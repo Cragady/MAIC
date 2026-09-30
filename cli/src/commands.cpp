@@ -129,6 +129,8 @@ const std::vector<Topic>& topics() {
         {"escape", {}, "back to normal mode", "*Esc*\nInsert or visual mode to normal mode; in the command line, cancels; in the conversation window, back to the input."},
         {"u", {"redo"}, "undo", "*u* *Ctrl-R*\n`u` undoes the last change in the input, `Ctrl-R` redoes (for the agent's file changes see `:h :undo`). Two hundred levels. An insert session counts as one step, and so does a change operator (`cw`, `cc`, `C`, `S`) together with what you typed after it."},
         {"ctrl-r", {"redo"}, "redo", "*Ctrl-R*\nRedo. See `:h u`."},
+        {"ctrl-z", {"c-z", "suspend", "^z", "fg"}, "suspend to the shell; fg resumes",
+         "*Ctrl-Z*\nSuspends MAIC to the shell that started it, like vim; `fg` brings it back with the screen redrawn. A running turn or command is paused with it (the model call resumes on `fg`; a very long pause can time the connection out, which is then retried like any failed call). Not in command-line mode."},
         {"ctrl-c", {}, "interrupt, clear, quit", "*Ctrl-C*\nWhile the agent works: interrupts the turn. While a `!command` runs: stops it. Otherwise: clears the input; pressed twice on an empty input: quits (or `:q`)."},
         {"shift-tab", {"tab"}, "cycle the mode", "*Shift-Tab*\nCycles manual → auto-read → edit → auto → plan. See `:h modes`."},
         {"ctrl-x", {"ctrl-x ctrl-e", "nvim", "editor"}, "edit the input in nvim", "*Ctrl-X Ctrl-E*\nOpens the input in $VISUAL, $EDITOR or nvim as a markdown file and loads it back when you quit. Same as `:e`."},

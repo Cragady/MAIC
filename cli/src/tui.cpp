@@ -441,7 +441,6 @@ private:
     size_t palette_sel_ = 0;
     std::string palette_for_;  // the command line the selection belongs to
     bool quit_armed_ = false;
-    bool ctrl_c_is_key_ = false;
     int view_height_ = 10;
 };
 
@@ -753,15 +752,19 @@ Element App::render_question() {
 }
 
 Element App::render() {
-    // FTXUI leaves ISIG on, so Ctrl-C would be a SIGINT that tears the UI down. Make it a key instead.
-    // This runs on the first frame, after FTXUI has set up the terminal; it restores the saved settings on exit.
-    if (!ctrl_c_is_key_) {
+    // FTXUI leaves ISIG on, so Ctrl-C would be a SIGINT that tears the UI down. Disable just the interrupt
+    // and quit characters: Ctrl-C then arrives as a key, while Ctrl-Z still raises SIGTSTP from the line
+    // discipline, which FTXUI turns into a proper suspend (its input parser drops the byte, so a key handler
+    // could never do it). Checked every frame, since FTXUI re-installs the terminal after fg; it restores the
+    // saved settings on exit.
+    {
         termios t;
-        if (tcgetattr(STDIN_FILENO, &t) == 0) {
-            t.c_lflag &= ~static_cast<tcflag_t>(ISIG);
+        if (tcgetattr(STDIN_FILENO, &t) == 0 && (t.c_cc[VINTR] != _POSIX_VDISABLE || t.c_cc[VQUIT] != _POSIX_VDISABLE || !(t.c_lflag & ISIG))) {
+            t.c_lflag |= ISIG;
+            t.c_cc[VINTR] = _POSIX_VDISABLE;
+            t.c_cc[VQUIT] = _POSIX_VDISABLE;
             tcsetattr(STDIN_FILENO, TCSANOW, &t);
         }
-        ctrl_c_is_key_ = true;
     }
     auto size = Terminal::Size();
     size_t width = static_cast<size_t>(std::max(size.dimx, 20));
