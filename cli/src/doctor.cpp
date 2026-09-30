@@ -194,11 +194,17 @@ int run_doctor() {
     else if (ram_gb >= 32) quick = "qwen3.5:4b", deep = "qwen3.5:9b", why = "no usable GPU found; a 4B on CPU is workable, a 9B is slow";
     else quick = "qwen3.5:2b", deep = "qwen3.5:4b", why = "no usable GPU and limited RAM";
     std::cout << "  " << why << "\n";
-    std::cout << "  quick model (default):  " << quick << (has_model(models, quick) ? "  (installed)" : "  ->  ollama pull " + quick) << "\n";
-    std::cout << "  deep model (:model):    " << deep << (has_model(models, deep) ? "  (installed)" : "  ->  ollama pull " + deep) << "\n";
-    if (settings.model != quick && settings.model.find('/') == std::string::npos) {
-        std::cout << "  your settings choose \"" << settings.model << "\"; set model = \"" << quick << "\" in settings.lua to use the recommendation\n";
-    }
+    // llama.cpp first: every sampler, logit bias and grammars reach it (docs/llamacpp.md). Ollama stays for pulling
+    // models, and its blobs are the GGUFs to link.
+    auto lc = find_vendor("llamacpp");
+    VendorStatus lcs = lc ? vendor_status(*lc) : VendorStatus{};
+    std::cout << "  llama.cpp (default, llamacpp/current):  ";
+    if (!lcs.installed) std::cout << "not built  ->  maic vendor add llamacpp\n";
+    else if (lcs.model.empty()) std::cout << "no GGUF linked yet  ->  maic vendor use llamacpp PATH (an Ollama blob works: ollama show --modelfile " << quick << ")\n";
+    else std::cout << lcs.model << "  ->  maic up llamacpp\n";
+    std::cout << "  ollama quick model (ollama/" << quick << "):  " << (has_model(models, quick) ? "installed" : "ollama pull " + quick) << "\n";
+    std::cout << "  ollama deep model (ollama/" << deep << "):   " << (has_model(models, deep) ? "installed" : "ollama pull " + deep) << "\n";
+    if (settings.model != "llamacpp/current") std::cout << "  your settings choose \"" << settings.model << "\"; the default is llamacpp/current\n";
     if (!fs::exists(settings_path())) std::cout << "  no settings file yet: maic settings init\n";
     if (!fs::exists(global_instructions_path())) std::cout << "  no global MAIC.md yet: " << global_instructions_path().string() << " (name, pronouns, standing rules)\n";
     if (avail_gb < 8) std::cout << "  only " << avail_gb << " GB of RAM is free right now; models load faster with more\n";

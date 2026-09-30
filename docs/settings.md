@@ -11,9 +11,9 @@ At each location a `settings.lua` is used when it exists, else a `settings.json`
 Because a settings file is code, it can decide things per machine:
 
 ```lua
-local deep = maic.hostname == "workstation" and "qwen3.5:9b" or "qwen3.5:4b"
+local model = maic.hostname == "laptop" and "ollama/qwen3.5:4b" or "llamacpp/current"
 return {
-  model = os.getenv("MAIC_MODEL") or deep,
+  model = os.getenv("MAIC_MODEL") or model,
   mode = "auto-read",
   models_dir = maic.home .. "/models",
   providers = {
@@ -28,7 +28,7 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 ```jsonc
 // the same keys, in JSON form
 {
-  "model": "qwen3.5:4b",
+  "model": "llamacpp/current",
   "mode": "manual",
   "think": false,
   "markdown": true,
@@ -43,7 +43,7 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 
 | Key | What |
 | :--- | :--- |
-| `model` | `provider/model`, or a bare Ollama model name. `--model` on the command line and `:model` in the session override it. |
+| `model` | `provider/model`, or a bare Ollama model name. Default `llamacpp/current`: the vendored llama-server ([llamacpp.md](llamacpp.md)), which serves whatever GGUF you linked under the name `current`. `--model` on the command line and `:model` in the session override it. |
 | `mode` | `manual`, `auto-read`, `edit`, `auto` or `plan` (see [cli/README.md](../cli/README.md#modes)). |
 | `think` | Ask the model to reason before answering. Slower; better on hard problems. |
 | `markdown` | Render markdown in the conversation window (`:set markdown off` for raw text). The input box always highlights markdown. |

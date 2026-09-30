@@ -65,7 +65,7 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:w` | send the input (same as Alt+Enter). `:w now` or `:ww` sends immediately even while the agent is working (see below) |
 | `:e` | edit the input in nvim (`$VISUAL`, then `$EDITOR`, then `nvim`); a non-zero exit leaves the input unchanged |
 | `:mode manual\|auto-read\|edit\|auto\|plan` | set the agent mode |
-| `:model NAME` | switch model (when idle): `qwen3.5:9b`, `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists providers |
+| `:model NAME` | switch model (when idle): `llamacpp/current`, `qwen3.5:9b` (Ollama), `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists providers |
 | `:models` | models the Ollama server has |
 | `:think on\|off` | let the model reason before answering |
 | `:set markdown\|mouse on\|off` | rendering and scroll-wheel toggles |

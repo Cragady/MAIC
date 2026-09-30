@@ -150,7 +150,10 @@ Use:
 
 ```sh
 maic doctor                  # what this machine has and a recommended setup
-maic                         # the agent, in the current directory (see cli/README.md)
+maic vendor add llamacpp     # first run: build llama.cpp (docs/llamacpp.md), ...
+maic vendor use llamacpp /path/to/model.gguf   # ... link a GGUF (an Ollama blob works), ...
+maic up llamacpp             # ... start llama-server on 127.0.0.1:8081, and
+maic                         # the agent, in the current directory, on llamacpp/current (see cli/README.md)
 maic -c                      # continue the last session here; maic -r picks one
 maic -p "prompt"             # one turn, no UI
 maic status                  # harness state + every service

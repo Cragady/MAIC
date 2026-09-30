@@ -62,12 +62,14 @@ One model at a time; `vendor use` again to switch, then restart the service. `ma
 
 ```sh
 maic up llamacpp             # llama-server on 127.0.0.1:8081, loads current-model.gguf; maic logs llamacpp
-maic --model llamacpp/qwen3.5-9b
+maic                         # llamacpp/current is the default model
 ```
 
-`services/llamacpp.json` runs `llama-server --host 127.0.0.1 --port 8081 --model .../current-model.gguf --ctx-size 16384 --jinja -ngl 99`. `--jinja` makes the server use the model's own chat template, which is what tool calling needs. `-ngl 99` puts every layer on the GPU; a CPU build ignores it with a warning. A 9B at Q4_K_M with 16k context is about the ceiling of an 8 GB card; if the server dies while loading, lower `--ctx-size` or `-ngl` in the service file, or add `--cache-type-k q8_0 --cache-type-v q8_0` (needs `--flash-attn on`) to halve the KV cache.
+`services/llamacpp.json` runs `llama-server --host 127.0.0.1 --port 8081 --model .../current-model.gguf --ctx-size 16384 --jinja -ngl 99 --alias current`. `--jinja` makes the server use the model's own chat template, which is what tool calling needs. `-ngl 99` puts every layer on the GPU; a CPU build ignores it with a warning. A 9B at Q4_K_M with 16k context is about the ceiling of an 8 GB card; if the server dies while loading, lower `--ctx-size` or `-ngl` in the service file, or add `--cache-type-k q8_0 --cache-type-v q8_0` (needs `--flash-attn on`) to halve the KV cache.
 
-**The model name after `llamacpp/` is yours to pick.** llama-server serves the one file it loaded and ignores the `model` field of the request; `/v1/models` reports the path of that file. So `llamacpp/qwen3.5-9b` and `llamacpp/anything` reach the same model. Use a name that says which GGUF was current, because that is what the session transcript records. `:model llamacpp/<name>` switches in a session; `model = "llamacpp/<name>"` in `settings.lua` makes it the default.
+**`llamacpp/current` is the default model**, and `current` is the name `--alias` gives whatever GGUF is linked, so `/v1/models` reports it and `:model llamacpp/current` always means "the linked one". llama-server serves the one file it loaded and ignores the `model` field of the request, so any other name after `llamacpp/` reaches the same model; `maic --model llamacpp/qwen3.5-9b` is a way to make the transcript say which GGUF was current at the time. `model = "ollama/qwen3.5:4b"` (or a bare Ollama name) in `settings.lua` makes Ollama the default again; both stay available and `:model` switches between them mid-session.
+
+If the model is not running, the first turn fails with the reason and what to do: `llamacpp is not running: maic up llamacpp (needs a model: maic vendor use llamacpp /path/model.gguf; maic vendor shows what is linked)`. `maic up llamacpp` refuses with the same hint until a GGUF is linked.
 
 The provider is shipped: kind `openai`, `base_url` `http://127.0.0.1:8081/v1`, no key, local (no `REMOTE` in the status line). Override it by name in `providers` if you move the port.
 
@@ -100,4 +102,4 @@ MAIC sends nothing of this to Anthropic, and Ollama takes only the options it kn
 | binaries | `~/.local/state/maic/vendor/llamacpp/bin` -> the build's `bin/` |
 | model | `~/.local/state/maic/vendor/llamacpp/current-model.gguf` -> your GGUF |
 | service | `services/llamacpp.json`; log in `~/.local/state/maic/logs/llamacpp.log` |
-| provider | `llamacpp`, `http://127.0.0.1:8081/v1`, in `default_providers()` |
+| provider | `llamacpp`, `http://127.0.0.1:8081/v1`, in `default_providers()`; `llamacpp/current` is the default model |

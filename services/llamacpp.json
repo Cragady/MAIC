@@ -13,7 +13,9 @@
     "16384",
     "--jinja",
     "-ngl",
-    "99"
+    "99",
+    "--alias",
+    "current"
   ],
   "port": 8081,
   "requires": [
