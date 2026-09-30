@@ -17,6 +17,7 @@
 #include "maic/bans.hpp"
 #include "maic/lua.hpp"
 #include "maic/places.hpp"
+#include "maic/tripwire.hpp"
 #include "maic/paths.hpp"
 
 #include <netinet/in.h>
@@ -760,6 +761,39 @@ int main() {
         Settings sa = load_settings(ws / "proj");
         expect(std::find(sa.allow.begin(), sa.allow.end(), "pytest *") != sa.allow.end() && std::find(sa.allow.begin(), sa.allow.end(), "maic-storyboard*") != sa.allow.end(),
                "allow patterns from settings add to the default helpers");
+        fs::remove(ws / "proj" / ".maic" / "settings.lua");
+    }
+
+    section("tripwire scope");
+    {
+        fs::path session_lock = ws / "t.jsonl.tripped";
+        set_tripwire_scope("session", session_lock);
+        expect(!tripwire_state() && !session_tripped(), "armed to begin with");
+        trip_tripwire("test trip");
+        expect(session_tripped() && tripwire_state() && tripwire_state()->find("test trip") != std::string::npos && fs::exists(session_lock), "a session-scoped trip writes the session lock, no root helper");
+        bool refused = false;
+        try {
+            require_armed("do a thing");
+        } catch (const std::exception&) {
+            refused = true;
+        }
+        expect(refused, "and require_armed refuses while it stands");
+        expect(unlock_session() && !tripwire_state() && !fs::exists(session_lock), "unlock_session removes it without sudo");
+        // The machine lock (the test's scratch file) is honoured even in session scope.
+        write_file(std::getenv("MAIC_TRIPWIRE_FILE"), "reason: machine\n");
+        expect(tripwire_state() && tripwire_state()->find("machine") != std::string::npos && !unlock_session(), "the machine lock still counts, and unlock_session cannot clear it");
+        fs::remove(std::getenv("MAIC_TRIPWIRE_FILE"));
+        set_tripwire_scope("machine", {});
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { tripwire = 'session' }");
+        expect(load_settings(ws / "proj").tripwire == "session", "the scope loads from settings");
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { tripwire = 'sometimes' }");
+        bool bad = false;
+        try {
+            load_settings(ws / "proj");
+        } catch (const std::exception&) {
+            bad = true;
+        }
+        expect(bad, "an unknown scope is an error");
         fs::remove(ws / "proj" / ".maic" / "settings.lua");
     }
 

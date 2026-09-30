@@ -177,6 +177,8 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             for (const auto& r : j["rules"]) if (r.is_string() && !r.get<std::string>().empty()) s.rules.push_back(r.get<std::string>());
         }
         s.harness = j.value("harness", s.harness);
+        s.tripwire = j.value("tripwire", s.tripwire);
+        if (s.tripwire != "machine" && s.tripwire != "session") throw std::runtime_error(path.string() + ": tripwire must be \"machine\" or \"session\", not \"" + s.tripwire + "\"");
         if (j.contains("sampling") && j["sampling"].is_object()) {
             for (const auto& [k, v] : j["sampling"].items()) s.sampling[k] = v;
         }
@@ -356,6 +358,8 @@ void write_default_settings(bool as_json) {
         {"//rules", "standing one-line instructions (\"always answer in French\"); they ride with system_prompt at both ends of the system prompt and in the per-turn note. :rule in a session, --rule on the command line"},
         {"//prefill", "text every reply starts with, sent as the opening of the assistant turn; a guarantee where a system prompt is a request"},
         {"harness", d.harness},
+        {"tripwire", d.tripwire},
+        {"//tripwire", "machine: a trip sets the root-owned lock every MAIC process respects, unlock asks for sudo; session: a trip locks this session only (a file beside its transcript), :unlock removes it without sudo. A project's .maic/settings.lua can choose per project"},
         {"//harness", "smart: a model reads the conversation and reviews every command or write the rules would allow without asking (auto, edit); dumb: the rule list alone"},
         {"reviewer_model", d.reviewer_model},
         {"dumb_auto_ok", d.dumb_auto_ok},

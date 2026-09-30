@@ -4,6 +4,7 @@
 #include "maic/agent.hpp"
 #include "maic/session.hpp"
 #include "maic/settings.hpp"
+#include "maic/tripwire.hpp"
 #include "maic/vendor.hpp"
 
 #include <unistd.h>
@@ -189,6 +190,7 @@ int run_headless(const HeadlessOptions& options) {
     agent.prefill = resolve_system_prompt(settings.prefill);
     agent.rules = settings.rules;
     agent.set_allow(settings.allow);
+    set_tripwire_scope(settings.tripwire, log->path().string() + ".tripped");
     agent.reload_instructions();
     agent.bans = settings.bans;
     {

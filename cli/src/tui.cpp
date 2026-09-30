@@ -235,6 +235,7 @@ public:
         agent_.prefill = resolve_system_prompt(settings_.prefill);
         agent_.rules = settings_.rules;
         agent_.set_allow(settings_.allow);
+        set_tripwire_scope(settings_.tripwire, log_->path().string() + ".tripped");
         agent_.reload_instructions();
         agent_.bans = settings_.bans;
         apply_sampling();
@@ -456,6 +457,7 @@ void App::welcome() {
     view_.append(Kind::Notice, "MAIC  ·  workspace " + agent_.harness().workspace().string() + "  ·  model " + agent_.model + remote);
     std::string files;
     for (const auto& f : agent_.instructions()) files += (files.empty() ? "" : ", ") + f.path.string();
+    if (session_tripped()) view_.append(Kind::Error, "this session is tripped (its own lock, from an earlier run): :unlock removes it");
     view_.append(Kind::Notice, "session transcript: " + log_path() + (files.empty() ? "" : "\ninstructions: " + files));
     if (!agent_.tools().empty()) {
         std::string names;
@@ -1384,10 +1386,13 @@ void App::run_command(const std::string& line) {
             }
         } else if (cmd == "trip") {
             trip_tripwire("manual trip: " + (arg.empty() ? std::string("from the agent session") : arg));
-            post(Kind::Error, "HARNESS TRIPPED. Nothing will run until :unlock");
+            post(Kind::Error, settings_.tripwire == "session" ? "SESSION TRIPPED. Nothing runs in this session until :unlock (no sudo: the lock is this session's own)"
+                                                                : "HARNESS TRIPPED. Nothing will run until :unlock");
         } else if (cmd == "unlock") {
             if (!tripwire_state()) post(Kind::Notice, "harness is not tripped");
-            else {
+            else if (session_tripped()) {
+                post(unlock_session() ? Kind::Notice : Kind::Error, unlock_session() ? "session lock removed; carry on" : "session lock removed, but the machine lock is set: `maic unlock` (sudo)");
+            } else {
                 screen_.WithRestoredIO([] {
                     [[maybe_unused]] int rc = std::system("echo 'Unlocking the MAIC harness.'; sudo -k && sudo /usr/local/sbin/maic-lock reset");
                 })();

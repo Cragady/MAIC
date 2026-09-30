@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -22,16 +23,39 @@ std::string lock_file() {
     const char* env = override_file();
     return env ? std::string(env) : std::string(kLockFile);
 }
-}  // namespace
 
-std::optional<std::string> tripwire_state() {
-    std::ifstream in(lock_file());
-    if (!in) {
-        return std::nullopt;
-    }
+std::string g_scope = "machine";
+std::filesystem::path g_session_lock;
+
+std::optional<std::string> read_lock(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) return std::nullopt;
     std::ostringstream contents;
     contents << in.rdbuf();
     return contents.str();
+}
+}  // namespace
+
+void set_tripwire_scope(const std::string& scope, const std::filesystem::path& session_lock) {
+    g_scope = scope == "session" ? "session" : "machine";
+    g_session_lock = session_lock;
+}
+
+bool session_tripped() {
+    std::error_code ec;
+    return !g_session_lock.empty() && std::filesystem::exists(g_session_lock, ec);
+}
+
+bool unlock_session() {
+    std::error_code ec;
+    if (!g_session_lock.empty()) std::filesystem::remove(g_session_lock, ec);
+    return !tripwire_state();
+}
+
+std::optional<std::string> tripwire_state() {
+    if (auto machine = read_lock(lock_file())) return machine;
+    if (session_tripped()) return read_lock(g_session_lock.string());
+    return std::nullopt;
 }
 
 void require_armed(const std::string& action) {
@@ -42,6 +66,10 @@ void require_armed(const std::string& action) {
 }
 
 void trip_tripwire(const std::string& reason) {
+    if (g_scope == "session" && !g_session_lock.empty()) {
+        std::ofstream(g_session_lock, std::ios::trunc) << "session lock (this session only; :unlock removes it)\nreason: " << reason << "\n";
+        return;
+    }
     if (const char* f = override_file()) {
         std::ofstream(f, std::ios::trunc) << "reason: " << reason << "\n";
         return;

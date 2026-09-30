@@ -553,7 +553,7 @@ int main(int argc, char** argv) {
         }
         if (cmd == "unlock") {
             if (!maic::tripwire_state()) {
-                std::cout << "harness: not tripped\n";
+                std::cout << "harness: not tripped (a session-scoped lock is removed inside its session with :unlock)\n";
                 return 0;
             }
             // Drop any cached sudo login first so unlocking always needs the password.

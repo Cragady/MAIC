@@ -95,6 +95,8 @@ Every agent tool call goes through `Agent::run_tool_call` (`core/src/agent.cpp`)
 
 **Repeats, refined.** The doom-loop rule now tells harm from confusion: a repeated write or a repeated command that could change something trips the lock at five, as before; a repeated read, read-only command or allow-listed command is refused at three and ends the turn at five, with a note to the user, because a small model re-running `maic-storyboard` is stuck, not dangerous, and a root-owned lock is the wrong answer to stuck.
 
+**Lock scope.** `tripwire = "session"` in settings makes a trip from that session land in a user-owned file beside its transcript instead of the root-owned machine lock: the session stops exactly as before, resumes still see it, and `:unlock` removes it without sudo. The machine lock is honoured in both scopes, and the more specific settings file wins, so a scratch project can run session-scoped while the default stays machine-wide.
+
 **The dumb harness.** `harness = "dumb"` (`:harness dumb`, `--harness dumb`) turns the reviewer off: nothing reads the conversation, the rule list alone decides. That is Micaiah's explicit option, not a fallback. Because auto mode then runs any well-formed command the rules do not catch, entering auto under a dumb harness shows a warning once and asks for a yes; after that the session settles in and does not ask again. `dumb_auto_ok = true` or `--accept-dumb-auto` skips the warning; a headless run refuses dumb + auto without one of them. Remote sessions are unaffected: a remote request is always asked, so the reviewer never sees one.
 
 **Planned:**
