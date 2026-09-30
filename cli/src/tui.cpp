@@ -141,9 +141,11 @@ int run_user_shell(const std::string& command, const std::filesystem::path& cwd,
 std::string init_project(const std::filesystem::path& ws) {
     std::string made;
     std::filesystem::create_directories(ws / ".maic");
-    if (!std::filesystem::exists(ws / ".maic" / "settings.json")) {
-        std::ofstream(ws / ".maic" / "settings.json") << "{\n  \"//\": \"Project settings for MAIC, committed with the code. Personal overrides go in settings.local.json (add it to .gitignore).\"\n}\n";
-        made += "created .maic/settings.json\n";
+    if (!std::filesystem::exists(ws / ".maic" / "settings.lua") && !std::filesystem::exists(ws / ".maic" / "settings.json")) {
+        std::ofstream(ws / ".maic" / "settings.lua") << "-- Project settings for MAIC, committed with the code. Personal overrides go in settings.local.lua\n"
+                                                          "-- (add it to .gitignore). Keys: docs/settings.md\n"
+                                                          "return {\n}\n";
+        made += "created .maic/settings.lua\n";
     }
     if (!std::filesystem::exists(ws / "MAIC.md")) {
         std::ofstream(ws / "MAIC.md") << "# " << ws.filename().string() << "\n\nStanding instructions for agents working in this project.\n";
@@ -946,7 +948,7 @@ void App::run_command(const std::string& line) {
         } else if (cmd == "settings") {
             std::string out = "settings files in effect (nearest last, wins):";
             for (const auto& p : settings_.sources) out += "\n  " + p.string();
-            if (settings_.sources.empty()) out += "\n  none (defaults). `maic settings init` writes the global one; `:init` scaffolds a project's.";
+            if (settings_.sources.empty()) out += "\n  none (defaults). `maic settings init` writes the global settings.lua; `:init` scaffolds a project's.";
             out += "\nsessions home: " + session_home_dir(settings_).lexically_relative(sessions_dir()).string() + "  (sessions_home = " + settings_.sessions_home + ")";
             post(Kind::Notice, out);
         } else if (cmd == "init") {

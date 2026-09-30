@@ -54,7 +54,7 @@ void usage() {
                  "  sessions                   list session transcripts (where started, where last opened)\n"
                  "  sessions rehome ID [project|general|NAME]   move a transcript to another home (default: project)\n"
                  "  sessions path ID           print a transcript's path\n"
-                 "  settings init|path         write the global settings file, or show where it goes\n"
+                 "  settings init [--json]|path  write the global settings file (Lua; --json for JSON), or show where it goes\n"
                  "  init                       scaffold this project: MAIC.md and .maic/settings.json (transcripts then\n"
                  "                             go under sessions/projects/); :init in a session also drafts the MAIC.md\n"
                  "  trip [reason]              trip the harness lock now (blocks all actions until unlocked)\n"
@@ -221,11 +221,17 @@ std::filesystem::path pick_session(bool continue_last, const std::optional<std::
 
 int cmd_settings(const std::vector<std::string>& args) {
     if (!args.empty() && args[0] == "init") {
-        maic::write_default_settings();
-        std::cout << "wrote " << maic::settings_path().string() << "\n";
+        bool as_json = args.size() > 1 && args[1] == "--json";
+        maic::write_default_settings(as_json);
+        std::filesystem::path p = maic::settings_path();
+        if (!as_json) p.replace_extension(".lua");
+        std::cout << "wrote " << p.string() << "\n";
         return 0;
     }
-    std::cout << maic::settings_path().string() << (std::filesystem::exists(maic::settings_path()) ? "" : "  (not created yet: maic settings init)") << "\n";
+    std::filesystem::path lua = maic::settings_path();
+    lua.replace_extension(".lua");
+    bool have = std::filesystem::exists(lua) || std::filesystem::exists(maic::settings_path());
+    std::cout << (std::filesystem::exists(lua) ? lua : maic::settings_path()).string() << (have ? "" : "  (not created yet: maic settings init, or init --json)") << "\n";
     return 0;
 }
 
@@ -377,9 +383,11 @@ int main(int argc, char** argv) {
             auto ws = std::filesystem::current_path();
             std::filesystem::create_directories(ws / ".maic");
             bool any = false;
-            if (!std::filesystem::exists(ws / ".maic" / "settings.json")) {
-                std::ofstream(ws / ".maic" / "settings.json") << "{\n  \"//\": \"Project settings for MAIC, committed with the code. Personal overrides go in settings.local.json (add it to .gitignore).\"\n}\n";
-                std::cout << "created .maic/settings.json\n";
+            if (!std::filesystem::exists(ws / ".maic" / "settings.lua") && !std::filesystem::exists(ws / ".maic" / "settings.json")) {
+                std::ofstream(ws / ".maic" / "settings.lua") << "-- Project settings for MAIC, committed with the code. Personal overrides go in settings.local.lua\n"
+                                                                  "-- (add it to .gitignore). Keys: docs/settings.md\n"
+                                                                  "return {\n}\n";
+                std::cout << "created .maic/settings.lua\n";
                 any = true;
             }
             if (!std::filesystem::exists(ws / "MAIC.md")) {

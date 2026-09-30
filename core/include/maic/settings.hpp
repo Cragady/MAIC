@@ -63,6 +63,7 @@ Settings load_settings();  // for the current directory
 std::filesystem::path resolve_sessions_home(const Settings& settings, const std::filesystem::path& workspace);
 
 // Writes the settings file with a documented default for every key. Never overwrites an existing file.
-void write_default_settings();
+// Lua by default (settings.lua); `json` writes settings.json instead.
+void write_default_settings(bool json = false);
 
 }  // namespace maic

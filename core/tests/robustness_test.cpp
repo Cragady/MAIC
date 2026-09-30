@@ -257,6 +257,26 @@ int main() {
             threw = true;
         }
         expect(threw, "a broken settings file throws instead of silently using defaults");
+        // A settings.lua beside the json wins, and it is code.
+        write_file(proj / ".maic" / "settings.lua", "return { mode = os.getenv('HOME') and 'plan' or 'manual', leader = ',', instruction_files = {'A.md','B.md'}, style = { user = { fg = 'blue' } } }");
+        Settings ls = load_settings(proj);
+        expect(ls.mode == "plan" && ls.leader == "," && ls.instruction_files.size() == 2 && ls.instruction_files[1] == "B.md", "settings.lua is evaluated as code, arrays included");
+        expect(ls.style("user").fg == "blue" && ls.style("user").bold, "lua styles merge over earlier layers");
+        bool lua_seen = false;
+        for (const auto& src : ls.sources) lua_seen = lua_seen || src.extension() == ".lua";
+        expect(lua_seen, ":settings lists the lua file that was read");
+        write_file(proj / ".maic" / "settings.lua", "return 42");
+        threw = false;
+        try {
+            load_settings(proj);
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw, "a settings.lua that does not return a table is an error");
+        fs::remove(proj / ".maic" / "settings.lua");
+        Lua lt(ws);
+        auto j = lt.eval_table("return { a = 1, b = 'x', c = { 1, 2, 3 }, d = { k = true }, e = 1.5 }");
+        expect(j["a"] == 1 && j["b"] == "x" && j["c"].is_array() && j["c"].size() == 3 && j["d"]["k"] == true && j["e"] == 1.5, "eval_table converts scalars, arrays and nested tables");
         unsetenv("XDG_CONFIG_HOME");
     }
 

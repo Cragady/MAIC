@@ -1,8 +1,11 @@
 #include "maic/settings.hpp"
 
 #include "maic/instructions.hpp"
+#include "maic/lua.hpp"
 #include "maic/session.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <stdexcept>
@@ -116,15 +119,31 @@ fs::path settings_path() {
 
 namespace {
 
-// Applies one file's keys over `s`. Scalars replace, providers merge by name, styles merge by role.
-void apply_file(Settings& s, const fs::path& path) {
-    std::ifstream in(path);
-    if (!in) return;
+// Applies one settings location over `s`: `<stem>.lua` when it exists (a chunk returning a table), else
+// `<stem>.json`. Scalars replace, providers merge by name, styles merge by role.
+void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspace) {
+    fs::path lua_path = json_path;
+    lua_path.replace_extension(".lua");
     json j;
-    try {
-        j = json::parse(in, nullptr, true, true);  // comments allowed
-    } catch (const json::exception& e) {
-        throw std::runtime_error(path.string() + ": " + e.what());
+    fs::path path;
+    std::error_code ec;
+    if (fs::is_regular_file(lua_path, ec)) {
+        path = lua_path;
+        try {
+            Lua lua(workspace);
+            j = lua.eval_table_file(lua_path);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("settings: ") + e.what());
+        }
+    } else {
+        std::ifstream in(json_path);
+        if (!in) return;
+        path = json_path;
+        try {
+            j = json::parse(in, nullptr, true, true);  // comments allowed
+        } catch (const json::exception& e) {
+            throw std::runtime_error(path.string() + ": " + e.what());
+        }
     }
     s.sources.push_back(path);
     try {
@@ -176,7 +195,7 @@ void apply_file(Settings& s, const fs::path& path) {
 Settings load_settings(const fs::path& workspace) {
     Settings s;
     s.styles = default_styles();
-    apply_file(s, settings_path());
+    apply_file(s, settings_path(), workspace);
     // Project layers: from just under $HOME down to the workspace, like instruction files.
     std::error_code ec;
     fs::path home = fs::weakly_canonical(std::getenv("HOME"), ec);
@@ -190,8 +209,8 @@ Settings load_settings(const fs::path& workspace) {
         if (d == d.root_path()) break;
     }
     for (auto it = dirs.rbegin(); it != dirs.rend(); ++it) {
-        apply_file(s, *it / ".maic" / "settings.json");
-        apply_file(s, *it / ".maic" / "settings.local.json");
+        apply_file(s, *it / ".maic" / "settings.json", workspace);
+        apply_file(s, *it / ".maic" / "settings.local.json", workspace);
     }
     return s;
 }
@@ -213,9 +232,38 @@ fs::path resolve_sessions_home(const Settings& settings, const fs::path& workspa
     return sessions_home(home);
 }
 
-void write_default_settings() {
+namespace {
+
+// JSON -> Lua table literal, with the key order kept readable.
+std::string lua_literal(const json& j, int indent) {
+    std::string pad(static_cast<size_t>(indent) * 2, ' ');
+    if (j.is_object()) {
+        std::string out = "{\n";
+        for (const auto& [k, v] : j.items()) {
+            if (k.rfind("//", 0) == 0) continue;  // "//key" comments are emitted next to their key below
+            if (auto c = j.find("//" + k); c != j.end() && c->is_string()) out += pad + "  -- " + c->get<std::string>() + "\n";
+            bool plain = !k.empty() && (std::isalpha(static_cast<unsigned char>(k[0])) || k[0] == '_') &&
+                         std::all_of(k.begin(), k.end(), [](unsigned char c) { return std::isalnum(c) || c == '_'; });
+            out += pad + "  " + (plain ? k : "[" + json(k).dump() + "]") + " = " + lua_literal(v, indent + 1) + ",\n";
+        }
+        return out + pad + "}";
+    }
+    if (j.is_array()) {
+        std::string out = "{ ";
+        for (const auto& v : j) out += lua_literal(v, indent + 1) + ", ";
+        return out + "}";
+    }
+    return j.dump();  // strings, numbers, booleans, null
+}
+
+}  // namespace
+
+void write_default_settings(bool as_json) {
     fs::path p = settings_path();
-    if (fs::exists(p)) throw std::runtime_error(p.string() + " already exists");
+    if (!as_json) p.replace_extension(".lua");
+    if (fs::exists(p) || fs::exists(settings_path()) || fs::exists(fs::path(settings_path()).replace_extension(".lua"))) {
+        throw std::runtime_error("a settings file already exists in " + p.parent_path().string());
+    }
     fs::create_directories(p.parent_path());
     Settings d;
     json providers = json::object();
@@ -246,7 +294,16 @@ void write_default_settings() {
         {"style", styles},
     };
     std::ofstream out(p);
-    out << j.dump(2) << "\n";
+    if (as_json) {
+        out << j.dump(2) << "\n";
+        return;
+    }
+    j.erase("//");
+    out << "-- MAIC settings (Lua). Every key is optional; delete what you don't change. This file is code: use\n"
+           "-- os.getenv, maic.hostname, maic.home or maic.workspace for per-machine choices. A settings.json in the same\n"
+           "-- place is used only when no settings.lua exists. Reference: docs/settings.md\n"
+           "return "
+        << lua_literal(j, 0) << "\n";
 }
 
 }  // namespace maic

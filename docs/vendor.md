@@ -11,7 +11,8 @@ MAIC can install the services it drives, so nothing has to live in `~/program-fi
 │       ├── v0.35.0/     the verified release (bin/ollama + CUDA libs)
 │       ├── current      -> v0.35.0
 │       └── cli-history  -> ~/.ollama/history
-├── workflows/comfyui/   your saved ComfyUI workflows (ComfyUI's own folder points here)
+├── workflows/comfyui/   your saved ComfyUI workflows, editable (ComfyUI's own folder points here)
+├── templates/comfyui/   your own templates: originals, shown in ComfyUI's template browser, opened as copies
 ├── sessions/            transcripts
 └── logs/                service logs
 ```
@@ -58,6 +59,18 @@ maic vendor unlink ollama        # stop using it; nothing is deleted
 ## Settings
 
 `models_dir` in `settings.json` is where model files live (the ComfyUI folders `checkpoints/ diffusion_models/ loras/ text_encoders/ vae/` and the Ollama store `ollama/`). `vendor/comfyui.sh` writes `extra_model_paths.yaml` from it on a fresh install; an adopted install keeps the file it has.
+
+## Workflows and templates
+
+ComfyUI has three kinds of workflow files, and only one of them is yours to edit:
+
+| Artifact | What | Editable? |
+| :--- | :--- | :--- |
+| `comfyui/workflows` | what you save in the UI; `~/.local/state/maic/workflows/comfyui/` | yes, that is the point |
+| `comfyui/templates` | your originals; `~/.local/state/maic/templates/comfyui/`. A no-op custom node (`vendor/comfyui-maic-templates`) serves this folder in ComfyUI's template browser, so opening one creates a new workflow and saving goes to `workflows`, never back into the template | by you, on purpose; never by the UI |
+| `comfyui/builtin-templates` | the templates ComfyUI ships (a pip package, 594 files); replaced on upgrade | no. Copy one into `templates/` to make it yours |
+
+So to change something while keeping the original safe: put the original in `templates/`, open it from the template browser, edit, save. `maic artifacts` shows all three with sizes.
 
 ## LuaJIT
 

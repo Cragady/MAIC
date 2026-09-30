@@ -25,8 +25,18 @@
     },
     {
       "name": "workflows",
-      "description": "saved workflows (ComfyUI's user workflow folder points here)",
+      "description": "your saved workflows, editable (ComfyUI's user workflow folder points here)",
       "path": "${MAIC_STATE}/workflows/comfyui"
+    },
+    {
+      "name": "templates",
+      "description": "your own templates: originals shown in ComfyUI's template browser and opened as copies, never edited in place",
+      "path": "${MAIC_STATE}/templates/comfyui"
+    },
+    {
+      "name": "builtin-templates",
+      "description": "ComfyUI's shipped templates (a pip package, read-only, replaced on upgrade); copy one into templates/ to make it yours",
+      "path": "${MAIC_VENDOR}/ComfyUI/.venv/lib/python3.13/site-packages/comfyui_workflow_templates_json/templates"
     },
     {
       "name": "uploads",

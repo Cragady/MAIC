@@ -1,5 +1,7 @@
 #pragma once
 
+#include <nlohmann/json.hpp>
+
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -30,6 +32,11 @@ public:
     };
     Result run(const std::string& code, const std::string& chunk_name = "=input");
     Result run_file(const std::filesystem::path& path);
+
+    // Runs a chunk that returns a table and converts it to JSON (settings.lua). Sequences (1..n) become arrays,
+    // other tables objects; functions and userdata are dropped. Throws with the Lua error on failure.
+    nlohmann::json eval_table(const std::string& code, const std::string& chunk_name = "=settings");
+    nlohmann::json eval_table_file(const std::filesystem::path& path);
 
     struct State;  // public for the C callbacks; not part of the interface
 

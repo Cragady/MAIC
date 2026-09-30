@@ -35,6 +35,15 @@ maic:
 EOF
         echo "wrote extra_model_paths.yaml -> $MAIC_MODELS_DIR"
     fi
+    # Your own templates (originals, opened as copies) show up in ComfyUI's template browser through a
+    # no-op custom node whose example_workflows/ points at the artifact tree.
+    tpl="$MAIC_STATE/templates/comfyui"
+    mkdir -p "$tpl"
+    if [ ! -e custom_nodes/comfyui-maic-templates ]; then
+        ln -s "$MAIC_ROOT/vendor/comfyui-maic-templates" custom_nodes/comfyui-maic-templates
+    fi
+    [ -e "$MAIC_ROOT/vendor/comfyui-maic-templates/example_workflows" ] || ln -s "$tpl" "$MAIC_ROOT/vendor/comfyui-maic-templates/example_workflows"
+    echo "templates: $tpl"
     # Workflows belong to MAIC's artifact tree; ComfyUI's user workflow folder points there.
     wf="$MAIC_STATE/workflows/comfyui"
     mkdir -p "$wf" user/default

@@ -6,8 +6,12 @@ extern "C" {
 #include <lualib.h>
 }
 
+#include <unistd.h>
+
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
+#include <stdexcept>
 #include <iterator>
 #include <sstream>
 
@@ -27,6 +31,11 @@ struct Lua::State {
 };
 
 namespace {
+
+// Lua 5.1 has no lua_absindex.
+int lua_absindex_compat(lua_State* L, int idx) {
+    return idx > 0 || idx <= LUA_REGISTRYINDEX ? idx : lua_gettop(L) + idx + 1;
+}
 
 Lua::State& self(lua_State* L) {
     return *static_cast<Lua::State*>(lua_touserdata(L, lua_upvalueindex(1)));
@@ -127,6 +136,16 @@ Lua::Lua(fs::path workspace, std::function<void(const std::string&)> notice) : s
     lua_setfield(L, -2, "workspace");
     lua_pushstring(L, MAIC_VERSION);
     lua_setfield(L, -2, "version");
+    if (const char* home = std::getenv("HOME")) {
+        lua_pushstring(L, home);
+        lua_setfield(L, -2, "home");
+    }
+    {
+        char host[256] = "";
+        gethostname(host, sizeof(host) - 1);
+        lua_pushstring(L, host);
+        lua_setfield(L, -2, "hostname");
+    }
     for (auto [name, fn] : {std::pair<const char*, lua_CFunction>{"read", l_read}, {"write", l_write}, {"shell", l_shell}, {"notice", l_notice}}) {
         lua_pushlightuserdata(L, st_);
         lua_pushcclosure(L, fn, 1);
@@ -158,6 +177,82 @@ Lua::Result Lua::run(const std::string& code, const std::string& chunk_name) {
     }
     lua_settop(L, 0);
     return {true, st_->output};
+}
+
+namespace {
+
+nlohmann::json to_json(lua_State* L, int idx, int depth) {
+    if (depth > 32) return nullptr;
+    idx = lua_absindex_compat(L, idx);
+    switch (lua_type(L, idx)) {
+        case LUA_TNIL: return nullptr;
+        case LUA_TBOOLEAN: return lua_toboolean(L, idx) != 0;
+        case LUA_TNUMBER: {
+            double d = lua_tonumber(L, idx);
+            if (d == static_cast<double>(static_cast<long long>(d))) return static_cast<long long>(d);
+            return d;
+        }
+        case LUA_TSTRING: {
+            size_t len = 0;
+            const char* s = lua_tolstring(L, idx, &len);
+            return std::string(s, len);
+        }
+        case LUA_TTABLE: {
+            // A sequence 1..n with nothing else is an array.
+            size_t n = lua_objlen(L, idx), keys = 0;
+            lua_pushnil(L);
+            while (lua_next(L, idx)) {
+                ++keys;
+                lua_pop(L, 1);
+            }
+            if (n > 0 && keys == n) {
+                nlohmann::json arr = nlohmann::json::array();
+                for (size_t i = 1; i <= n; ++i) {
+                    lua_rawgeti(L, idx, static_cast<int>(i));
+                    arr.push_back(to_json(L, -1, depth + 1));
+                    lua_pop(L, 1);
+                }
+                return arr;
+            }
+            nlohmann::json obj = nlohmann::json::object();
+            lua_pushnil(L);
+            while (lua_next(L, idx)) {
+                std::string key = lua_type(L, -2) == LUA_TSTRING ? lua_tostring(L, -2) : std::to_string(static_cast<long long>(lua_tonumber(L, -2)));
+                nlohmann::json v = to_json(L, -1, depth + 1);
+                if (!v.is_null() || lua_type(L, -1) == LUA_TNIL) obj[key] = v;
+                lua_pop(L, 1);
+            }
+            return obj;
+        }
+        default: return nullptr;  // functions, userdata, threads
+    }
+}
+
+}  // namespace
+
+nlohmann::json Lua::eval_table(const std::string& code, const std::string& chunk_name) {
+    lua_State* L = st_->L;
+    int rc = luaL_loadbuffer(L, code.data(), code.size(), chunk_name.c_str());
+    if (rc == 0) rc = lua_pcall(L, 0, 1, 0);
+    if (rc != 0) {
+        std::string err = lua_tostring(L, -1) ? lua_tostring(L, -1) : "unknown error";
+        lua_pop(L, 1);
+        throw std::runtime_error(err);
+    }
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        throw std::runtime_error(chunk_name + ": must return a table");
+    }
+    nlohmann::json out = to_json(L, -1, 0);
+    lua_pop(L, 1);
+    return out;
+}
+
+nlohmann::json Lua::eval_table_file(const fs::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw std::runtime_error("can't read " + path.string());
+    std::string code((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return eval_table(code, "@" + path.string());
 }
 
 Lua::Result Lua::run_file(const fs::path& path) {

@@ -99,6 +99,20 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 > Everything else in `docs/` is transcribed AI output. Treat the numbers as leads, not facts — a few of
 > them already contradict each other (see the note under Option A below).
 
+## Get the repository
+
+```sh
+# just what the build needs (the pinned LuaJIT source); ComfyUI and Ollama come later, through maic itself
+git clone --recurse-submodules=vendor/lua-pins https://github.com/Cragady/MAIC
+# everything, including the ComfyUI checkout (about 100 MB), fetched in parallel
+git clone --recurse-submodules -j4 https://github.com/Cragady/MAIC
+# an existing clone
+git submodule update --init -j4              # all of them
+git submodule update --init vendor/lua-pins  # the required one only
+```
+
+`maic` pulls and builds the non-required vendors itself: `maic vendor add comfyui` fetches the pinned ComfyUI submodule, applies MAIC's patches, sets up its Python with uv and links it in; `maic vendor add ollama` downloads and checksum-verifies the pinned release. `maic vendor adopt NAME PATH` uses an install you already have instead. See [docs/vendor.md](docs/vendor.md).
+
 ## Structure and Build
 
 MAIC is the control plane for the local AI stack and, eventually, a C++ agentic CLI. The core is C++; other languages are fine in the sub-projects that need them.

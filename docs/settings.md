@@ -1,14 +1,32 @@
 # Settings
 
-Settings are layered, and every key is optional; MAIC runs fine with no files at all:
+Settings are Lua files that return a table (JSON with the same keys works too). They are layered, and every key is optional; MAIC runs fine with no files at all:
 
-1. `~/.config/maic/settings.json` (or `$XDG_CONFIG_HOME/maic/settings.json`): yours, for every project. `maic settings init` writes one with every default and a comment; `maic settings path` shows where it goes.
-2. `<dir>/.maic/settings.json` for each directory from just under `$HOME` down to the workspace: the project's, meant to be committed.
-3. `<dir>/.maic/settings.local.json` next to each of those: personal overrides, keep it out of git.
+1. `~/.config/maic/settings.lua` (or `$XDG_CONFIG_HOME/maic/settings.lua`): yours, for every project. `maic settings init` writes one with every default and a comment; `maic settings path` shows where it goes.
+2. `<dir>/.maic/settings.lua` for each directory from just under `$HOME` down to the workspace: the project's, meant to be committed.
+3. `<dir>/.maic/settings.local.lua` next to each of those: personal overrides, keep it out of git.
 
-Nearer files win. Scalars replace, `providers` merge by name, `style` merges by role. `:settings` in a session lists the files that were read; `maic init` (or `:init`, which also has the agent draft the `MAIC.md`) scaffolds a project's. Comments (`//`) are allowed in all of them.
+At each location a `settings.lua` is used when it exists, else a `settings.json` (`maic settings init --json` writes that form). Nearer files win. Scalars replace, `providers` merge by name, `style` merges by role. `:settings` in a session lists the files that were read; `maic init` (or `:init`, which also has the agent draft the `MAIC.md`) scaffolds a project's.
 
-```json
+Because a settings file is code, it can decide things per machine:
+
+```lua
+local deep = maic.hostname == "workstation" and "qwen3.5:9b" or "qwen3.5:4b"
+return {
+  model = os.getenv("MAIC_MODEL") or deep,
+  mode = "auto-read",
+  models_dir = maic.home .. "/models",
+  providers = {
+    anthropic = { api_key_command = "pass show anthropic/api-key" },
+  },
+  style = { user = { fg = "#ff8800", bold = true } },
+}
+```
+
+The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`, `maic.workspace` and `maic.version` are set. Keys in the JSON examples below are the same in Lua (`sessions_home = "auto"`).
+
+```jsonc
+// the same keys, in JSON form
 {
   "model": "qwen3.5:4b",
   "mode": "manual",
