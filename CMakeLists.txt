@@ -35,10 +35,13 @@ add_test(NAME comfy_node COMMAND python3 -m unittest -v test_node
          WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/vendor/comfyui-maic-llamacpp)
 add_test(NAME workflow_edit COMMAND python3 -m unittest -q test_workflow_edit
          WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/tools/comfyui)
-set_tests_properties(comfy_node workflow_edit PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
+add_test(NAME storyboard COMMAND python3 -m unittest -q test_storyboard
+         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/tools/comfyui)
+set_tests_properties(comfy_node workflow_edit storyboard PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
 
 install(TARGETS maic maic-server RUNTIME DESTINATION bin)
 install(PROGRAMS tools/comfyui/workflow_edit.py DESTINATION bin RENAME maic-workflow-edit)
+install(PROGRAMS tools/comfyui/storyboard.py DESTINATION bin RENAME maic-storyboard)
 install(DIRECTORY server/web/ DESTINATION share/maic/server/web)
 install(DIRECTORY services/ DESTINATION share/maic/services)
 # Fallback root for a copy installed without the repository: the vendor ledger and scripts, not the checkouts.

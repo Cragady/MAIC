@@ -39,3 +39,20 @@ Long text can come from stdin: `set FILE 50.text -`. Exit codes: 0 written (or t
 ## Field names
 
 Known node types show named slots (`CLIPTextEncode.text`, `KSampler.seed/steps/cfg/sampler_name/scheduler/denoise`, `SaveImage.filename_prefix`, `TextOverlay.text/font_size/color/...`, `ImageStitch.direction/...`, MAIC's `MaicLlmChat.system/prompt/...`); anything else shows `w0`, `w1`, ... in the order ComfyUI stores them. `inspect` always shows the current value beside the name, so a slot is never a guess.
+
+# storyboard.py (`maic-storyboard`): a story JSON into the manga workflow, one panel at a time
+
+The story has `characters[]` (with an `appearance`), a `setting`, and `panels[]` with a `caption`, a `visual_description`, a `mood`, sometimes a `dialogue` line, and which characters are present (`character_positions` / `character_details`). The workflow has, per panel, a prompt node and two caption overlays. The split:
+
+- **Mechanical, done by the script.** `maic-storyboard fill STORY WORKFLOW` writes every caption into the narration overlay and every dialogue line into the dialogue overlay, verbatim. Run once.
+- **Judgement, done by the agent, one panel per turn.** `maic-storyboard plan STORY WORKFLOW --panel 7` prints that panel's story values in full, the characters present with their appearance, the setting, what the prompt holds now, the quality baseline the workflow already uses (never changed), and the exact `maic-workflow-edit set ...` command with the baseline filled in and a `YOUR TAGS HERE` slot. The agent writes Danbooru-style tags for that one panel and runs the command. Small enough for a 4B's context.
+- `maic-storyboard check STORY WORKFLOW` lists the panels still on the baseline alone, overlays that differ from the story, and story fields the tool does not map (production notes, dialogue summaries: for a person).
+
+The brief for the agent, once `fill` has run:
+
+```
+Run `maic-storyboard plan STORY WORKFLOW --panel N` for N = 1, then 2, and so on. For each panel, write the
+prompt as Danbooru-style tags from the values it shows (characters present with their appearance, the scene,
+camera, mood), put them in place of YOUR TAGS HERE in the command it prints, keep the baseline exactly, and run
+it. Then run the confirm line. One panel per turn. When all panels are done run `maic-storyboard check`.
+```
