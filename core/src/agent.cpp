@@ -153,6 +153,12 @@ std::string Agent::system_prompt() const {
         "done as you finish them, and keep it current until the work is done.\n" +
         user_tools_text() +
         "\n"
+        "# Helpers on this machine\n"
+        "`maic-workflow-edit FILE ...` (through run_shell) edits the tunable fields of a ComfyUI workflow JSON without "
+        "touching its wiring: run `maic-workflow-edit inspect FILE --json` first to learn node ids, titles and field "
+        "names, then `set FILE NODE.FIELD VALUE`, `append`, `prepend`, `replace-all FILE OLD NEW`, or `apply FILE "
+        "edits.json`; `--dry-run` shows the diff. The file must be inside the workspace to be written.\n"
+        "\n"
         "# The harness\n"
         "Every tool call is checked before it runs. Results starting with DENIED or BLOCKED are final for that "
         "call: do not retry it, do not look for another route to the same effect, and do not ask the user to "

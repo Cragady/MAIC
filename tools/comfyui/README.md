@@ -1,6 +1,6 @@
 # workflow_edit.py: tune a ComfyUI workflow without touching its wiring
 
-`tools/comfyui/workflow_edit.py PATH` reads a workflow JSON by exact path and works on its widget values only: prompts, seeds, steps, CFG, sampler, file prefixes, caption text and colours, stitch settings. Links, node ids and positions are never changed, and every write keeps a `PATH.bak`.
+Installed as `maic-workflow-edit` beside `maic` (the agent is told about it in its briefing and can run it through `run_shell`; the sandbox sees the whole filesystem read-only and writes only inside the workspace, so start `maic` in the folder that holds the workflow). `tools/comfyui/workflow_edit.py PATH` reads a workflow JSON by exact path and works on its widget values only: prompts, seeds, steps, CFG, sampler, file prefixes, caption text and colours, stitch settings. Links, node ids and positions are never changed, and every write keeps a `PATH.bak`.
 
 ## For a person
 

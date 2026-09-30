@@ -313,6 +313,8 @@ int main() {
             if (m["role"] == "tool" && m["content"].get<std::string>().find("write to docs/ instead") != std::string::npos) fed_back = true;
         }
         expect(fed_back && !fs::exists(ws / "note.txt"), "the reason reaches the model as the tool result and nothing was written");
+        std::string briefing = fake.requests[0]["messages"][0]["content"];
+        expect(briefing.find("maic-workflow-edit inspect FILE --json") != std::string::npos, "the briefing names the workflow editor and how to start with it");
     }
 
     section("undo points and nested instructions");

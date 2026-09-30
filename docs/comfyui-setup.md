@@ -65,7 +65,7 @@ Custom node requirements go into the same venv: `uv pip install --python .venv -
 
 ## Editing workflows without the UI
 
-`tools/comfyui/workflow_edit.py` changes prompts, seeds, steps, captions and file prefixes in a workflow JSON by exact path, interactively or from the command line, without touching the wiring; the agent can drive it through `run_shell`. See [tools/comfyui/README.md](../tools/comfyui/README.md).
+`maic-workflow-edit` (installed beside `maic`; source in `tools/comfyui/workflow_edit.py`) changes prompts, seeds, steps, captions and file prefixes in a workflow JSON by exact path, interactively or from the command line, without touching the wiring; the agent knows it from its briefing and drives it through `run_shell` when MAIC runs in the workflow's folder. See [tools/comfyui/README.md](../tools/comfyui/README.md).
 
 ## Run
 

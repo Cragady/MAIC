@@ -35,5 +35,6 @@ cmake -S "$work" -B "$work/build" -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$work/build" -j --target maic maic-server >/dev/null
 cmake --install "$work/build" >/dev/null
 ln -sfn "$prefix/bin/maic" "$HOME/bin/maic"
+ln -sfn "$prefix/bin/maic-workflow-edit" "$HOME/bin/maic-workflow-edit"
 echo "installed $("$prefix/bin/maic" --version) at $prefix; ~/bin/maic points to it"
 echo "dev build stays at build/cli/maic (run it directly while testing)"
