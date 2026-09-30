@@ -30,6 +30,10 @@ add_subdirectory(server)
 add_subdirectory(cli)
 add_subdirectory(harness)
 
+# MAIC's ComfyUI chat node, tested against a fake llama-server without ComfyUI.
+add_test(NAME comfy_node COMMAND python3 -m unittest -v test_node
+         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/vendor/comfyui-maic-llamacpp)
+
 install(TARGETS maic maic-server RUNTIME DESTINATION bin)
 install(DIRECTORY server/web/ DESTINATION share/maic/server/web)
 install(DIRECTORY services/ DESTINATION share/maic/services)
