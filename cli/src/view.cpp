@@ -334,6 +334,31 @@ std::string View::yank_word_range(char scope, size_t& from_col, size_t& to_col) 
     return t.substr(from, to - from);
 }
 
+void View::find_on_line(const std::string& kind, const std::string& ch, int n) {
+    if (lines_.empty() || ch.empty()) return;
+    std::string t = line_text(lines_[cur_line_].spans);
+    bool forward = kind == "f" || kind == "t";
+    size_t pos = utf8_offset(t, cur_col_);
+    for (int i = 0; i < n; ++i) {
+        size_t found;
+        if (forward) {
+            size_t from = utf8_next(t, pos);
+            if (kind == "t" && i == 0) from = utf8_next(t, from);
+            found = t.find(ch, from);
+        } else {
+            if (pos == 0) return;
+            size_t upto = utf8_prev(t, pos);
+            if (kind == "T" && i == 0 && upto > 0) upto = utf8_prev(t, upto);
+            found = t.rfind(ch, upto);
+        }
+        if (found == std::string::npos) return;
+        pos = found;
+    }
+    if (kind == "t") pos = utf8_prev(t, pos);
+    if (kind == "T") pos = utf8_next(t, pos);
+    cur_col_ = utf8_len(t.substr(0, std::min(pos, t.size())));
+}
+
 std::string View::handle(const Event& e, int height) {
     const std::string& k = e.input();
     last_height_ = height;
@@ -366,6 +391,15 @@ std::string View::handle(const Event& e, int height) {
     if (!pending_.empty()) {
         std::string op = pending_;
         pending_.clear();
+        if (op == "f" || op == "F" || op == "t" || op == "T") {
+            if (!k.empty() && static_cast<unsigned char>(k[0]) >= 0x20) {
+                last_find_kind_ = op;
+                last_find_char_ = k;
+                find_on_line(op, k, n);
+            }
+            ensure_cursor_visible(height);
+            return "";
+        }
         if (op == "g" && k == "g") {
             cur_line_ = 0;
             cur_col_ = 0;
@@ -424,7 +458,12 @@ std::string View::handle(const Event& e, int height) {
     else if (k == "\x05") scroll_by(-n), (void)0;
     else if (k == "\x19") scroll_by(n), (void)0;
     else if (k == "G") move_cursor_line(static_cast<int>(lines_.size()));
-    else if (k == "}") jump_message(1, false, n);
+    else if (k == "f" || k == "F" || k == "t" || k == "T") pending_ = k;
+    else if ((k == ";" || k == ",") && !last_find_kind_.empty()) {
+        std::string kind = last_find_kind_;
+        if (k == ",") kind = kind == "f" ? "F" : kind == "F" ? "f" : kind == "t" ? "T" : "t";
+        find_on_line(kind, last_find_char_, n);
+    } else if (k == "}") jump_message(1, false, n);
     else if (k == "{") jump_message(-1, false, n);
     else if (pending_ == "]" || pending_ == "[") {
         std::string op = pending_;

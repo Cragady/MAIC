@@ -119,6 +119,33 @@ int main() {
         expect(ed.cursor() == 12, "$ goes to the last character in normal mode");
     }
 
+    section("f t F T ; ,");
+    {
+        Editor ed = fresh("say (hello) and (bye)");
+        keys(ed, "<esc>0f(");
+        expect(ed.cursor() == 4, "f( lands on the first paren");
+        keys(ed, ";");
+        expect(ed.cursor() == 16, "; repeats forward");
+        keys(ed, ",");
+        expect(ed.cursor() == 4, ", reverses");
+        keys(ed, "$Fa");
+        expect(ed.cursor() == 12, "F finds backward: " + std::to_string(ed.cursor()));
+        keys(ed, "0t)");
+        expect(ed.cursor() == 9, "t stops before the character");
+        keys(ed, "$T(");
+        expect(ed.cursor() == 17, "T stops after the character");
+        keys(ed, "0fz");
+        expect(ed.cursor() == 0, "a missing character does not move");
+        keys(ed, "02f(");
+        expect(ed.cursor() == 16, "a count selects the nth match");
+    }
+    check("say (hello) and (bye)", "<esc>0f(dt)", "say ) and (bye)", "dt) deletes up to the paren");
+    check("say (hello) and (bye)", "<esc>0f(df)", "say  and (bye)", "df) deletes through the paren");
+    check("say (hello) and (bye)", "<esc>0f(ct)X<esc>", "say X) and (bye)", "ct) changes up to the paren");
+    check("say (hello) and (bye)", "<esc>$dF(", "say (hello) and )", "dF( deletes back to the paren, keeping the cursor char");
+    check("one two three", "<esc>0vf y", "one two three", "v then f extends the selection");
+    expect(reg == "one ", "and y yanks it");
+
     section("register, yank and paste");
     {
         Editor ed = fresh("one two three");

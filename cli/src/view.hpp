@@ -105,6 +105,8 @@ private:
     std::string leader_ = " ";
     std::string yank_word_range(char scope, size_t& from_col, size_t& to_col) const;  // iw / aw on the cursor line
 
+    std::string last_find_kind_, last_find_char_;  // f F t T target for ; and ,
+    void find_on_line(const std::string& kind, const std::string& ch, int n);
     std::string pattern_;
     std::vector<std::pair<size_t, size_t>> matches_;  // (line, column)
 };

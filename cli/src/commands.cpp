@@ -208,6 +208,7 @@ std::vector<std::string> complete_argument(const std::string& command, const std
     else if (cmd == "w" || cmd == "write" || cmd == "send") candidates = {"now"};
     else if (cmd == "up" || cmd == "down") candidates = ctx.services;
     else if (cmd == "model") {
+        candidates = ctx.models;
         for (const auto& p : ctx.providers) candidates.push_back(p + "/");
     } else if (cmd == "h" || cmd == "help") {
         for (const auto& c : commands()) candidates.push_back(c.name);

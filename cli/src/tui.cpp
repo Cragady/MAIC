@@ -258,6 +258,9 @@ private:
     Element render_input(size_t width, int& rows);
     Element render_palette(int& rows);
     std::vector<std::string> palette_entries();  // what the palette lists for the current command line
+    std::vector<std::string> installed_models();  // Ollama models, cached for a while (a localhost call)
+    std::vector<std::string> models_cache_;
+    std::chrono::steady_clock::time_point models_cached_at_{};
     void complete_command();
     Element render_top_status();
     Element render_bottom_status();
@@ -392,9 +395,27 @@ std::vector<std::string> App::palette_entries() {
     } catch (const std::exception&) {
     }
     for (const auto& p : agent_.providers) ctx.providers.push_back(p.name);
+    ctx.models = installed_models();
     std::string cmd = line.substr(0, space), partial = line.substr(space + 1);
     auto matches = match_commands(cmd);
     return complete_argument(matches.empty() ? cmd : matches.front()->name, partial, ctx);
+}
+
+std::vector<std::string> App::installed_models() {
+    auto now = std::chrono::steady_clock::now();
+    if (!models_cache_.empty() && now - models_cached_at_ < std::chrono::seconds(30)) return models_cache_;
+    std::vector<std::string> out;
+    for (size_t i = 0; i < agent_.providers.size(); ++i) {
+        const auto& p = agent_.providers[i];
+        if (p.kind != "ollama" || p.remote()) continue;
+        try {
+            for (const auto& m : list_ollama_models(p)) out.push_back(i == 0 ? m : p.name + "/" + m);
+        } catch (const std::exception&) {
+        }
+    }
+    models_cache_ = out;
+    models_cached_at_ = now;
+    return out;
 }
 
 Element App::render_palette(int& rows) {

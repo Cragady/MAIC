@@ -3,3 +3,4 @@ build-asan/
 .idea/
 .playground/
 vcpkg_installed/
+.claude/

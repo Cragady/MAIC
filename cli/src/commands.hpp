@@ -23,6 +23,7 @@ std::vector<const CommandInfo*> match_commands(const std::string& word);
 struct CompletionContext {
     std::vector<std::string> services;
     std::vector<std::string> providers;
+    std::vector<std::string> models;  // installed models, as they would be typed ("qwen3.5:4b", "lab/gemma")
 };
 std::vector<std::string> complete_argument(const std::string& command, const std::string& partial, const CompletionContext& ctx);
 

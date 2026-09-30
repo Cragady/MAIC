@@ -75,6 +75,13 @@ private:
     std::string pending_;  // operator waiting for a motion: d, c, y, g, and "di"/"ci"/"yi"/"da".. for text objects
     std::string leader_ = " ";
     bool leader_pending_ = false;
+    std::string find_pending_;   // f F t T waiting for its character
+    int find_count_ = 1;         // the count typed before it
+    std::string last_find_kind_, last_find_char_;  // for ; and ,
+    // Position for f/F/t/T from the cursor on the current line, or npos.
+    size_t find_char(const std::string& kind, const std::string& ch, int n) const;
+    // Handles f F t T ; , and the character after them; applies a pending d/c/y. True when consumed.
+    bool handle_find(const std::string& k, int n);
     bool clip_next_ = false;  // "+ or "* was typed: the next yank goes to the clipboard, the next paste comes from it
     int count_ = 0;
     size_t anchor_ = 0;    // visual selection start

@@ -296,6 +296,83 @@ bool Editor::text_object(char scope, char obj, size_t& from, size_t& to) const {
     return true;
 }
 
+size_t Editor::find_char(const std::string& kind, const std::string& ch, int n) const {
+    if (ch.empty() || text_.empty()) return std::string::npos;
+    bool forward = kind == "f" || kind == "t";
+    size_t line_start = cursor_, line_end = cursor_;
+    while (line_start > 0 && text_[line_start - 1] != '\n') --line_start;
+    while (line_end < text_.size() && text_[line_end] != '\n') ++line_end;
+    size_t pos = cursor_;
+    for (int i = 0; i < n; ++i) {
+        size_t found = std::string::npos;
+        if (forward) {
+            size_t from = utf8_next(text_, pos);
+            if (kind == "t" && i == 0) from = utf8_next(text_, from);  // t x right before an x: skip it, like vim
+            found = text_.find(ch, from);
+            if (found >= line_end) return std::string::npos;
+        } else {
+            if (pos <= line_start) return std::string::npos;
+            size_t upto = utf8_prev(text_, pos);
+            if (kind == "T" && i == 0 && upto > line_start) upto = utf8_prev(text_, upto);
+            found = text_.rfind(ch, upto);
+            if (found == std::string::npos || found < line_start) return std::string::npos;
+        }
+        pos = found;
+    }
+    if (kind == "t") return utf8_prev(text_, pos);
+    if (kind == "T") return utf8_next(text_, pos);
+    return pos;
+}
+
+bool Editor::handle_find(const std::string& k, int n) {
+    std::string kind, ch;
+    if (!find_pending_.empty()) {
+        kind = find_pending_;
+        ch = k;
+        find_pending_.clear();
+        last_find_kind_ = kind;
+        last_find_char_ = ch;
+    } else if (k == "f" || k == "F" || k == "t" || k == "T") {
+        find_pending_ = k;
+        find_count_ = n;
+        return true;
+    } else if (k == ";" || k == ",") {
+        if (last_find_kind_.empty()) return true;
+        kind = last_find_kind_;
+        if (k == ",") kind = kind == "f" ? "F" : kind == "F" ? "f" : kind == "t" ? "T" : "t";
+        ch = last_find_char_;
+    } else {
+        return false;
+    }
+    if (kind == last_find_kind_ && ch == last_find_char_ && k != ";" && k != ",") n = find_count_;  // the count came before the f
+    size_t dest = find_char(kind, ch, n);
+    if (dest == std::string::npos) {
+        pending_.clear();
+        return true;
+    }
+    std::string op = pending_;
+    pending_.clear();
+    if (op == "d" || op == "c" || op == "y") {
+        bool inclusive = kind == "f" || kind == "t";  // forward finds include the character; backward ones stop before the cursor
+        size_t start = cursor_, end = inclusive ? utf8_next(text_, dest) : dest;
+        size_t a = std::min(start, end), b = std::max(start, end);
+        if (op == "y") {
+            yank_range(a, b);
+            cursor_ = a;
+            return clamp_normal(), true;
+        }
+        save_undo();
+        yank_range(a, b);
+        delete_range(a, b, false);
+        if (op == "c") enter_insert(cursor_, false);
+        else clamp_normal();
+        return true;
+    }
+    cursor_ = dest;
+    if (mode_ != Mode::Visual && mode_ != Mode::VisualLine) clamp_normal();
+    return true;
+}
+
 // Moves the cursor by a motion key and reports whether an operator over it includes the final character.
 size_t Editor::motion_target(const std::string& k, int n, bool& inclusive) {
     inclusive = false;
@@ -375,7 +452,8 @@ bool Editor::handle_insert(const Event& e) {
 
 bool Editor::handle_normal(const Event& e) {
     const std::string& k = e.input();
-    if (e == Event::Escape) return pending_.clear(), count_ = 0, leader_pending_ = false, clip_next_ = false, true;
+    if (e == Event::Escape) return pending_.clear(), find_pending_.clear(), count_ = 0, leader_pending_ = false, clip_next_ = false, true;
+    if (!find_pending_.empty() && !k.empty() && static_cast<unsigned char>(k[0]) >= 0x20) return handle_find(k, std::max(count_, 1)), count_ = 0, true;
     if (k == "\x12") return redo(), true;  // Ctrl-R
     if (leader_pending_) {
         leader_pending_ = false;
@@ -400,6 +478,9 @@ bool Editor::handle_normal(const Event& e) {
     int n = std::max(count_, 1);
     count_ = 0;
 
+    if ((pending_ == "d" || pending_ == "c" || pending_ == "y" || pending_.empty()) && (k == "f" || k == "F" || k == "t" || k == "T" || k == ";" || k == ",")) {
+        return handle_find(k, n);
+    }
     if (!pending_.empty()) {
         std::string op = pending_;
         pending_.clear();
@@ -532,7 +613,10 @@ bool Editor::handle_normal(const Event& e) {
 
 bool Editor::handle_visual(const Event& e) {
     std::string k = e.input();
+    if (!find_pending_.empty() && e != Event::Escape && !k.empty() && static_cast<unsigned char>(k[0]) >= 0x20) return handle_find(k, std::max(count_, 1)), count_ = 0, true;
+    if (k == "f" || k == "F" || k == "t" || k == "T" || k == ";" || k == ",") return handle_find(k, std::max(count_, 1)), count_ = 0, true;
     if (e == Event::Escape || k == "v" || k == "V") {
+        if (e == Event::Escape) find_pending_.clear();
         if (k == "V" && mode_ == Mode::Visual) return mode_ = Mode::VisualLine, true;
         if (k == "v" && mode_ == Mode::VisualLine) return mode_ = Mode::Visual, true;
         mode_ = Mode::Normal;
