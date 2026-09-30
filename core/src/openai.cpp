@@ -23,6 +23,7 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
     nlohmann::json msgs = nlohmann::json::array();
     std::deque<std::string> pending_ids;
     int generated = 0;
+    bool mid_system = provider.options.value("mid_system", false);  // true: send later system messages as system
     for (const auto& m : messages) {
         if (m.role == "assistant") {
             if (m.content.empty() && m.tool_calls.empty()) continue;
@@ -45,6 +46,10 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
             if (id.empty() && !pending_ids.empty()) id = pending_ids.front();
             if (!pending_ids.empty() && pending_ids.front() == id) pending_ids.pop_front();
             msgs.push_back({{"role", "tool"}, {"tool_call_id", id}, {"content", m.content}});
+        } else if (m.role == "system" && !msgs.empty() && !mid_system) {
+            // A system message after the first: most local chat templates (Qwen's among them) reject or
+            // mishandle one, so it goes as a user-role note unless the provider says otherwise.
+            msgs.push_back({{"role", "user"}, {"content", "[system note] " + m.content}});
         } else {
             msgs.push_back({{"role", m.role}, {"content", m.content}});
         }
@@ -56,6 +61,11 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
     }
     if (!options.stop.empty()) body["stop"] = options.stop;
     if (options.logit_bias.is_object() && !options.logit_bias.empty()) body["logit_bias"] = options.logit_bias;
+    // llama-server honours these; OpenAI's own API rejects unknown fields, so a provider opts in.
+    if (provider.options.value("thinking_controls", false)) {
+        body["chat_template_kwargs"] = {{"enable_thinking", options.think}};
+        if (!options.think) body["reasoning_effort"] = "none";
+    }
     if (!tools.empty()) body["tools"] = tools;
     nlohmann::json extra = provider.options.value("extra_body", nlohmann::json::object());
     for (const auto& [k, v] : extra.items()) body[k] = v;

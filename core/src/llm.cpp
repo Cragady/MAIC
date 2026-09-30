@@ -78,7 +78,9 @@ std::vector<Provider> default_providers() {
         {"ollama", "ollama", "http://127.0.0.1:11434", "", "", nlohmann::json::object()},
         // llama.cpp's OpenAI-compatible endpoint (services/llamacpp.json). Everything in `sampling` is merged into
         // the request, so logit_bias, xtc_probability, xtc_threshold, dry_multiplier, grammar and json_schema all reach it.
-        {"llamacpp", "openai", "http://127.0.0.1:8081/v1", "", "", nlohmann::json::object()},
+        // llama.cpp's OpenAI-compatible server: thinking is switched per request, the context matches
+        // services/llamacpp.json, and later system messages go as user notes (the default for this kind).
+        {"llamacpp", "openai", "http://127.0.0.1:8081/v1", "", "", {{"thinking_controls", true}, {"context_window", 16384}}},
         {"anthropic", "anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "",
          {{"max_tokens", 64000}, {"effort", "high"}, {"think_effort", "xhigh"}, {"fallbacks", "default"}}},
         {"deepseek", "openai", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "", nlohmann::json::object()},
