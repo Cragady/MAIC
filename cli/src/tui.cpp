@@ -12,6 +12,7 @@
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
 #include "maic/status.hpp"
+#include "maic/tools.hpp"
 #include "maic/tripwire.hpp"
 #include "style.hpp"
 #include "view.hpp"
@@ -1410,7 +1411,7 @@ void App::run_command(const std::string& line) {
             std::string todo = todo_text();
             post(Kind::Notice, todo.empty() ? "no plan yet: the agent keeps one with the todo tool during multi-step work" : todo);
         } else if (cmd == "tools") {
-            std::string out = "tools the model can call: read_file, list_dir, glob, search_files, write_file, edit_file, run_shell, question, todo";
+            std::string out = "tools the model can call: " + tool_names();
             if (agent_.tools().empty()) out += "\nno user-defined tools. Put a <name>.lua in .maic/tools/ or " + global_tools_dir().string() + " (see :h tools)";
             for (const auto& t : agent_.tools()) out += "\n  " + t.name + "  " + t.file.string() + "\n    " + t.description;
             for (const auto& n : agent_.tool_notices()) out += "\n  " + n;

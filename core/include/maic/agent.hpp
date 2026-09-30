@@ -123,11 +123,13 @@ public:
 
     const std::vector<Message>& messages() const { return messages_; }
 
-    // Undo points: the previous content of each file a tool changed this session, newest last.
+    // Undo points: the previous content of each file a tool changed this session, newest last. A move is one
+    // point that moves the file back; a deleted directory has no point (only files are kept).
     struct UndoPoint {
         std::filesystem::path path;
         std::optional<std::string> before;  // nullopt: the file did not exist
         std::string summary;
+        std::filesystem::path moved_to;  // set: undo moves it back from here to `path`
     };
     const std::vector<UndoPoint>& undo_points() const { return undo_; }
     std::string undo(size_t count = 1);  // restores the newest `count` points; returns what was restored
@@ -239,7 +241,8 @@ private:
     void rewrite_log();    // after compaction: a reset record and the new history, so resume sees the same thing
     size_t history_bytes() const;
     std::string summarise(size_t from, size_t to, const std::atomic<bool>& cancel);  // messages [from, to) -> summary text
-    void save_undo_point(const std::filesystem::path& path, const std::string& summary);
+    void save_undo_point(const std::filesystem::path& path, const std::string& summary);  // a file's content before a write; nothing for a directory
+    void push_undo(UndoPoint u);
     Decision review(const Action& action, const std::string& summary, const std::string& preview);
     std::string with_operator_note(const std::string& text) const;
     std::string nested_instructions(const std::filesystem::path& file);  // instruction files between the workspace and `file`, each once

@@ -86,11 +86,11 @@ int main() {
     expect(!tool(h, "no_such_tool", json::object()).ok, "unknown tool -> error");
     bool threw = false;
     try {
-        tool_action(h, "read_file", {{"path", nullptr}});
+        tool_actions(h, "read_file", {{"path", nullptr}});
     } catch (const std::exception&) {
         threw = true;
     }
-    expect(threw, "tool_action with a null path throws (the agent reports it) instead of crashing");
+    expect(threw, "tool_actions with a null path throws (the agent reports it) instead of crashing");
 
     section("files that are not what the tool expects");
     static const char kBinary[] = "\x00\x01\xff\xfe binary \x80\x81";
@@ -175,8 +175,8 @@ int main() {
         expect(r.ok && r.text.find("here.txt") != std::string::npos, "workdir runs the command in that directory");
         r = tool(h, "run_shell", {{"command", "ls"}, {"workdir", "nope"}});
         expect(!r.ok && r.text.find("not a directory") != std::string::npos, "a missing workdir is an error, not a silent fallback");
-        auto act = tool_action(h, "run_shell", {{"command", "ls"}, {"workdir", "sub"}});
-        expect(act.workdir == fs::weakly_canonical(ws / "sub"), "tool_action resolves the workdir for the harness");
+        auto act = tool_actions(h, "run_shell", {{"command", "ls"}, {"workdir", "sub"}});
+        expect(act.size() == 1 && act[0].workdir == fs::weakly_canonical(ws / "sub"), "tool_actions resolves the workdir for the harness");
     }
 
     section("search_files");
@@ -224,8 +224,192 @@ int main() {
     for (int i = 0; i < 510; ++i) write_file(ws / "g" / "many" / ("f" + std::to_string(i) + ".txt"), "");
     g = tool(h, "glob", {{"pattern", "many/*.txt"}, {"path", "g"}});
     expect(g.ok && std::count(g.text.begin(), g.text.end(), '\n') == 501 && g.text.find("stopped at 500") != std::string::npos, "results are capped at 500 with a note");
-    expect(tool_action(h, "glob", {{"pattern", "*.cpp"}}).kind == Action::Kind::Read && tool_action(h, "glob", {{"pattern", "*.cpp"}}).path == h.resolve("."),
+    expect(tool_actions(h, "glob", {{"pattern", "*.cpp"}})[0].kind == Action::Kind::Read && tool_actions(h, "glob", {{"pattern", "*.cpp"}})[0].path == h.resolve("."),
            "the harness sees glob as a read of the directory");
+
+    section("read_file grep");
+    {
+        write_file(ws / "grep.txt", "alpha one\nbeta two\nalpha three\ngamma\n");
+        auto r = tool(h, "read_file", {{"path", "grep.txt"}, {"grep", "^alpha"}});
+        expect(r.ok && r.text == "1\talpha one\n3\talpha three\n(2 matching lines; the file has 4 lines)\n", "grep returns only matching lines with their numbers:\n" + r.text);
+        r = tool(h, "read_file", {{"path", "grep.txt"}, {"grep", "zeta"}});
+        expect(r.ok && r.text.find("no lines match /zeta/") == 1 && r.text.find("4 lines") != std::string::npos, "no match says so and how long the file is: " + r.text);
+        r = tool(h, "read_file", {{"path", "grep.txt"}, {"grep", "alpha"}, {"offset", 2}});
+        expect(r.ok && r.text.find("1\t") == std::string::npos && r.text.find("3\talpha three") == 0, "offset applies before matching");
+        r = tool(h, "read_file", {{"path", "grep.txt"}, {"grep", "([bad"}});
+        expect(!r.ok && r.text.find("bad grep regex") == 0, "an invalid grep regex is an error");
+        r = tool(h, "read_file", {{"path", "big.txt"}, {"grep", "line"}, {"limit", 3}});
+        expect(r.ok && r.text.find("Showing 3 matching lines up to line 3 of 2500. Use offset=4") != std::string::npos, "a capped grep says where to continue: " + r.text);
+    }
+
+    section("list_dir depth");
+    {
+        for (const char* f : {"one/a.txt", "one/two/b.txt", "one/two/three/c.txt", "one/two/three/four/d.txt", "one/build/x.o", "top.txt"}) write_file(ws / "tree" / f, "x");
+        auto r = tool(h, "list_dir", {{"path", "tree"}});
+        expect(r.ok && r.text == "one/ (3 entries)\ntop.txt\n(2 entries)", "depth 1 shows entries with directory counts:\n" + r.text);
+        r = tool(h, "list_dir", {{"path", "tree"}, {"depth", 2}});
+        expect(r.ok && r.text.find("one/ (3 entries)\n  a.txt\n  build/ (1 entry)\n  two/ (2 entries)\ntop.txt\n(2 entries, 5 to depth 2)") == 0 && r.text.find("b.txt") == std::string::npos, "depth 2 indents one level and stops there:\n" + r.text);
+        r = tool(h, "list_dir", {{"path", "tree"}, {"depth", 9}});
+        expect(r.ok && r.text.find("    three/ (2 entries)\n      c.txt\n      four/ (1 entry)\n") != std::string::npos && r.text.find("d.txt") == std::string::npos && r.text.find("x.o") == std::string::npos &&
+                   r.text.find("to depth 4)") != std::string::npos,
+               "depth is capped at 4 and build/ is not expanded:\n" + r.text);
+        expect(tool_actions(h, "list_dir", {{"path", "tree"}, {"depth", 3}})[0].kind == Action::Kind::Read, "a deep listing is still one read");
+    }
+
+    section("multi_edit");
+    {
+        write_file(ws / "m.txt", "one\ntwo\nthree\n");
+        auto r = tool(h, "multi_edit", {{"path", "m.txt"}, {"edits", {{{"old_string", "one"}, {"new_string", "1\n1.5"}}, {{"old_string", "three"}, {"new_string", "3"}}}}});
+        expect(r.ok && read_whole_text(ws / "m.txt") == "1\n1.5\ntwo\n3\n" && r.text.find("2 edits: 1 (+2 -1), 2 (+1 -1)") != std::string::npos, "edits apply in order and the result names each delta: " + r.text);
+        r = tool(h, "multi_edit", {{"path", "m.txt"}, {"edits", {{{"old_string", "two"}, {"new_string", "2"}}, {{"old_string", "nope"}, {"new_string", "x"}}}}});
+        expect(!r.ok && read_whole_text(ws / "m.txt") == "1\n1.5\ntwo\n3\n" && r.text.find("edit 2 of 2: old_string not found") == 0 && r.text.find("Nothing was written") != std::string::npos,
+               "one failing edit means nothing is written and the result names it: " + r.text);
+        r = tool(h, "multi_edit", {{"path", "m.txt"}, {"edits", {{{"old_string", "1"}, {"new_string", "one"}, {"replace_all", true}}, {{"old_string", "one\none.5"}, {"new_string", "uno"}}}}});
+        expect(r.ok && read_whole_text(ws / "m.txt") == "uno\ntwo\n3\n" && r.text.find("1 (2 occurrences, +2 -2)") != std::string::npos, "a later edit sees the earlier one's result: " + r.text);
+        r = tool(h, "multi_edit", {{"path", "m.txt"}, {"edits", json::array()}});
+        expect(!r.ok && r.text.find("non-empty array") != std::string::npos, "an empty edit list is an error");
+        r = tool(h, "multi_edit", {{"path", "m.txt"}, {"edits", {{{"old_string", "two"}}}}});
+        expect(!r.ok && r.text.find("edit 1 of 1 needs old_string and new_string") == 0, "a malformed edit is named");
+        write_file(ws / "mc.txt", "a\r\nb\r\n");
+        r = tool(h, "multi_edit", {{"path", "mc.txt"}, {"edits", {{{"old_string", "a"}, {"new_string", "A"}}, {{"old_string", "b"}, {"new_string", "B"}}}}});
+        expect(r.ok && read_whole_text(ws / "mc.txt") == "A\r\nB\r\n", "CRLF is kept through a multi_edit");
+        std::string pv = tool_preview(h, "multi_edit", {{"path", "m.txt"}, {"edits", {{{"old_string", "uno"}, {"new_string", "one"}}, {{"old_string", "two"}, {"new_string", "2"}}}}});
+        expect(pv == "edit 1 of 2:\n- uno\n+ one\nedit 2 of 2:\n- two\n+ 2\n", "the preview shows every edit: " + pv);
+        expect(tool_summary("multi_edit", {{"path", "m.txt"}, {"edits", {1, 2, 3}}}) == "multi_edit m.txt (3 edits)", "the summary counts the edits");
+    }
+
+    section("apply_patch");
+    {
+        write_file(ws / "pa.txt", "one\ntwo\nthree\nfour\n");
+        write_file(ws / "pb.txt", "x\ny\n");
+        std::string patch =
+            "--- a/pa.txt\n+++ b/pa.txt\n@@ -1,4 +1,4 @@\n one\n-two\n+TWO\n three\n four\n"
+            "--- pb.txt\n+++ pb.txt\n@@ -1,2 +1,3 @@\n x\n+between\n y\n";
+        auto acts = tool_actions(h, "apply_patch", {{"patch", patch}});
+        expect(acts.size() == 2 && acts[0].kind == Action::Kind::Write && acts[0].path == h.resolve("pa.txt") && acts[1].path == h.resolve("pb.txt"), "one write action per file in the patch");
+        auto r = tool(h, "apply_patch", {{"patch", patch}});
+        expect(r.ok && read_whole_text(ws / "pa.txt") == "one\nTWO\nthree\nfour\n" && read_whole_text(ws / "pb.txt") == "x\nbetween\ny\n", "both files are patched");
+        expect(r.text == "applied the patch: " + h.resolve("pa.txt").string() + " (1 hunk, +1 -1), " + h.resolve("pb.txt").string() + " (1 hunk, +1 -0)", "the result lists files and hunks: " + r.text);
+        // A hunk that does not match applies nothing, in any file.
+        std::string bad = "--- pb.txt\n+++ pb.txt\n@@ -1,1 +1,1 @@\n-x\n+X\n--- pa.txt\n+++ pa.txt\n@@ -2,1 +2,1 @@\n-nope\n+yes\n";
+        r = tool(h, "apply_patch", {{"patch", bad}});
+        expect(!r.ok && read_whole_text(ws / "pb.txt") == "x\nbetween\ny\n" && r.text.find("hunk 1 of " + h.resolve("pa.txt").string() + " (patch line 8) does not match: at line 2 the file has \"TWO\" but the patch expects \"nope\"") == 0 &&
+                   r.text.find("Nothing was applied") != std::string::npos,
+               "a failed hunk names the file and line and nothing is written: " + r.text);
+        // Wrong line numbers with exact context still land; loose context does not.
+        r = tool(h, "apply_patch", {{"patch", "--- pa.txt\n+++ pa.txt\n@@ -30,2 +30,2 @@\n three\n-four\n+FOUR\n"}});
+        expect(r.ok && read_whole_text(ws / "pa.txt") == "one\nTWO\nthree\nFOUR\n", "a hunk with a wrong line number is placed by its exact context");
+        r = tool(h, "apply_patch", {{"patch", "--- pa.txt\n+++ pa.txt\n@@ -3,2 +3,2 @@\n  three\n-FOUR\n+4\n"}});
+        expect(!r.ok && read_whole_text(ws / "pa.txt") == "one\nTWO\nthree\nFOUR\n", "context with different whitespace does not match (fuzz 0)");
+        // Create and delete, CRLF, the no-newline marker, and git's extra header lines.
+        r = tool(h, "apply_patch", {{"patch", "diff --git a/new.txt b/new.txt\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n"}});
+        expect(r.ok && read_whole_text(ws / "new.txt") == "hello\nworld\n" && r.text.find("(created, +2 -0)") != std::string::npos, "--- /dev/null creates a file: " + r.text);
+        r = tool(h, "apply_patch", {{"patch", "--- /dev/null\n+++ new.txt\n@@ -0,0 +1 @@\n+again\n"}});
+        expect(!r.ok && r.text.find("already exists") != std::string::npos, "creating an existing file is refused");
+        r = tool(h, "apply_patch", {{"patch", "--- new.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-hello\n-world\n"}});
+        expect(r.ok && !fs::exists(ws / "new.txt") && r.text.find("(deleted)") != std::string::npos, "+++ /dev/null deletes it");
+        write_file(ws / "pc.txt", "a\r\nb\r\n");
+        r = tool(h, "apply_patch", {{"patch", "--- pc.txt\r\n+++ pc.txt\r\n@@ -1,2 +1,2 @@\r\n a\r\n-b\r\n+B\r\n"}});
+        expect(r.ok && read_whole_text(ws / "pc.txt") == "a\r\nB\r\n", "CRLF files stay CRLF, and a CRLF patch is fine");
+        r = tool(h, "apply_patch", {{"patch", "--- pc.txt\n+++ pc.txt\n@@ -2,1 +2,1 @@\n-B\n+end\n\\ No newline at end of file\n"}});
+        expect(r.ok && read_whole_text(ws / "pc.txt") == "a\r\nend", "the no-newline marker is honoured");
+        r = tool(h, "apply_patch", {{"patch", "--- pa.txt\n+++ pa.txt\n@@ -9,1 +9,1 @@\n-nine\n+9\n"}});
+        expect(!r.ok && r.text.find("does not match: the file has only 4 lines") != std::string::npos, "a hunk past the end says how long the file is: " + r.text);
+        r = tool(h, "apply_patch", {{"patch", "just change two to TWO please"}});
+        expect(!r.ok && r.text.find("no '--- old' / '+++ new' file headers") != std::string::npos, "prose instead of a diff is explained");
+        bool threw2 = false;
+        try {
+            tool_actions(h, "apply_patch", {{"patch", "@@ -1 +1 @@\n-x\n+y\n"}});
+        } catch (const std::exception& e) {
+            threw2 = std::string(e.what()).find("patch line 1: a hunk before any") == 0;
+        }
+        expect(threw2, "a hunk without a file header fails at tool_actions, before anything is judged or run");
+        r = tool(h, "apply_patch", {{"patch", "--- old.txt\n+++ renamed.txt\n@@ -1 +1 @@\n-x\n+y\n"}});
+        expect(!r.ok && r.text.find("does not rename") != std::string::npos && r.text.find("move_file") != std::string::npos, "a rename diff points at move_file");
+        expect(tool_summary("apply_patch", {{"patch", patch}}) == "apply_patch pa.txt, pb.txt", "the summary names the files");
+        expect(tool_preview(h, "apply_patch", {{"patch", patch}}).find("--- a/pa.txt\n+++ b/pa.txt\n@@ -1,4 +1,4 @@\n one\n-two\n+TWO\n") == 0, "the preview is the patch");
+    }
+
+    section("move, copy, delete, make_dir");
+    {
+        write_file(ws / "mv" / "a.txt", "content\n");
+        auto r = tool(h, "move_file", {{"from", "mv/a.txt"}, {"to", "mv/sub/b.txt"}});
+        expect(r.ok && !fs::exists(ws / "mv" / "a.txt") && read_whole_text(ws / "mv" / "sub" / "b.txt") == "content\n" && r.text == "moved " + h.resolve("mv/a.txt").string() + " to " + h.resolve("mv/sub/b.txt").string(),
+               "move_file renames and creates the parent: " + r.text);
+        r = tool(h, "move_file", {{"from", "mv/nope.txt"}, {"to", "mv/x.txt"}});
+        expect(!r.ok && r.text.find("no such file or directory") == 0, "moving a missing file is an error");
+        write_file(ws / "mv" / "c.txt", "c\n");
+        r = tool(h, "move_file", {{"from", "mv/c.txt"}, {"to", "mv/sub/b.txt"}});
+        expect(!r.ok && r.text.find("already exists") != std::string::npos && read_whole_text(ws / "mv" / "sub" / "b.txt") == "content\n", "a move never overwrites");
+        r = tool(h, "move_file", {{"from", "mv/c.txt"}, {"to", "mv/sub"}});
+        expect(!r.ok && r.text.find("give the full new path, like " + h.resolve("mv/sub/name").string()) != std::string::npos, "moving onto a directory explains the full-path rule: " + r.text);
+        r = tool(h, "move_file", {{"from", "mv/sub"}, {"to", "mv/moved"}});
+        expect(r.ok && read_whole_text(ws / "mv" / "moved" / "b.txt") == "content\n", "directories move too");
+        auto acts = tool_actions(h, "move_file", {{"from", "mv/c.txt"}, {"to", "mv/d.txt"}});
+        expect(acts.size() == 2 && acts[0].kind == Action::Kind::Write && acts[0].path == h.resolve("mv/c.txt") && acts[1].kind == Action::Kind::Write && acts[1].path == h.resolve("mv/d.txt"), "a move is a write at both ends");
+        expect(tool_summary("move_file", {{"from", "a"}, {"to", "b"}}) == "move_file a -> b", "the move summary shows both paths");
+
+        r = tool(h, "copy_file", {{"from", "mv/c.txt"}, {"to", "mv/copy/c2.txt"}});
+        expect(r.ok && read_whole_text(ws / "mv" / "c.txt") == "c\n" && read_whole_text(ws / "mv" / "copy" / "c2.txt") == "c\n" && r.text.rfind("copied ", 0) == 0, "copy_file copies and keeps the source: " + r.text);
+        r = tool(h, "copy_file", {{"from", "mv/moved"}, {"to", "mv/moved2"}});
+        expect(r.ok && read_whole_text(ws / "mv" / "moved2" / "b.txt") == "content\n" && r.text.find("(1 files)") != std::string::npos, "directories copy recursively with a file count: " + r.text);
+        r = tool(h, "copy_file", {{"from", "mv/c.txt"}, {"to", "mv/copy/c2.txt"}});
+        expect(!r.ok && r.text.find("already exists") != std::string::npos, "a copy never overwrites");
+        acts = tool_actions(h, "copy_file", {{"from", "mv/c.txt"}, {"to", "mv/e.txt"}});
+        expect(acts.size() == 2 && acts[0].kind == Action::Kind::Read && acts[1].kind == Action::Kind::Write && acts[1].path == h.resolve("mv/e.txt"), "a copy is a read of the source and a write of the destination");
+
+        r = tool(h, "delete_file", {{"path", "mv/copy/c2.txt"}});
+        expect(r.ok && !fs::exists(ws / "mv" / "copy" / "c2.txt") && r.text == "deleted " + h.resolve("mv/copy/c2.txt").string(), "delete_file removes a file");
+        r = tool(h, "delete_file", {{"path", "mv/copy"}});
+        expect(r.ok && !fs::exists(ws / "mv" / "copy") && r.text.find("(empty directory)") != std::string::npos, "and an empty directory");
+        r = tool(h, "delete_file", {{"path", "mv/moved2"}});
+        expect(!r.ok && fs::exists(ws / "mv" / "moved2" / "b.txt") && r.text.find("is a directory with 1 files and 0 directories inside") != std::string::npos && r.text.find("recursive set to true") != std::string::npos,
+               "a directory with contents needs recursive: " + r.text);
+        std::string pv = tool_preview(h, "delete_file", {{"path", "mv/moved2"}});
+        expect(pv == "deletes a directory with 1 files and 0 directories inside\n", "the preview counts what would go: " + pv);
+        pv = tool_preview(h, "delete_file", {{"path", "mv/c.txt"}});
+        expect(pv == "deletes 1 lines:\n- c\n", "a file's preview shows its lines: " + pv);
+        r = tool(h, "delete_file", {{"path", "mv/moved2"}, {"recursive", true}});
+        expect(r.ok && !fs::exists(ws / "mv" / "moved2") && r.text.find("(1 files, 0 directories)") != std::string::npos, "recursive deletes the tree and says how much went: " + r.text);
+        r = tool(h, "delete_file", {{"path", "mv/moved2"}});
+        expect(!r.ok && r.text.find("no such file or directory") == 0, "deleting a missing path is an error");
+        r = tool(h, "delete_file", {{"path", "."}, {"recursive", true}});
+        expect(!r.ok && r.text.find("workspace itself") != std::string::npos && fs::exists(ws / "mv" / "c.txt"), "the workspace itself is never deleted");
+        expect(tool_summary("delete_file", {{"path", "x"}, {"recursive", true}}) == "delete_file x (recursive)", "the summary shows recursive");
+
+        r = tool(h, "make_dir", {{"path", "mk/deep/er"}});
+        expect(r.ok && fs::is_directory(ws / "mk" / "deep" / "er") && r.text.rfind("created ", 0) == 0, "make_dir creates parents");
+        r = tool(h, "make_dir", {{"path", "mk/deep/er"}});
+        expect(r.ok && r.text.find("already exists") != std::string::npos, "an existing directory is fine");
+        r = tool(h, "make_dir", {{"path", "mv/c.txt"}});
+        expect(!r.ok && r.text.find("is a file") != std::string::npos, "a file in the way is an error");
+        expect(tool_actions(h, "make_dir", {{"path", "mk/x"}})[0].kind == Action::Kind::Write && tool_actions(h, "delete_file", {{"path", "mk"}})[0].kind == Action::Kind::Write, "make_dir and delete_file are writes");
+        expect(canonical_tool_name("moveFile") == "move_file" && canonical_tool_name("Apply-Patch") == "apply_patch" && canonical_tool_name("MultiEdit") == "multi_edit", "the new names are repaired too");
+    }
+
+    section("the harness judges the new tools like writes");
+    {
+        auto verdict = [&](const std::string& name, const json& args, Mode mode) {
+            std::vector<Verdict> out;
+            for (const auto& a : tool_actions(h, name, args)) out.push_back(h.check(a, mode, Origin::Local).verdict);
+            return out;
+        };
+        using V = Verdict;
+        expect(verdict("move_file", {{"from", "mv/c.txt"}, {"to", "/tmp/maic-robustness-out.txt"}}, Mode::Auto) == std::vector<V>{V::Allow, V::Ask}, "a move out of the workspace asks on the destination");
+        expect(verdict("move_file", {{"from", "/tmp/maic-robustness-out.txt"}, {"to", "mv/in.txt"}}, Mode::Auto) == std::vector<V>{V::Ask, V::Allow}, "a move in from outside asks on the source");
+        expect(verdict("copy_file", {{"from", "mv/c.txt"}, {"to", "/tmp/maic-robustness-out.txt"}}, Mode::Auto) == std::vector<V>{V::Allow, V::Ask}, "a copy out of the workspace asks");
+        expect(verdict("copy_file", {{"from", "~/.ssh/id_ed25519"}, {"to", "mv/key"}}, Mode::Auto)[0] == V::Deny, "copying a secret is denied as a read");
+        expect(verdict("delete_file", {{"path", "/tmp/maic-robustness-out.txt"}}, Mode::Auto) == std::vector<V>{V::Ask}, "a delete outside the workspace asks");
+        expect(verdict("delete_file", {{"path", "~/.ssh/known_hosts"}}, Mode::Auto) == std::vector<V>{V::Trip}, "deleting a secret trips");
+        expect(verdict("delete_file", {{"path", "/etc/hosts"}}, Mode::Auto) == std::vector<V>{V::Trip}, "deleting a system file trips");
+        expect(verdict("make_dir", {{"path", "~/bin/evil"}}, Mode::Auto) == std::vector<V>{V::Ask}, "a directory under a sensitive path asks");
+        expect(verdict("multi_edit", {{"path", "mv/c.txt"}, {"edits", json::array()}}, Mode::Plan) == std::vector<V>{V::Deny}, "plan mode denies multi_edit");
+        expect(verdict("apply_patch", {{"patch", "--- mv/c.txt\n+++ mv/c.txt\n@@ -1 +1 @@\n-c\n+C\n--- /tmp/maic-robustness-out.txt\n+++ /tmp/maic-robustness-out.txt\n@@ -1 +1 @@\n-a\n+b\n"}}, Mode::Auto) == std::vector<V>{V::Allow, V::Ask},
+               "a patch touching a file outside the workspace asks for that file");
+        expect(verdict("apply_patch", {{"patch", "--- /etc/passwd\n+++ /etc/passwd\n@@ -1 +1 @@\n-a\n+b\n"}}, Mode::Auto) == std::vector<V>{V::Trip}, "a patch under /etc trips");
+        expect(!h.harmless(tool_actions(h, "delete_file", {{"path", "mv/c.txt"}})[0]) && !h.harmless(tool_actions(h, "move_file", {{"from", "a"}, {"to", "b"}})[1]) && h.harmless(tool_actions(h, "copy_file", {{"from", "a"}, {"to", "b"}})[0]),
+               "repeats of the new writes are not harmless; the read half of a copy is");
+    }
 
     section("sandbox under stress");
     auto t0 = std::chrono::steady_clock::now();
