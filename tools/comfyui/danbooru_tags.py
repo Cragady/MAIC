@@ -13,6 +13,11 @@ offline. The agent inside MAIC uses `check` and `search`; `fetch` is for a perso
     maic-danbooru-tags check --prompt "a, b, c" the same for a comma-separated prompt
     maic-danbooru-tags search WORD [--limit N]  tags containing WORD, most used first
     maic-danbooru-tags show                     what the local file holds and when it was fetched
+    maic-danbooru-tags groups fetch             the "Tag groups" wiki index and every group page it links, as
+                                                markdown under <state>/references/danbooru/groups/ (network)
+    maic-danbooru-tags groups list              the groups held locally
+    maic-danbooru-tags groups show NAME         one group page (a unique prefix of its name is enough)
+    maic-danbooru-tags groups search WORD       lines mentioning WORD across every local group page
 
 Tags are compared with spaces and underscores treated alike and case ignored. Exit code 1 from `check` when
 any tag is unknown, so a script can gate on it.
@@ -29,6 +34,106 @@ import urllib.request
 SITE = "https://danbooru.donmai.us"
 CATEGORIES = {"general": 0, "artist": 1, "copyright": 3, "character": 4, "meta": 5}
 UA = "maic-danbooru-tags/1 (local prompt checking; https://github.com/Cragady/MAIC)"
+
+
+def groups_dir():
+    return os.path.join(os.path.dirname(store_path()), "groups")
+
+
+def slug(title):
+    t = title.split(":", 1)[1] if title.lower().startswith("tag group:") else title
+    return "".join(c if c.isalnum() else "-" for c in t.strip().lower()).strip("-")
+
+
+def dtext_to_markdown(body):
+    """The little DText the wiki uses, into readable markdown: headings, lists, links, expand blocks."""
+    import re
+    out = []
+    for line in body.replace("\r\n", "\n").split("\n"):
+        if line.startswith("[expand") or line.startswith("[/expand"):
+            continue
+        m = re.match(r"^h([1-6])\.\s*(.*)$", line)
+        if m:
+            line = "#" * (int(m.group(1)) - 2 if int(m.group(1)) > 2 else 1) + " " + m.group(2)
+        line = re.sub(r"\[\[([^\]|]+)\|([^\]]+)\]\]", r"\2", line)  # [[page|shown]]
+        line = re.sub(r"\[\[([^\]]+)\]\]", r"\1", line)                # [[page]]
+        line = re.sub(r'"([^"]+)":#[\w-]+', r"\1", line)                  # "text":#anchor
+        line = re.sub(r"\[/?(b|i|u|s|tn|quote|code|nodtext|spoiler)\]", "", line)
+        line = re.sub(r"^(\*+)\s*", lambda mm: "  " * (len(mm.group(1)) - 1) + "- ", line)
+        out.append(line.rstrip())
+    text = "\n".join(out)
+    return re.sub(r"\n{3,}", "\n\n", text).strip() + "\n"
+
+
+def wiki_page(title, site):
+    return get_json("/wiki_pages/" + urllib.parse.quote(title.replace(" ", "_").lower(), safe="") + ".json", site)
+
+
+def cmd_groups(args):
+    import re
+    d = groups_dir()
+    if args.action == "fetch":
+        site = args.site.rstrip("/")
+        index = wiki_page("tag_groups", site)
+        titles = []
+        for link in re.findall(r"\[\[([^\]]+)\]\]", index["body"]):
+            page = link.split("|", 1)[0].strip()
+            if page.lower().startswith("tag group:") and page not in titles:
+                titles.append(page)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "index.md"), "w", encoding="utf-8") as f:
+            f.write("# Tag groups (Danbooru wiki index)\n\nSource: %s/wiki_pages/tag_groups, fetched %s\n\n" % (site, time.strftime("%Y-%m-%d")) + dtext_to_markdown(index["body"]))
+        manifest = {"fetched": time.strftime("%Y-%m-%d %H:%M"), "site": site, "groups": {}}
+        for i, title in enumerate(titles, 1):
+            time.sleep(args.delay)
+            try:
+                page = wiki_page(title, site)
+            except Exception as e:
+                print(f"{i}/{len(titles)} {title}: skipped ({e})")
+                continue
+            name = slug(title)
+            with open(os.path.join(d, name + ".md"), "w", encoding="utf-8") as f:
+                f.write("# %s\n\nSource: %s/wiki_pages/%s, fetched %s\n\n" % (title, site, urllib.parse.quote(title.replace(" ", "_"), safe=""), time.strftime("%Y-%m-%d")) + dtext_to_markdown(page["body"]))
+            manifest["groups"][name] = {"title": title, "chars": len(page["body"])}
+            print(f"{i}/{len(titles)} {title}")
+        with open(os.path.join(d, "groups.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+        print(f"wrote {len(manifest['groups'])} group pages and index.md under {d}")
+        return
+    mpath = os.path.join(d, "groups.json")
+    if not os.path.isfile(mpath):
+        sys.exit(f"no local group pages at {d}: run `maic-danbooru-tags groups fetch` first (needs the network; not from inside an agent)")
+    with open(mpath, encoding="utf-8") as f:
+        manifest = json.load(f)
+    if args.action == "list":
+        print(f"{len(manifest['groups'])} groups, fetched {manifest['fetched']}, under {d}")
+        for name, g in sorted(manifest["groups"].items()):
+            print(f"  {name:<32} {g['title']}")
+        return
+    if args.action == "show":
+        if not args.name:
+            sys.exit("groups show NAME")
+        key = slug(args.name)
+        hits = [n for n in manifest["groups"] if n == key] or [n for n in manifest["groups"] if n.startswith(key)] or [n for n in manifest["groups"] if key in n]
+        if len(hits) != 1:
+            sys.exit(f"'{args.name}' matches {len(hits)} groups" + (": " + ", ".join(sorted(hits)) if hits else "; `groups list` shows them"))
+        with open(os.path.join(d, hits[0] + ".md"), encoding="utf-8") as f:
+            sys.stdout.write(f.read())
+        return
+    if args.action == "search":
+        if not args.name:
+            sys.exit("groups search WORD")
+        word = args.name.lower()
+        n = 0
+        for name in sorted(manifest["groups"]):
+            with open(os.path.join(d, name + ".md"), encoding="utf-8") as f:
+                for line in f:
+                    if word in line.lower():
+                        print(f"{name}: {line.rstrip()}")
+                        n += 1
+        print(f"{n} line(s)")
+        return
+    sys.exit("groups fetch|list|show NAME|search WORD")
 
 
 def store_path():
@@ -165,6 +270,12 @@ def main():
     p.set_defaults(func=cmd_search)
     p = sub.add_parser("show", help="what the local file holds")
     p.set_defaults(func=cmd_show)
+    p = sub.add_parser("groups", help="the Tag groups wiki index and its pages, local")
+    p.add_argument("action", choices=["fetch", "list", "show", "search"])
+    p.add_argument("name", nargs="?")
+    p.add_argument("--delay", type=float, default=1.0)
+    p.add_argument("--site", default=SITE, help=argparse.SUPPRESS)
+    p.set_defaults(func=cmd_groups)
     args = ap.parse_args()
     args.func(args)
 

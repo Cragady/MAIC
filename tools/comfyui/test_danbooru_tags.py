@@ -14,7 +14,12 @@ class Fake(http.server.BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
         page = int(q.get("page", ["1"])[0])
-        if u.path == "/tags.json":
+        if u.path == "/wiki_pages/tag_groups.json":
+            body = "[expand=Table of Contents]\r\n* 1. \"Body\":#dtext-body\r\n[/expand]\r\nh4. Body\r\n* [[Tag group:Posture]]\r\n* [[Tag group:Hair|Hair]]\r\n* [[List of style parodies]]\r\n"
+            rows = {"title": "tag_groups", "body": body}
+        elif u.path.startswith("/wiki_pages/tag_group"):
+            rows = {"title": u.path.split("/")[-1][:-5], "body": "[See [[tag groups]].]\r\n\r\nh4. Basic positions\r\n* [[standing]]\r\n** [[standing on one leg]]\r\n"}
+        elif u.path == "/tags.json":
             rows = [] if page > 1 else [{"name": "1girl", "post_count": 5000000}, {"name": "grey_hair", "post_count": 400000}, {"name": "bus_stop", "post_count": 9000}]
         else:
             rows = [] if page > 1 else [{"antecedent_name": "gray_hair", "consequent_name": "grey_hair"}]
@@ -53,6 +58,28 @@ class Tests(unittest.TestCase):
         r = self.run_tool("search", "hair")
         self.assertIn("grey_hair  (general, 400000 posts)", r.stdout)
         self.assertIn("3 tags: general 3", self.run_tool("show").stdout)
+
+    def test_groups_fetch_list_show_search(self):
+        self.assertIn("no local group pages", self.run_tool("groups", "list").stderr)
+        r = self.run_tool("groups", "fetch", "--site", "http://127.0.0.1:%d" % self.srv.server_address[1], "--delay", "0")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("wrote 2 group pages", r.stdout)
+        gd = os.path.join(os.path.dirname(self.store), "groups")
+        index = open(os.path.join(gd, "index.md")).read()
+        self.assertIn("## Body", index)
+        self.assertIn("- Tag group:Posture", index)
+        self.assertNotIn("[expand", index)
+        self.assertNotIn("#dtext", index)
+        r = self.run_tool("groups", "list")
+        self.assertIn("2 groups", r.stdout)
+        self.assertIn("posture", r.stdout)
+        r = self.run_tool("groups", "show", "post")
+        self.assertIn("## Basic positions", r.stdout)
+        self.assertIn("- standing\n  - standing on one leg", r.stdout)
+        self.assertNotIn("[[", r.stdout)
+        r = self.run_tool("groups", "search", "one leg")
+        self.assertIn("posture: ", r.stdout)
+        self.assertIn("2 line(s)", r.stdout)
 
 
 if __name__ == "__main__":
