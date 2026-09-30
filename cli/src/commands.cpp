@@ -107,7 +107,7 @@ const std::vector<Topic>& topics() {
          "A file that fails to load is skipped with a notice. `maic tools` lists them outside a session. Format and a complete example: docs/tools.md and tools/examples/word-count.lua."},
         {"instructions", {"maic.md", "agents.md", "claude.md"}, "standing instructions the model always sees",
          "*instructions*\n"
-         "~/.config/maic/MAIC.md, then every MAIC.md or AGENTS.md from under $HOME down to the workspace, re-read at the start of every turn (32 KB each). `:instructions` shows what is in effect."},
+         "~/.config/maic/MAIC.md, then every MAIC.md or AGENTS.md from under $HOME down to the workspace, re-read at the start of every turn (32 KB each); an AGENTS.md deeper in the tree is attached the first time a file under it is read. `:instructions` shows what is in effect; `:instructions off`, `--no-instructions` or `load_instructions = false` loads none, and `:system` / `--system` places operator text ahead of all of them (see `:h system`)."},
         {"keys", {"keybindings", "bindings", "motions", "vim"}, "the key map",
          "*keys*\n"
          "The input is a small vim and starts in normal mode.\n\n"
@@ -123,7 +123,7 @@ const std::vector<Topic>& topics() {
         {"alt-enter", {"send"}, "sends the input", "*Alt+Enter*\nSends the input from any mode; the same as `:w`. Enter is a new line. nvim has no default Alt mappings, so nothing is lost."},
         {"enter", {}, "a new line", "*Enter*\nInsert mode: a new line. Normal mode: down a line. To send, use Alt+Enter or `:w`."},
         {"escape", {}, "back to normal mode", "*Esc*\nInsert or visual mode to normal mode; in the command line, cancels; in the conversation window, back to the input."},
-        {"u", {"undo"}, "undo", "*u* *Ctrl-R*\n`u` undoes the last change, `Ctrl-R` redoes. Two hundred levels. An insert session counts as one step, and so does a change operator (`cw`, `cc`, `C`, `S`) together with what you typed after it."},
+        {"u", {"redo"}, "undo", "*u* *Ctrl-R*\n`u` undoes the last change in the input, `Ctrl-R` redoes (for the agent's file changes see `:h :undo`). Two hundred levels. An insert session counts as one step, and so does a change operator (`cw`, `cc`, `C`, `S`) together with what you typed after it."},
         {"ctrl-r", {"redo"}, "redo", "*Ctrl-R*\nRedo. See `:h u`."},
         {"ctrl-c", {}, "interrupt, clear, quit", "*Ctrl-C*\nWhile the agent works: interrupts the turn. While a `!command` runs: stops it. Otherwise: clears the input; pressed twice on an empty input: quits (or `:q`)."},
         {"shift-tab", {"tab"}, "cycle the mode", "*Shift-Tab*\nCycles manual → auto-read → edit → auto → plan. See `:h modes`."},
