@@ -71,7 +71,7 @@ const std::vector<Topic>& topics() {
          "A remote provider receives your prompts, every file the agent reads and every command's output; MAIC says so when you switch and shows REMOTE in the status strip. Keys come from an environment variable or a command, never from the settings file. See docs/settings.md."},
         {"settings", {"config", "styles", "style", "settings.json"}, "the settings file",
          "*settings*\n"
-         "~/.config/maic/settings.json: model, mode, think, markdown, mouse, instruction_files, providers and styles. `maic settings init` writes a documented one; `maic settings path` shows where it goes. `:set markdown|mouse on|off` changes two of them for this session. See docs/settings.md."},
+         "Layered: ~/.config/maic/settings.json, then `.maic/settings.json` and `.maic/settings.local.json` in each directory from under $HOME down to the workspace (nearest wins; settings.json is for the project, settings.local.json is personal). Keys: model, mode, think, markdown, mouse, sessions_home (auto/general/project/name), instruction_files, providers, style. `maic settings init` writes the global one, `:init` scaffolds a project's, `:settings` shows what is in effect. See docs/settings.md."},
         {"instructions", {"maic.md", "agents.md", "claude.md"}, "standing instructions the model always sees",
          "*instructions*\n"
          "~/.config/maic/MAIC.md, then every MAIC.md or AGENTS.md from under $HOME down to the workspace, re-read at the start of every turn (32 KB each). `:instructions` shows what is in effect."},
@@ -127,6 +127,10 @@ const std::vector<CommandInfo>& commands() {
          "*:status*\nThe harness state, every service with where it runs (host process, pid, url) and a quick action, the model and whether it is remote, this session's file, the mode, and queued messages."},
         {"up", {}, "SERVICE", "start a service", "*:up*\n`:up ollama` starts a service MAIC manages (ollama, comfyui). Refused while the harness is tripped."},
         {"down", {}, "SERVICE", "stop a service MAIC started", "*:down*\n`:down ollama` stops it. MAIC only stops what it started."},
+        {"init", {}, "", "scaffold MAIC.md and .maic/settings.json, then draft the MAIC.md",
+         "*:init*\nCreates `.maic/settings.json` and a `MAIC.md` placeholder in the workspace, then asks the agent to look over the project and write the MAIC.md (it will ask before writing in manual mode). A project with a MAIC.md keeps its transcripts under sessions/projects/. `maic init` does the scaffolding only."},
+        {"settings", {}, "", "which settings files are in effect",
+         "*:settings*\nLists the settings files that were read, nearest last: the global file, then `.maic/settings.json` and `.maic/settings.local.json` from just under $HOME down to the workspace. Shows where this session's transcript home resolved to. See `:h settings`."},
         {"instructions", {}, "", "the MAIC.md / AGENTS.md files in effect", "*:instructions*\nLists the instruction files the model sees, re-read every turn. See `:h instructions`."},
         {"session", {}, "", "where this transcript is", "*:session*\nThis session's file and the sessions directory. See `:h sessions`."},
         {"artifacts", {}, "", "where everything is kept, with sizes", "*:artifacts*\nEvery place MAIC and its services leave things (transcripts, service logs, ComfyUI outputs, ...) with sizes. Clean with `maic artifacts clean OWNER/NAME [--older-than DAYS]`."},

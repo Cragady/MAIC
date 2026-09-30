@@ -7,6 +7,7 @@
 #include "maic/instructions.hpp"
 #include "maic/sandbox.hpp"
 #include "maic/session.hpp"
+#include "maic/settings.hpp"
 #include "maic/tools.hpp"
 
 #include <sys/stat.h>
@@ -158,6 +159,43 @@ int main() {
     }
     expect(threw, "refuses to clean outside $HOME");
     fs::remove_all(victim);
+
+    section("layered settings and session homes");
+    {
+        // ws is under $HOME (~/.cache/...), so project layers apply. Global file untouched: use XDG_CONFIG_HOME.
+        fs::path cfg = ws / "xdg";
+        write_file(cfg / "maic" / "settings.json", R"({"model": "global/model", "mode": "manual", "style": {"user": {"fg": "red"}}})");
+        setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
+        fs::path proj = ws / "proj";
+        write_file(proj / ".maic" / "settings.json", R"({"mode": "edit", "providers": {"lab": {"kind": "openai", "base_url": "http://127.0.0.1:9/v1"}}})");
+        write_file(proj / ".maic" / "settings.local.json", R"({"model": "local/model", "style": {"user": {"bold": true}}})");
+        Settings s = load_settings(proj);
+        expect(s.sources.size() == 3, "three files read: global, project, project-local");
+        expect(s.model == "local/model" && s.mode == "edit", "nearer files win for scalars");
+        bool lab = false;
+        for (const auto& p : s.providers) lab = lab || (p.name == "lab" && p.kind == "openai");
+        expect(lab && s.providers.size() == default_providers().size() + 1, "providers merge by name");
+        expect(s.style("user").fg == "red" && s.style("user").bold, "styles merge across layers");
+        expect(resolve_sessions_home(s, proj).filename() == "general", "no MAIC.md: auto resolves to general");
+        write_file(proj / "MAIC.md", "# proj\n");
+        expect(resolve_sessions_home(s, proj).parent_path().filename() == "projects", "a MAIC.md moves auto to the project home");
+        s.sessions_home = "general";
+        expect(resolve_sessions_home(s, proj).filename() == "general", "an explicit general overrides the MAIC.md");
+        fs::path sub = proj / "sub";
+        fs::create_directories(sub);
+        Settings inner = load_settings(sub);
+        expect(inner.mode == "edit" && resolve_sessions_home(inner, sub).parent_path().filename() == "projects",
+               "a subdirectory inherits the project's settings and home");
+        write_file(proj / ".maic" / "settings.json", "{ this is not json");
+        threw = false;
+        try {
+            load_settings(proj);
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw, "a broken settings file throws instead of silently using defaults");
+        unsetenv("XDG_CONFIG_HOME");
+    }
 
     section("instructions");
     write_file(ws / "MAIC.md", std::string(100 * 1024, 'x'));

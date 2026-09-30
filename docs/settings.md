@@ -1,6 +1,12 @@
 # Settings
 
-`~/.config/maic/settings.json` (or `$XDG_CONFIG_HOME/maic/settings.json`). Every key is optional; MAIC runs fine without the file. `maic settings init` writes one with every default filled in and a comment, `maic settings path` shows where it goes. Comments (`//`) are allowed.
+Settings are layered, and every key is optional; MAIC runs fine with no files at all:
+
+1. `~/.config/maic/settings.json` (or `$XDG_CONFIG_HOME/maic/settings.json`): yours, for every project. `maic settings init` writes one with every default and a comment; `maic settings path` shows where it goes.
+2. `<dir>/.maic/settings.json` for each directory from just under `$HOME` down to the workspace: the project's, meant to be committed.
+3. `<dir>/.maic/settings.local.json` next to each of those: personal overrides, keep it out of git.
+
+Nearer files win. Scalars replace, `providers` merge by name, `style` merges by role. `:settings` in a session lists the files that were read; `maic init` (or `:init`, which also has the agent draft the `MAIC.md`) scaffolds a project's. Comments (`//`) are allowed in all of them.
 
 ```json
 {
@@ -9,7 +15,7 @@
   "think": false,
   "markdown": true,
   "mouse": true,
-  "sessions_home": "general",
+  "sessions_home": "auto",
   "instruction_files": ["MAIC.md", "AGENTS.md"],
   "providers": { ... },
   "style": { ... }
@@ -24,7 +30,7 @@
 | `markdown` | Render markdown in the conversation window (`:set markdown off` for raw text). The input box always highlights markdown. |
 | `mouse` | Scroll wheel support. With it on, the terminal's own text selection needs Shift+drag; `:set mouse off` turns it off for a session. |
 | `instruction_files` | File names looked for from `$HOME` down to the workspace, like CLAUDE.md. See [Instructions](#instructions). |
-| `sessions_home` | Where new transcripts go: `general` (default, `sessions/general/`), `project` (`sessions/projects/<encoded workspace>/`), or any name (`sessions/<name>/`). `maic sessions rehome` moves existing ones. |
+| `sessions_home` | Where new transcripts go. `auto` (default): under `sessions/projects/<encoded workspace>/` when the workspace has a `MAIC.md` (or one is in effect from a parent directory), else `sessions/general/`. Or force it: `general`, `project`, or any name (`sessions/<name>/`). A project can set this in its `.maic/settings.json`; `maic sessions rehome` moves existing transcripts. |
 
 ## Providers
 

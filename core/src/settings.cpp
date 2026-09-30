@@ -1,5 +1,8 @@
 #include "maic/settings.hpp"
 
+#include "maic/instructions.hpp"
+#include "maic/session.hpp"
+
 #include <cstdlib>
 #include <fstream>
 #include <stdexcept>
@@ -111,17 +114,19 @@ fs::path settings_path() {
     return fs::path(std::getenv("HOME")) / ".config" / "maic" / "settings.json";
 }
 
-Settings load_settings() {
-    Settings s;
-    s.styles = default_styles();
-    std::ifstream in(settings_path());
-    if (!in) return s;
+namespace {
+
+// Applies one file's keys over `s`. Scalars replace, providers merge by name, styles merge by role.
+void apply_file(Settings& s, const fs::path& path) {
+    std::ifstream in(path);
+    if (!in) return;
     json j;
     try {
         j = json::parse(in, nullptr, true, true);  // comments allowed
     } catch (const json::exception& e) {
-        throw std::runtime_error(settings_path().string() + ": " + e.what());
+        throw std::runtime_error(path.string() + ": " + e.what());
     }
+    s.sources.push_back(path);
     try {
         s.model = j.value("model", s.model);
         s.mode = j.value("mode", s.mode);
@@ -156,9 +161,50 @@ Settings load_settings() {
             s.styles[name] = parse_style(sj).merged_over(s.style(name));
         }
     } catch (const json::exception& e) {
-        throw std::runtime_error(settings_path().string() + ": " + e.what());
+        throw std::runtime_error(path.string() + ": " + e.what());
+    }
+}
+
+}  // namespace
+
+Settings load_settings(const fs::path& workspace) {
+    Settings s;
+    s.styles = default_styles();
+    apply_file(s, settings_path());
+    // Project layers: from just under $HOME down to the workspace, like instruction files.
+    std::error_code ec;
+    fs::path home = fs::weakly_canonical(std::getenv("HOME"), ec);
+    fs::path ws = fs::weakly_canonical(workspace, ec);
+    std::vector<fs::path> dirs;
+    for (fs::path d = ws; !d.empty(); d = d.parent_path()) {
+        if (d == home) break;
+        dirs.push_back(d);
+        auto rel = d.lexically_relative(home);
+        if (rel.empty() || *rel.begin() == "..") break;  // not under $HOME
+        if (d == d.root_path()) break;
+    }
+    for (auto it = dirs.rbegin(); it != dirs.rend(); ++it) {
+        apply_file(s, *it / ".maic" / "settings.json");
+        apply_file(s, *it / ".maic" / "settings.local.json");
     }
     return s;
+}
+
+Settings load_settings() {
+    return load_settings(fs::current_path());
+}
+
+fs::path resolve_sessions_home(const Settings& settings, const fs::path& workspace) {
+    std::string home = settings.sessions_home;
+    if (home == "auto") {
+        bool project = false;
+        for (const auto& f : load_instructions(workspace, settings.instruction_files)) {
+            if (f.path != global_instructions_path()) project = true;
+        }
+        home = project ? "project" : "general";
+    }
+    if (home == "project") return sessions_home("project:" + fs::weakly_canonical(workspace).string());
+    return sessions_home(home);
 }
 
 void write_default_settings() {
@@ -183,6 +229,7 @@ void write_default_settings() {
         {"markdown", d.markdown},
         {"mouse", d.mouse},
         {"sessions_home", d.sessions_home},
+        {"//sessions_home", "auto: a project's transcripts (it has a MAIC.md) go under sessions/projects/, others under sessions/general/. Or: general, project, a name."},
         {"instruction_files", d.instruction_files},
         {"providers", providers},
         {"style", styles},

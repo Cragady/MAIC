@@ -37,7 +37,9 @@ void usage() {
                  "  sessions                   list session transcripts (where started, where last opened)\n"
                  "  sessions rehome ID [project|general|NAME]   move a transcript to another home (default: project)\n"
                  "  sessions path ID           print a transcript's path\n"
-                 "  settings init|path         write a documented settings file, or show where it goes\n"
+                 "  settings init|path         write the global settings file, or show where it goes\n"
+                 "  init                       scaffold this project: MAIC.md and .maic/settings.json (transcripts then\n"
+                 "                             go under sessions/projects/); :init in a session also drafts the MAIC.md\n"
                  "  trip [reason]              trip the harness lock now (blocks all actions until unlocked)\n"
                  "  unlock                     reset the harness lock (asks for your sudo password)\n"
                  "\n"
@@ -276,6 +278,23 @@ int main(int argc, char** argv) {
             return std::system("sudo -k && sudo /usr/local/sbin/maic-lock reset") == 0 ? 0 : 1;
         }
         if (cmd == "settings") return cmd_settings(cargs);
+        if (cmd == "init") {
+            auto ws = std::filesystem::current_path();
+            std::filesystem::create_directories(ws / ".maic");
+            bool any = false;
+            if (!std::filesystem::exists(ws / ".maic" / "settings.json")) {
+                std::ofstream(ws / ".maic" / "settings.json") << "{\n  \"//\": \"Project settings for MAIC, committed with the code. Personal overrides go in settings.local.json (add it to .gitignore).\"\n}\n";
+                std::cout << "created .maic/settings.json\n";
+                any = true;
+            }
+            if (!std::filesystem::exists(ws / "MAIC.md")) {
+                std::ofstream(ws / "MAIC.md") << "# " << ws.filename().string() << "\n\nStanding instructions for agents working in this project.\n";
+                std::cout << "created MAIC.md: transcripts for this project now go under sessions/projects/. Run `maic` and `:init` to have the agent draft it.\n";
+                any = true;
+            }
+            if (!any) std::cout << "already initialised\n";
+            return 0;
+        }
         if (cmd == "sessions") {
             if (cargs.size() >= 2 && (cargs[0] == "rehome" || cargs[0] == "path")) {
                 auto s = maic::find_session(cargs[1]);

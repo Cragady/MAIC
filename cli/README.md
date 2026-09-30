@@ -60,6 +60,8 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:!cmd` or `!cmd` | run a command in **your** shell, unsandboxed, in the workspace; output shows in the conversation and is passed to the model as context (Ctrl-C stops it) |
 | `:status` | harness, every service with where it runs and what to do about it, model and whether it is remote, session file, queue |
 | `:up NAME` / `:down NAME` | start / stop a service |
+| `:init` | scaffold `MAIC.md` and `.maic/settings.json` here, then have the agent draft the `MAIC.md` from the project |
+| `:settings` | which settings files are in effect and where this session's transcript lives |
 | `:instructions` | the MAIC.md / AGENTS.md files in effect |
 | `:session` / `:artifacts` | where this transcript is; where everything is kept, with sizes |
 | `:reg` | the yank register |
@@ -90,7 +92,7 @@ Whatever the mode: secrets are never read, system paths are never written, start
 
 Every session is a JSONL file under `~/.local/state/maic/sessions/`, readable only by you: each message as sent to the model, every tool call with the harness's decision, and the displayable transcript. `maic -c` resumes the newest session started or last opened in the current directory; `maic -r` lists them; `maic -r ID` (a unique prefix is enough) resumes one. The model is told it resumed and what the current mode and instructions are. A session that ended mid tool call resumes from the last complete step.
 
-**Homes.** Transcripts go to `sessions/general/` unless settings say otherwise (`"sessions_home": "project"` puts new ones under `sessions/projects/<encoded workspace path>/`, the Claude Code layout; any other name makes `sessions/<name>/`). Every open (the first start and each resume) records the workspace, host and pid, so `maic sessions` shows where a transcript was started and, when different, where it was last opened and how many times. `maic sessions rehome ID [project|general|NAME]` moves a transcript to another home (default: its own project's directory); forks keep working because they find their parent by id. `maic sessions path ID` prints a path.
+**Homes.** A project (a workspace with a `MAIC.md`, its own or inherited from a parent directory) keeps its transcripts under `sessions/projects/<encoded workspace path>/`, the Claude Code layout; everything else goes to `sessions/general/`. `sessions_home` in any settings layer overrides this (`general`, `project`, or a name for `sessions/<name>/`), so a project can opt back into `general`. `maic init` or `:init` turns a directory into a project. Every open (the first start and each resume) records the workspace, host and pid, so `maic sessions` shows where a transcript was started and, when different, where it was last opened and how many times. `maic sessions rehome ID [project|general|NAME]` moves a transcript to another home (default: its own project's directory); forks keep working because they find their parent by id. `maic sessions path ID` prints a path.
 
 Where the continuation is written depends on `--append` / `--no-append`:
 
