@@ -88,6 +88,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [ollama-setup.md](docs/ollama-setup.md) — local-only Ollama install, service settings, privacy audit.
 * [harness.md](docs/harness.md) — the safety harness: tripwire (built) and planned layers.
 * [settings.md](docs/settings.md) — the settings file: model providers (local and remote), styles, instruction files.
+* [sessions.md](docs/sessions.md): the session file format, every record type, homes, forks and `--fork-at`, `maic sessions import` (claude.ai exports, Claude Code transcripts), `redact`, `export`.
 * [vendor.md](docs/vendor.md) — the services MAIC installs for itself (ComfyUI, Ollama) at pinned versions, and the artifact tree.
 * [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.
 * [opencode-quick-wins.md](docs/opencode-quick-wins.md) — 23 small, ranked improvements to take from opencode, with file pointers.
