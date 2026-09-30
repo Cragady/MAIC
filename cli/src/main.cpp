@@ -245,6 +245,9 @@ int main(int argc, char** argv) {
             else if (a == "-h" || a == "--help" || a == "help") {
                 usage();
                 return 0;
+            } else if (a == "-V" || a == "--version" || a == "version") {
+                std::cout << "maic " MAIC_VERSION "\n";
+                return 0;
             } else rest.push_back(a);
         }
         if (continue_last || resume) tui.resume = headless.resume = pick_session(continue_last, resume_id);

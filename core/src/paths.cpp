@@ -17,9 +17,19 @@ std::filesystem::path home_dir() {
 
 }  // namespace
 
+// MAIC_HOME, else the source tree this binary was built from, else (an installed copy) <prefix>/share/maic.
 std::filesystem::path root_dir() {
     if (const char* env = std::getenv("MAIC_HOME"); env && *env) {
         return env;
+    }
+    std::error_code ec;
+    if (std::filesystem::is_directory(std::filesystem::path(MAIC_ROOT) / "services", ec)) {
+        return MAIC_ROOT;
+    }
+    std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (!ec) {
+        std::filesystem::path share = exe.parent_path().parent_path() / "share" / "maic";
+        if (std::filesystem::is_directory(share / "services", ec)) return share;
     }
     return MAIC_ROOT;
 }
