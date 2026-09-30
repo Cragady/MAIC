@@ -6,13 +6,21 @@ Status of the built parts: [README.md](../README.md), [cli/README.md](../cli/REA
 
 ## 1. Remote access
 
-The reason `server/` exists. Micaiah wants to chat with agents from her phone.
+The reason `server/` exists. Micaiah wants to chat with agents from her phone. Design and reference: [remote.md](remote.md).
 
-* **`server/`**: a MAIC server process that owns agent sessions and speaks a small JSON protocol over a socket (local Unix socket first, then TLS on a port). The CLI becomes one client of it; the current in-process agent stays for offline use.
-* **Rendezvous**: the server does not have to run the models. It can forward to Ollama on the same machine, to a remote provider, or act as a meeting point between a phone and a workstation behind NAT (an outbound connection from the workstation to a small relay; the relay never sees plaintext).
-* **Harness rules for remote clients**: every request from a client that is not the local terminal is `Origin::Remote` and is always asked; approvals can be answered from the client, but `unlock` cannot (it needs the local sudo password).
-* **A client**: a web app first (works on any phone, no store), then Android/iOS if the web app is not enough. Shows the conversation, streams replies, answers approvals, lists sessions, switches models.
-* **Auth**: a per-device token created on the workstation, TLS with a pinned certificate, rate limits, and an audit line per remote request.
+**Built:**
+
+* **`maic-server`** (`maic server start`): owns agent sessions, one `Agent` per session id with its own transcript (kind `server`), and serves a JSON API with server-sent events for streaming. The CLI's in-process agent stays for offline use.
+* **Harness rules for remote clients**: every request is `Origin::Remote` and is asked about in every mode; approvals are answered through the API; there is no route for `unlock`, only for `trip`.
+* **The web client** (`server/web/index.html`): one file, no build, phone-friendly. Streams replies, shows tool calls, answers approvals (yes, no, no with a reason, always, trip), lists and resumes sessions, switches modes, reattaches after a lost connection.
+* **Auth**: per-device bearer tokens (hashes on disk, constant-time compare, rate limited per source), TLS mandatory off loopback with a self-signed certificate made on first use or a configured pair, an audit line per request.
+* **Workspace containment**: a remote session opens only inside `server.workspaces`.
+
+**Still to do:**
+
+* **Rendezvous relay**: an outbound WebSocket from the workstation to a small relay, end-to-end encrypted after a one-time pairing on the LAN, so the phone reaches home without an open port and the relay sees nothing. Designed in remote.md.
+* **A native client** (Android first) when the web app is not enough: notifications for pending approvals, pinning and pairing in the app, background reattach.
+* **Sessions across restarts in the client**: the API can `resume` a transcript by id; the client should list past server sessions, not only the live ones.
 
 ## 2. Harness: the planned layers
 
