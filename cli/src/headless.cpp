@@ -119,6 +119,12 @@ int run_headless(const HeadlessOptions& options) {
         return 1;
     }
     if (!options.json) fprintf(stdout, "\n");
+    auto u = agent.usage();
+    if (u.calls) {
+        if (options.json) fprintf(stdout, "%s\n", nlohmann::json{{"type", "usage"}, {"input", u.total_input}, {"output", u.total_output}, {"calls", u.calls}, {"context", u.last.context}}.dump().c_str());
+        else fprintf(stderr, "※ tokens: %ld in, %ld out over %d call%s%s\n", u.total_input, u.total_output, u.calls, u.calls == 1 ? "" : "s",
+                     u.last.context ? (" (context " + std::to_string(u.last.input) + "/" + std::to_string(u.last.context) + ")").c_str() : "");
+    }
     if (log) fprintf(stderr, "※ transcript: %s\n", log->path().string().c_str());
     else fprintf(stderr, "※ not recorded (--record keeps a transcript)\n");
     return g_cancel ? 130 : 0;

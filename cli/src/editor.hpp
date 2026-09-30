@@ -23,6 +23,8 @@ public:
 
     Editor(std::string* shared_register) : register_(shared_register) {}
 
+    void set_leader(std::string leader) { leader_ = std::move(leader); }
+
     Result handle(const ftxui::Event& e);
 
     Mode mode() const { return mode_; }
@@ -63,11 +65,17 @@ private:
     void enter_insert(size_t at, bool snapshot = true);
     void paste(bool after);
     size_t motion_target(const std::string& k, int n, bool& inclusive);
+    // iw aw iW aW i" a" i' a' i` a` i( a( i) a) ib ab i[ a[ i] a] i{ a{ i} a} iB aB i< a< i> a>
+    bool text_object(char scope, char obj, size_t& from, size_t& to) const;
+    void yank_range(size_t from, size_t to);  // to the register, and the clipboard when "+ or leader asked
 
     std::string text_;
     size_t cursor_ = 0;
     Mode mode_ = Mode::Normal;
-    std::string pending_;  // operator waiting for a motion: d, c, y, g
+    std::string pending_;  // operator waiting for a motion: d, c, y, g, and "di"/"ci"/"yi"/"da".. for text objects
+    std::string leader_ = " ";
+    bool leader_pending_ = false;
+    bool clip_next_ = false;  // "+ or "* was typed: the next yank goes to the clipboard, the next paste comes from it
     int count_ = 0;
     size_t anchor_ = 0;    // visual selection start
     std::string cmdline_;

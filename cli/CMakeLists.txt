@@ -5,7 +5,7 @@ target_link_libraries(maic PRIVATE maic_core ftxui::component ftxui::dom ftxui::
 target_compile_options(maic PRIVATE -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
 target_compile_definitions(maic PRIVATE MAIC_VERSION="${MAIC_GIT_VERSION}")
 
-add_executable(editor_test tests/editor_test.cpp src/editor.cpp src/commands.cpp)
+add_executable(editor_test tests/editor_test.cpp src/editor.cpp src/commands.cpp src/view.cpp src/style.cpp)
 target_link_libraries(editor_test PRIVATE maic_core ftxui::component ftxui::dom ftxui::screen)
 target_include_directories(editor_test PRIVATE src ../core/tests)
 target_compile_options(editor_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)

@@ -97,7 +97,10 @@ const std::vector<Topic>& topics() {
         {"ctrl-x", {"ctrl-x ctrl-e", "nvim", "editor"}, "edit the input in nvim", "*Ctrl-X Ctrl-E*\nOpens the input in $VISUAL, $EDITOR or nvim as a markdown file and loads it back when you quit. Same as `:e`."},
         {"v", {"visual", "visual-mode"}, "visual selection", "*v* *V*\n`v` selects by character, `V` by line, in the input or the conversation window. Then `y` yanks, `d` deletes (input only), `c` changes, `o` swaps the ends, Esc leaves."},
         {"i", {"insert", "a", "o"}, "insert mode", "*i* *a* *I* *A* *o* *O*\n`i` inserts before the cursor, `a` after, `I` at the line start, `A` at the line end, `o` opens a line below, `O` above. Esc returns to normal mode."},
-        {"p", {"paste", "register", "reg"}, "paste the register", "*p* *P* *Ctrl-Y*\n`p` pastes the register after the cursor, `P` before; in insert mode Ctrl-Y pastes it. The register holds the last yank or delete from the input or the conversation window. `:reg` shows it."},
+        {"p", {"paste", "register", "reg"}, "paste the register or the clipboard", "*p* *P* *Ctrl-Y* *\"+p*\n`p` pastes the register after the cursor, `P` before; in insert mode Ctrl-Y pastes it. `\"+p` (or `\"*p`, or Space then `p`) pastes the system clipboard (wl-paste, xclip or xsel). The register holds the last yank or delete from the input or the conversation window. `:reg` shows it."},
+        {"y", {"yank", "leader", "space", "text-objects", "iw", "aw"}, "yank: motions, text objects, the clipboard", "*y* *Y* *\"+y* *<leader>y* *text-objects*\n"
+         "`y` + motion yanks (`yw`, `y$`, `yy`, `Y`); `d` and `c` take the same motions. Text objects work after `d`, `c`, `y` and in visual mode: `iw` `aw` (word), `iW` `aW`, `i\"` `a\"`, `i'` `a'`, `` i` ``, `i(` `a(` (also `ib`), `i[` `a[`, `i{` `a{` (also `iB`), `i<` `a<`. So `ciw`, `di\"`, `ya(`, `viw`.\n"
+         "The system clipboard: `\"+y` (or `\"*y`) before any yank, or the leader (Space by default, `leader` in settings) then `y`: `<leader>y` yanks the line in normal mode or the selection in visual mode. In the conversation window every yank already reaches the clipboard, and `yiw`, `yw`, `y$`, `Y`, `yy` work there too."},
         {"!", {"shell", "bang"}, "run a command in your shell", "*!* *:!*\n`!cmd` as a message, or `:!cmd`, runs cmd in your own shell (not the sandbox) in the workspace. The output shows in the conversation and is handed to the model as context. Ctrl-C stops it."},
     };
     return t;
@@ -122,7 +125,7 @@ const std::vector<CommandInfo>& commands() {
         {"models", {}, "", "models the Ollama server has", "*:models*\nLists the models on the current Ollama provider (`ollama list`)."},
         {"think", {}, "on|off", "let the model reason first", "*:think*\n`:think on` asks the model to reason before answering: slower, better on hard problems. Anthropic models then use the provider's `think_effort`."},
         {"set", {}, "markdown|mouse on|off", "rendering and mouse toggles",
-         "*:set*\n`:set markdown off` shows the conversation as raw text; `on` renders it. `:set mouse off` stops the scroll wheel and gives the terminal its normal mouse selection back. Both persist through settings.json."},
+         "*:set*\n`:set markdown off` shows the conversation as raw text; `on` renders it. `:set mouse off` stops the scroll wheel and gives the terminal its normal mouse selection back. `:set tooldetails on` shows tool output in full instead of an 8-line preview (in the conversation window `za` folds or unfolds one result, `zR` unfolds all, `zM` folds all). markdown and mouse persist through settings.json."},
         {"status", {}, "", "harness, services, model, session",
          "*:status*\nThe harness state, every service with where it runs (host process, pid, url) and a quick action, the model and whether it is remote, this session's file, the mode, and queued messages."},
         {"up", {}, "SERVICE", "start a service", "*:up*\n`:up ollama` starts a service MAIC manages (ollama, comfyui). Refused while the harness is tripped."},
@@ -164,7 +167,7 @@ std::vector<std::string> complete_argument(const std::string& command, const std
     std::vector<std::string> candidates;
     std::string cmd = lower(command);
     if (cmd == "mode") candidates = {"manual", "auto-read", "edit", "auto", "plan"};
-    else if (cmd == "set") candidates = {"markdown", "mouse"};
+    else if (cmd == "set") candidates = {"markdown", "mouse", "tooldetails"};
     else if (cmd == "think") candidates = {"on", "off"};
     else if (cmd == "w" || cmd == "write" || cmd == "send") candidates = {"now"};
     else if (cmd == "up" || cmd == "down") candidates = ctx.services;

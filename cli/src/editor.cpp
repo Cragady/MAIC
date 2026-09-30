@@ -1,5 +1,7 @@
 #include "editor.hpp"
 
+#include "maic/clipboard.hpp"
+
 #include <algorithm>
 #include <cctype>
 
@@ -146,13 +148,26 @@ void Editor::delete_range(size_t from, size_t to, bool yank) {
     cursor_ = std::min(from, text_.size());
 }
 
+void Editor::yank_range(size_t from, size_t to) {
+    if (from > to) std::swap(from, to);
+    to = std::min(to, text_.size());
+    *register_ = text_.substr(from, to - from);
+    if (clip_next_) copy_to_clipboard(*register_);
+    clip_next_ = false;
+}
+
 void Editor::paste(bool after) {
-    if (register_->empty()) return;
+    std::string source = *register_;
+    if (clip_next_) {
+        clip_next_ = false;
+        source = paste_from_clipboard();
+    }
+    if (source.empty()) return;
     save_undo();
     size_t at = after ? utf8_next(text_, cursor_) : cursor_;
     if (mode_ != Mode::Insert && text_.empty()) at = 0;
-    text_.insert(at, *register_);
-    cursor_ = at + register_->size();
+    text_.insert(at, source);
+    cursor_ = at + source.size();
     if (mode_ != Mode::Insert) cursor_ = utf8_prev(text_, cursor_ + 1 > text_.size() ? text_.size() : cursor_);
     clamp_normal();
 }
@@ -196,6 +211,89 @@ void Editor::line_start() {
 
 void Editor::line_end() {
     while (cursor_ < text_.size() && text_[cursor_] != '\n') ++cursor_;
+}
+
+bool Editor::text_object(char scope, char obj, size_t& from, size_t& to) const {
+    if (text_.empty()) return false;
+    size_t cur = std::min(cursor_, text_.size() - 1);
+    if (obj == 'w' || obj == 'W') {
+        auto cls = [&](size_t i) { return obj == 'W' ? (char_class(text_[i]) == 0 ? 0 : 1) : char_class(text_[i]); };
+        int c = cls(cur);
+        from = cur;
+        to = utf8_next(text_, cur);
+        while (from > 0 && text_[from - 1] != '\n' && cls(utf8_prev(text_, from)) == c) from = utf8_prev(text_, from);
+        while (to < text_.size() && text_[to] != '\n' && cls(to) == c) to = utf8_next(text_, to);
+        if (scope == 'a' && c != 0) {
+            size_t t = to;
+            while (t < text_.size() && text_[t] == ' ') ++t;
+            if (t > to) to = t;
+            else while (from > 0 && text_[from - 1] == ' ') --from;
+        }
+        return true;
+    }
+    if (obj == '"' || obj == '\'' || obj == '`') {
+        // The pair on this line around the cursor: the quote at or before the cursor opens, the next one closes.
+        size_t line_start = cur;
+        while (line_start > 0 && text_[line_start - 1] != '\n') --line_start;
+        size_t line_end = cur;
+        while (line_end < text_.size() && text_[line_end] != '\n') ++line_end;
+        size_t open = std::string::npos;
+        for (size_t i = line_start; i <= cur && i < line_end; ++i) {
+            if (text_[i] == obj) open = (open == std::string::npos || (text_[cur] != obj && i <= cur)) ? i : open;
+        }
+        // Count quotes before the cursor: an even count means the cursor sits before a pair that starts after it.
+        size_t count = 0, last = std::string::npos;
+        for (size_t i = line_start; i < cur; ++i) {
+            if (text_[i] == obj) ++count, last = i;
+        }
+        if (text_[cur] == obj) open = (count % 2 == 1) ? last : cur;
+        else if (count % 2 == 1) open = last;
+        else open = text_.find(obj, cur);
+        if (open == std::string::npos || open >= line_end) return false;
+        size_t close = text_.find(obj, open + 1);
+        if (close == std::string::npos || close >= line_end) return false;
+        from = scope == 'i' ? open + 1 : open;
+        to = scope == 'i' ? close : close + 1;
+        return true;
+    }
+    char o = 0, c = 0;
+    switch (obj) {
+        case '(': case ')': case 'b': o = '(', c = ')'; break;
+        case '[': case ']': o = '[', c = ']'; break;
+        case '{': case '}': case 'B': o = '{', c = '}'; break;
+        case '<': case '>': o = '<', c = '>'; break;
+        default: return false;
+    }
+    // Nearest enclosing pair, counting nesting; a cursor on a bracket belongs to that pair.
+    size_t open = std::string::npos;
+    int depth = 0;
+    for (size_t i = cur + 1; i-- > 0;) {
+        if (text_[i] == c && i != cur) ++depth;
+        else if (text_[i] == o) {
+            if (depth == 0) {
+                open = i;
+                break;
+            }
+            --depth;
+        }
+    }
+    if (open == std::string::npos) return false;
+    depth = 0;
+    size_t close = std::string::npos;
+    for (size_t i = open + 1; i < text_.size(); ++i) {
+        if (text_[i] == o) ++depth;
+        else if (text_[i] == c) {
+            if (depth == 0) {
+                close = i;
+                break;
+            }
+            --depth;
+        }
+    }
+    if (close == std::string::npos) return false;
+    from = scope == 'i' ? open + 1 : open;
+    to = scope == 'i' ? close : close + 1;
+    return true;
 }
 
 // Moves the cursor by a motion key and reports whether an operator over it includes the final character.
@@ -277,8 +375,23 @@ bool Editor::handle_insert(const Event& e) {
 
 bool Editor::handle_normal(const Event& e) {
     const std::string& k = e.input();
-    if (e == Event::Escape) return pending_.clear(), count_ = 0, true;
+    if (e == Event::Escape) return pending_.clear(), count_ = 0, leader_pending_ = false, clip_next_ = false, true;
     if (k == "\x12") return redo(), true;  // Ctrl-R
+    if (leader_pending_) {
+        leader_pending_ = false;
+        if (k == "y") {  // <leader>y: the line to the clipboard
+            clip_next_ = true;
+            size_t a = cursor_, b = cursor_;
+            while (a > 0 && text_[a - 1] != '\n') --a;
+            while (b < text_.size() && text_[b] != '\n') ++b;
+            yank_range(a, b);
+        } else if (k == "p" || k == "P") {
+            clip_next_ = true;
+            paste(k == "p");
+        }
+        return true;
+    }
+    if (!leader_.empty() && k == leader_ && pending_.empty()) return leader_pending_ = true, true;
 
     if (k.size() == 1 && std::isdigit(static_cast<unsigned char>(k[0])) && (k != "0" || count_ > 0)) {
         count_ = std::min(count_ * 10 + (k[0] - '0'), 9999);
@@ -290,15 +403,36 @@ bool Editor::handle_normal(const Event& e) {
     if (!pending_.empty()) {
         std::string op = pending_;
         pending_.clear();
+        if (op == "\"") {
+            if (k == "+" || k == "*") clip_next_ = true;
+            return true;
+        }
+        if ((op == "d" || op == "c" || op == "y") && (k == "i" || k == "a")) return pending_ = op + k, true;
+        if (op.size() == 2 && (op[1] == 'i' || op[1] == 'a')) {
+            size_t from, to;
+            if (!text_object(op[1], k.empty() ? 0 : k[0], from, to)) return true;
+            if (op[0] == 'y') {
+                yank_range(from, to);
+                cursor_ = from;
+                return clamp_normal(), true;
+            }
+            save_undo();
+            yank_range(from, to);
+            text_.erase(from, to - from);
+            cursor_ = std::min(from, text_.size());
+            if (op[0] == 'c') enter_insert(cursor_, false);
+            else clamp_normal();
+            return true;
+        }
         if (op == "g" && k == "g") return cursor_ = 0, true;
         bool whole = (op == "d" && k == "d") || (op == "c" && k == "c") || (op == "y" && k == "y");
         if (whole) {
             if (op == "y") {
-                *register_ = text_;
+                yank_range(0, text_.size());
                 return true;
             }
             save_undo();
-            *register_ = text_;
+            yank_range(0, text_.size());
             text_.clear();
             cursor_ = 0;
             if (op == "c") enter_insert(0, false);
@@ -320,13 +454,14 @@ bool Editor::handle_normal(const Event& e) {
             }
             if (op == "y") {
                 size_t a = std::min(start, end), b = std::max(start, end);
-                *register_ = text_.substr(a, b - a);
+                yank_range(a, b);
                 cursor_ = a;
                 clamp_normal();
                 return true;
             }
             save_undo();
-            delete_range(start, end, true);
+            yank_range(start, end);
+            delete_range(start, end, false);
             if (op == "c") enter_insert(cursor_, false);
             else clamp_normal();
             return true;
@@ -344,7 +479,14 @@ bool Editor::handle_normal(const Event& e) {
     if (k == "V") return anchor_ = cursor_, mode_ = Mode::VisualLine, true;
     if (k == "p") return paste(true), true;
     if (k == "P") return paste(false), true;
-    if (k == "g" || k == "d" || k == "c" || k == "y") return pending_ = k, true;
+    if (k == "g" || k == "d" || k == "c" || k == "y" || k == "\"") return pending_ = k, true;
+    if (k == "Y") {  // yank the line, like yy
+        size_t a = cursor_, b = cursor_;
+        while (a > 0 && text_[a - 1] != '\n') --a;
+        while (b < text_.size() && text_[b] != '\n') ++b;
+        yank_range(a, b);
+        return true;
+    }
     if (k == "G") return cursor_ = text_.size(), clamp_normal(), true;
     if (k == "x") {
         save_undo();
@@ -389,7 +531,7 @@ bool Editor::handle_normal(const Event& e) {
 }
 
 bool Editor::handle_visual(const Event& e) {
-    const std::string& k = e.input();
+    std::string k = e.input();
     if (e == Event::Escape || k == "v" || k == "V") {
         if (k == "V" && mode_ == Mode::Visual) return mode_ = Mode::VisualLine, true;
         if (k == "v" && mode_ == Mode::VisualLine) return mode_ = Mode::Visual, true;
@@ -402,16 +544,41 @@ bool Editor::handle_visual(const Event& e) {
     }
     int n = std::max(count_, 1);
     count_ = 0;
+    if (leader_pending_) {
+        leader_pending_ = false;
+        if (k == "y") clip_next_ = true, k = "y";
+        else return true;
+    } else if (!leader_.empty() && k == leader_) {
+        return leader_pending_ = true, true;
+    }
+    if (pending_ == "i" || pending_ == "a") {  // a text object extends the selection: viw, va"
+        char scope = pending_[0];
+        pending_.clear();
+        size_t from, to;
+        if (text_object(scope, k.empty() ? 0 : k[0], from, to) && to > from) {
+            anchor_ = from;
+            cursor_ = utf8_prev(text_, to);
+        }
+        return true;
+    }
+    if (pending_ == "\"") {
+        pending_.clear();
+        if (k == "+" || k == "*") clip_next_ = true;
+        return true;
+    }
+    if (k == "\"") return pending_ = "\"", true;
+    if (k == "i" || k == "a") return pending_ = k, true;
     auto [a, b] = selection();
     if (k == "y" || k == "d" || k == "x" || k == "c") {
         if (k == "y") {
-            *register_ = text_.substr(a, b - a);
+            yank_range(a, b);
             cursor_ = a;
             mode_ = Mode::Normal;
             return clamp_normal(), true;
         }
         save_undo();
-        delete_range(a, b, true);
+        yank_range(a, b);
+        delete_range(a, b, false);
         if (k == "c") enter_insert(cursor_, false);
         else mode_ = Mode::Normal, clamp_normal();
         return true;

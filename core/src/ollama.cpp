@@ -45,6 +45,8 @@ Message chat_ollama(const Provider& provider, const ChatOptions& options, const 
         }
         // Anything malformed in a line is skipped rather than thrown through the HTTP client.
         try {
+            if (j.contains("prompt_eval_count")) reply.usage.input = j.value("prompt_eval_count", 0);
+            if (j.contains("eval_count")) reply.usage.output = j.value("eval_count", 0);
             const auto& msg = j.value("message", nlohmann::json::object());
             if (auto t = msg.value("thinking", ""); !t.empty()) on_text(t, true);
             if (auto c = msg.value("content", ""); !c.empty()) {
@@ -68,6 +70,7 @@ Message chat_ollama(const Provider& provider, const ChatOptions& options, const 
     lines.finish(handle_line);
     if (!error.empty()) throw std::runtime_error(provider.name + ": " + error);
     if (r.status != 200) throw std::runtime_error(api_error(provider.name, r));
+    reply.usage.context = options.num_ctx;
     return reply;
 }
 

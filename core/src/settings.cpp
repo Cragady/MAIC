@@ -135,6 +135,8 @@ void apply_file(Settings& s, const fs::path& path) {
         s.mouse = j.value("mouse", s.mouse);
         s.sound = j.value("sound", s.sound);
         s.sessions_home = j.value("sessions_home", s.sessions_home);
+        s.leader = j.value("leader", s.leader);
+        if (s.leader == "space" || s.leader == "<space>") s.leader = " ";
         if (j.contains("instruction_files")) s.instruction_files = j["instruction_files"].get<std::vector<std::string>>();
         json providers = j.value("providers", json::object());
         for (const auto& [name, pj] : providers.items()) {
@@ -229,6 +231,7 @@ void write_default_settings() {
         {"markdown", d.markdown},
         {"mouse", d.mouse},
         {"sessions_home", d.sessions_home},
+        {"leader", "space"},
         {"//sessions_home", "auto: a project's transcripts (it has a MAIC.md) go under sessions/projects/, others under sessions/general/. Or: general, project, a name."},
         {"instruction_files", d.instruction_files},
         {"providers", providers},

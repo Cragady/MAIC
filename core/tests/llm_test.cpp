@@ -77,11 +77,12 @@ int main() {
     {
         Fake f;
         f.serve("/api/chat", {R"({"message":{"content":"Hel)", R"(lo"}})" "\n" R"({"message":{"content":" there"}})" "\n",
-                              "not json at all\n", R"({"done":true})" "\n"});
+                              "not json at all\n", R"({"done":true,"prompt_eval_count":120,"eval_count":7})" "\n"});
         f.start();
         std::string streamed;
         auto m = run({"ollama", "ollama", f.url()}, hello, &streamed);
         expect(m.content == "Hello there" && streamed == "Hello there", "lines split across chunks are reassembled; junk lines skipped");
+        expect(m.usage.input == 120 && m.usage.output == 7 && m.usage.context == 16384, "Ollama token counts and the context size are reported");
     }
     {
         Fake f;
@@ -111,7 +112,7 @@ int main() {
     {
         Fake f;
         f.serve("/v1/messages", {
-            sse({{"type", "message_start"}, {"message", {{"model", "test-model"}}}}),
+            sse({{"type", "message_start"}, {"message", {{"model", "test-model"}, {"usage", {{"input_tokens", 900}, {"cache_read_input_tokens", 100}}}}}}),
             sse({{"type", "content_block_start"}, {"index", 0}, {"content_block", {{"type", "thinking"}, {"thinking", ""}}}}),
             sse({{"type", "content_block_delta"}, {"index", 0}, {"delta", {{"type", "thinking_delta"}, {"thinking", "hmm"}}}}),
             sse({{"type", "content_block_delta"}, {"index", 0}, {"delta", {{"type", "signature_delta"}, {"signature", "SIG"}}}}),
@@ -121,7 +122,7 @@ int main() {
             sse({{"type", "content_block_delta"}, {"index", 2}, {"delta", {{"type", "input_json_delta"}, {"partial_json", "{\"pa"}}}}),
             sse({{"type", "content_block_delta"}, {"index", 2}, {"delta", {{"type", "input_json_delta"}, {"partial_json", "th\": \"a.txt\"}"}}}}),
             sse({{"type", "content_block_stop"}, {"index", 2}}),
-            sse({{"type", "message_delta"}, {"delta", {{"stop_reason", "tool_use"}}}}),
+            sse({{"type", "message_delta"}, {"delta", {{"stop_reason", "tool_use"}}}, {"usage", {{"output_tokens", 42}}}}),
             sse({{"type", "message_stop"}}),
         });
         f.start();
@@ -130,6 +131,7 @@ int main() {
         auto m = run(anth, hello, &streamed, no_cancel, kTools);
         expect(m.content == "Reading " && m.tool_calls.size() == 1 && m.tool_calls[0].id == "toolu_1" &&
                m.tool_calls[0].arguments.value("path", "") == "a.txt", "text, and a tool call whose input arrives in pieces");
+        expect(m.usage.input == 1000 && m.usage.output == 42 && m.usage.context == 1000000, "Anthropic usage: input incl. cache reads, output from message_delta, 1M window");
         expect(m.raw_kind == "anthropic" && m.raw.size() == 3 && m.raw[0].value("signature", "") == "SIG",
                "the raw turn keeps the thinking block and its signature for replay");
         auto body = json::parse(f.last_body);
@@ -217,6 +219,7 @@ int main() {
             "data: " + json{{"choices", {{{"delta", {{"content", "Hi "}}}}}}}.dump() + "\n\n",
             "data: " + json{{"choices", {{{"delta", {{"tool_calls", {{{"index", 0}, {"id", "call_9"}, {"function", {{"name", "read_file"}, {"arguments", "{\"pa"}}}}}}}}}}}}.dump() + "\n\n",
             "data: " + json{{"choices", {{{"delta", {{"tool_calls", {{{"index", 0}, {"function", {{"arguments", "th\":\"b\"}"}}}}}}}}, {"finish_reason", "tool_calls"}}}}}.dump() + "\n\n",
+            "data: " + json{{"choices", json::array()}, {"usage", {{"prompt_tokens", 55}, {"completion_tokens", 9}}}}.dump() + "\n\n",
             "data: [DONE]\n\n",
         });
         f.start();
@@ -224,6 +227,8 @@ int main() {
         std::string streamed;
         auto m = run(oai, hello, &streamed, no_cancel, kTools);
         expect(m.content == "Hi " && streamed == "thinkHi ", "content and reasoning stream");
+        expect(m.usage.input == 55 && m.usage.output == 9 && json::parse(f.last_body)["stream_options"]["include_usage"] == true,
+               "OpenAI-style usage is requested and parsed from the final chunk");
         expect(m.tool_calls.size() == 1 && m.tool_calls[0].id == "call_9" && m.tool_calls[0].arguments.value("path", "") == "b",
                "a tool call assembled from pieces");
         expect(f.last_headers.find("Authorization")->second == "Bearer sk-test", "bearer auth is sent");

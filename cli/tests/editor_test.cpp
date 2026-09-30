@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include "editor.hpp"
+#include "view.hpp"
 #include "maic/markdown.hpp"
 
 using namespace maic;
@@ -47,6 +48,7 @@ void check(const std::string& typed, const std::string& then, const std::string&
 }  // namespace
 
 int main() {
+    setenv("MAIC_NO_CLIPBOARD", "1", 1);  // never touch the real clipboard from a test
     section("insert mode");
     {
         Editor ed(&reg);
@@ -150,6 +152,77 @@ int main() {
         expect(ed.mode() == Editor::Mode::Normal, "Esc leaves visual");
     }
 
+    section("text objects");
+    check("one two three", "<esc>0wciwX<esc>", "one X three", "ciw changes the word under the cursor");
+    check("one two three", "<esc>0wdaw", "one three", "daw deletes the word and its trailing space");
+    check("say \"hello world\" now", "<esc>0di\"", "say \"\" now", "di\" with the cursor before the quotes operates on the pair ahead, as vim does");
+    {
+        Editor ed = fresh("say \"hello world\" now");
+        keys(ed, "<esc>0");
+        for (int i = 0; i < 7; ++i) keys(ed, "l");  // onto 'e' of hello
+        keys(ed, "di\"");
+        expect(ed.text() == "say \"\" now", "di\" empties the quotes -> \"" + ed.text() + "\"");
+        Editor ed2 = fresh("say \"hello world\" now");
+        keys(ed2, "<esc>0");
+        for (int i = 0; i < 7; ++i) keys(ed2, "l");
+        keys(ed2, "da\"");
+        expect(ed2.text() == "say  now", "da\" removes the quotes too -> \"" + ed2.text() + "\"");
+    }
+    {
+        Editor ed = fresh("f(a, (b)) x");
+        keys(ed, "<esc>0ll");  // on 'a'
+        keys(ed, "da(");
+        expect(ed.text() == "f x", "da( removes the enclosing parens -> \"" + ed.text() + "\"");
+        Editor ed2 = fresh("f(a, (b)) x");
+        keys(ed2, "<esc>0");
+        for (int i = 0; i < 6; ++i) keys(ed2, "l");  // on 'b'
+        keys(ed2, "ci)Z<esc>");
+        expect(ed2.text() == "f(a, (Z)) x", "ci) works on the innermost pair -> \"" + ed2.text() + "\"");
+        Editor ed3 = fresh("call {a b} done");
+        keys(ed3, "<esc>0");
+        for (int i = 0; i < 6; ++i) keys(ed3, "l");
+        keys(ed3, "yi{");
+        expect(reg == "a b", "yi{ yanks inside braces");
+        keys(ed3, "$p");
+        expect(ed3.text() == "call {a b} donea b", "and p pastes it");
+    }
+    check("one two three", "<esc>0wviwd", "one  three", "viw then d deletes the selected word");
+    {
+        Editor ed = fresh("say \"hi there\" ok");
+        keys(ed, "<esc>0");
+        for (int i = 0; i < 6; ++i) keys(ed, "l");
+        keys(ed, "va\"y");
+        expect(reg == "\"hi there\"", "va\" then y yanks the quoted text with quotes");
+    }
+
+    section("registers and the leader");
+    {
+        Editor ed = fresh("alpha beta");
+        keys(ed, "<esc>Y");
+        expect(reg == "alpha beta", "Y yanks the line");
+        reg.clear();
+        keys(ed, "0\"+yw");
+        expect(reg == "alpha ", "\"+yw yanks to the register too (clipboard disabled in tests)");
+        reg.clear();
+        keys(ed, " y");  // Space is the leader
+        expect(reg == "alpha beta", "<leader>y yanks the line");
+        Editor ins = fresh("a b");
+        expect(ins.text() == "a b", "Space in insert mode is still a space");
+        Editor v = fresh("one two");
+        keys(v, "<esc>0viw y");
+        expect(reg == "one" && v.mode() == Editor::Mode::Normal, "<leader>y in visual mode yanks the selection");
+        Editor custom = fresh("x y");
+        custom.set_leader(",");
+        keys(custom, "<esc>,y");
+        expect(reg == "x y", "the leader can be changed");
+        reg = "PASTED";
+        Editor p = fresh("ab");
+        keys(p, "<esc>\"+p");
+        expect(p.text() == "ab", "\"+p pastes the clipboard, which is empty here, so nothing changes");
+        keys(p, "p");
+        expect(p.text() == "abPASTED", "a plain p still pastes the register (after the cursor, which sits on b)");
+    }
+
     section("command line");
     {
         Editor ed = fresh("draft");
@@ -227,6 +300,35 @@ int main() {
         expect(help_text("harn").find("*harness*") == 0, "a unique prefix resolves");
         expect(help_text("sess").find("several") != std::string::npos, "sess matches :session and sessions, so it lists both");
         expect(help_text("nope").find("no help") == 0, "an unknown topic says so");
+    }
+
+    section("conversation window folds");
+    {
+        std::string r2;
+        View v(&r2);
+        std::string big;
+        for (int i = 1; i <= 20; ++i) big += "line " + std::to_string(i) + "\n";
+        v.append(Kind::Tool, "$ ls");
+        v.append(Kind::ToolOk, big);
+        Settings s;
+        v.render(s, 80, 40);  // lays out
+        v.set_focused(true);
+        auto rendered_lines = [&] {
+            v.render(s, 80, 40);
+            return v.status_hint();  // "cursor/total"
+        };
+        std::string before = rendered_lines();
+        expect(before.find("/") != std::string::npos && std::stoul(before.substr(before.find('/') + 1)) < 15, "a long tool result is folded to a preview");
+        v.handle(Event::Character("z"), 40);
+        std::string msg = v.handle(Event::Character("a"), 40);
+        std::string after = rendered_lines();
+        expect(std::stoul(after.substr(after.find('/') + 1)) > 20, "za unfolds it (" + after + ")");
+        v.handle(Event::Character("z"), 40);
+        v.handle(Event::Character("M"), 40);
+        expect(rendered_lines() == before, "zM folds everything again");
+        v.set_collapse_default(false);
+        v.append(Kind::ToolOk, big);
+        expect(std::stoul(rendered_lines().substr(rendered_lines().find('/') + 1)) > 30, "with tooldetails on, new results arrive unfolded");
     }
 
     section("wrapping");

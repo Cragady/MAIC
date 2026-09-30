@@ -47,6 +47,25 @@ bool attached(Kind k) {
     return k == Kind::ToolOk || k == Kind::ToolErr;
 }
 
+constexpr size_t kPreviewLines = 8;
+
+// The first lines of a tool result, with a note about the rest.
+std::string preview(const std::string& text) {
+    std::string out;
+    size_t n = 0, total = 0, start = 0;
+    while (start <= text.size()) {
+        size_t nl = text.find('\n', start);
+        std::string line = text.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+        if (nl == std::string::npos && line.empty() && start == text.size()) break;
+        if (n < kPreviewLines) out += (n ? "\n" : "") + line, ++n;
+        ++total;
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    if (total > n) out += "\n… +" + std::to_string(total - n) + " lines (za shows them)";
+    return out;
+}
+
 std::string lower(std::string s) {
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
@@ -56,7 +75,15 @@ std::string lower(std::string s) {
 
 void View::append(Kind kind, std::string text) {
     std::lock_guard lock(mu_);
-    entries_.push_back({kind, std::move(text)});
+    entries_.push_back({kind, std::move(text), attached(kind) && collapse_default_});
+    ++version_;
+}
+
+void View::set_all_collapsed(bool on) {
+    std::lock_guard lock(mu_);
+    for (auto& e : entries_) {
+        if (attached(e.kind)) e.collapsed = on;
+    }
     ++version_;
 }
 
@@ -109,8 +136,9 @@ void View::layout(size_t width) {
         if (e > 0 && !attached(entry.kind)) lines_.push_back({{}, Kind::Assistant, e, 0, 0, false});
         size_t pre = utf8_len(prefix(entry.kind));
         bool use_md = markdown_ && (entry.kind == Kind::Assistant || entry.kind == Kind::User || entry.kind == Kind::Notice);
+        std::string shown_text = entry.collapsed ? preview(entry.text) : entry.text;
         // Tool output and shell output keep tabs; the renderer drops them, so expand.
-        auto source = use_md ? markdown_lines(entry.text) : plain_lines(entry.text);
+        auto source = use_md ? markdown_lines(shown_text) : plain_lines(shown_text);
         size_t offset = 0;
         bool first = true;
         for (const auto& src : source) {
@@ -124,19 +152,19 @@ void View::layout(size_t width) {
             auto wrapped = wrap_line(expanded, width > pre ? width - pre : 8);
             size_t line_off = offset;
             for (size_t w = 0; w < wrapped.size(); ++w) {
-                // Byte range in the entry: walk the raw text by the columns this row shows (a tab shows as 4).
+                // Byte range in the shown text: walk it by the columns this row shows (a tab shows as 4).
                 size_t shown = utf8_len(line_text(wrapped[w]));
                 size_t end = line_off;
                 size_t seen = 0;
                 while (end < line_off + raw.size() && seen < shown) {
-                    size_t n = utf8_next(entry.text, end);
+                    size_t n = utf8_next(shown_text, end);
                     seen += raw[end - line_off] == '\t' ? 4 : 1;
                     end = n;
                 }
                 lines_.push_back({wrapped[w], entry.kind, e, line_off, end, first});
                 first = false;
                 line_off = end;
-                if (line_off < offset + raw.size() && entry.text[line_off] == ' ') ++line_off;  // the dropped soft-break space
+                if (line_off < offset + raw.size() && shown_text[line_off] == ' ') ++line_off;  // the dropped soft-break space
             }
             offset += raw.size() + 1;  // past the newline
         }
@@ -150,7 +178,8 @@ void View::layout(size_t width) {
 std::string View::text_of(const Line& l) const {
     std::lock_guard lock(mu_);
     if (l.entry >= entries_.size()) return "";
-    const auto& t = entries_[l.entry].text;
+    const auto& e = entries_[l.entry];
+    std::string t = e.collapsed ? preview(e.text) : e.text;
     return t.substr(std::min(l.begin, t.size()), l.end > l.begin ? l.end - l.begin : 0);
 }
 
@@ -259,9 +288,41 @@ std::string View::yank_selection() {
     return out;
 }
 
+// The word under the cursor on the current line, as columns.
+std::string View::yank_word_range(char scope, size_t& from_col, size_t& to_col) const {
+    if (lines_.empty()) return "";
+    std::string t = line_text(lines_[cur_line_].spans);
+    if (t.empty()) return "";
+    size_t cur = std::min(utf8_offset(t, cur_col_), t.size() - 1);
+    int c = char_class(t[cur]);
+    size_t from = cur, to = utf8_next(t, cur);
+    while (from > 0 && char_class(t[utf8_prev(t, from)]) == c) from = utf8_prev(t, from);
+    while (to < t.size() && char_class(t[to]) == c) to = utf8_next(t, to);
+    if (scope == 'a') {
+        while (to < t.size() && t[to] == ' ') ++to;
+    }
+    from_col = utf8_len(t.substr(0, from));
+    to_col = utf8_len(t.substr(0, to));
+    return t.substr(from, to - from);
+}
+
 std::string View::handle(const Event& e, int height) {
     const std::string& k = e.input();
     last_height_ = height;
+    auto yank_text = [&](const std::string& text, const std::string& what) {
+        *register_ = text;
+        return "yanked " + what + " (" + copy_to_clipboard(text) + ")";
+    };
+    if (pending_ == "leader") {
+        pending_.clear();
+        if (k == "y" && visual_ != VisualMode::None) {
+            std::string text = yank_selection();
+            visual_ = VisualMode::None;
+            return yank_text(text, "selection");
+        }
+        return "";
+    }
+    if (!leader_.empty() && k == leader_ && pending_.empty()) return pending_ = "leader", "";
     if (e == Event::Escape) {
         if (visual_ != VisualMode::None) return visual_ = VisualMode::None, "";
         pending_.clear();
@@ -280,13 +341,41 @@ std::string View::handle(const Event& e, int height) {
         if (op == "g" && k == "g") {
             cur_line_ = 0;
             cur_col_ = 0;
+        } else if (op == "z") {
+            if (k == "R") set_all_collapsed(false);
+            else if (k == "M") set_all_collapsed(true);
+            else if ((k == "a" || k == "o" || k == "c") && !lines_.empty()) {
+                std::lock_guard lock(mu_);
+                auto& e = entries_[lines_[cur_line_].entry];
+                if (attached(e.kind)) {
+                    e.collapsed = k == "a" ? !e.collapsed : k == "c";
+                    ++version_;
+                } else {
+                    return "not a tool result (za folds tool output)";
+                }
+            }
         } else if (op == "y" && k == "y") {
             anchor_line_ = cur_line_;
             visual_ = VisualMode::Line;
             std::string text = yank_selection();
             visual_ = VisualMode::None;
-            *register_ = text;
-            return "yanked 1 line (" + copy_to_clipboard(text) + ")";
+            return yank_text(text, "1 line");
+        } else if (op == "y" && (k == "i" || k == "a")) {
+            pending_ = "y" + k;
+        } else if ((op == "yi" || op == "ya") && k == "w") {
+            size_t a, b;
+            std::string word = yank_word_range(op[1], a, b);
+            if (!word.empty()) return yank_text(word, "word");
+        } else if (op == "y" && (k == "w" || k == "e" || k == "$")) {
+            std::string t = lines_.empty() ? "" : line_text(lines_[cur_line_].spans);
+            size_t from = utf8_offset(t, cur_col_), to = t.size();
+            if (k != "$" && from < t.size()) {
+                to = from;
+                int c = char_class(t[to]);
+                while (to < t.size() && char_class(t[to]) == c) to = utf8_next(t, to);
+                if (k == "w") while (to < t.size() && char_class(t[to]) == 0) to = utf8_next(t, to);
+            }
+            if (to > from) return yank_text(t.substr(from, to - from), k == "$" ? "to end of line" : "word");
         } else if (op == "\"" && (k == "+" || k == "*")) {
             pending_ = "\"+";
         } else if (op == "\"+" && k == "y" && visual_ != VisualMode::None) {
@@ -307,6 +396,13 @@ std::string View::handle(const Event& e, int height) {
     else if (k == "\x05") scroll_by(-n), (void)0;
     else if (k == "\x19") scroll_by(n), (void)0;
     else if (k == "G") move_cursor_line(static_cast<int>(lines_.size()));
+    else if (k == "Y") {
+        anchor_line_ = cur_line_;
+        visual_ = VisualMode::Line;
+        std::string text = yank_selection();
+        visual_ = VisualMode::None;
+        return yank_text(text, "1 line");
+    }
     else if (k == "y" && visual_ != VisualMode::None) {
         std::string text = yank_selection();
         visual_ = VisualMode::None;
@@ -314,7 +410,7 @@ std::string View::handle(const Event& e, int height) {
         size_t nl = std::count(text.begin(), text.end(), '\n') + 1;
         ensure_cursor_visible(height);
         return "yanked " + std::to_string(nl) + (nl == 1 ? " line (" : " lines (") + copy_to_clipboard(text) + ")";
-    } else if (k == "g" || k == "y" || k == "\"") pending_ = k;
+    } else if (k == "g" || k == "y" || k == "\"" || k == "z") pending_ = k;
     else if (k == "h" || e == Event::ArrowLeft) cur_col_ = cur_col_ >= static_cast<size_t>(n) ? cur_col_ - n : 0;
     else if (k == "l" || e == Event::ArrowRight) {
         size_t w = lines_.empty() ? 0 : line_width(lines_[cur_line_].spans);

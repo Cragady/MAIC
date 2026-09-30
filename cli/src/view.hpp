@@ -16,7 +16,8 @@ enum class Kind { User, Assistant, Thinking, Tool, ToolOk, ToolErr, Notice, Erro
 
 struct Entry {
     Kind kind;
-    std::string text;
+    std::string text;        // the full text; tool results show a preview while collapsed
+    bool collapsed = false;
 };
 
 // The conversation window. Appends are thread-safe; everything else runs on the UI thread. When focused
@@ -24,9 +25,13 @@ struct Entry {
 class View {
 public:
     explicit View(std::string* shared_register) : register_(shared_register) {}
+    void set_leader(std::string leader) { leader_ = std::move(leader); }
 
     // thread-safe
     void append(Kind kind, std::string text);
+    void set_collapse_default(bool on) { collapse_default_ = on; }
+    bool collapse_default() const { return collapse_default_; }
+    void set_all_collapsed(bool on);  // zR / zM
     void append_to_last(Kind kind, std::string_view delta);  // streaming: extends the last entry if it has this kind
     void clear();
     size_t size() const;
@@ -91,6 +96,9 @@ private:
     std::string pending_;
     int count_ = 0;
     std::string* register_;
+    bool collapse_default_ = true;
+    std::string leader_ = " ";
+    std::string yank_word_range(char scope, size_t& from_col, size_t& to_col) const;  // iw / aw on the cursor line
 
     std::string pattern_;
     std::vector<std::pair<size_t, size_t>> matches_;  // (line, column)

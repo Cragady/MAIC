@@ -128,12 +128,16 @@ Message chat_anthropic(const Provider& provider, const ChatOptions& options, con
         std::map<int, nlohmann::json> blocks;
         std::map<int, std::string> partial_input;
         std::string stop_reason, error, served_by;
+        Usage usage;
 
         auto handle_event = [&](const nlohmann::json& ev) {
             std::string type = ev.value("type", "");
             try {
                 if (type == "message_start") {
-                    served_by = ev.value("message", nlohmann::json::object()).value("model", "");
+                    const auto& msg = ev.value("message", nlohmann::json::object());
+                    served_by = msg.value("model", "");
+                    const auto& u = msg.value("usage", nlohmann::json::object());
+                    usage.input = u.value("input_tokens", 0) + u.value("cache_read_input_tokens", 0) + u.value("cache_creation_input_tokens", 0);
                 } else if (type == "content_block_start") {
                     int i = ev.value("index", 0);
                     blocks[i] = ev.value("content_block", nlohmann::json::object());
@@ -169,6 +173,7 @@ Message chat_anthropic(const Provider& provider, const ChatOptions& options, con
                 } else if (type == "message_delta") {
                     auto sr = ev.value("delta", nlohmann::json::object()).value("stop_reason", nlohmann::json());
                     if (sr.is_string()) stop_reason = sr.get<std::string>();
+                    usage.output = ev.value("usage", nlohmann::json::object()).value("output_tokens", usage.output);
                 } else if (type == "error") {
                     const auto& e = ev.value("error", nlohmann::json::object());
                     error = e.value("type", "error") + ": " + e.value("message", "");
@@ -195,6 +200,9 @@ Message chat_anthropic(const Provider& provider, const ChatOptions& options, con
         if (!error.empty()) throw std::runtime_error(provider.name + ": " + error);
 
         Message reply{"assistant", "", {}, "", "", false, "anthropic", nlohmann::json::array()};
+        reply.usage = usage;
+        // Current Anthropic models have a 1M window; Haiku 4.5 has 200K. A provider option can override.
+        reply.usage.context = opt.value("context_window", options.model.find("haiku") != std::string::npos ? 200000 : 1000000);
         for (auto& [i, b] : blocks) {
             std::string bt = b.value("type", "");
             if (bt == "text") reply.content += b.value("text", "");

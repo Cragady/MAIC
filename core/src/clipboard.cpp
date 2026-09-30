@@ -55,6 +55,7 @@ bool pipe_to(const char* command, const std::string& text) {
 }  // namespace
 
 std::string copy_to_clipboard(const std::string& text) {
+    if (std::getenv("MAIC_NO_CLIPBOARD")) return "clipboard disabled";  // tests, and anyone who wants it off
     std::string used;
     if (std::getenv("WAYLAND_DISPLAY") && has_program("wl-copy") && pipe_to("wl-copy 2>/dev/null", text)) {
         used = "wl-copy";
@@ -62,11 +63,28 @@ std::string copy_to_clipboard(const std::string& text) {
         used = "xclip";
     }
     // OSC 52 goes straight to the terminal, even when this session is over ssh.
-    if (text.size() < 100000) {
+    if (text.size() < 100000 && isatty(STDOUT_FILENO)) {
         std::string seq = "\x1b]52;c;" + base64(text) + "\x07";
         if (write(STDOUT_FILENO, seq.data(), seq.size()) > 0) used += used.empty() ? "terminal (OSC 52)" : " + terminal";
     }
     return used.empty() ? "internal register only" : used;
+}
+
+std::string paste_from_clipboard() {
+    if (std::getenv("MAIC_NO_CLIPBOARD")) return "";
+    const char* commands[] = {"wl-paste -n 2>/dev/null", "xclip -selection clipboard -o 2>/dev/null", "xsel -ob 2>/dev/null"};
+    const char* needs[] = {"wl-paste", "xclip", "xsel"};
+    for (int i = 0; i < 3; ++i) {
+        if (!has_program(needs[i])) continue;
+        FILE* p = popen(commands[i], "r");
+        if (!p) continue;
+        std::string out;
+        char buf[4096];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), p)) > 0) out.append(buf, n);
+        if (pclose(p) == 0 && !out.empty()) return out;
+    }
+    return "";
 }
 
 }  // namespace maic

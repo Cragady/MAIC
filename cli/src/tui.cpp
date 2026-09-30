@@ -46,20 +46,6 @@ namespace {
 
 using namespace ftxui;
 
-constexpr size_t kToolPreviewLines = 8;
-
-std::string preview(const std::string& text) {
-    std::istringstream in(text);
-    std::string out, line;
-    size_t n = 0, total = 0;
-    while (std::getline(in, line)) {
-        if (n < kToolPreviewLines) out += (n ? "\n" : "") + line, ++n;
-        ++total;
-    }
-    if (total > n) out += "\n… +" + std::to_string(total - n) + " lines";
-    return out;
-}
-
 std::string human_bytes(uintmax_t b) {
     const char* units[] = {"B", "KB", "MB", "GB", "TB"};
     double v = static_cast<double>(b);
@@ -186,13 +172,15 @@ public:
         agent_.think = settings_.think;
         if (auto m = parse_mode(settings_.mode)) agent_.mode = *m;
         view_.set_markdown(settings_.markdown);
+        editor_.set_leader(settings_.leader);
+        view_.set_leader(settings_.leader);
         if (resume) {
             LoadedSession old = load_session(*resume);
             for (const auto& t : old.transcript) {
                 if (t.type == "user") view_.append(Kind::User, t.text);
                 else if (t.type == "assistant") view_.append(Kind::Assistant, t.text);
                 else if (t.type == "tool_call") view_.append(Kind::Tool, t.text);
-                else if (t.type == "tool_result") view_.append(t.ok ? Kind::ToolOk : Kind::ToolErr, preview(t.text));
+                else if (t.type == "tool_result") view_.append(t.ok ? Kind::ToolOk : Kind::ToolErr, t.text);
                 else view_.append(Kind::Notice, t.text);
             }
             agent_.set_log(&log_);
@@ -216,7 +204,7 @@ public:
         screen_.PostEvent(Event::Custom);
     }
     void on_tool_call(const std::string& summary) override { post(Kind::Tool, summary); }
-    void on_tool_result(const std::string& text, bool ok) override { post(ok ? Kind::ToolOk : Kind::ToolErr, preview(text)); }
+    void on_tool_result(const std::string& text, bool ok) override { post(ok ? Kind::ToolOk : Kind::ToolErr, text); }
     void on_notice(const std::string& text) override { post(Kind::Notice, text); }
     Approval ask(const ApprovalRequest& request) override {
         std::future<Approval> answer;
@@ -476,7 +464,25 @@ Element App::render_bottom_status() {
     if (!hint.empty()) parts.push_back(text(hint + " ") | decorate(settings_.style("status_dim")));
     if (!status_msg_.empty()) parts.push_back(text(status_msg_) | decorate(settings_.style("notice")));
     parts.push_back(filler());
-    parts.push_back(text(focus_ == Focus::Conversation ? "Ctrl-W j: back to input · v/V select · y yank · / search  " : "Ctrl-W k: conversation · :help  ") |
+    auto u = agent_.usage();
+    if (u.calls) {
+        auto k = [](long n) {
+            char buf[32];
+            if (n >= 1000) snprintf(buf, sizeof(buf), "%.1fk", n / 1000.0);
+            else snprintf(buf, sizeof(buf), "%ld", n);
+            return std::string(buf);
+        };
+        std::string ctx = "ctx " + k(u.last.input);
+        const char* style = "status_dim";
+        if (u.last.context > 0) {
+            int pct = static_cast<int>(100.0 * u.last.input / u.last.context);
+            ctx += "/" + k(u.last.context) + " (" + std::to_string(pct) + "%)";
+            if (pct >= 85) style = "harness_tripped";
+            else if (pct >= 60) style = "notice";
+        }
+        parts.push_back(text(ctx + " · Σ↑" + k(u.total_input) + " ↓" + k(u.total_output) + "  ") | decorate(settings_.style(style)));
+    }
+    parts.push_back(text(focus_ == Focus::Conversation ? "Ctrl-W j: input · v y / · :help  " : "Ctrl-W k: conversation · :help  ") |
                     decorate(settings_.style("status_dim")));
     return hbox(parts);
 }
@@ -855,7 +861,11 @@ void App::run_command(const std::string& line) {
             bool on = value != "off" && value != "false" && value != "0";
             if (key == "markdown" || key == "md") view_.set_markdown(on), post(Kind::Notice, on ? "markdown rendering on" : "markdown rendering off (raw text)");
             else if (key == "mouse") settings_.mouse = on, screen_.TrackMouse(on), post(Kind::Notice, on ? "mouse on (Shift+drag selects text in the terminal)" : "mouse off");
-            else post(Kind::Error, ":set markdown|mouse on|off");
+            else if (key == "tooldetails" || key == "details") {
+                view_.set_collapse_default(!on);
+                view_.set_all_collapsed(!on);
+                post(Kind::Notice, on ? "tool output shown in full (za folds one, zM all)" : "tool output folded to a preview (za unfolds one, zR all)");
+            } else post(Kind::Error, ":set markdown|mouse|tooldetails on|off");
         } else if (cmd == "clear") {
             if (idle()) {
                 agent_.clear();

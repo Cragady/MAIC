@@ -40,6 +40,7 @@ struct Settings {
     // Where new transcripts go: "auto" (project when the workspace has a MAIC.md, else general), "general",
     // "project", or a name under sessions/.
     std::string sessions_home = "auto";
+    std::string leader = " ";  // the vim leader key in normal and visual modes (Space, as in her nvim)
     std::vector<std::filesystem::path> sources;  // the files that were read, in order
     std::vector<Provider> providers = default_providers();
     std::map<std::string, Style> styles;  // by role, see docs/settings.md; defaults are filled in

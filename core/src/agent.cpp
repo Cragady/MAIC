@@ -168,6 +168,11 @@ void Agent::add_context(const std::string& text) {
     push({"user", text});
 }
 
+Agent::UsageReport Agent::usage() const {
+    std::lock_guard lock(usage_mu_);
+    return usage_;
+}
+
 void Agent::post_message(const std::string& text) {
     std::lock_guard lock(mailbox_mu_);
     mailbox_.push_back(text);
@@ -247,6 +252,14 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
         }
         deliver_now_ = false;
         if (log_ && !reply.content.empty()) log_->write("assistant", {{"text", reply.content}});
+        if (reply.usage.input || reply.usage.output) {
+            std::lock_guard lock(usage_mu_);
+            usage_.last = reply.usage;
+            usage_.total_input += reply.usage.input;
+            usage_.total_output += reply.usage.output;
+            ++usage_.calls;
+            if (log_) log_->write("usage", {{"input", reply.usage.input}, {"output", reply.usage.output}, {"context", reply.usage.context}});
+        }
         push(reply);
         if (reply.tool_calls.empty()) {
             return;

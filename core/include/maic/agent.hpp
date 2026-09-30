@@ -71,6 +71,15 @@ public:
     // True when the current model runs off this machine: prompts and tool output leave it.
     bool remote() const { return resolve_model(providers, model).first.remote(); }
 
+    // Token accounting: the last model call and this session's running totals. Thread-safe.
+    struct UsageReport {
+        Usage last;
+        long total_input = 0;
+        long total_output = 0;
+        int calls = 0;
+    };
+    UsageReport usage() const;
+
     const Harness& harness() const { return harness_; }
 
     // MAIC.md / AGENTS.md files in effect. Re-read from disk at the start of every turn.
@@ -94,6 +103,8 @@ private:
     Mode prompted_mode_ = Mode::Manual;  // what the conversation was last told
     std::string prompted_instructions_;
 
+    mutable std::mutex usage_mu_;
+    UsageReport usage_;
     mutable std::mutex mailbox_mu_;
     std::deque<std::string> mailbox_;
     std::atomic<bool> deliver_now_{false};

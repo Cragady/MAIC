@@ -36,7 +36,7 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
         }
     }
 
-    nlohmann::json body = {{"model", options.model}, {"stream", true}, {"messages", msgs}};
+    nlohmann::json body = {{"model", options.model}, {"stream", true}, {"messages", msgs}, {"stream_options", {{"include_usage", true}}}};
     if (!tools.empty()) body["tools"] = tools;
     nlohmann::json extra = provider.options.value("extra_body", nlohmann::json::object());
     for (const auto& [k, v] : extra.items()) body[k] = v;
@@ -66,6 +66,10 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
                 error = e.is_object() ? e.value("message", e.dump()) : e.dump();
                 return;
             }
+            if (j.contains("usage") && j["usage"].is_object()) {
+                reply.usage.input = j["usage"].value("prompt_tokens", reply.usage.input);
+                reply.usage.output = j["usage"].value("completion_tokens", reply.usage.output);
+            }
             for (const auto& choice : j.value("choices", nlohmann::json::array())) {
                 const auto& d = choice.value("delta", nlohmann::json::object());
                 for (const char* key : {"reasoning_content", "reasoning"}) {
@@ -94,6 +98,7 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
     if (r.status != 200) throw std::runtime_error(api_error(provider.name, r));
     if (!error.empty()) throw std::runtime_error(provider.name + ": " + error);
 
+    reply.usage.context = provider.options.value("context_window", 0);
     if (finish == "length" && !calls.empty()) {
         reply.content += "\n[Output hit the length limit before the tool call was complete.]";
         return reply;

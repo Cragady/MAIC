@@ -18,6 +18,13 @@ struct ToolCall {
     nlohmann::json arguments;
 };
 
+// Token counts a provider reported for one reply. `context` is the model's window when known (0 otherwise).
+struct Usage {
+    int input = 0;   // prompt tokens this call (the conversation so far, cache reads included)
+    int output = 0;
+    int context = 0;
+};
+
 struct Message {
     std::string role;  // system, user, assistant, tool
     std::string content;
@@ -29,6 +36,7 @@ struct Message {
     // fallback blocks, ...). Replayed unchanged to the same provider kind; other kinds use the fields above.
     std::string raw_kind;
     nlohmann::json raw;
+    Usage usage;  // assistant replies only
 };
 
 // Session files store messages this way; raw provider blocks survive the round trip.
