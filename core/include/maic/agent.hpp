@@ -242,7 +242,6 @@ private:
     void rewrite_log();    // after compaction: a reset record and the new history, so resume sees the same thing
     size_t history_bytes() const;
     std::string summarise(size_t from, size_t to, const std::atomic<bool>& cancel);  // messages [from, to) -> summary text
-    void save_undo_point(const std::filesystem::path& path, const std::string& summary);
     bool touches_harness(const Action& action) const;
     void save_undo_point(const std::filesystem::path& path, const std::string& summary);  // a file's content before a write; nothing for a directory
     void push_undo(UndoPoint u);
