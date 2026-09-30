@@ -144,8 +144,12 @@ std::string Agent::system_prompt() const {
         "(manual, auto-read, edit, auto, plan); you will be told when that happens.\n"
         "\n"
         "# Tools\n"
-        "read_file, list_dir, glob (find files by name pattern), search_files (grep -E syntax), write_file, edit_file (one "
-        "exact replacement), run_shell.\n"
+        "read_file (with grep to get only matching lines of a big file), list_dir (depth for a tree), glob (find files by "
+        "name pattern), search_files (grep -E syntax), write_file, edit_file (one exact replacement), run_shell.\n"
+        "multi_edit makes several replacements in one file in one step; if any fails nothing is written. apply_patch "
+        "applies a unified diff (diff -u / git diff format) to one or more files; context must match exactly.\n"
+        "move_file, copy_file, delete_file and make_dir move, copy, delete and mkdir; use them, a shell mv, cp, rm "
+        "or mkdir will ask the user. delete_file needs recursive: true for a directory with contents.\n"
         "run_shell is bash inside a sandbox: only the workspace is writable, there is no network, no sudo, and a "
         "timeout (default 120 s). In auto-read and plan modes only read-only commands run, with the workspace "
         "read-only too. Tool output is capped; read files in ranges when they are long.\n"
@@ -645,10 +649,10 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         return result("unknown tool '" + call.name + "'. The tools are: " + names + ". Call one of those.", false);
     }
     bool harness_action = !lua && name != "question" && name != "todo";
-    Action action;
+    std::vector<Action> actions;
     if (harness_action) {
         try {
-            action = tool_action(harness_, name, call.arguments);
+            actions = tool_actions(harness_, name, call.arguments);
         } catch (const std::exception& e) {
             return result(std::string("error: ") + e.what(), false);
         }
@@ -658,7 +662,8 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
     std::string sig = name + "\x1f" + call.arguments.dump();
     repeats_ = sig == last_call_ ? repeats_ + 1 : 1;
     last_call_ = sig;
-    if (repeats_ >= repeat_trip && harness_.harmless(action)) {
+    bool harmless = std::all_of(actions.begin(), actions.end(), [&](const Action& a) { return harness_.harmless(a); });
+    if (repeats_ >= repeat_trip && harmless) {
         // A confused model re-running a read or a harmless helper is not an attack: stop the turn instead.
         stuck_ = true;
         record["decision"] = "deny";
@@ -723,12 +728,23 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         return result(r.text, r.ok);
     }
 
-    Decision d = authorise(action, name, summary, tool_preview(harness_, name, call.arguments), origin, events, record);
-    if (d.verdict != Verdict::Allow) return result(d.reason, false);
-    if (action.kind == Action::Kind::Write) save_undo_point(action.path, summary);
+    // Every path the call touches is judged before anything runs: a move out of the workspace asks on its
+    // destination, a patch with one file under /etc trips before any file is written.
+    std::string preview = tool_preview(harness_, name, call.arguments);
+    Decision d{Verdict::Allow, ""};
+    for (const auto& a : actions) {
+        d = authorise(a, name, summary, preview, origin, events, record);
+        if (d.verdict != Verdict::Allow) return result(d.reason, false);
+    }
+    if (name != "move_file") {
+        for (const auto& a : actions) {
+            if (a.kind == Action::Kind::Write) save_undo_point(a.path, summary);
+        }
+    }
     ToolResult r = run_tool(harness_, name, call.arguments, d.read_only_sandbox, cancel);
+    if (r.ok && name == "move_file") push_undo({actions[0].path, std::nullopt, summary, actions[1].path});
     if (r.ok && name == "read_file") {
-        std::string extra = nested_instructions(action.path);
+        std::string extra = nested_instructions(actions[0].path);
         if (!extra.empty()) r.text += "\n" + extra;
     }
     return result(r.text, r.ok);
@@ -900,12 +916,18 @@ Decision Agent::review(const Action& action, const std::string& summary, const s
     }
 }
 
+void Agent::push_undo(UndoPoint u) {
+    undo_.push_back(std::move(u));
+    if (undo_.size() > 200) undo_.erase(undo_.begin());
+}
+
 void Agent::save_undo_point(const std::filesystem::path& path, const std::string& summary) {
+    std::error_code ec;
+    if (std::filesystem::is_directory(path, ec)) return;  // a directory's contents are not kept
     UndoPoint u{path, std::nullopt, summary};
     std::ifstream in(path, std::ios::binary);
     if (in) u.before = std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    undo_.push_back(std::move(u));
-    if (undo_.size() > 200) undo_.erase(undo_.begin());
+    push_undo(std::move(u));
 }
 
 std::string Agent::undo(size_t count) {
@@ -914,12 +936,17 @@ std::string Agent::undo(size_t count) {
         UndoPoint u = std::move(undo_.back());
         undo_.pop_back();
         std::error_code ec;
-        if (u.before) {
+        if (!u.moved_to.empty()) {
+            ec = move_path(u.moved_to, u.path);
+            report += ec ? "could not move " + u.moved_to.string() + " back to " + u.path.string() + ": " + ec.message() + "\n"
+                         : "moved " + u.moved_to.string() + " back to " + u.path.string() + " (undid: " + u.summary + ")\n";
+        } else if (u.before) {
+            std::filesystem::create_directories(u.path.parent_path(), ec);
             std::ofstream out(u.path, std::ios::binary | std::ios::trunc);
             out << *u.before;
             report += "restored " + u.path.string() + " (undid: " + u.summary + ")\n";
         } else {
-            std::filesystem::remove(u.path, ec);
+            std::filesystem::remove_all(u.path, ec);
             report += "removed " + u.path.string() + " (it did not exist before: " + u.summary + ")\n";
         }
         if (log_) log_->write("undo", {{"path", u.path.string()}, {"summary", u.summary}});

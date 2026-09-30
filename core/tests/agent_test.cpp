@@ -360,6 +360,46 @@ int main() {
         expect(a2s == "old\n" && !fs::exists(ws / "svc" / "b.txt") && report.find("restored") != std::string::npos && report.find("removed") != std::string::npos,
                "undo restores the edited file and removes the created one");
         expect(agent.undo() == "nothing to undo", "nothing left to undo");
+
+        // delete_file keeps the content; move_file keeps the reverse move; each is one undo point.
+        std::ofstream(ws / "svc" / "gone.txt") << "keep me\n";
+        fake.tool_call = json{{"name", "delete_file"}, {"arguments", {{"path", "svc/gone.txt"}}}};
+        fake.calls_left = 1;
+        agent.submit("delete", Origin::Local, r, no_cancel);
+        expect(!fs::exists(ws / "svc" / "gone.txt") && agent.undo_points().size() == 1, "a delete runs in auto mode and leaves one undo point");
+        report = agent.undo();
+        std::ifstream g(ws / "svc" / "gone.txt");
+        std::string gs((std::istreambuf_iterator<char>(g)), std::istreambuf_iterator<char>());
+        expect(gs == "keep me\n" && report.find("restored") == 0, "undo of a delete brings the file back: " + report);
+        fake.tool_call = json{{"name", "move_file"}, {"arguments", {{"from", "svc/gone.txt"}, {"to", "svc/deep/moved.txt"}}}};
+        fake.calls_left = 1;
+        r.results.clear();
+        agent.submit("move", Origin::Local, r, no_cancel);
+        expect(!fs::exists(ws / "svc" / "gone.txt") && fs::exists(ws / "svc" / "deep" / "moved.txt") && agent.undo_points().size() == 1 && !agent.undo_points()[0].moved_to.empty(),
+               "a move runs and leaves one reverse-move undo point");
+        report = agent.undo();
+        expect(fs::exists(ws / "svc" / "gone.txt") && !fs::exists(ws / "svc" / "deep" / "moved.txt") && report.find("moved ") == 0 && report.find("back to") != std::string::npos,
+               "undo of a move moves the file back: " + report);
+        // A move whose destination is outside the workspace asks; No leaves both ends untouched and no undo point.
+        fake.tool_call = json{{"name", "move_file"}, {"arguments", {{"from", "svc/gone.txt"}, {"to", (fs::temp_directory_path() / "maic-agent-test-out.txt").string()}}}};
+        fake.calls_left = 1;
+        r.asked.clear();
+        r.results.clear();
+        agent.submit("move out", Origin::Local, r, no_cancel);
+        expect(r.asked.size() == 1 && r.asked[0].reason == "outside the workspace" && r.asked[0].summary.find("move_file svc/gone.txt -> ") == 0 && fs::exists(ws / "svc" / "gone.txt") &&
+                   !fs::exists(fs::temp_directory_path() / "maic-agent-test-out.txt") && r.results.size() == 1 && r.results[0].find("DENIED") == 0 && agent.undo_points().empty(),
+               "a move out of the workspace asks on its destination; No moves nothing and saves nothing");
+        // A patch touching /etc trips at that file before any file is written; the workspace file in the same patch stays as it was.
+        std::ofstream(ws / "svc" / "ok.txt") << "same\n";
+        fake.tool_call = json{{"name", "apply_patch"}, {"arguments", {{"patch", "--- svc/ok.txt\n+++ svc/ok.txt\n@@ -1 +1 @@\n-same\n+changed\n--- /etc/hosts\n+++ /etc/hosts\n@@ -1 +1 @@\n-a\n+b\n"}}}};
+        fake.calls_left = 1;
+        r.results.clear();
+        agent.submit("patch", Origin::Local, r, no_cancel);
+        std::ifstream ok(ws / "svc" / "ok.txt");
+        std::string oks((std::istreambuf_iterator<char>(ok)), std::istreambuf_iterator<char>());
+        expect(r.results.size() == 1 && r.results[0].find("BLOCKED") == 0 && oks == "same\n" && tripwire_state(), "a patch with a file under /etc is blocked before anything is written, and trips");
+        fs::remove(std::getenv("MAIC_TRIPWIRE_FILE"));
+        expect(!tripwire_state(), "the test lock is cleared again");
     }
 
     section("repeated calls and budgets");

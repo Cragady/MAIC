@@ -4,6 +4,10 @@ What MAIC should become, beyond what is built. Ordered roughly by value. Anythin
 
 Status of the built parts: [README.md](../README.md), [cli/README.md](../cli/README.md).
 
+## 0. User accounts on maic-server (later)
+
+Micaiah's decision (2026-09-30): accounts belong to MAIC's own server, not to llama.cpp (which has API keys only, no identities). Planned: user accounts with email verification (a signup that sends a code to the address and activates on confirmation), per-user tokens replacing the per-device ones, per-user session ownership and audit lines, an admin list. The mail step is the one outbound request MAIC's server would make, on the user's explicit action, and it must be configurable to a local relay. Not started.
+
 ## 1. Remote access
 
 The reason `server/` exists. Micaiah wants to chat with agents from her phone. Design and reference: [remote.md](remote.md).

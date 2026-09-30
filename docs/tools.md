@@ -6,12 +6,18 @@ What the model can call, and how to add a tool of your own in Lua. Every tool, b
 
 | Tool | What it does | What the harness sees |
 | :--- | :--- | :--- |
-| `read_file` | numbered lines of a text file, in ranges | a read of the file |
-| `list_dir` | a directory listing | a read of the directory |
+| `read_file` | numbered lines of a text file, in ranges; `grep` returns only the lines matching a regex | a read of the file |
+| `list_dir` | a directory listing, with entry counts; `depth` (up to 4) shows a tree, not expanding `.git`, `build` and similar | a read of the directory |
 | `glob` | files by name pattern (`*.cpp`, `src/**/*.h`); skips `.git`, `build` and similar | a read of the directory |
 | `search_files` | grep -E over file contents | a read of the directory |
 | `write_file` | create or overwrite a file (an undo point is saved first) | a write |
 | `edit_file` | one exact replacement (undo point saved first) | a write |
+| `multi_edit` | several replacements in one file, in order; nothing is written unless every one matches (one undo point) | a write |
+| `apply_patch` | a unified diff (`diff -u`, `git diff`) over one or more files; exact context, CRLF kept, nothing written if any hunk fails (an undo point per file) | a write to every file in the patch, each judged on its own |
+| `move_file` | rename or move a file or directory; never overwrites (the undo point is the reverse move) | a write at both ends |
+| `copy_file` | copy a file or directory; never overwrites | a read of the source and a write of the destination |
+| `delete_file` | delete a file or empty directory; a directory with contents needs `recursive: true` (a file's content is kept for undo; a directory's is not) | a write |
+| `make_dir` | create a directory with its parents | a write |
 | `run_shell` | bash in bubblewrap: workspace writable, no network, no sudo, a timeout | a command |
 | `question` | asks you one thing and waits; options are picked by number, or you type an answer | nothing: it changes nothing, so it is only logged |
 | `todo` | the model's plan for multi-step work, replaced whole on every call | nothing: logged |
