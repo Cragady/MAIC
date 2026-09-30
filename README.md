@@ -83,8 +83,55 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [templates/sentinel-pipeline-widget.html](templates/sentinel-pipeline-widget.html) — interactive
   diagram of the routing pipeline.
 
-> Everything in `docs/` is transcribed AI output. Treat the numbers as leads, not facts — a few of
+**Set up and measured on this machine** (not AI transcripts — these were installed and tested):
+
+* [ollama-setup.md](docs/ollama-setup.md) — local-only Ollama install, service settings, privacy audit.
+* [harness.md](docs/harness.md) — the safety harness: tripwire (built) and planned layers.
+* [comfyui-setup.md](docs/comfyui-setup.md) — ComfyUI in its own venv, models on the external drive.
+* [local-llm-benchmarks.md](docs/local-llm-benchmarks.md) — measured tok/s per model and runtime.
+
+> Everything else in `docs/` is transcribed AI output. Treat the numbers as leads, not facts — a few of
 > them already contradict each other (see the note under Option A below).
+
+## Structure and Build
+
+MAIC is the control plane for the local AI stack and, eventually, a C++ agentic CLI. The core is C++; other languages are fine in the sub-projects that need them.
+
+```
+MAIC/
+├── core/       C++ library: agent loop, Ollama client, tools, harness policy, sandbox, service manager, tripwire
+├── cli/        `maic`: the agent UI (vim keys, modes) and service/harness commands. See cli/README.md
+├── harness/    maic-lock (root-owned tripwire helper) + its installer
+├── services/   one JSON file per service MAIC runs (ollama, comfyui)
+├── tools/      planned: polyglot agent tools
+├── server/     planned: remote access, as a client of core
+└── docs/
+```
+
+Build (needs `VCPKG_ROOT` set, which your shell does; vcpkg fetches nlohmann-json, FTXUI and cpp-httplib into `build/`):
+
+```sh
+cd ~/dev2/MAIC
+cmake --preset default
+cmake --build --preset default
+ctest --test-dir build                           # harness + sandbox tests
+ln -s ~/dev2/MAIC/build/cli/maic ~/bin/maic      # once
+sudo ./harness/install-tripwire.sh               # once, see docs/harness.md
+```
+
+Use:
+
+```sh
+maic                         # the agent, in the current directory (see cli/README.md)
+maic status                  # harness state + every service
+maic up ollama comfyui       # or: maic up all
+maic down all
+maic logs ollama
+maic trip "reason"           # panic button, no password
+maic unlock                  # needs your sudo password
+```
+
+State lives in `~/.local/state/maic/`: `run/<service>.pid` (PID plus process start time, so a reused PID is never mistaken for the service) and `logs/<service>.log`.
 
 ## Immediate Steps
 
