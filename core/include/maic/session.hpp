@@ -34,11 +34,13 @@ public:
     const std::filesystem::path& path() const { return path_; }
     void write(const std::string& type, nlohmann::json data);
 
-private:
+    // Tag constructors behind reopen() and fork(), public so a SessionLog can be made with make_unique.
     struct Reopen {};
     struct Fork {};
     SessionLog(Reopen, const std::filesystem::path& path);
     SessionLog(Fork, const std::filesystem::path& parent, size_t records, const std::string& kind);
+
+private:
     void create(const std::string& kind);
     std::filesystem::path path_;
     std::mutex mu_;

@@ -23,8 +23,10 @@ void usage() {
                  "       maic -c                            continue the last session started in this directory\n"
                  "       maic -r [ID]                       resume a session by id (or pick from a list)\n"
                  "       maic -p \"prompt\" [--json] [--think] one turn without the UI (prompt \"-\" reads stdin; -c/-r work here too)\n"
+                 "       --record                           with -p: keep a transcript (a one-shot -p writes none by default)\n"
                  "       --append / --no-append             with -c/-r: write into the old session file, or into a new one that\n"
-                 "                                          points at it (default: interactive appends, -p does not)\n"
+                 "                                          points at it (default: interactive appends; -p records nothing\n"
+                 "                                          unless --record, which forks, or --append)\n"
                  "\n"
                  "  status                     harness, services, where they run, quick actions\n"
                  "  up <service...|all>        start services\n"
@@ -228,7 +230,8 @@ int main(int argc, char** argv) {
             else if (a == "-r" || a == "--resume") {
                 resume = true;
                 if (i + 1 < args.size() && args[i + 1][0] != '-') resume_id = args[++i];
-            } else if (a == "--append") append = true;
+            } else if (a == "--record" || a == "--transcript") headless.record = true;
+            else if (a == "--append") append = true;
             else if (a == "--no-append") append = false;
             else if (a == "--json") headless.json = true;
             else if (a == "--think") headless.think = true;
@@ -239,6 +242,7 @@ int main(int argc, char** argv) {
         }
         if (continue_last || resume) tui.resume = headless.resume = pick_session(continue_last, resume_id);
         if (append) tui.append = headless.append = *append;
+        if (headless.append) headless.record = true;
         if (print) return maic::run_headless(headless);
         if (rest.empty()) return maic::run_tui(tui);
 

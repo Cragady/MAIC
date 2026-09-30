@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <iostream>
 #include <iterator>
+#include <memory>
 
 namespace maic {
 
@@ -90,19 +91,20 @@ int run_headless(const HeadlessOptions& options) {
         return 2;
     }
 
-    SessionLog log = !options.resume        ? SessionLog("headless")
-                     : options.append         ? SessionLog::reopen(*options.resume)
-                                              : SessionLog::fork(*options.resume, count_records(*options.resume), "headless");
+    std::unique_ptr<SessionLog> log;
+    if (options.append && options.resume) log = std::make_unique<SessionLog>(SessionLog::Reopen{}, *options.resume);
+    else if (options.record && options.resume) log = std::make_unique<SessionLog>(SessionLog::Fork{}, *options.resume, count_records(*options.resume), "headless");
+    else if (options.record) log = std::make_unique<SessionLog>("headless");
     Agent agent(std::filesystem::current_path(), settings.model);
     agent.providers = settings.providers;
     agent.mode = *mode;
     agent.think = options.think || settings.think;
-    agent.set_log(&log);
+    if (log) agent.set_log(log.get());
     if (options.resume) {
         LoadedSession old = load_session(*options.resume);
         agent.restore(old.messages);
         fprintf(stderr, "※ resumed %s (%zu messages)%s\n", options.resume->stem().string().c_str(), old.messages.size(),
-                options.append ? ", appending to it" : ", writing to a new file that points at it");
+                !log ? ", not recorded" : options.append ? ", appending to it" : ", writing to a new file that points at it");
     }
     if (agent.remote()) fprintf(stderr, "※ REMOTE model %s: prompts and tool output leave this machine\n", agent.model.c_str());
 
@@ -115,7 +117,8 @@ int run_headless(const HeadlessOptions& options) {
         return 1;
     }
     if (!options.json) fprintf(stdout, "\n");
-    fprintf(stderr, "※ transcript: %s\n", log.path().string().c_str());
+    if (log) fprintf(stderr, "※ transcript: %s\n", log->path().string().c_str());
+    else fprintf(stderr, "※ not recorded (--record keeps a transcript)\n");
     return g_cancel ? 130 : 0;
 }
 

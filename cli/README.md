@@ -9,7 +9,7 @@ maic                               # the agent
 maic --model anthropic/claude-opus-5-5 --mode auto-read
 maic -c                            # continue the last session started in this directory
 maic -r                            # pick an earlier session from a list (maic -r ID for one you know)
-maic -p "explain main.cpp"         # one turn, no UI; -c / -r work here too; --json for events
+maic -p "explain main.cpp"         # one turn, no UI, no transcript; --record keeps one; -c / -r load an old one; --json for events
 maic sessions                      # every session, with a preview
 maic artifacts                     # where MAIC and its services keep transcripts, logs, outputs
 maic settings init                 # a documented settings file (docs/settings.md)
@@ -93,9 +93,9 @@ Every session is a JSONL file in `~/.local/state/maic/sessions/`, readable only 
 Where the continuation is written depends on `--append` / `--no-append`:
 
 * **append** (the interactive default): the old file keeps growing; one conversation, one file.
-* **no-append** (the default for `maic -p`): a new file whose first record points at the old one and says how many records were loaded; the old messages are not copied. Loading follows that pointer, so the new file resumes and lists normally (`maic sessions` shows "resumed from"). This is also how a session forks: two continuations of the same past never touch each other or the original.
+* **no-append**: a new file whose first record points at the old one and says how many records were loaded; the old messages are not copied. Loading follows that pointer, so the new file resumes and lists normally (`maic sessions` shows "resumed from"). This is also how a session forks: two continuations of the same past never touch each other or the original.
 
-So `cat big-context.md | maic -p - -r ID` puts a large context in front of an old conversation without bloating the old transcript, and `maic -c -p "..." --append` extends the old one in place.
+`maic -p` writes no transcript at all unless asked: `--record` (or `--transcript`) keeps one, which with `-c` / `-r` is the pointer-style new file; `--append` writes into the old file and implies recording. So `cat big-context.md | maic -p - -r ID` runs a large context against an old conversation and leaves nothing behind, `... --record` keeps that as a fork, and `maic -c -p "..." --append` extends the old one in place.
 
 ## Tools the model gets
 

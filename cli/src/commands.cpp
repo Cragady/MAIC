@@ -60,7 +60,7 @@ const std::vector<Topic>& topics() {
          "*sessions*\n"
          "Every session is a JSONL file in ~/.local/state/maic/sessions (0600). `:session` shows this one; `maic sessions` lists them.\n\n"
          "- `maic -c` continues the newest session from the current directory; `maic -r` picks from a list; `maic -r ID` (a unique prefix is enough).\n"
-         "- Interactive resumes append to the same file. `--no-append` (the default for `maic -p`) writes a new file that only points at the old one and the number of records loaded, which is also how a session forks.\n"
+         "- Interactive resumes append to the same file. `--no-append` writes a new file that only points at the old one and the number of records loaded, which is also how a session forks. `maic -p` records nothing unless `--record` (a fork when resuming) or `--append`.\n"
          "- A session that ended mid tool call resumes from the last complete step. The model is told it resumed, with the current mode and instructions."},
         {"queue", {"queued", "mid-turn", "interrupt"}, "sending while the agent works",
          "*queue*\n"
