@@ -28,6 +28,7 @@ struct FakeOllama {
     int usage_input = 0;  // reported as prompt_eval_count on the final line when set
     json tool_call;       // when set and calls_left > 0, the reply is this one tool call ({"name", "arguments"})
     int calls_left = 0;
+    std::function<std::string(const json&)> reply;  // when set and non-empty for a request, replaces the echo
 
     FakeOllama() {
         port = srv.bind_to_any_port("127.0.0.1");
@@ -41,6 +42,11 @@ struct FakeOllama {
             for (const auto& m : body["messages"]) {
                 if (m["role"] == "user") last = m["content"];
             }
+            std::string echo = "echo: " + last;
+            if (reply) {
+                std::string r = reply(body);
+                if (!r.empty()) echo = r;
+            }
             int delay = delay_ms;
             int usage = usage_input;
             json call;
@@ -48,7 +54,7 @@ struct FakeOllama {
                 --calls_left;
                 call = tool_call;
             }
-            res.set_chunked_content_provider("application/x-ndjson", [last, delay, usage, call](size_t, httplib::DataSink& sink) {
+            res.set_chunked_content_provider("application/x-ndjson", [echo, delay, usage, call](size_t, httplib::DataSink& sink) {
                 if (!call.is_null()) {
                     std::string line = json{{"message", {{"content", ""}, {"tool_calls", {{{"function", call}}}}}}}.dump() + "\n";
                     sink.write(line.data(), line.size());
@@ -57,7 +63,7 @@ struct FakeOllama {
                     sink.done();
                     return true;
                 }
-                std::string out = "echo: " + last;
+                std::string out = echo;
                 for (size_t i = 0; i < out.size(); i += 4) {
                     std::string line = json{{"message", {{"content", out.substr(i, 4)}}}}.dump() + "\n";
                     if (!sink.write(line.data(), line.size())) return false;
@@ -310,6 +316,7 @@ int main() {
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         agent.mode = Mode::Auto;
+        agent.review_with_model = false;  // this section tests undo, not the reviewer
         Recorder r;
         fake.tool_call = json{{"name", "read_file"}, {"arguments", {{"path", "svc/a.txt"}}}};
         fake.calls_left = 1;
@@ -526,6 +533,64 @@ int main() {
         bool warned = false;
         for (const auto& n : rb.notices) warned = warned || n.find("token ban") != std::string::npos;
         expect(warned && !fake.requests.back().contains("logit_bias"), "numeric token bans on Ollama are reported, not sent");
+    }
+
+    section("the reviewer (smart harness) and the dumb harness");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        auto is_review = [](const json& b) { return b["messages"][0]["role"] == "system" && b["messages"][0]["content"].get<std::string>().rfind("You review one action", 0) == 0; };
+        auto reviews = [&] {
+            int n = 0;
+            for (const auto& r : fake.requests) n += is_review(r);
+            return n;
+        };
+        auto run = [&](const std::string& verdict, bool smart, const std::string& path) {
+            fake.reply = [&, verdict](const json& b) { return is_review(b) ? verdict : std::string(); };
+            fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", path}, {"content", "x"}}}};
+            fake.calls_left = 1;
+            Agent agent(ws, "test");
+            agent.providers = {fake.provider()};
+            agent.mode = Mode::Auto;
+            agent.review_with_model = smart;
+            Recorder r;
+            r.reply = {Approval::Yes, ""};
+            agent.submit("please write the file", Origin::Local, r, no_cancel);
+            return r;
+        };
+        auto r1 = run("DENY: nothing in the conversation asked for that file", true, "r1.txt");
+        expect(!fs::exists(ws / "r1.txt") && r1.asked.empty(), "a DENY from the reviewer stops the write without asking");
+        expect(!r1.results.empty() && r1.results[0].find("DENIED: reviewer: nothing in the conversation") == 0, "the model reads the reviewer's reason: " + (r1.results.empty() ? "" : r1.results[0]));
+        bool noticed = false;
+        for (const auto& n : r1.notices) noticed = noticed || n.rfind("reviewer refused", 0) == 0;
+        expect(noticed, "the user sees the refusal");
+        auto r2 = run("ALLOW: the user asked for exactly this", true, "r2.txt");
+        expect(fs::exists(ws / "r2.txt") && r2.asked.empty(), "an ALLOW lets it run silently");
+        auto r3 = run("ASK: unusual path", true, "r3.txt");
+        expect(r3.asked.size() == 1 && r3.asked[0].reason == "reviewer: unusual path" && fs::exists(ws / "r3.txt"), "an ASK becomes an approval prompt with the reviewer's reason");
+        auto r4 = run("I am not sure what to say here", true, "r4.txt");
+        expect(r4.asked.size() == 1 && r4.asked[0].reason.find("no clear verdict") != std::string::npos, "an unparseable answer fails closed to ASK");
+        auto r5 = run("**ALLOW**: fine\nmore words", true, "r5.txt");
+        expect(fs::exists(ws / "r5.txt") && r5.asked.empty(), "markdown bold and trailing lines around the verdict are tolerated");
+        int before = reviews();
+        auto r6 = run("DENY: would have refused", false, "r6.txt");
+        expect(fs::exists(ws / "r6.txt") && reviews() == before && r6.asked.empty(), "the dumb harness never calls the reviewer and the rules alone decide");
+        fake.reply = [&](const json& b) { return is_review(b) ? std::string("DENY: no") : std::string(); };
+        fake.tool_call = json{{"name", "read_file"}, {"arguments", {{"path", "r2.txt"}}}};
+        fake.calls_left = 1;
+        Agent rd(ws, "test");
+        rd.providers = {fake.provider()};
+        rd.mode = Mode::Auto;
+        Recorder rr;
+        before = reviews();
+        rd.submit("read it", Origin::Local, rr, no_cancel);
+        expect(reviews() == before && !rr.results.empty() && rr.results[0].find("1\tx") != std::string::npos, "reads skip the reviewer");
+        json review_req;
+        for (const auto& q : fake.requests) if (is_review(q)) review_req = q;
+        std::string body = review_req["messages"][1]["content"];
+        expect(!review_req.contains("tools") && body.find("User: please write the file") != std::string::npos && body.find("Write to:") != std::string::npos && body.find("Mode: auto") != std::string::npos,
+               "the reviewer sees the user's words, the mode and the action, and has no tools");
+        fake.reply = nullptr;
     }
 
     section("context files");

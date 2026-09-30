@@ -55,6 +55,9 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 | `models_dir` | Where model files live: ComfyUI's `checkpoints/ diffusion_models/ loras/ text_encoders/ vae/` and Ollama's `ollama/` store. Used when MAIC installs ComfyUI (see [vendor.md](vendor.md)). |
 | `system_prompt` | Operator text placed first in every system prompt, before MAIC's briefing and any instruction file; `"@~/path"` reads a file. `--system` and `:system` override. Front-loads behaviour. |
 | `load_instructions` | `false` loads no `MAIC.md` / `AGENTS.md` anywhere (default `true`); `--no-instructions` and `:instructions off` do it per session. Independent of `system_prompt`; combine them to run on your own text alone. |
+| `harness` | `"smart"` (default): a model reviews every command or write the rules would allow without asking, see `:h harness`. `"dumb"`: the rule list alone. |
+| `reviewer_model` | The model that reviews under the smart harness (default: the session's model). Same `provider/model` form as `model`. |
+| `dumb_auto_ok` | `true` skips the once-per-session warning when entering auto mode under a dumb harness (default `false`). |
 | `bans` | `{ strings = {...}, tokens = {...}, retries = 3, replacement = "[banned]", ignore_case = false }`. Strings are enforced by MAIC on every provider (cut before they show, re-asked, then replaced); tokens (ids or text) become `logit_bias` on OpenAI-compatible providers. Layers add strings and tokens. `--ban` and `:ban` at run time. See `:h ban`. |
 | `budget_tokens` | Stop the agent once input plus output tokens over the session reach this (default `0`, unlimited); `:budget` changes it live. |
 | `title_model` | A model that names the session after its first turn, for `maic sessions` (default off). A remote model is never used for a local session. |

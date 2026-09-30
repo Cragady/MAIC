@@ -464,6 +464,17 @@ int main() {
         auto j = b.to_json();
         Bans back = Bans::from_json(j);
         expect(back.strings == b.strings && back.retries == 3 && back.replacement == "[banned]", "bans round-trip through JSON");
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { harness = 'dumb', reviewer_model = 'ollama/qwen3.5:4b', dumb_auto_ok = true }");
+        Settings sh = load_settings(ws / "proj");
+        expect(sh.harness == "dumb" && sh.reviewer_model == "ollama/qwen3.5:4b" && sh.dumb_auto_ok, "harness, reviewer_model and dumb_auto_ok load from settings");
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { harness = 'clever' }");
+        bool bad_harness = false;
+        try {
+            load_settings(ws / "proj");
+        } catch (const std::exception&) {
+            bad_harness = true;
+        }
+        expect(bad_harness, "an unknown harness value is an error");
         write_file(ws / "proj" / ".maic" / "settings.lua", "return { bans = { strings = {'lol'}, tokens = {42, 'x'}, retries = 1 } }");
         Settings s3 = load_settings(ws / "proj");
         expect(s3.bans.strings == std::vector<std::string>{"lol"} && s3.bans.tokens.size() == 2 && s3.bans.retries == 1, "bans load from settings");

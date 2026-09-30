@@ -117,6 +117,11 @@ int run_headless(const HeadlessOptions& options) {
     if (options.system) settings.system_prompt = *options.system;
     if (options.load_instructions) settings.load_instructions = *options.load_instructions;
     settings.bans.strings.insert(settings.bans.strings.end(), options.bans.begin(), options.bans.end());
+    if (options.harness) settings.harness = *options.harness;
+    if (settings.harness != "smart" && settings.harness != "dumb") {
+        fprintf(stderr, "maic: --harness must be smart or dumb\n");
+        return 2;
+    }
     auto mode = parse_mode(settings.mode);
     if (!mode) {
         fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
@@ -146,6 +151,23 @@ int run_headless(const HeadlessOptions& options) {
     Agent agent(std::filesystem::current_path(), settings.model);
     agent.providers = settings.providers;
     agent.mode = *mode;
+    agent.review_with_model = settings.harness != "dumb";
+    agent.reviewer_model = settings.reviewer_model;
+    if (*mode == Mode::Auto && !agent.review_with_model && !settings.dumb_auto_ok && !options.accept_dumb_auto) {
+        fprintf(stderr, "dumb harness + auto mode: no model reads the conversation before the agent acts; only the rule list stands between it and your shell.\n");
+        if (isatty(STDIN_FILENO) && options.prompt != "-") {
+            fprintf(stderr, "continue into auto mode? [y/N] ");
+            fflush(stderr);
+            std::string line;
+            if (!std::getline(std::cin, line) || (line != "y" && line != "Y")) {
+                fprintf(stderr, "stopped. Pass --accept-dumb-auto, set dumb_auto_ok = true in settings, or use --mode edit.\n");
+                return 2;
+            }
+        } else {
+            fprintf(stderr, "stopped: pass --accept-dumb-auto (or dumb_auto_ok = true in settings) to run auto mode without the reviewer.\n");
+            return 2;
+        }
+    }
     agent.think = options.think || settings.think;
     agent.compaction.at = settings.compact_at;
     agent.compaction.keep_results = settings.compact_keep_results;

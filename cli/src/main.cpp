@@ -44,6 +44,9 @@ void usage(std::ostream& out = std::cerr) {
                  "       --system TEXT|@FILE, -S            operator instructions placed first in the system prompt (front-loads behaviour)\n"
                  "       --no-instructions                  load no MAIC.md / AGENTS.md anywhere; combines with --system\n"
                  "       --ban TEXT                         a phrase the model must not say (repeatable; also bans in settings, :ban)\n"
+                 "       --harness smart|dumb               smart (default): a model reviews commands and writes the rules would let\n"
+                 "                                          through without asking; dumb: the rule list alone (maic help harness)\n"
+                 "       --accept-dumb-auto                 skip the warning when combining --harness dumb with --mode auto\n"
                  "       --record / --no-record             keep a transcript or not (interactive: yes by default, or \"record\" in\n"
                  "                                          settings; -p: none by default)\n"
                  "       --append / --no-append             with -c/-r: write into the old session file, or into a new one that\n"
@@ -379,6 +382,8 @@ int main(int argc, char** argv) {
             else if (a == "--interactive" || a == "-i") interactive = true;
             else if (a == "--system" || a == "-S") tui.system = headless.system = value("--system");
             else if (a == "--no-instructions") tui.load_instructions = headless.load_instructions = false;
+            else if (a == "--harness") tui.harness = headless.harness = value("--harness");
+            else if (a == "--accept-dumb-auto") tui.accept_dumb_auto = headless.accept_dumb_auto = true;
             else if (a == "--ban") {
                 std::string b = value("--ban");
                 tui.bans.push_back(b);

@@ -49,9 +49,11 @@ const std::vector<Topic>& topics() {
          "- **auto**: edits and sandboxed commands inside the workspace run on their own; writes outside it ask.\n"
          "- **plan**: read-only. Reads and read-only commands only; the model proposes a plan.\n\n"
          "In every mode: secrets are never read, system paths are never written, startup files and MAIC's own harness are always asked about, dangerous commands trip the harness, and a request from another origin is always asked. See `:h harness`."},
-        {"harness", {"tripwire", "sandbox", "trip", "lock"}, "what protects the machine",
-         "*harness*\n"
-         "Every tool call is checked before it runs: tripwire, then policy for the mode, then approval, then the sandbox.\n\n"
+        {"harness", {"tripwire", "sandbox", "trip", "lock", "dumb", "smart", "reviewer"}, "what protects the machine; :harness smart|dumb",
+         "*harness* *:harness* *--harness*\n"
+         "Every tool call is checked before it runs: tripwire, then policy for the mode, then the reviewer, then approval, then the sandbox.\n\n"
+         "- **reviewer** (the **smart** harness, the default): before any command or write that the rules would let through *without asking* (auto and edit modes), a model reads the last few things you said, the agent's last words and the action, and answers ALLOW, ASK or DENY. ASK becomes an approval prompt, DENY refuses with the reason, and a reviewer that cannot answer means ASK. Reads are never reviewed; what you approved yourself is not reviewed either. `reviewer_model` in settings picks the model (default: the session's).\n"
+         "- **dumb harness**: `:harness dumb`, `--harness dumb`, or `harness = \"dumb\"` in settings turns the reviewer off; the rule list alone decides and nothing reads the conversation. Entering **auto** under it shows a warning once per session and asks you to confirm; `dumb_auto_ok = true` (or `--accept-dumb-auto`) skips that. Headless runs refuse dumb + auto without one of those. The status strip shows DUMB HARNESS.\n"
          "- **tripwire**: a root-owned lock. `:trip REASON` (or the [t] answer at an approval, or a dangerous command) sets it instantly with no password. While tripped nothing runs, but the session survives. `:unlock` resets it and asks for your sudo password.\n"
          "- **sandbox**: every model-run command executes in bubblewrap: only the workspace writable, secrets hidden, no network, no sudo, a timeout.\n"
          "- **approval**: y / n / N (no, and type a sentence the model gets as the reason) / a (always this file or program, this session) / t (trip). Edits show the lines that would change.\n"
@@ -166,6 +168,8 @@ const std::vector<CommandInfo>& commands() {
          "*:e* *:edit* *:nvim*\nOpens the input in $VISUAL, $EDITOR or nvim as a markdown file; when you quit, the file becomes the input (one undo step). A non-zero exit leaves the input unchanged. Also Ctrl-X Ctrl-E."},
         {"h", {"help", "topics"}, "[topic]", "this help, or :h TOPIC",
          "*:h* *:help* *maic help*\n`:h` alone lists every topic. `:h TOPIC` shows one: a command (`:h w`), a key (`:h u`, `:h Ctrl-W`, `:h Alt+Enter`) or a concept (`:h modes`, `:h harness`, `:h sessions`). A unique prefix is enough; several matches give a list.\n\nOutside a session `maic help` prints the command summary and `maic help TOPIC` one of these pages, both on stdout so they pipe (`maic help lua | less`, `maic help | grep vendor`). `maic help topics` prints the index."},
+        {"harness", {}, "[smart|dumb]", "the reviewer on (smart) or the rule list alone (dumb)",
+         "*:harness*\n`:harness` shows which is in force; `:harness smart` turns the model reviewer on, `:harness dumb` off. Switching to dumb while in auto mode drops to edit until you confirm auto again. See `:h harness`."},
         {"mode", {}, "NAME", "set the agent mode",
          "*:mode*\n`:mode manual|auto-read|edit|auto|plan`. Shift-Tab cycles them. See `:h modes`."},
         {"model", {}, "[NAME]", "switch model, or list providers",
@@ -257,6 +261,7 @@ std::vector<std::string> complete_argument(const std::string& command, const std
     else if (cmd == "budget") candidates = {"off"};
     else if (cmd == "instructions") candidates = {"on", "off"};
     else if (cmd == "ban") candidates = {"add", "token", "remove", "tokens", "clear", "retries", "case", "list"};
+    else if (cmd == "harness") candidates = {"smart", "dumb"};
     else if (cmd == "compact") candidates = {"prune", "head", "all"};
     else if (cmd == "think") candidates = {"on", "off"};
     else if (cmd == "w" || cmd == "write" || cmd == "send") candidates = {"now"};
@@ -309,8 +314,13 @@ std::string help_text(const std::string& topic_in) {
     };
     for (const auto& c : commands()) consider(c.name, c.aliases, c.help, ":" + c.name);
     for (const auto& t : topics()) consider(t.name, t.aliases, t.text, t.name);
-    if (!exact.empty()) return *exact.front().second;
+    if (!exact.empty()) return *exact.back().second;  // a topic and a command of the same name: the topic's page
     if (prefix.size() == 1) return *prefix.front().second;
+    // Several matches that are one name (a `:harness` command and a `harness` topic): the topic's page.
+    bool one_name = true;
+    auto bare = [](std::string n) { return n.rfind(":", 0) == 0 ? n.substr(1) : n; };
+    for (const auto& [name, text] : prefix) one_name = one_name && bare(name) == bare(prefix.front().first);
+    if (!prefix.empty() && one_name) return *prefix.back().second;
     if (prefix.empty()) return "no help for '" + topic_in + "'. `:h` lists the topics.";
     std::string out = "'" + topic_in + "' matches several topics:\n";
     for (const auto& [name, text] : prefix) out += "  " + name + "\n";

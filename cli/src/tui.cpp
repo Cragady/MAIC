@@ -169,6 +169,13 @@ struct PendingApproval {
 };
 
 // The question tool: shown like an approval; a number picks an option, typed text is a free answer.
+// A yes/no the UI needs from the user before it does something (entering auto under a dumb harness).
+struct PendingConfirm {
+    std::string title;
+    std::vector<std::string> lines;
+    std::function<void(bool)> then;
+};
+
 struct PendingQuestion {
     std::string text;
     std::vector<std::string> options;
@@ -189,7 +196,18 @@ public:
           agent_(std::filesystem::current_path(), settings_.model), editor_(&register_), view_(&register_) {
         agent_.providers = settings_.providers;
         agent_.think = settings_.think;
-        if (auto m = parse_mode(settings_.mode)) agent_.mode = *m;
+        agent_.review_with_model = settings_.harness != "dumb";
+        agent_.reviewer_model = settings_.reviewer_model;
+        dumb_auto_ok_ = settings_.dumb_auto_ok;
+        if (auto m = parse_mode(settings_.mode)) {
+            // Auto under a dumb harness is confirmed first; until then the session starts one step safer.
+            if (*m == Mode::Auto && !agent_.review_with_model && !dumb_auto_ok_) {
+                agent_.mode = Mode::Edit;
+                request_mode(Mode::Auto);
+            } else {
+                agent_.mode = *m;
+            }
+        }
         view_.set_markdown(settings_.markdown);
         editor_.set_leader(settings_.leader);
         {
@@ -302,7 +320,36 @@ private:
     }
     bool asking() {
         std::lock_guard lock(mu_);
-        return approval_.has_value() || question_.has_value();
+        return approval_.has_value() || question_.has_value() || confirm_.has_value();
+    }
+    // Changes the mode; auto under a dumb harness is confirmed once per session (or dumb_auto_ok in settings).
+    void request_mode(Mode m) {
+        if (m == Mode::Auto && !agent_.review_with_model && !dumb_auto_ok_) {
+            confirm_dumb_auto([this](bool yes) {
+                if (yes) {
+                    dumb_auto_ok_ = true;
+                    agent_.mode = Mode::Auto;
+                    post(Kind::Notice, "auto mode under a dumb harness: the rule list alone decides what runs. `:harness smart` brings the reviewer back.");
+                } else {
+                    post(Kind::Notice, "staying in " + std::string(mode_name(agent_.mode.load())));
+                }
+            });
+            return;
+        }
+        agent_.mode = m;
+    }
+    void confirm_dumb_auto(std::function<void(bool)> then) {
+        std::lock_guard lock(mu_);
+        confirm_ = PendingConfirm{
+            " dumb harness + auto mode ",
+            {"No model reads the conversation before the agent acts. In auto mode only the rule list stands between",
+             "the agent and your shell: the trip patterns, the read-only classifier, the workspace fence and the",
+             "sandbox. A wrong but well-formed command runs. Nothing asks you first.",
+             "",
+             "Continue into auto mode?  [y] yes, for this session   [n] stay in " + std::string(mode_name(agent_.mode.load())) +
+                 "   (dumb_auto_ok = true in settings skips this)"},
+            std::move(then)};
+        screen_.PostEvent(Event::Custom);
     }
     std::string todo_text() {
         std::lock_guard lock(mu_);
@@ -355,6 +402,10 @@ private:
     std::mutex mu_;  // guards approval_, question_ and todo_
     std::optional<PendingApproval> approval_;
     std::optional<PendingQuestion> question_;
+    std::optional<PendingConfirm> confirm_;
+    bool dumb_auto_ok_ = false;
+    Element render_confirm();
+    bool handle_confirm(const Event& e);
     std::vector<TodoItem> todo_;
 
     std::atomic<bool> busy_{false};
@@ -576,6 +627,7 @@ Element App::render_top_status() {
     if (busy_) right.push_back(text(" · working… ctrl-c interrupts") | decorate(settings_.style("notice")));
     if (shell_busy_) right.push_back(text(" · shell running") | decorate(settings_.style("shell")));
     if (lua_mode_) right.push_back(text(" · LUA MODE (:chat returns)") | decorate(settings_.style("shell")));
+    if (!agent_.review_with_model) right.push_back(text(" · DUMB HARNESS") | color(Color::RedLight));
     right.push_back(text(" "));
     return hbox({hbox(left), filler(), hbox(right)}) | decorate(settings_.style("status"));
 }
@@ -653,6 +705,31 @@ Element App::render_approval() {
     return window(text(" approve? ") | bold, vbox(rows)) | decorate(settings_.style("approval"));
 }
 
+Element App::render_confirm() {
+    std::lock_guard lock(mu_);
+    if (!confirm_) return emptyElement();
+    Elements rows;
+    for (const auto& l : confirm_->lines) rows.push_back(text(l));
+    return window(text(confirm_->title) | bold | color(Color::RedLight), vbox(rows)) | decorate(settings_.style("approval"));
+}
+
+bool App::handle_confirm(const Event& e) {
+    const std::string& k = e.input();
+    std::function<void(bool)> then;
+    bool yes = false;
+    {
+        std::lock_guard lock(mu_);
+        if (!confirm_) return true;
+        if (k == "y" || k == "Y") yes = true;
+        else if (k == "n" || k == "N" || e == Event::Escape || k == "\x03") yes = false;
+        else return true;
+        then = std::move(confirm_->then);
+        confirm_.reset();
+    }
+    if (then) then(yes);
+    return true;
+}
+
 Element App::render_question() {
     std::lock_guard lock(mu_);
     if (!question_) return emptyElement();
@@ -689,12 +766,13 @@ Element App::render() {
         std::lock_guard lock(mu_);
         approval_rows = 5;
         if (approval_) approval_rows += std::min(14, static_cast<int>(std::count(approval_->request.preview.begin(), approval_->request.preview.end(), '\n')));
+        if (confirm_) approval_rows += static_cast<int>(confirm_->lines.size()) + 2;
         if (question_) approval_rows = 4 + static_cast<int>(question_->options.size());
     }
     view_height_ = std::max(1, size.dimy - input_rows - palette_rows - 3 - approval_rows - (focused ? 2 : 0));
     Element conversation = view_.render(settings_, focused ? width - 2 : width, view_height_);
     if (focused) conversation = conversation | borderLight | decorate(settings_.style("focus"));
-    return vbox({conversation, render_approval(), render_question(), render_top_status(), separator() | decorate(settings_.style("separator")), input, palette,
+    return vbox({conversation, render_approval(), render_question(), render_confirm(), render_top_status(), separator() | decorate(settings_.style("separator")), input, palette,
                  render_bottom_status()});
 }
 
@@ -728,8 +806,14 @@ bool App::handle(Event e) {
     if (raw != "\x03") quit_armed_ = false;
     status_msg_.clear();
     if (asking()) {
-        std::lock_guard lock(mu_);
-        if (question_) return handle_question(e);
+        bool q = false, c = false;
+        {
+            std::lock_guard lock(mu_);
+            q = question_.has_value();
+            c = !q && !approval_ && confirm_.has_value();
+        }
+        if (q) return handle_question(e);
+        if (c) return handle_confirm(e);
     }
     if (asking()) return handle_approval(e);
 
@@ -746,7 +830,7 @@ bool App::handle(Event e) {
         return true;
     }
     if (e == Event::TabReverse && editor_.mode() != Editor::Mode::Command) {
-        agent_.mode = next_mode(agent_.mode.load());
+        request_mode(next_mode(agent_.mode.load()));
         return true;
     }
     // Ctrl-W j / k: move between the input and the conversation window (in insert mode Ctrl-W deletes a word).
@@ -1136,8 +1220,29 @@ void App::run_command(const std::string& line) {
         } else if (cmd == "h" || cmd == "help") {
             post(Kind::Notice, help_text(arg));
         } else if (cmd == "mode") {
-            if (auto m = parse_mode(arg)) agent_.mode = *m;
+            if (auto m = parse_mode(arg)) request_mode(*m);
             else post(Kind::Error, "modes: manual, auto-read, edit, auto, plan");
+        } else if (cmd == "harness") {
+            if (arg.empty()) {
+                post(Kind::Notice, agent_.review_with_model
+                                       ? "harness: smart. A model (" + (agent_.reviewer_model.empty() ? agent_.model : agent_.reviewer_model) +
+                                             ") reads the conversation and reviews every command or write the rules would allow without asking. `:harness dumb` turns that off."
+                                       : "harness: dumb. The rule list alone decides; nothing reads the conversation. `:harness smart` brings the reviewer back.");
+            } else if (arg == "smart") {
+                agent_.review_with_model = true;
+                post(Kind::Notice, "harness: smart (reviewer on)");
+            } else if (arg == "dumb") {
+                agent_.review_with_model = false;
+                if (agent_.mode.load() == Mode::Auto && !dumb_auto_ok_) {
+                    agent_.mode = Mode::Edit;
+                    post(Kind::Notice, "harness: dumb. Dropped to edit mode until you confirm auto.");
+                    request_mode(Mode::Auto);
+                } else {
+                    post(Kind::Notice, "harness: dumb (rules only)");
+                }
+            } else {
+                post(Kind::Error, ":harness [smart|dumb]");
+            }
         } else if (cmd == "model") {
             if (arg.empty()) {
                 std::string list = "model: " + agent_.model + "\nproviders:";
@@ -1447,6 +1552,12 @@ int run_tui(const TuiOptions& options) {
     if (options.system) settings.system_prompt = *options.system;
     if (options.load_instructions) settings.load_instructions = *options.load_instructions;
     settings.bans.strings.insert(settings.bans.strings.end(), options.bans.begin(), options.bans.end());
+    if (options.harness) settings.harness = *options.harness;
+    if (options.accept_dumb_auto) settings.dumb_auto_ok = true;
+    if (settings.harness != "smart" && settings.harness != "dumb") {
+        std::cerr << "maic: --harness must be smart or dumb\n";
+        return 2;
+    }
     if (!parse_mode(settings.mode)) {
         fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
         return 2;

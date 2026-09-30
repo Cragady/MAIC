@@ -141,6 +141,13 @@ public:
     // Names of instruction files (MAIC.md, AGENTS.md, ...) looked for beside files the model reads.
     void set_instruction_names(std::vector<std::string> names);
 
+    // The harness's second reader. When on ("smart" harness), a model reads the recent conversation and the
+    // action before any command or write that the rules would let through without asking, and answers
+    // ALLOW, ASK or DENY; ASK becomes an approval prompt, and a reviewer that cannot answer means ASK. Reads
+    // are never reviewed. When off ("dumb" harness) the rule list alone decides.
+    bool review_with_model = true;
+    std::string reviewer_model;  // "" = the session's model
+
     // Things the model must not say; see bans.hpp. Changes apply from the next model call.
     Bans bans;
     // Sampler settings merged into every request (temperature, top_k, ...), from the provider's settings.
@@ -210,6 +217,7 @@ private:
     size_t history_bytes() const;
     std::string summarise(size_t from, size_t to, const std::atomic<bool>& cancel);  // messages [from, to) -> summary text
     void save_undo_point(const std::filesystem::path& path, const std::string& summary);
+    Decision review(const Action& action, const std::string& summary, const std::string& preview);
     std::string nested_instructions(const std::filesystem::path& file);  // instruction files between the workspace and `file`, each once
 
     std::vector<UndoPoint> undo_;

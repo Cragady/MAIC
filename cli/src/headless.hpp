@@ -18,6 +18,8 @@ struct HeadlessOptions {
     std::optional<std::string> system;
     std::optional<bool> load_instructions;
     std::vector<std::string> bans;
+    std::optional<std::string> harness;
+    bool accept_dumb_auto = false;
     bool record = false;  // write a transcript at all (a one-shot -p leaves nothing behind by default)
     bool append = false;  // with resume: write into the old file (implies record) rather than a new one that points at it
     std::optional<size_t> fork_at;  // with resume: fork from its first N records (append is then false)

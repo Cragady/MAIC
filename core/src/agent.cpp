@@ -627,8 +627,19 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     Decision d = harness_.check(action, mode, origin);
     record["decision"] = verdict_name(d.verdict);
     record["reason"] = d.reason;
+    bool user_allowed = false;
     if (d.verdict == Verdict::Ask && always_allowed_.count(Harness::approval_key(action))) {
         d = {Verdict::Allow, "allowed earlier this session"};
+        user_allowed = true;
+    }
+    // The second reader: only for what would otherwise run silently.
+    if (d.verdict == Verdict::Allow && !user_allowed && action.kind != Action::Kind::Read && review_with_model) {
+        Decision r = review(action, summary, preview);
+        record["review"] = {{"verdict", verdict_name(r.verdict)}, {"reason", r.reason}};
+        if (r.verdict != Verdict::Allow) {
+            if (r.verdict == Verdict::Deny) events.on_notice("reviewer refused: " + summary + " (" + r.reason + ")");
+            d = {r.verdict, "reviewer: " + r.reason, d.read_only_sandbox};
+        }
     }
     if (d.verdict == Verdict::Ask) {
         std::string key = Harness::approval_key(action);
@@ -676,6 +687,65 @@ const LuaTool* Agent::find_tool(const std::string& name) const {
 
 void Agent::set_instruction_names(std::vector<std::string> names) {
     instruction_names_ = std::move(names);
+}
+
+Decision Agent::review(const Action& action, const std::string& summary, const std::string& preview) {
+    // The recent conversation, from the model's side: the last few things the user said and the agent's
+    // last words, so the reviewer judges the action against what was actually asked.
+    std::string recent;
+    int users = 0;
+    for (size_t i = messages_.size(); i-- > 0 && users < 3;) {
+        const auto& m = messages_[i];
+        if (m.role == "user" && m.content.rfind("[", 0) != 0) {
+            recent = "User: " + (m.content.size() > 600 ? m.content.substr(0, 600) + " ..." : m.content) + "\n" + recent;
+            ++users;
+        }
+    }
+    std::string last_words;
+    for (size_t i = messages_.size(); i-- > 0;) {
+        if (messages_[i].role == "assistant" && !messages_[i].content.empty()) {
+            last_words = messages_[i].content.size() > 600 ? messages_[i].content.substr(0, 600) + " ..." : messages_[i].content;
+            break;
+        }
+    }
+    std::string what = action.kind == Action::Kind::Shell ? "Command: " + action.command + (action.workdir.empty() ? "" : "\nIn directory: " + action.workdir.string())
+                                                          : "Write to: " + action.path.string() + (preview.empty() ? "" : "\nChange:\n" + preview);
+    std::vector<Message> req = {
+        {"system", "You review one action a coding agent is about to take on the user's machine, before it runs. The user lets the agent act "
+                   "without asking in this mode; you are the second reader who checks the action against the conversation. Answer with exactly one "
+                   "line: ALLOW, ASK or DENY, then a colon and one short reason. ALLOW when the action plainly serves what the user asked and stays "
+                   "within it. ASK when it is surprising, touches something the user did not mention, removes or overwrites broadly, or you are "
+                   "unsure. DENY when it is destructive, sends data out, or works against what the user said."},
+        {"user", "Workspace: " + harness_.workspace().string() + "\nMode: " + std::string(mode_name(mode)) + "\n\nRecent conversation:\n" + recent +
+                     (last_words.empty() ? "" : "Agent's last words: " + last_words + "\n") + "\nThe action: " + summary + "\n" + what + "\n\nYour one line:"},
+    };
+    try {
+        auto [provider, name] = resolve_model(providers, reviewer_model.empty() ? model : reviewer_model);
+        ChatOptions opt{name, false};
+        opt.retries = 1;
+        std::atomic<bool> no{false};
+        Message reply = chat(provider, opt, req, nlohmann::json::array(), [](std::string_view, bool) {}, no);
+        std::string t = reply.content;
+        if (auto p = t.find("</think>"); p != std::string::npos) t = t.substr(p + 8);
+        size_t start = t.find_first_not_of(" \n\t*");
+        if (start == std::string::npos) return {Verdict::Ask, "the reviewer gave no verdict"};
+        t = t.substr(start);
+        std::string word;
+        for (char c : t) {
+            if (!std::isalpha(static_cast<unsigned char>(c))) break;
+            word += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+        std::string reason = t.substr(word.size());
+        while (!reason.empty() && (reason.front() == ':' || reason.front() == ' ' || reason.front() == '*')) reason.erase(0, 1);
+        if (auto nl = reason.find('\n'); nl != std::string::npos) reason = reason.substr(0, nl);
+        if (reason.size() > 200) reason = reason.substr(0, 200) + " ...";
+        if (word == "ALLOW") return {Verdict::Allow, reason};
+        if (word == "DENY") return {Verdict::Deny, reason.empty() ? "the reviewer refused it" : reason};
+        if (word == "ASK") return {Verdict::Ask, reason.empty() ? "the reviewer wants you to decide" : reason};
+        return {Verdict::Ask, "the reviewer gave no clear verdict"};
+    } catch (const std::exception& e) {
+        return {Verdict::Ask, std::string("the reviewer could not answer (") + e.what() + ")"};
+    }
 }
 
 void Agent::save_undo_point(const std::filesystem::path& path, const std::string& summary) {

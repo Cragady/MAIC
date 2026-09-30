@@ -89,6 +89,10 @@ Every agent tool call goes through `Agent::run_tool_call` (`core/src/agent.cpp`)
 17. **`workdir` for commands** is resolved by the harness; outside the workspace it is asked about like a write there.
 18. **User-defined tools stay inside.** A Lua tool runs in a state with no `io`, `os`, `require` or `load`; its only way to the machine is the `maic` table, whose calls are authorised one by one like built-in calls, logged with the tool call, and refused with a Lua error the model reads. A tool is stopped after 60 s or on Ctrl-C.
 
+19. **A second reader.** With the default `harness = "smart"`, a model reads the last few user messages, the agent's last words and the action before any command or write that the rules would let through without asking (auto and edit modes), and answers ALLOW, ASK or DENY. ASK turns into an approval prompt, DENY refuses with the reason in the tool result, and a reviewer that fails or gives no clear verdict means ASK. Reads and actions the user already approved are not reviewed. `reviewer_model` picks the model; by default the session's own model reviews itself in a separate, tool-less call, which is cheap on a local model and still catches the plainly off-track action.
+
+**The dumb harness.** `harness = "dumb"` (`:harness dumb`, `--harness dumb`) turns the reviewer off: nothing reads the conversation, the rule list alone decides. That is Micaiah's explicit option, not a fallback. Because auto mode then runs any well-formed command the rules do not catch, entering auto under a dumb harness shows a warning once and asks for a yes; after that the session settles in and does not ask again. `dumb_auto_ok = true` or `--accept-dumb-auto` skips the warning; a headless run refuses dumb + auto without one of them. Remote sessions are unaffected: a remote request is always asked, so the reviewer never sees one.
+
 **Planned:**
 
 * **Landlock** as a second filesystem fence applied by the core itself, and **resource limits** (memory, process count).

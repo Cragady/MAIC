@@ -168,6 +168,10 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         if (j.contains("instruction_files")) s.instruction_files = j["instruction_files"].get<std::vector<std::string>>();
         s.load_instructions = j.value("load_instructions", s.load_instructions);
         s.system_prompt = j.value("system_prompt", s.system_prompt);
+        s.harness = j.value("harness", s.harness);
+        if (s.harness != "smart" && s.harness != "dumb") throw std::runtime_error(path.string() + ": harness must be \"smart\" or \"dumb\", not \"" + s.harness + "\"");
+        s.reviewer_model = j.value("reviewer_model", s.reviewer_model);
+        s.dumb_auto_ok = j.value("dumb_auto_ok", s.dumb_auto_ok);
         if (j.contains("bans")) {
             Bans b = Bans::from_json(j["bans"]);
             // Layers add strings and tokens; the scalar knobs take the nearest value.
@@ -330,6 +334,10 @@ void write_default_settings(bool as_json) {
         {"instruction_files", d.instruction_files},
         {"load_instructions", d.load_instructions},
         {"system_prompt", d.system_prompt},
+        {"harness", d.harness},
+        {"//harness", "smart: a model reads the conversation and reviews every command or write the rules would allow without asking (auto, edit); dumb: the rule list alone"},
+        {"reviewer_model", d.reviewer_model},
+        {"dumb_auto_ok", d.dumb_auto_ok},
         {"bans", {{"strings", nlohmann::json::array()}, {"tokens", nlohmann::json::array()}, {"retries", 3}, {"replacement", "[banned]"}, {"ignore_case", false}}},
         {"//bans", "strings the model must not say (cut and re-asked, then replaced); tokens (ids, or text) become logit_bias on OpenAI-compatible providers"},
         {"//system_prompt", "text placed first in every system prompt, or \"@~/path/to/file.md\"; independent of instruction files"},

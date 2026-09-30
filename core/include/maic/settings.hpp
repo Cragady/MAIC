@@ -65,6 +65,9 @@ struct Settings {
     bool load_instructions = true;  // false: no MAIC.md / AGENTS.md anywhere
     std::string system_prompt;      // text placed first in the system prompt; "@path" reads a file (~ expands)
     Bans bans;                      // strings and tokens the model must not produce (see docs/settings.md)
+    std::string harness = "smart";  // "smart": a model reviews commands and writes the rules would allow; "dumb": rules only
+    std::string reviewer_model;     // the reviewer ("" = the session's model)
+    bool dumb_auto_ok = false;      // true: no warning when entering auto mode under a dumb harness
     ServerSettings server;
 
     const Style& style(const std::string& name) const;
