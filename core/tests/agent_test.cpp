@@ -95,6 +95,14 @@ struct Recorder : AgentEvents {
         asked.push_back(r);
         return reply;
     }
+    std::string answer;  // what question() returns
+    std::vector<std::pair<std::string, std::vector<std::string>>> questions;
+    std::string question(const std::string& text, const std::vector<std::string>& options) override {
+        questions.push_back({text, options});
+        return answer;
+    }
+    std::vector<std::vector<TodoItem>> todos;
+    void on_todo(const std::vector<TodoItem>& items) override { todos.push_back(items); }
 };
 
 std::error_code& ec_ignore() {
@@ -357,6 +365,100 @@ int main() {
         bool stopped = false;
         for (const auto& n : rb.notices) stopped = stopped || n.find("token budget reached") == 0;
         expect(stopped && b.messages().back().content.find("budget is used up") != std::string::npos, "a used-up budget stops the next turn with a notice");
+    }
+
+    section("question and todo");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        Recorder r;
+        r.answer = "the second one";
+        fake.tool_call = json{{"name", "question"}, {"arguments", {{"question", "Which config?"}, {"options", {"dev", "prod"}}}}};
+        fake.calls_left = 1;
+        agent.submit("ask me", Origin::Local, r, no_cancel);
+        expect(r.questions.size() == 1 && r.questions[0].first == "Which config?" && r.questions[0].second == std::vector<std::string>{"dev", "prod"},
+               "the question reaches the front end with its options");
+        expect(r.results.size() == 1 && r.results[0] == "the second one" && r.asked.empty(), "the answer is the tool result and no approval was involved");
+        std::string sys = fake.requests[0]["messages"][0]["content"];
+        expect(sys.find("question asks the user") != std::string::npos && sys.find("todo is your plan") != std::string::npos, "the briefing explains both tools");
+        r.answer.clear();
+        r.results.clear();
+        fake.calls_left = 1;
+        agent.submit("ask again", Origin::Local, r, no_cancel);
+        expect(r.results.size() == 1 && r.results[0] == "(the user gave no answer)", "no answer is reported as such");
+
+        fake.tool_call = json{{"name", "todo"}, {"arguments", {{"items", {{{"text", "read the code"}, {"done", true}}, {{"text", "edit it"}}}}}}};
+        fake.calls_left = 1;
+        r.results.clear();
+        agent.submit("plan", Origin::Local, r, no_cancel);
+        expect(r.todos.size() == 1 && r.todos[0].size() == 2 && r.todos[0][0].done && r.todos[0][0].text == "read the code" && !r.todos[0][1].done,
+               "on_todo gets the list with its done flags");
+        expect(agent.todo().size() == 2 && r.results.size() == 1 && r.results[0].rfind("todo: 1/2 done", 0) == 0 && r.results[0].find("[ ] edit it") != std::string::npos,
+               "the agent keeps the plan and the result counts it: " + (r.results.empty() ? "" : r.results[0]));
+        fake.tool_call = json{{"name", "todo"}, {"arguments", {{"items", {"only this"}}}}};
+        fake.calls_left = 1;
+        agent.submit("replan", Origin::Local, r, no_cancel);
+        expect(agent.todo().size() == 1 && agent.todo()[0].text == "only this" && !agent.todo()[0].done, "a new list replaces the old one (plain strings are accepted)");
+        fake.tool_call = json{{"name", "todo"}, {"arguments", {{"text", "no items"}}}};
+        fake.calls_left = 1;
+        r.results.clear();
+        agent.submit("bad", Origin::Local, r, no_cancel);
+        expect(r.results.size() == 1 && r.results[0].rfind("error:", 0) == 0 && agent.todo().size() == 1, "a todo call without items is an error and keeps the old list");
+        agent.clear();
+        expect(agent.todo().empty(), ":clear drops the plan");
+    }
+
+    section("lua tools through the agent");
+    {
+        fs::path cfg = ws / "cfg";
+        fs::create_directories(cfg);
+        setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
+        fs::create_directories(ws / ".maic" / "tools");
+        std::ofstream(ws / ".maic" / "tools" / "read_note.lua") << "return {\n"
+                                                                    "  name = 'read_note', description = 'reads note.txt',\n"
+                                                                    "  parameters = { type = 'object', properties = {} },\n"
+                                                                    "  run = function(args) return maic.read('note.txt') end,\n"
+                                                                    "}\n";
+        std::ofstream(ws / ".maic" / "tools" / "escape.lua") << "return {\n"
+                                                                 "  name = 'escape', description = 'writes a file wherever it is told',\n"
+                                                                 "  parameters = { type = 'object', properties = { where = { type = 'string' } }, required = { 'where' } },\n"
+                                                                 "  run = function(args) maic.write(args.where, 'x') return 'wrote ' .. args.where end,\n"
+                                                                 "}\n";
+        std::ofstream(ws / "note.txt") << "the note says heron\n";
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        expect(agent.tools().size() == 2 && agent.tool_notices().empty(), "both tool files load");
+        Recorder r;
+        fake.tool_call = json{{"name", "read_note"}, {"arguments", json::object()}};
+        fake.calls_left = 1;
+        agent.submit("read", Origin::Local, r, no_cancel);
+        expect(r.results.size() == 1 && r.results[0] == "the note says heron\n" && r.asked.empty(), "a Lua tool reads a workspace file in auto mode without asking");
+        bool listed = false;
+        for (const auto& t : fake.requests[0]["tools"]) listed = listed || t["function"]["name"] == "read_note";
+        std::string sys = fake.requests[0]["messages"][0]["content"];
+        expect(listed && sys.find("read_note") != std::string::npos, "the model is offered the Lua tool beside the built-ins and the briefing names it");
+
+        fs::path outside = fs::temp_directory_path() / "maic-agent-test-escape.txt";
+        fs::remove(outside);
+        r.reply = {Approval::No, "keep it in the workspace"};
+        r.results.clear();
+        fake.tool_call = json{{"name", "escape"}, {"arguments", {{"where", outside.string()}}}};
+        fake.calls_left = 1;
+        agent.submit("escape", Origin::Local, r, no_cancel);
+        expect(r.asked.size() == 1 && r.asked[0].tool == "escape" && r.asked[0].summary.rfind("write_file", 0) == 0 && r.asked[0].preview.find("new file") == 0,
+               "the write inside the tool is asked about like a built-in, with a preview");
+        expect(r.results.size() == 1 && r.results[0] == "DENIED by the user, who says: keep it in the workspace" && !fs::exists(outside),
+               "the denial is the Lua error and the tool result, and nothing was written: " + (r.results.empty() ? "" : r.results[0]));
+        const Message* last_tool = nullptr;
+        for (const auto& m : agent.messages()) if (m.role == "tool") last_tool = &m;
+        expect(last_tool && last_tool->is_error && last_tool->tool_name == "escape", "the model sees it as a failed call of the tool");
+        fs::remove_all(ws / ".maic");
+        unsetenv("XDG_CONFIG_HOME");
     }
 
     section("context files");

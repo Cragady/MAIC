@@ -412,7 +412,7 @@ ToolResult run_shell(const Harness& harness, const nlohmann::json& args, bool re
 
 }  // namespace
 
-std::string canonical_tool_name(const std::string& name) {
+std::string snake_tool_name(const std::string& name) {
     // Small models emit Read_File, readFile or read-file; map them back.
     std::string snake;
     for (size_t i = 0; i < name.size(); ++i) {
@@ -420,6 +420,11 @@ std::string canonical_tool_name(const std::string& name) {
         if (std::isupper(c) && i > 0 && std::islower(static_cast<unsigned char>(name[i - 1]))) snake += '_';
         snake += static_cast<char>(c == '-' || c == ' ' ? '_' : std::tolower(c));
     }
+    return snake;
+}
+
+std::string canonical_tool_name(const std::string& name) {
+    std::string snake = snake_tool_name(name);
     for (const char* t : kToolNames) {
         if (snake == t) return t;
     }

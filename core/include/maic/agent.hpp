@@ -3,6 +3,7 @@
 #include "maic/harness.hpp"
 #include "maic/instructions.hpp"
 #include "maic/llm.hpp"
+#include "maic/lua_tools.hpp"
 #include "maic/session.hpp"
 
 #include <atomic>
@@ -34,6 +35,12 @@ struct ApprovalAnswer {
     std::string feedback;
 };
 
+// One line of the model's plan (the todo tool).
+struct TodoItem {
+    std::string text;
+    bool done = false;
+};
+
 // What a front end (the CLI now, the server later) implements to follow and steer a turn.
 // Every method is called from the agent's worker thread.
 class AgentEvents {
@@ -45,6 +52,14 @@ public:
     virtual void on_notice(const std::string& text) = 0;
     // Blocks until the user answers.
     virtual ApprovalAnswer ask(const ApprovalRequest& request) = 0;
+    // The question tool: blocks until the user answers; "" when they gave no answer. Options may be empty.
+    virtual std::string question(const std::string& text, const std::vector<std::string>& options) {
+        (void)text;
+        (void)options;
+        return "";
+    }
+    // The model replaced its plan.
+    virtual void on_todo(const std::vector<TodoItem>& items) { (void)items; }
 };
 
 class Agent {
@@ -140,10 +155,24 @@ public:
     const std::vector<InstructionFile>& instructions() const { return instructions_; }
     void reload_instructions() { instructions_ = load_instructions(harness_.workspace(), instruction_names_); }
 
+    // The model's current plan, replaced whole by every todo call; cleared with the conversation.
+    const std::vector<TodoItem>& todo() const { return todo_; }
+
+    // User-defined Lua tools, loaded once at construction (docs/tools.md), and the files that were skipped.
+    const std::vector<LuaTool>& tools() const { return tools_; }
+    const std::vector<std::string>& tool_notices() const { return tool_notices_; }
+
 private:
     Message run_tool_call(const ToolCall& call, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel);
+    // Policy, then this session's "always" answers, then the user. Never returns Ask: a No becomes Deny with the
+    // user's words, a Trip has already tripped the lock. For Deny and Trip the reason is the text the model
+    // sees. Every tool action, built-in or from a Lua tool, goes through here; `record` gets the log fields.
+    Decision authorise(const Action& action, const std::string& tool, const std::string& summary, const std::string& preview,
+                       Origin origin, AgentEvents& events, nlohmann::json& record);
+    const LuaTool* find_tool(const std::string& name) const;
     std::string system_prompt() const;
     std::string instructions_text() const;
+    std::string user_tools_text() const;
     // History is append-only (newer Anthropic models reject edited history): mode and instruction changes after
     // the first turn are appended as system messages instead of rewriting the system prompt.
     void start_or_update_conversation();
@@ -166,10 +195,14 @@ private:
     void rewrite_log();    // after compaction: a reset record and the new history, so resume sees the same thing
     size_t history_bytes() const;
     std::string summarise(size_t from, size_t to, const std::atomic<bool>& cancel);  // messages [from, to) -> summary text
-    void save_undo_point(const std::string& name, const nlohmann::json& args);
+    void save_undo_point(const std::filesystem::path& path, const std::string& summary);
     std::string nested_instructions(const std::filesystem::path& file);  // instruction files between the workspace and `file`, each once
 
     std::vector<UndoPoint> undo_;
+    std::vector<TodoItem> todo_;
+    std::vector<LuaTool> tools_;
+    std::vector<std::string> tool_notices_;
+    nlohmann::json schemas_;  // the built-ins, then the Lua tools
     std::vector<std::string> instruction_names_ = {"MAIC.md", "AGENTS.md"};
     std::set<std::string> attached_instructions_;
     std::string last_call_;
