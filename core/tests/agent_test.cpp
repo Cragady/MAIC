@@ -468,6 +468,32 @@ int main() {
         unsetenv("XDG_CONFIG_HOME");
     }
 
+    section("prefill");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.prefill = "hellooooo ";
+        Recorder r;
+        agent.submit("hi", Origin::Local, r, no_cancel);
+        auto last = fake.requests.back()["messages"].back();
+        expect(last["role"] == "assistant" && last["content"] == "hellooooo ", "the prefill is sent as an open assistant turn");
+        expect(r.text.rfind("hellooooo echo: hi", 0) == 0, "it is shown first, then the model's continuation: " + r.text);
+        expect(agent.messages().back().role == "assistant" && agent.messages().back().content.rfind("hellooooo ", 0) == 0, "and stored as the start of the reply");
+        expect(fake.requests.back()["messages"][fake.requests.back()["messages"].size() - 2]["role"] == "user", "the history itself gains no assistant stub");
+        // llama-server style: the server echoes the prefill at the head of its output.
+        fake.reply = [](const json&) { return std::string("hellooooo the rest"); };
+        Recorder r2;
+        agent.submit("again", Origin::Local, r2, no_cancel);
+        expect(r2.text == "hellooooo the rest" && agent.messages().back().content == "hellooooo the rest", "an echoed prefill is not doubled: " + r2.text);
+        fake.reply = [](const json&) { return std::string("hel"); };
+        Recorder r3;
+        agent.submit("short", Origin::Local, r3, no_cancel);
+        expect(r3.text == "hellooooo hel", "a reply shorter than the prefill still shows");
+        fake.reply = nullptr;
+    }
+
     section("operator prompt and instruction switch");
     {
         FakeOllama fake;

@@ -462,7 +462,32 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
                 if (filter.triggered()) abort = true;
             };
             try {
-                reply = chat(provider, options, messages_, schemas_, sink, abort);
+                if (!prefill.empty()) {
+                    // The prefill is shown and counted as the reply's start; the model gets it as an open
+                    // assistant turn and continues from there. llama-server echoes the prefill at the head
+                    // of its output, Anthropic sends only the continuation: a repeat is dropped either way.
+                    std::vector<Message> with_prefill = messages_;
+                    with_prefill.push_back({"assistant", prefill});
+                    sink(prefill, false);
+                    std::string head;
+                    bool decided = false;
+                    auto strip = [&](std::string_view d, bool t) {
+                        if (t || decided) {
+                            sink(d, t);
+                            return;
+                        }
+                        head.append(d);
+                        if (head.size() < prefill.size() && prefill.compare(0, head.size(), head) == 0) return;  // could still be the echo
+                        decided = true;
+                        if (head.rfind(prefill, 0) == 0) head.erase(0, prefill.size());
+                        if (!head.empty()) sink(head, false);
+                        head.clear();
+                    };
+                    reply = chat(provider, options, with_prefill, schemas_, strip, abort);
+                    if (!decided && !head.empty()) sink(head, false);  // a reply shorter than the prefill
+                } else {
+                    reply = chat(provider, options, messages_, schemas_, sink, abort);
+                }
             } catch (...) {
                 abort = true;
                 watcher.join();

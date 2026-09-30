@@ -17,6 +17,7 @@ maic -p "summarise these" -C notes.md -C log.txt   # files attached as context b
 maic -p "let's plan the refactor" -i               # an interactive session that opens with that prompt sent
 cat prompt.txt | maic -pi -        # short flags cluster (-p -i); a value-taking flag (-m, -C) goes last in a cluster
 maic --system @~/prompts/reviewer.md --no-instructions   # front-load behaviour; ignore every MAIC.md / AGENTS.md
+maic --prefill "hellooooo "                               # every reply starts with this, guaranteed (see :h prefill)
 maic --xtc 0.5,0.1 --sampling min_p=0.05 --ban-pattern @~/bans/tics.re   # samplers and bans for one run
 maic help headless                 # the verbose page for all of the above (same as :h headless in a session)
 maic help | grep vendor            # help goes to stdout, so it pipes; maic help topics lists every page

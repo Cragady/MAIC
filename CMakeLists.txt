@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(maic VERSION 0.1.0 LANGUAGES CXX)
+project(maic VERSION 0.2.0 LANGUAGES CXX)
 
 # The version shown by `maic --version`: the git tag when there is one, else the project version plus commit.
 # A release build passes -DMAIC_GIT_VERSION=<tag> (the archive has no .git).

@@ -168,6 +168,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         if (j.contains("instruction_files")) s.instruction_files = j["instruction_files"].get<std::vector<std::string>>();
         s.load_instructions = j.value("load_instructions", s.load_instructions);
         s.system_prompt = j.value("system_prompt", s.system_prompt);
+        s.prefill = j.value("prefill", s.prefill);
         s.harness = j.value("harness", s.harness);
         if (j.contains("sampling") && j["sampling"].is_object()) {
             for (const auto& [k, v] : j["sampling"].items()) s.sampling[k] = v;
@@ -339,6 +340,8 @@ void write_default_settings(bool as_json) {
         {"instruction_files", d.instruction_files},
         {"load_instructions", d.load_instructions},
         {"system_prompt", d.system_prompt},
+        {"prefill", d.prefill},
+        {"//prefill", "text every reply starts with, sent as the opening of the assistant turn; a guarantee where a system prompt is a request"},
         {"harness", d.harness},
         {"//harness", "smart: a model reads the conversation and reviews every command or write the rules would allow without asking (auto, edit); dumb: the rule list alone"},
         {"reviewer_model", d.reviewer_model},

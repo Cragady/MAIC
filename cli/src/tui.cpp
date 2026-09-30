@@ -229,6 +229,7 @@ public:
         agent_.set_instruction_names(settings_.instruction_files);
         agent_.load_instruction_files = settings_.load_instructions;
         agent_.system_prefix = resolve_system_prompt(settings_.system_prompt);
+        agent_.prefill = resolve_system_prompt(settings_.prefill);
         agent_.reload_instructions();
         agent_.bans = settings_.bans;
         apply_sampling();
@@ -1565,6 +1566,14 @@ void App::run_command(const std::string& line) {
             } else {
                 post(Kind::Error, ":sampling [KEY VALUE | xtc P [T] | unset KEY | reset]");
             }
+        } else if (cmd == "prefill") {
+            if (arg == "off" || arg == "none") agent_.prefill.clear(), post(Kind::Notice, "no prefill");
+            else if (!arg.empty()) {
+                agent_.prefill = resolve_system_prompt(arg);
+                post(Kind::Notice, "every reply now starts with: " + agent_.prefill);
+            } else {
+                post(Kind::Notice, agent_.prefill.empty() ? "no prefill (:prefill TEXT makes every reply start with TEXT; :prefill off clears)" : "replies start with: " + agent_.prefill);
+            }
         } else if (cmd == "system") {
             if (!arg.empty() && idle()) {
                 agent_.system_prefix = resolve_system_prompt(arg);
@@ -1655,6 +1664,7 @@ int run_tui(const TuiOptions& options) {
     if (options.mode) settings.mode = *options.mode;
     if (options.record) settings.record = *options.record;
     if (options.system) settings.system_prompt = *options.system;
+    if (options.prefill) settings.prefill = *options.prefill;
     if (options.load_instructions) settings.load_instructions = *options.load_instructions;
     settings.bans.strings.insert(settings.bans.strings.end(), options.bans.begin(), options.bans.end());
     settings.bans.patterns.insert(settings.bans.patterns.end(), options.ban_patterns.begin(), options.ban_patterns.end());

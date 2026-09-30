@@ -53,6 +53,7 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 | `compact_at` | Auto-compact when the last model call used this share of the context window (default `0.75`; `0` disables). Old tool results are stubbed first; the oldest turns are summarised only if that was not enough. See `:h compact`. |
 | `compact_keep_results` | Tool results that are never stubbed, counting from the most recent (default `4`). |
 | `models_dir` | Where model files live: ComfyUI's `checkpoints/ diffusion_models/ loras/ text_encoders/ vae/` and Ollama's `ollama/` store. Used when MAIC installs ComfyUI (see [vendor.md](vendor.md)). |
+| `prefill` | Text every reply starts with, sent as the opening of the assistant turn so the model continues it (a guarantee, where `system_prompt` is a request). `--prefill` and `:prefill` override. A prefilled turn rarely calls tools. |
 | `system_prompt` | Operator text placed first in every system prompt, before MAIC's briefing and any instruction file; `"@~/path"` reads a file. `--system` and `:system` override. Front-loads behaviour. |
 | `load_instructions` | `false` loads no `MAIC.md` / `AGENTS.md` anywhere (default `true`); `--no-instructions` and `:instructions off` do it per session. Independent of `system_prompt`; combine them to run on your own text alone. |
 | `harness` | `"smart"` (default): a model reviews every command or write the rules would allow without asking, see `:h harness`. `"dumb"`: the rule list alone. |

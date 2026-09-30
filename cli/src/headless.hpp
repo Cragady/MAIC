@@ -18,6 +18,7 @@ struct HeadlessOptions {
     std::optional<std::filesystem::path> resume;
     std::vector<std::filesystem::path> context;  // files attached to the turn before the prompt ("-" = stdin)
     std::optional<std::string> system;
+    std::optional<std::string> prefill;
     std::optional<bool> load_instructions;
     std::vector<std::string> bans;
     std::vector<std::string> ban_patterns;

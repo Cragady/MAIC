@@ -153,6 +153,10 @@ public:
     // Sampler settings merged into every request (temperature, top_k, ...), from the provider's settings.
     nlohmann::json sampling;
 
+    // Text every reply starts with, put in the model's mouth: sent as the opening of the assistant turn, so
+    // the model continues it rather than being asked to comply. A prefilled turn rarely calls a tool.
+    std::string prefill;
+
     // Whether the operator instructions also close each user turn as the model sees it (they always lead and
     // close the system prompt). Set per provider: `options.operator_note`, default on except for Anthropic.
     bool operator_note_in_turn = true;

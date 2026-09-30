@@ -116,6 +116,7 @@ int run_headless(const HeadlessOptions& options) {
     if (options.model) settings.model = *options.model;
     if (options.mode) settings.mode = *options.mode;
     if (options.system) settings.system_prompt = *options.system;
+    if (options.prefill) settings.prefill = *options.prefill;
     if (options.load_instructions) settings.load_instructions = *options.load_instructions;
     settings.bans.strings.insert(settings.bans.strings.end(), options.bans.begin(), options.bans.end());
     if (options.harness) settings.harness = *options.harness;
@@ -176,6 +177,7 @@ int run_headless(const HeadlessOptions& options) {
     agent.set_instruction_names(settings.instruction_files);
     agent.load_instruction_files = settings.load_instructions;
     agent.system_prefix = resolve_system_prompt(settings.system_prompt);
+    agent.prefill = resolve_system_prompt(settings.prefill);
     agent.reload_instructions();
     agent.bans = settings.bans;
     {
