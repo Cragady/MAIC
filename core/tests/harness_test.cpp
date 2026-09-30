@@ -129,6 +129,24 @@ int main() {
 
     shell(h, Mode::Auto, "echo " + std::string(20000, 'a'), Verdict::Deny);
 
+    std::cout << "read-only classifier: looking-only invocations a coding agent makes\n";
+    for (const char* cmd : {"python3 --version", "node --version", "node -v", "cargo --version", "cmake --version", "go version", "java -version", "gcc --version",
+                            "ctest -N", "git remote -v", "git branch", "git branch -a", "git stash list", "git stash show", "git show --stat HEAD", "git config --get user.name",
+                            "git config --list", "git worktree list", "git submodule status", "git reflog", "git ls-tree HEAD", "git cat-file -p HEAD", "wc -l src/a.cpp",
+                            "du -sh build", "df -h", "file a.out", "stat a.txt", "which cmake", "env", "printenv HOME", "uname -a", "id", "date", "jq .name package.json",
+                            "head -20 a.txt", "tail -f log.txt", "sort a.txt", "uniq a.txt", "cut -d: -f1 a.txt", "tr a-z A-Z", "diff a b", "cmp a b", "md5sum a", "sha256sum a",
+                            "tree src", "realpath .", "basename /a/b", "dirname /a/b", "cat a | head -3", "ls && wc -l a", "test -f a", "[ -f a ]", "command -v cmake",
+                            "hostname", "nproc", "ps aux", "seq 3", "ls; git status"}) {
+        expect(is_read_only_command(cmd), std::string("read-only: ") + cmd);
+    }
+    for (const char* cmd : {"python3 -c 'print(1)'", "python3 script.py", "node -e 'x'", "cargo build", "cmake -B build", "go build", "ctest", "ctest -R x",
+                            "git stash", "git stash pop", "git stash drop", "git config user.name x", "git worktree add ../x", "git submodule update", "git reflog expire",
+                            "env FOO=1 make", "env make", "sort -o out a", "sort --output=out a", "uniq a b", "tree -o out", "date -s now", "command make", "hostname evil",
+                            "ls > out", "ls; make", "cat a | tee b", "wc -l $(ls)", "echo `date`", "ls && rm a", "ls & make", "make", "rm -rf build", "cp a b", "mv a b",
+                            "mkdir x", "touch x", "sed -i s/a/b/ f", "find . -delete", "awk '{print}' a", "less a"}) {
+        expect(!is_read_only_command(cmd), std::string("not read-only: ") + cmd);
+    }
+
     std::cout << "allow list\n";
     {
         Harness a(ws);

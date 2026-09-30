@@ -76,23 +76,64 @@ bool read_only_segment(const std::string& segment) {
         "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag", "find", "fd", "tree", "wc", "file",
         "stat", "du", "df", "pwd", "echo", "printf", "which", "type", "whoami", "id", "uname", "date", "sort",
         "uniq", "cut", "tr", "sed", "jq", "diff", "cmp", "md5sum", "sha1sum", "sha256sum", "basename", "dirname",
-        "realpath", "readlink", "nl", "column", "xxd", "hexdump", "strings", "true", "false", "test", "git",
+        "realpath", "readlink", "nl", "column", "xxd", "hexdump", "strings", "true", "false", "test", "[", "git",
+        "printenv", "hostname", "nproc", "lscpu", "free", "uptime", "ps", "pgrep", "tac", "rev", "seq", "expr",
+        "bat", "env", "command",
     };
     static const std::set<std::string> git_read = {"status", "log", "diff", "show", "blame", "ls-files", "rev-parse",
-                                                   "describe", "shortlog", "grep", "remote", "branch", "tag"};
+                                                   "describe", "shortlog", "grep", "remote", "branch", "tag", "stash",
+                                                   "config", "ls-tree", "cat-file", "rev-list", "reflog", "worktree",
+                                                   "submodule", "check-ignore", "for-each-ref", "merge-base", "name-rev",
+                                                   "count-objects", "var", "diff-tree", "show-ref", "symbolic-ref"};
+    // Toolchains whose only looking-only invocation is printing their version or help: `python3 -c ...` runs code.
+    static const std::set<std::string> toolchains = {
+        "python", "python3", "node", "npm", "npx", "bun", "deno", "cargo", "rustc", "cmake", "make", "ninja", "meson",
+        "gcc", "g++", "cc", "c++", "clang", "clang++", "go", "java", "javac", "ruby", "perl", "pip", "pip3", "uv", "tsc",
+        "bash", "zsh", "sh", "docker", "ollama", "clang-format", "clang-tidy", "ctest",
+    };
     auto words = split_words(segment);
-    if (words.empty() || !programs.count(words[0])) return false;
-    for (const auto& w : words) {
-        if (words[0] == "find" && (w == "-delete" || w.rfind("-exec", 0) == 0 || w.rfind("-ok", 0) == 0 || w.rfind("-fprint", 0) == 0 || w == "-fls")) return false;
-        if (words[0] == "sed" && (w == "-i" || w.rfind("-i", 0) == 0 || w == "--in-place")) return false;
+    if (words.empty()) return false;
+    const std::string& prog = words[0];
+    if (toolchains.count(prog)) {
+        if (prog == "go") return words.size() == 2 && (words[1] == "version" || words[1] == "help" || words[1] == "env");
+        if (prog == "java" && words.size() == 2 && words[1] == "-version") return true;
+        if (prog == "ctest" && words.size() == 2 && words[1] == "-N") return true;
+        return words.size() == 2 && (words[1] == "--version" || words[1] == "-V" || words[1] == "--help" || words[1] == "-h" ||
+                                     (words[1] == "-v" && (prog == "node" || prog == "npm" || prog == "bun" || prog == "deno")));
     }
-    if (words[0] == "git") {
+    if (!programs.count(prog)) return false;
+    size_t operands = 0;
+    for (size_t i = 1; i < words.size(); ++i) {
+        const auto& w = words[i];
+        if (prog == "find" && (w == "-delete" || w.rfind("-exec", 0) == 0 || w.rfind("-ok", 0) == 0 || w.rfind("-fprint", 0) == 0 || w == "-fls")) return false;
+        if (prog == "sed" && (w == "-i" || w.rfind("-i", 0) == 0 || w == "--in-place")) return false;
+        if ((prog == "sort" || prog == "tree") && (w == "-o" || w.rfind("-o", 0) == 0 || w.rfind("--output", 0) == 0)) return false;
+        if (prog == "date" && (w == "-s" || w.rfind("--set", 0) == 0)) return false;
+        if (w.empty() || w[0] != '-') ++operands;
+    }
+    // `uniq IN OUT` writes OUT; `env` with anything but flags runs a program or sets a variable; `command X` runs X.
+    if (prog == "uniq" && operands > 1) return false;
+    if (prog == "env" && words.size() > 1) return false;
+    if (prog == "command" && (words.size() != 3 || (words[1] != "-v" && words[1] != "-V"))) return false;
+    if (prog == "hostname" && operands > 0) return false;
+    if (prog == "git") {
         if (words.size() < 2 || !git_read.count(words[1])) return false;
-        // branch/tag/remote only when listing
+        // Subcommands that also write: only their listing forms.
         if ((words[1] == "branch" || words[1] == "tag" || words[1] == "remote") && words.size() > 2) {
             for (size_t i = 2; i < words.size(); ++i) {
                 if (words[i] != "-a" && words[i] != "-v" && words[i] != "-vv" && words[i] != "-r" && words[i] != "--list" && words[i] != "-l") return false;
             }
+        }
+        if (words[1] == "stash" && (words.size() < 3 || (words[2] != "list" && words[2] != "show"))) return false;
+        if (words[1] == "worktree" && (words.size() < 3 || words[2] != "list")) return false;
+        if (words[1] == "submodule" && (words.size() < 3 || words[2] != "status")) return false;
+        if (words[1] == "reflog" && words.size() > 2 && words[2] != "show" && words[2][0] != '-') return false;
+        if (words[1] == "config") {
+            if (words.size() < 3) return false;
+            for (size_t i = 2; i < words.size(); ++i) {
+                if (words[i] == "--list" || words[i] == "-l" || words[i].rfind("--get", 0) == 0) return true;
+            }
+            return false;
         }
     }
     return true;
