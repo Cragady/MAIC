@@ -8,7 +8,7 @@ The GitHub repository https://github.com/danbooru/danbooru is the Rails applicat
 
 ## Image composition and style
 - Artistic license (/wiki_pages/tag_group%3Aartistic_license)
-- Image composition (/wiki_pages/tag_group%3Aimage_composition): framing, camera angle, cropping
+- Image composition (/wiki_pages/tag_group%3Aimage_composition): framing, camera angle, cropping, techniques, flaws; kept in full in [danbooru-image-composition.md](danbooru-image-composition.md) with a short list for manga panels
 - Backgrounds (/wiki_pages/tag_group%3Abackgrounds)
 - Censorship (/wiki_pages/tag_group%3Acensorship)
 - Character count (/wiki_pages/tag_group%3Acharacter_count): 1girl, 2girls, 1boy, solo, multiple girls

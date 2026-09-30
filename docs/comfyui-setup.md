@@ -65,7 +65,7 @@ Custom node requirements go into the same venv: `uv pip install --python .venv -
 
 ## Prompt vocabulary
 
-NoobAI, Illustrious and Anima are trained on Danbooru tags. The tag group index, with the order a prompt should follow, is kept in [references/danbooru-tag-groups.md](references/danbooru-tag-groups.md).
+NoobAI, Illustrious and Anima are trained on Danbooru tags. The tag group index, with the order a prompt should follow, is kept in [references/danbooru-tag-groups.md](references/danbooru-tag-groups.md); the camera, framing and technique vocabulary in [references/danbooru-image-composition.md](references/danbooru-image-composition.md).
 
 ## Editing workflows without the UI
 
