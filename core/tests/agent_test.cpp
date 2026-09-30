@@ -486,6 +486,12 @@ int main() {
         std::string sys = fake.requests[0]["messages"][0]["content"];
         expect(sys.rfind("# Operator instructions", 0) == 0 && sys.find("terse reviewer") < sys.find("inside MAIC"), "the operator text leads the system prompt");
         expect(sys.rfind("terse reviewer") > sys.find("pelican") && sys.find("# Operator instructions, again") != std::string::npos, "and closes it, after the instruction files");
+        std::string last_user = fake.requests[0]["messages"].back()["content"];
+        expect(last_user.rfind("hi\n\n(Operator instructions in force", 0) == 0 && last_user.find("terse reviewer") != std::string::npos, "and rides at the end of the user's turn as the model sees it");
+        agent.operator_note_in_turn = false;
+        Recorder r2;
+        agent.submit("again", Origin::Local, r2, no_cancel);
+        expect(fake.requests.back()["messages"].back()["content"] == "again", "operator_note off keeps the user's turn bare (Anthropic's default)");
         expect(sys.find("project rule: always say pelican") != std::string::npos, "instruction files still load alongside it");
 
         Agent bare(ws, "test");

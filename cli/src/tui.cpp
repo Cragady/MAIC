@@ -266,6 +266,7 @@ public:
             else s[k] = v;
         }
         agent_.sampling = s;
+        agent_.operator_note_in_turn = provider.options.value("operator_note", provider.kind != "anthropic");
     }
     nlohmann::json live_sampling_ = nlohmann::json::object();  // :sampling changes, over the settings
     std::string transcript_path() const { return log_->path().string(); }

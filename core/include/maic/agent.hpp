@@ -153,6 +153,10 @@ public:
     // Sampler settings merged into every request (temperature, top_k, ...), from the provider's settings.
     nlohmann::json sampling;
 
+    // Whether the operator instructions also close each user turn as the model sees it (they always lead and
+    // close the system prompt). Set per provider: `options.operator_note`, default on except for Anthropic.
+    bool operator_note_in_turn = true;
+
     // Operator text placed at the very top of the system prompt, before MAIC's own briefing. Independent of
     // instruction files: use both, either, or neither.
     std::string system_prefix;
@@ -218,6 +222,7 @@ private:
     std::string summarise(size_t from, size_t to, const std::atomic<bool>& cancel);  // messages [from, to) -> summary text
     void save_undo_point(const std::filesystem::path& path, const std::string& summary);
     Decision review(const Action& action, const std::string& summary, const std::string& preview);
+    std::string with_operator_note(const std::string& text) const;
     std::string nested_instructions(const std::filesystem::path& file);  // instruction files between the workspace and `file`, each once
 
     std::vector<UndoPoint> undo_;

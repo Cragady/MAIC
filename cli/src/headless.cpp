@@ -184,6 +184,7 @@ int run_headless(const HeadlessOptions& options) {
         for (const auto& [k, v] : per_provider.items()) s[k] = v;
         for (const auto& [k, v] : options.sampling.items()) s[k] = v;  // the command line wins
         agent.sampling = s;
+        agent.operator_note_in_turn = provider.options.value("operator_note", provider.kind != "anthropic");
     }
     settings.bans.patterns.insert(settings.bans.patterns.end(), options.ban_patterns.begin(), options.ban_patterns.end());
     agent.bans = settings.bans;

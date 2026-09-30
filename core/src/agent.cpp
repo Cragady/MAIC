@@ -95,6 +95,15 @@ std::string Agent::instructions_text() const {
     return out;
 }
 
+// The operator instructions again, at the end of the user's turn. Measured with a 4B against this very
+// prompt and its tool schemas: every system-side placement (top, end, both, a system reminder before the
+// turn, even the rule alone) was ignored once tools were attached; the rule closing the user turn was
+// followed every time. The transcript keeps the user's words as typed; this is what the model is sent.
+std::string Agent::with_operator_note(const std::string& text) const {
+    if (system_prefix.empty() || !operator_note_in_turn) return text;
+    return text + "\n\n(Operator instructions in force, they take precedence: " + system_prefix + ")";
+}
+
 std::string Agent::system_prompt() const {
     std::string prompt;
     if (!system_prefix.empty()) {
@@ -365,7 +374,7 @@ bool Agent::drain_mailbox() {
     }
     for (const auto& text : pending) {
         if (log_) log_->write("user", {{"text", text}, {"queued", true}});
-        push({"user", text});
+        push({"user", with_operator_note(text)});
     }
     return !pending.empty();
 }
@@ -377,7 +386,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
         log_->write("user", {{"text", text}, {"provider", provider.name}, {"model", model}, {"remote", provider.remote()},
                              {"mode", mode_name(mode)}, {"origin", origin == Origin::Local ? "local" : "remote"}});
     }
-    push({"user", text});
+    push({"user", with_operator_note(text)});
 
     ChatOptions options{model_name, think};
     options.notice = [&](const std::string& t) { events.on_notice(t); };
