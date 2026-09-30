@@ -80,6 +80,8 @@ void usage(std::ostream& out = std::cerr) {
                  "  up <service...|all>        start services\n"
                  "  down <service...|all>      stop services MAIC started\n"
                  "  logs <service> [lines]     the end of a service's log (default 40 lines)\n"
+                 "  gpu [free [all|llamacpp|comfyui]]   who holds the card (llama-server's resident model, ComfyUI's VRAM);\n"
+                 "                             free unloads models without stopping anything\n"
                  "  path [NAME] [--copy]       every place maic knows (workspace, sessions, models, workflows, ...) or one path;\n"
                  "                             --copy puts it on the clipboard; a unique prefix is enough\n"
                  "  cd NAME [--subshell]       print a place's directory (cd \"$(maic cd NAME)\"; a file's parent); --subshell (-s)\n"
@@ -163,10 +165,24 @@ int cmd_up(const std::vector<maic::ServiceDef>& services) {
         } catch (const std::exception& e) {
             std::cout << " failed\n";
             std::cerr << "maic: " << e.what() << "\n";
+            if (std::string why = maic::explain_exit(def, all); !why.empty()) std::cerr << "      " << why << "\n";
             rc = 1;
         }
     }
     return rc;
+}
+
+int cmd_gpu(const std::vector<std::string>& args) {
+    auto services = maic::load_services(maic::root_dir() / "services");
+    if (args.empty() || args[0] == "show") {
+        std::cout << maic::gpu_report(services).text() << "maic gpu free [all|llamacpp|comfyui] releases memory without stopping anything\n";
+        return 0;
+    }
+    if (args[0] == "free") {
+        std::cout << maic::gpu_free(services, args.size() > 1 ? args[1] : "all");
+        return 0;
+    }
+    throw std::runtime_error("maic gpu [show | free [all|llamacpp|comfyui]]");
 }
 
 int cmd_down(const std::vector<maic::ServiceDef>& services) {
@@ -830,6 +846,7 @@ int main(int argc, char** argv) {
         if (cmd == "path" || cmd == "paths" || cmd == "places") return cmd_path(cargs);
         if (cmd == "open") return cmd_open(cargs);
         if (cmd == "cd") return cmd_cd(cargs);
+        if (cmd == "gpu" || cmd == "vram") return cmd_gpu(cargs);
         if (cmd == "shell-init") {
             std::string shell = cargs.empty() ? "" : cargs[0];
             if (shell.empty()) {

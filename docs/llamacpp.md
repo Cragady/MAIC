@@ -14,7 +14,7 @@ One number, `context` (default 16384), drives both the server's `--ctx-size` (th
 
 ## Sharing an 8 GB card with ComfyUI
 
-They take turns. `maic up comfyui` (the service is marked `needs_gpu`) first asks llama-server to unload whatever model it holds and says so; the server stays up and reloads the model on the next request, once ComfyUI has let go of its weights. A load that fails with a CUDA out-of-memory means the other side still holds the card. Two models resident at once is roadmap item 1.
+They take turns. `maic up comfyui` (the service is marked `needs_gpu`) first asks llama-server to unload whatever model it holds and says so; the server stays up and reloads the model on the next request, once ComfyUI has let go of its weights. A load that fails with a CUDA out-of-memory means the other side still holds the card: `maic gpu` shows who, `maic gpu free` releases both sides without stopping anything, and a failed `maic up` says exactly that instead of an exit code. Two models resident at once is roadmap item 1.
 
 ## Getting a model
 

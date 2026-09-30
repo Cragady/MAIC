@@ -69,6 +69,7 @@ const std::vector<Topic>& topics() {
          "- **approval**: y / n / N (no, and type a sentence the model gets as the reason) / a (always this file or program, this session) / t (trip). Edits show the lines that would change.\n"
          "- **repeated calls**: the same call three times in a row is refused; five times trips the lock when it is a write or a command that could change something, and just ends the turn when it is harmless (a read, a read-only or allow-listed command). Three denials by you in one turn end the turn.\n"
          "- **allow list**: commands you pre-approved run without asking or review; see `:h allow`.\n"
+         "- **the card**: `:gpu` shows who holds it, `:gpu free` releases it; see `:h gpu`.\n"
          "- **undo points**: every file the agent changes is saved first; `:undo` restores. See `:h undo`.\n\n"
          "Details and the planned layers: docs/harness.md."},
         {"sessions", {"session", "resume", "transcript", "transcripts"}, "transcripts, -c, -r, forking",
@@ -233,6 +234,9 @@ const std::vector<CommandInfo>& commands() {
         {"instructions", {"no-instructions", "load_instructions"}, "[on|off]", "the MAIC.md / AGENTS.md files in effect, or switch them off",
          "*:instructions* *--no-instructions*\nLists the instruction files the model sees, re-read every turn. `:instructions off` stops loading them (global, project and nested) for the next turns; `on` brings them back. `--no-instructions` on the command line or `load_instructions = false` in settings starts that way. Independent of `:system`. See `:h instructions`."},
         {"session", {}, "", "where this transcript is", "*:session*\nThis session's file and the sessions directory. See `:h sessions`."},
+        {"gpu", {"vram", "memory"}, "[free [all|llamacpp|comfyui]]", "who holds the card; free memory without stopping anything",
+         "*:gpu* *maic gpu* *vram* *out of memory*\n"
+         "`:gpu` (and `maic gpu`) shows who holds the card without nvidia-smi: the model resident in llama-server, and ComfyUI's own view of VRAM used and total. `:gpu free` unloads llama-server's model (it reloads on the next request) and asks ComfyUI to unload its models and release its caches; `:gpu free llamacpp` or `:gpu free comfyui` does one side. Nothing is stopped. When a service fails to start, `maic up` reads its log and says why in plain words: a CUDA out of memory names who holds the card and this command; a port in use, a missing Python module and a driver mismatch are recognised too. Starting a service marked `needs_gpu` (ComfyUI) frees llama-server's model first by itself."},
         {"path", {"paths", "places", "mcd", "cd"}, "[NAME] [copy]", "a place maic knows: show it, or copy it to the clipboard",
          "*:path* *:open* *maic path* *mcd*\n"
          "MAIC keeps a registry of every place it knows by a short name: `workspace`, `session` (this transcript), `sessions`, `state`, `config`, `settings`, `instructions`, `logs`, `root`, `tools`, `models`, `models/llamacpp`, `vendor`, `vendor/<service>`, `workflows`, `templates`, and every `maic artifacts` entry as `owner/name`. A unique prefix is enough (`:path work`, `:path sess`).\n\n"
@@ -302,6 +306,7 @@ std::vector<std::string> complete_argument(const std::string& command, const std
     else if (cmd == "ban") candidates = {"add", "token", "remove", "tokens", "clear", "retries", "case", "list"};
     else if (cmd == "harness") candidates = {"smart", "dumb"};
     else if (cmd == "allow") candidates = {"remove", "list"};
+    else if (cmd == "gpu") candidates = {"free", "free llamacpp", "free comfyui"};
     else if (cmd == "path" || cmd == "open") candidates = {"workspace", "session", "sessions", "state", "config", "settings", "instructions", "logs", "root", "tools", "models", "vendor", "workflows", "templates", "comfyui/outputs", "comfyui/workflows", "comfyui/templates", "maic/sessions", "maic/service-logs"};
     else if (cmd == "sampling") candidates = {"xtc", "temperature", "top_k", "top_p", "min_p", "seed", "repeat_penalty", "dry_multiplier", "top_n_sigma", "unset", "reset"};
     else if (cmd == "compact") candidates = {"prune", "head", "all"};

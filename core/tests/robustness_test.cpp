@@ -982,6 +982,29 @@ int main() {
         bool marked = false;
         for (const auto& d : defs) marked = marked || (d.name == "comfyui" && d.needs_gpu);
         expect(marked, "services/comfyui.json is marked needs_gpu");
+        // explain_exit reads the log's tail.
+        ServiceDef dead;
+        dead.name = "zz-test-svc";
+        dead.port = 9;
+        fs::create_directories(service_log_path(dead).parent_path());
+        write_file(service_log_path(dead), "starting\ntorch.AcceleratorError: CUDA error: out of memory\nReturning 2 (CUDA_ERROR_OUT_OF_MEMORY)\n");
+        std::string why = explain_exit(dead, {lc});
+        expect(why.rfind("CUDA out of memory", 0) == 0 && why.find("maic gpu") != std::string::npos, "an out-of-memory exit is explained with the way out: " + why);
+        write_file(service_log_path(dead), "OSError: [Errno 98] Address already in use\n");
+        expect(explain_exit(dead, {lc}).find("port 9 is already in use") == 0, "a port clash is explained");
+        write_file(service_log_path(dead), "ModuleNotFoundError: No module named 'aiohttp'\n");
+        expect(explain_exit(dead, {lc}).find("Python module is missing") != std::string::npos, "a missing module is explained");
+        write_file(service_log_path(dead), "all fine\n");
+        expect(explain_exit(dead, {lc}).empty(), "an unrecognised log explains nothing");
+        fs::remove(service_log_path(dead));
+        GpuReport g;
+        g.llamacpp_running = true;
+        g.llamacpp_models = {"Big"};
+        g.comfyui_running = true;
+        g.comfyui_vram_used = 3L << 30;
+        g.comfyui_vram_total = 8L << 30;
+        std::string t = g.text();
+        expect(t.find("holds Big") != std::string::npos && t.find("3.0 GB used of 8.0 GB") != std::string::npos, "the report names the holder and the figures: " + t);
     }
 
     section("tripwire scope");

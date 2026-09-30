@@ -50,4 +50,22 @@ std::vector<std::string> unload_resident(const std::string& base_url);
 // ("" when nothing had to happen).
 std::string free_gpu_for(const ServiceDef& def, const std::vector<ServiceDef>& services);
 
+// Who holds the card, without nvidia-smi: llama-server's resident models and ComfyUI's own VRAM figures.
+struct GpuReport {
+    std::vector<std::string> llamacpp_models;  // resident in llama-server ("" entries never)
+    bool llamacpp_running = false;
+    bool comfyui_running = false;
+    long comfyui_vram_used = -1;   // bytes, from ComfyUI's /system_stats; -1 when unknown
+    long comfyui_vram_total = -1;
+    std::string text() const;      // a few lines for a person
+};
+GpuReport gpu_report(const std::vector<ServiceDef>& services);
+// Frees what can be freed without stopping anything: llama-server unloads its models, ComfyUI unloads its
+// models and releases cached memory (its /free route). `what` is "all", "llamacpp" or "comfyui".
+std::string gpu_free(const std::vector<ServiceDef>& services, const std::string& what = "all");
+
+// Why a service died, from the tail of its log: a CUDA out of memory, a missing module, a port in use, and
+// what to do about it. "" when nothing recognisable is there.
+std::string explain_exit(const ServiceDef& def, const std::vector<ServiceDef>& services);
+
 }  // namespace maic

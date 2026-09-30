@@ -1432,7 +1432,12 @@ void App::run_command(const std::string& line) {
                     require_armed("start services");
                     if (std::string freed = free_gpu_for(s, services()); !freed.empty()) post(Kind::Notice, freed);
                     post(Kind::Notice, "starting " + s.name + "…");
-                    post(Kind::Notice, start_service(s) ? s.name + " is ready" : s.name + " is still starting");
+                    try {
+                        post(Kind::Notice, start_service(s) ? s.name + " is ready" : s.name + " is still starting");
+                    } catch (const std::exception& e) {
+                        std::string why = explain_exit(s, services());
+                        post(Kind::Error, std::string(e.what()) + (why.empty() ? "" : "\n" + why));
+                    }
                 } else {
                     stop_service(s);
                     post(Kind::Notice, s.name + " stopped");
@@ -1701,6 +1706,18 @@ void App::run_command(const std::string& line) {
             post(Kind::Notice, "this session: " + log_path() + (settings_.record ? "\nhome: " + log_->path().parent_path().lexically_relative(sessions_dir()).string() +
                                    "  (maic sessions rehome " + log_->path().stem().string() + " project|general|NAME moves it)" : "\nnot kept: it lives in the runtime directory and is gone at logout") + "\n"
                                    "all sessions: " + sessions_dir().string() + "\n`maic sessions` lists them, `maic artifacts` cleans");
+        } else if (cmd == "gpu" || cmd == "vram") {
+            try {
+                if (arg.rfind("free", 0) == 0) {
+                    require_armed("free GPU memory");
+                    std::string what = arg.size() > 5 ? arg.substr(5) : "all";
+                    post(Kind::Notice, gpu_free(services(), what));
+                } else {
+                    post(Kind::Notice, gpu_report(services()).text() + ":gpu free [all|llamacpp|comfyui] releases memory without stopping anything");
+                }
+            } catch (const std::exception& e) {
+                post(Kind::Error, e.what());
+            }
         } else if (cmd == "path" || cmd == "paths") {
             std::istringstream a(arg);
             std::string name, what;

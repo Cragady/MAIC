@@ -4,6 +4,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <fstream>
+
+#include <deque>
+
 #include "maic/tripwire.hpp"
 #include "maic/vendor.hpp"
 
@@ -111,6 +115,124 @@ std::string free_gpu_for(const ServiceDef& def, const std::vector<ServiceDef>& s
         for (const auto& f : freed) names += (names.empty() ? "" : ", ") + f;
         return "unloaded " + names + " from llamacpp to free the GPU for " + def.name + " (it reloads on the next request)";
     }
+    return "";
+}
+
+namespace {
+const ServiceDef* by_name(const std::vector<ServiceDef>& services, const std::string& name) {
+    for (const auto& s : services) {
+        if (s.name == name) return &s;
+    }
+    return nullptr;
+}
+std::string gib(long bytes) {
+    char b[32];
+    snprintf(b, sizeof(b), "%.1f GB", static_cast<double>(bytes) / (1024.0 * 1024 * 1024));
+    return b;
+}
+}  // namespace
+
+GpuReport gpu_report(const std::vector<ServiceDef>& services) {
+    GpuReport r;
+    if (const auto* lc = by_name(services, "llamacpp"); lc && service_status(*lc).state == ServiceState::Running) {
+        r.llamacpp_running = true;
+        r.llamacpp_models = resident_models("http://127.0.0.1:" + std::to_string(lc->port));
+    }
+    if (const auto* cf = by_name(services, "comfyui"); cf && service_status(*cf).state == ServiceState::Running) {
+        r.comfyui_running = true;
+        httplib::Client c("http://127.0.0.1:" + std::to_string(cf->port));
+        c.set_connection_timeout(2);
+        c.set_read_timeout(5);
+        if (auto res = c.Get("/system_stats"); res && res->status == 200) {
+            auto j = nlohmann::json::parse(res->body, nullptr, false);
+            for (const auto& d : j.value("devices", nlohmann::json::array())) {
+                long total = d.value("vram_total", 0L), free = d.value("vram_free", 0L);
+                if (total > 0) {
+                    r.comfyui_vram_total = total;
+                    r.comfyui_vram_used = total - free;
+                    break;
+                }
+            }
+        }
+    }
+    return r;
+}
+
+std::string GpuReport::text() const {
+    std::string out;
+    if (llamacpp_running) {
+        out += "llamacpp: ";
+        if (llamacpp_models.empty()) out += "running, no model resident\n";
+        else {
+            out += "holds ";
+            for (size_t i = 0; i < llamacpp_models.size(); ++i) out += (i ? ", " : "") + llamacpp_models[i];
+            out += " (maic gpu free llamacpp unloads; it reloads on the next request)\n";
+        }
+    } else {
+        out += "llamacpp: not running\n";
+    }
+    if (comfyui_running) {
+        out += "comfyui: running";
+        if (comfyui_vram_total > 0) out += ", the card as it sees it: " + gib(comfyui_vram_used) + " used of " + gib(comfyui_vram_total);
+        out += " (maic gpu free comfyui unloads its models and caches)\n";
+    } else {
+        out += "comfyui: not running\n";
+    }
+    return out;
+}
+
+std::string gpu_free(const std::vector<ServiceDef>& services, const std::string& what) {
+    std::string out;
+    if (what == "all" || what == "llamacpp") {
+        if (const auto* lc = by_name(services, "llamacpp"); lc && service_status(*lc).state == ServiceState::Running) {
+            auto freed = unload_resident("http://127.0.0.1:" + std::to_string(lc->port));
+            std::string names;
+            for (const auto& f : freed) names += (names.empty() ? "" : ", ") + f;
+            out += freed.empty() ? "llamacpp: nothing was resident\n" : "llamacpp: unloaded " + names + "\n";
+        } else if (what == "llamacpp") {
+            out += "llamacpp: not running\n";
+        }
+    }
+    if (what == "all" || what == "comfyui") {
+        if (const auto* cf = by_name(services, "comfyui"); cf && service_status(*cf).state == ServiceState::Running) {
+            httplib::Client c("http://127.0.0.1:" + std::to_string(cf->port));
+            c.set_connection_timeout(2);
+            c.set_read_timeout(30);
+            auto res = c.Post("/free", R"({"unload_models":true,"free_memory":true})", "application/json");
+            out += res && res->status == 200 ? "comfyui: models unloaded and caches released\n" : "comfyui: /free failed\n";
+        } else if (what == "comfyui") {
+            out += "comfyui: not running\n";
+        }
+    }
+    if (what != "all" && what != "llamacpp" && what != "comfyui") throw std::runtime_error("maic gpu free [all|llamacpp|comfyui]");
+    return out;
+}
+
+std::string explain_exit(const ServiceDef& def, const std::vector<ServiceDef>& services) {
+    std::ifstream in(service_log_path(def));
+    if (!in) return "";
+    std::deque<std::string> tail;
+    for (std::string line; std::getline(in, line);) {
+        tail.push_back(line);
+        if (tail.size() > 80) tail.pop_front();
+    }
+    std::string text;
+    for (const auto& l : tail) text += l + "\n";
+    auto has = [&](const char* s) { return text.find(s) != std::string::npos; };
+    if (has("out of memory") || has("CUDA_ERROR_OUT_OF_MEMORY") || has("cudaErrorMemoryAllocation") || has("failed to allocate")) {
+        GpuReport g = gpu_report(services);
+        std::string who;
+        if (!g.llamacpp_models.empty()) {
+            who = "llamacpp holds ";
+            for (size_t i = 0; i < g.llamacpp_models.size(); ++i) who += (i ? ", " : "") + g.llamacpp_models[i];
+        } else if (g.comfyui_running && def.name != "comfyui") {
+            who = "comfyui holds its models";
+        }
+        return "CUDA out of memory: the card is full" + (who.empty() ? std::string(" (maic gpu shows who holds it)") : " (" + who + "). maic gpu free releases it, then maic up " + def.name + " again");
+    }
+    if (has("Address already in use")) return "port " + std::to_string(def.port) + " is already in use: another copy is running, or something else took the port (maic status)";
+    if (has("ModuleNotFoundError") || has("No module named")) return "a Python module is missing: the venv is incomplete (maic vendor update " + def.name + " rebuilds it)";
+    if (has("Driver/library version mismatch")) return "the NVIDIA driver in the kernel does not match the libraries on disk: a reboot fixes it";
     return "";
 }
 
