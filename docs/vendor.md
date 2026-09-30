@@ -6,7 +6,6 @@ MAIC can install the services it drives (llama.cpp, the default model server; Co
 ~/.local/state/maic/
 ├── vendor/
 │   ├── ComfyUI          -> the pinned submodule checkout (or an install you adopted)
-│   ├── comfyui-ollama   -> the pinned custom-node checkout
 │   ├── llama.cpp        -> the pinned submodule checkout (or an adopted one)
 │   ├── llama.cpp-build/ its out-of-tree CMake build (bin/llama-server, ...)
 │   ├── llamacpp/
@@ -36,8 +35,7 @@ ollama/cli-history    0 B        0      ~/.local/state/maic/vendor/ollama/cli-hi
 
 | Service | Kind | Pinned | Install |
 | :--- | :--- | :--- | :--- |
-| `comfyui` | submodule `vendor/ComfyUI` | `v0.38.0` | `vendor/comfyui.sh`: uv venv with Python 3.13 (system Python untouched), CUDA 13 torch, requirements, the custom node linked in, `extra_model_paths.yaml` from `models_dir`, workflows moved into the artifact tree |
-| `comfyui-ollama` | submodule `vendor/comfyui-ollama` | commit `6db7560` | patched with `vendor/patches/comfyui-ollama-think.patch` (passes `think` through, so Qwen3.5 answers instead of reasoning until the token limit) |
+| `comfyui` | submodule `vendor/ComfyUI` | `v0.38.0` | `vendor/comfyui.sh`: uv venv with Python 3.13 (system Python untouched), CUDA 13 torch, requirements, MAIC's custom nodes linked in (`vendor/comfyui-maic-llamacpp`, the chat nodes for llama-server; `vendor/comfyui-maic-templates`, the template shelf), `extra_model_paths.yaml` from `models_dir`, workflows moved into the artifact tree |
 | `llamacpp` | submodule `vendor/llama.cpp` | `b11284` | `vendor/llamacpp.sh`: CMake out of tree into `llama.cpp-build/`, Release, CUDA when `nvcc` is found, no TLS (the binaries cannot download models), targets `llama-server llama-cli llama-quantize llama-gguf-split`, `llamacpp/bin` link. See [llamacpp.md](llamacpp.md) |
 | `ollama` | release | `v0.35.0` | `vendor/ollama.sh`: download, sha256 against the release's `sha256sum.txt` (a mismatch aborts), unpack, `current` link |
 

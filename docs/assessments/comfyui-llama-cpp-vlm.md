@@ -1,5 +1,7 @@
 # Assessment: ComfyUI-llama-cpp_vlm as a replacement for comfyui-ollama
 
+**Done (2026-09-30):** the section 7 alternative is built as `vendor/comfyui-maic-llamacpp` (nodes `MaicLlmServer`, `MaicLlmChat`), `comfyui-ollama` and its patch are gone, and `example_workflows/Story chat (llama.cpp).json` is the rewritten workflow.
+
 Date: 2026-09-30. Read-only review of `~/dev2/tools-and-things/ComfyUI-llama-cpp_vlm` (upstream `lihaoyun6/ComfyUI-llama-cpp_vlm`, HEAD `f2209cc`, 2026-08-17) against the vendored `~/dev2/tools-and-things/comfyui-ollama` (`stavsap/comfyui-ollama` at `6db7560` plus `vendor/patches/comfyui-ollama-think.patch`). Question: can it replace the Ollama nodes in Micaiah's ComfyUI workflows so ComfyUI no longer needs Ollama at all.
 
 **Verdict: reject as a vendored replacement.** It has no license file, it loads the GGUF in-process (a second copy of the model next to MAIC's `llama-server`, on an 8 GB card), it cannot express the per-run `think` switch that the Ollama patch exists for, and the two-model "Story chat" cannot be rebuilt on its single global model slot. The right replacement is a small MAIC-owned node that talks to `llama-server` on `127.0.0.1:8081` over HTTP (section 7). Nothing in the Manga workflows depends on Ollama, so only one workflow is affected.

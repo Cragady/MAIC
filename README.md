@@ -129,7 +129,7 @@ MAIC/
 ├── cli/        `maic`: the agent UI (vim keys, modes, sessions) and service/harness commands. See cli/README.md
 ├── harness/    maic-lock (root-owned tripwire helper) + its installer
 ├── services/   one JSON file per service MAIC runs (llamacpp, comfyui, ollama)
-├── vendor/     pinned submodules (llama.cpp, ComfyUI, comfyui-ollama), patches, install scripts, manifest.json. See docs/vendor.md
+├── vendor/     pinned submodules (llama.cpp, ComfyUI), MAIC's own ComfyUI nodes (comfyui-maic-*), install scripts, manifest.json. See docs/vendor.md
 ├── tools/      examples of user-defined Lua tools (docs/tools.md); the polyglot runtimes are planned
 ├── server/     maic-server: sessions over HTTP with server-sent events, the phone web client. See docs/remote.md
 └── docs/
