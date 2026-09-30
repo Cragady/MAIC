@@ -495,6 +495,21 @@ int main() {
         std::string o8 = pj.feed("call 555-1234 now");
         o8 += pj.flush();
         expect(pj.triggered() && pj.hit() == "555-1234" && o8 == "call ", "string and regex stages combine");
+        write_file(ws / "bans.txt", "# phrases\npelican\n\n  \nas an AI \n");
+        auto lines = expand_ban_entry("@" + (ws / "bans.txt").string());
+        expect(lines == std::vector<std::string>{"pelican", "as an AI"}, "@file gives one entry per line, comments and blanks skipped, trailing space trimmed");
+        expect(expand_ban_entry("plain") == std::vector<std::string>{"plain"}, "anything else is one entry");
+        bool missing = false;
+        try {
+            expand_ban_entry("@" + (ws / "nope.txt").string());
+        } catch (const std::exception&) {
+            missing = true;
+        }
+        expect(missing, "a missing ban file is an error");
+        write_file(ws / "toks.txt", "1234\n▲\n");
+        Bans bf = Bans::from_json({{"strings", {"@" + (ws / "bans.txt").string(), "x"}}, {"tokens", {"@" + (ws / "toks.txt").string()}}});
+        expect(bf.strings == std::vector<std::string>{"pelican", "as an AI", "x"} && bf.tokens.size() == 2 && bf.tokens[0] == 1234 && bf.tokens[1] == "▲",
+               "settings entries expand @file too, numeric token lines become ids");
         Bans bad;
         bad.patterns = {"(unclosed"};
         BanFilter pk(bad);

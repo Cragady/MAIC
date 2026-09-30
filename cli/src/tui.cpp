@@ -1441,20 +1441,31 @@ void App::run_command(const std::string& line) {
                 out += "\nbanned tokens (" + std::to_string(b.tokens.size()) + "):";
                 for (size_t i = 0; i < b.tokens.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". " + b.tokens[i].dump();
                 out += "\nretries " + std::to_string(b.retries) + ", then replaced by \"" + b.replacement + "\"" + (b.ignore_case ? ", case-insensitive" : "") +
-                       "\n:ban add TEXT · :ban pattern REGEX · :ban token ID|TEXT · :ban remove N · :ban patterns remove N · :ban tokens remove N · :ban clear · :ban retries N · :ban case on|off · :ban window N";
+                       "\n:ban add TEXT|@FILE · :ban pattern REGEX|@FILE · :ban token ID|TEXT|@FILE · :ban remove N · :ban patterns remove N · :ban tokens remove N · :ban clear · :ban retries N · :ban case on|off · :ban window N";
                 post(Kind::Notice, out);
             } else if (sub == "pattern" && !rest.empty()) {
-                regex_t re;
-                int rc = regcomp(&re, rest.c_str(), REG_EXTENDED | (b.ignore_case ? REG_ICASE : 0));
-                if (rc != 0) {
-                    char err[200];
-                    regerror(rc, &re, err, sizeof(err));
-                    post(Kind::Error, std::string("not a valid POSIX extended regex: ") + err);
-                } else {
-                    regfree(&re);
-                    b.patterns.push_back(rest);
-                    post(Kind::Notice, "banned /" + rest + "/ (from the next model call)");
+                std::vector<std::string> entries;
+                try {
+                    entries = expand_ban_entry(rest);
+                } catch (const std::exception& e) {
+                    post(Kind::Error, e.what());
+                    return;
                 }
+                int added = 0;
+                for (const auto& pat : entries) {
+                    regex_t re;
+                    int rc = regcomp(&re, pat.c_str(), REG_EXTENDED | (b.ignore_case ? REG_ICASE : 0));
+                    if (rc != 0) {
+                        char err[200];
+                        regerror(rc, &re, err, sizeof(err));
+                        post(Kind::Error, "not a valid POSIX extended regex: /" + pat + "/: " + err);
+                        continue;
+                    }
+                    regfree(&re);
+                    b.patterns.push_back(pat);
+                    ++added;
+                }
+                if (added) post(Kind::Notice, added == 1 && entries.size() == 1 ? "banned /" + entries[0] + "/ (from the next model call)" : "banned " + std::to_string(added) + " patterns from " + rest.substr(1));
             } else if (sub == "patterns" && rest.rfind("remove ", 0) == 0) {
                 size_t n = static_cast<size_t>(std::atoi(rest.c_str() + 7));
                 if (n >= 1 && n <= b.patterns.size()) b.patterns.erase(b.patterns.begin() + static_cast<long>(n - 1)), post(Kind::Notice, "removed");
@@ -1462,13 +1473,28 @@ void App::run_command(const std::string& line) {
             } else if (sub == "window" && !rest.empty()) {
                 b.window = std::max(8, std::atoi(rest.c_str()));
                 post(Kind::Notice, "regex hold-back window: " + std::to_string(b.window) + " characters");
-            } else if (sub == "add" && !rest.empty()) {
-                b.strings.push_back(rest);
-                post(Kind::Notice, "banned \"" + rest + "\" (from the next model call)");
-            } else if (sub == "token" && !rest.empty()) {
-                bool numeric = !rest.empty() && std::all_of(rest.begin(), rest.end(), [](unsigned char c) { return std::isdigit(c); });
-                b.tokens.push_back(numeric ? nlohmann::json(std::stoll(rest)) : nlohmann::json(rest));
-                post(Kind::Notice, "banned token " + (numeric ? rest : "\"" + rest + "\"") + (numeric ? " (logit_bias on OpenAI-compatible providers only)" : ""));
+            } else if ((sub == "add" || sub == "token") && !rest.empty()) {
+                std::vector<std::string> entries;
+                try {
+                    entries = expand_ban_entry(rest);
+                } catch (const std::exception& e) {
+                    post(Kind::Error, e.what());
+                    return;
+                }
+                for (const auto& e : entries) {
+                    if (sub == "add") {
+                        b.strings.push_back(e);
+                        continue;
+                    }
+                    bool numeric = std::all_of(e.begin(), e.end(), [](unsigned char c) { return std::isdigit(c); });
+                    b.tokens.push_back(numeric ? nlohmann::json(std::stoll(e)) : nlohmann::json(e));
+                }
+                if (entries.size() == 1 && rest[0] != '@') {
+                    post(Kind::Notice, sub == "add" ? "banned \"" + rest + "\" (from the next model call)"
+                                                    : "banned token " + rest + (b.tokens.back().is_number() ? " (logit_bias on OpenAI-compatible providers only)" : ""));
+                } else {
+                    post(Kind::Notice, "banned " + std::to_string(entries.size()) + (sub == "add" ? " phrases" : " tokens") + " from " + rest.substr(1));
+                }
             } else if (sub == "remove" && !rest.empty()) {
                 size_t n = static_cast<size_t>(std::atoi(rest.c_str()));
                 if (n >= 1 && n <= b.strings.size()) b.strings.erase(b.strings.begin() + static_cast<long>(n - 1)), post(Kind::Notice, "removed");

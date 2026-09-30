@@ -22,6 +22,10 @@ namespace maic {
 // Regex bans (`patterns`, POSIX extended) are matched over the same stream. A regex cannot say how much more
 // text might complete a match, so the filter keeps the last `window` characters back until more arrives or
 // the reply ends; a pattern longer than the window can slip partly onto the screen before it is cut.
+// A ban given as "@path" stands for the file's lines: one entry per non-empty line, `#` lines skipped, `~`
+// expanded. Anything else is one entry. Throws when the file cannot be read.
+std::vector<std::string> expand_ban_entry(const std::string& value);
+
 struct Bans {
     std::vector<std::string> strings;
     std::vector<std::string> patterns;

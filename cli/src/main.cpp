@@ -10,6 +10,7 @@
 #include "maic/settings.hpp"
 #include "maic/status.hpp"
 #include "maic/tripwire.hpp"
+#include "maic/bans.hpp"
 #include "maic/lua.hpp"
 #include "maic/lua_tools.hpp"
 #include "maic/vendor.hpp"
@@ -43,8 +44,11 @@ void usage(std::ostream& out = std::cerr) {
                  "                                          FILE \"-\" reads stdin (then the prompt can't also be stdin)\n"
                  "       --system TEXT|@FILE, -S            operator instructions placed first in the system prompt (front-loads behaviour)\n"
                  "       --no-instructions                  load no MAIC.md / AGENTS.md anywhere; combines with --system\n"
-                 "       --ban TEXT                         a phrase the model must not say (repeatable; also bans in settings, :ban)\n"
-                 "       --ban-pattern REGEX                a POSIX extended regex the reply must not match (repeatable; maic help bans)\n"
+                 "       --ban TEXT|@FILE                   a phrase the model must not say, or a file with one per line (repeatable; :ban)\n"
+                 "       --ban-pattern REGEX|@FILE          a POSIX extended regex the reply must not match, or a file of them (maic help bans)\n"
+                 "       --xtc P[,T]                        exclude top choices: probability and threshold (0.5,0.1); llama.cpp-style\n"
+                 "                                          servers only, Ollama has no XTC (maic help sampling)\n"
+                 "       --sampling KEY=VALUE               any sampler key for this run (temperature=0.7, min_p=0.05, seed=7); repeatable\n"
                  "       --harness smart|dumb               smart (default): a model reviews commands and writes the rules would let\n"
                  "                                          through without asking; dumb: the rule list alone (maic help harness)\n"
                  "       --accept-dumb-auto                 skip the warning when combining --harness dumb with --mode auto\n"
@@ -385,14 +389,32 @@ int main(int argc, char** argv) {
             else if (a == "--no-instructions") tui.load_instructions = headless.load_instructions = false;
             else if (a == "--harness") tui.harness = headless.harness = value("--harness");
             else if (a == "--accept-dumb-auto") tui.accept_dumb_auto = headless.accept_dumb_auto = true;
-            else if (a == "--ban-pattern") {
-                std::string b = value("--ban-pattern");
-                tui.ban_patterns.push_back(b);
-                headless.ban_patterns.push_back(b);
+            else if (a == "--xtc") {
+                // --xtc P or --xtc P,T (threshold defaults to 0.1)
+                std::string v = value("--xtc");
+                std::string p = v, t = "0.1";
+                if (auto c = v.find(','); c != std::string::npos) p = v.substr(0, c), t = v.substr(c + 1);
+                nlohmann::json pj = nlohmann::json::parse(p, nullptr, false), tj = nlohmann::json::parse(t, nullptr, false);
+                if (!pj.is_number() || !tj.is_number()) throw std::runtime_error("--xtc takes a probability, or probability,threshold (e.g. 0.5 or 0.5,0.1)");
+                tui.sampling["xtc_probability"] = headless.sampling["xtc_probability"] = pj;
+                tui.sampling["xtc_threshold"] = headless.sampling["xtc_threshold"] = tj;
+            } else if (a == "--sampling") {
+                std::string kv = value("--sampling");
+                auto eq = kv.find('=');
+                if (eq == std::string::npos || eq == 0) throw std::runtime_error("--sampling takes KEY=VALUE (e.g. temperature=0.7, min_p=0.05)");
+                nlohmann::json v = nlohmann::json::parse(kv.substr(eq + 1), nullptr, false);
+                if (v.is_discarded()) v = kv.substr(eq + 1);
+                tui.sampling[kv.substr(0, eq)] = headless.sampling[kv.substr(0, eq)] = v;
+            } else if (a == "--ban-pattern") {
+                for (const auto& b : maic::expand_ban_entry(value("--ban-pattern"))) {
+                    tui.ban_patterns.push_back(b);
+                    headless.ban_patterns.push_back(b);
+                }
             } else if (a == "--ban") {
-                std::string b = value("--ban");
-                tui.bans.push_back(b);
-                headless.bans.push_back(b);
+                for (const auto& b : maic::expand_ban_entry(value("--ban"))) {
+                    tui.bans.push_back(b);
+                    headless.bans.push_back(b);
+                }
             }
             else if (a == "--context" || a == "-C") {
                 std::string f = value("--context");

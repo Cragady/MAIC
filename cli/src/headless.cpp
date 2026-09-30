@@ -182,6 +182,7 @@ int run_headless(const HeadlessOptions& options) {
         nlohmann::json s = settings.sampling.is_object() ? settings.sampling : nlohmann::json::object();
         nlohmann::json per_provider = provider.options.value("sampling", nlohmann::json::object());
         for (const auto& [k, v] : per_provider.items()) s[k] = v;
+        for (const auto& [k, v] : options.sampling.items()) s[k] = v;  // the command line wins
         agent.sampling = s;
     }
     settings.bans.patterns.insert(settings.bans.patterns.end(), options.ban_patterns.begin(), options.ban_patterns.end());

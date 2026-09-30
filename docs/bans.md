@@ -9,6 +9,10 @@ Three tools, which combine. All of them are configured in `settings.lua` under `
 | Token bans (`bans.tokens`, `:ban token`) | OpenAI-compatible servers (llama.cpp, vLLM, LM Studio, ...) | `logit_bias` at minus infinity: the token can never be chosen, so the model takes another path |
 | XTC (`sampling.xtc_probability`, `:sampling xtc`) | llama.cpp-based servers | a sampler that throws away the top choices, so stock phrases lose their head start |
 
+## Files
+
+Wherever a ban is given, `@path` stands for a file: one entry per line, blank lines and lines starting with `#` skipped, `~` expanded. `--ban @~/bans/phrases.txt`, `--ban-pattern @~/bans/tics.re`, `:ban add @file`, `:ban pattern @file`, `:ban token @file` (numeric lines are ids), and in settings `strings = { "@~/bans/phrases.txt" }`, `patterns = { "@~/bans/tics.re" }`. A missing file is an error at the point it is named.
+
 ## Why not constrained decoding
 
 Grammar-guided or regex-guided decoding (GBNF on llama.cpp, guided regex on vLLM and friends) constrains the reply to *match* a grammar. Those engines have no complement and no negative lookahead, so "anything except a reply containing X" cannot be written down for them. That is why MAIC bans after the fact: the filter is provider-independent, it sees the exact text, and the model is told what it did so the retry can be different. The cost is one or more extra calls when a ban fires, which `retries` bounds.

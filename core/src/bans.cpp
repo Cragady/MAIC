@@ -2,8 +2,26 @@
 
 #include <algorithm>
 #include <cctype>
+#include <stdexcept>
+#include <fstream>
+#include <cstdlib>
 
 namespace maic {
+
+std::vector<std::string> expand_ban_entry(const std::string& value) {
+    if (value.empty() || value[0] != '@') return {value};
+    std::string p = value.substr(1);
+    if (!p.empty() && p[0] == '~') p = std::string(std::getenv("HOME")) + p.substr(1);
+    std::ifstream in(p);
+    if (!in) throw std::runtime_error("ban file not found: " + p);
+    std::vector<std::string> out;
+    for (std::string line; std::getline(in, line);) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        out.push_back(line);
+    }
+    return out;
+}
 
 nlohmann::json Bans::to_json() const {
     return {{"strings", strings}, {"patterns", patterns}, {"tokens", tokens}, {"retries", retries}, {"replacement", replacement}, {"ignore_case", ignore_case}, {"window", window}};
@@ -13,13 +31,21 @@ Bans Bans::from_json(const nlohmann::json& j) {
     Bans b;
     if (!j.is_object()) return b;
     for (const auto& s : j.value("strings", nlohmann::json::array())) {
-        if (s.is_string() && !s.get<std::string>().empty()) b.strings.push_back(s.get<std::string>());
+        if (!s.is_string() || s.get<std::string>().empty()) continue;
+        for (const auto& e : expand_ban_entry(s.get<std::string>())) b.strings.push_back(e);
     }
     for (const auto& p : j.value("patterns", nlohmann::json::array())) {
-        if (p.is_string() && !p.get<std::string>().empty()) b.patterns.push_back(p.get<std::string>());
+        if (!p.is_string() || p.get<std::string>().empty()) continue;
+        for (const auto& e : expand_ban_entry(p.get<std::string>())) b.patterns.push_back(e);
     }
     for (const auto& t : j.value("tokens", nlohmann::json::array())) {
-        if (t.is_number_integer() || (t.is_string() && !t.get<std::string>().empty())) b.tokens.push_back(t);
+        if (t.is_number_integer()) b.tokens.push_back(t);
+        else if (t.is_string() && !t.get<std::string>().empty()) {
+            for (const auto& e : expand_ban_entry(t.get<std::string>())) {
+                bool numeric = std::all_of(e.begin(), e.end(), [](unsigned char c) { return std::isdigit(c); });
+                b.tokens.push_back(numeric ? nlohmann::json(std::stoll(e)) : nlohmann::json(e));
+            }
+        }
     }
     b.retries = j.value("retries", b.retries);
     b.replacement = j.value("replacement", b.replacement);
