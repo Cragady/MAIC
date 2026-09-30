@@ -102,6 +102,8 @@ int main() {
         expect(fake.requests.size() == 1 && fake.requests[0]["messages"][0]["role"] == "system" &&
                fake.requests[0]["messages"][0]["content"].get<std::string>().find("inside MAIC") != std::string::npos,
                "the model gets the MAIC briefing as the system prompt");
+        std::string sys = fake.requests[0]["messages"][0]["content"];
+        expect(sys.find("You are not the user") != std::string::npos, "the briefing separates the agent from the user");
     }
 
     section("mode change is appended, not rewritten");

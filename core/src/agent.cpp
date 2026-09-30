@@ -65,16 +65,21 @@ std::string mode_rule(Mode mode) {
 
 std::string Agent::instructions_text() const {
     std::string out;
+    if (instructions_.empty()) return out;
+    out += "\n# Standing instructions\n"
+           "The user wrote the files below about themselves and about how they want you to work. Follow them. "
+           "In them, \"I\", \"me\" and \"my\" mean the user, never you: they describe the person you are talking to. "
+           "You are MAIC's agent, a separate thing from the user.\n";
     for (const auto& f : instructions_) {
-        out += "\n# Instructions from " + f.path.string() + " (follow these)\n" + f.text + "\n";
+        out += "\n## " + f.path.string() + "\n" + f.text + "\n";
     }
     return out;
 }
 
 std::string Agent::system_prompt() const {
     std::string prompt =
-        "You are the agent inside MAIC, a terminal coding tool on the user's own machine. The user talks to you "
-        "through a vim-style interface; you work through tools.\n"
+        "You are the agent inside MAIC, a terminal coding tool on the user's own machine. The user is a person talking "
+        "to you through a vim-style interface; you work through tools. You are not the user.\n"
         "\n"
         "# Where you are\n"
         "Workspace: " + harness_.workspace().string() + " (relative paths resolve here; everything you do is scoped to it).\n"

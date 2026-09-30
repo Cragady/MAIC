@@ -13,6 +13,7 @@ maic -p "explain main.cpp"         # one turn, no UI, no transcript; --record ke
 maic sessions                      # every session, with a preview
 maic artifacts                     # where MAIC and its services keep transcripts, logs, outputs
 maic settings init                 # a documented settings file (docs/settings.md)
+maic doctor                        # the machine, the tools MAIC needs, installed models, a recommended setup
 ```
 
 ## Screen
@@ -34,7 +35,8 @@ The input starts in normal mode, like opening vim: `i` to type. Cursor: a bar in
 | Where | Keys |
 | :--- | :--- |
 | insert | type; **Enter** new line; **Esc** to normal; Ctrl-W / Ctrl-U delete word / line; Ctrl-Y pastes the register; ↑ ↓ or Ctrl-P / Ctrl-N prompt history |
-| normal (input) | `i a I A o O` insert; `h j k l w b e 0 ^ $` move (Enter = down a line); `x X D C S` edit; `d c y` + motion, `dd cc yy`; `v V` select; `p P` paste; `u` undo, **Ctrl-R** redo (multi-level; an insert session is one step); counts (`3w`); `:e` or **Ctrl-X Ctrl-E** opens the input in `$VISUAL` / `$EDITOR` / nvim as markdown and loads it back when you quit |
+| normal (input) | `i a I A o O` insert; `h j k l w b e 0 ^ $` move (Enter = down a line); `x X D C S` edit; `d c y` + motion, `dd cc yy Y`; text objects after `d c y` or in visual mode: `iw aw iW aW i" a" i' i` i( a( ib i[ a[ i{ a{ iB i< a<` (so `ciw`, `di"`, `ya(`, `viw`); `v V` select; `p P` paste; `u` undo, **Ctrl-R** redo (multi-level; an insert session is one step); counts (`3w`); `:e` or **Ctrl-X Ctrl-E** opens the input in `$VISUAL` / `$EDITOR` / nvim as markdown and loads it back when you quit |
+| clipboard | `"+y` / `"*y` before any yank sends it to the system clipboard; `"+p` pastes from it; the **leader** (Space by default, `leader` in settings) then `y` yanks the line (normal) or the selection (visual) to the clipboard, leader then `p`/`P` pastes from it. In the conversation window every yank reaches the clipboard; `yiw`, `yw`, `y$`, `Y`, `yy` work there |
 | normal (input empty) | `j k` Ctrl-D/U Ctrl-F/B `G` scroll the conversation without leaving the input; `v` / `V` jump into the conversation window selecting |
 | conversation window | **Ctrl-W k** enters, **Ctrl-W j** (or Esc, `i`, Enter) returns; `j k h l w b e 0 $ gg G` Ctrl-D/U/F/B move; `v` / `V` select; `y` yanks (to the register **and** the system clipboard); `yy` a line; `/pattern` then `n` / `N` search (smart case); `o` swaps selection ends |
 | anywhere | **Shift-Tab** cycles the mode; **Ctrl-C** interrupts the agent, else stops a `!command`, else clears the input, else (twice) quits; scroll wheel scrolls the conversation (in insert mode: prompt history) |

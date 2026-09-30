@@ -91,6 +91,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.
 * [opencode-quick-wins.md](docs/opencode-quick-wins.md) — 23 small, ranked improvements to take from opencode, with file pointers.
 * [cleanroom.md](docs/cleanroom.md) — what may go into MAIC, where the design came from, third-party licenses.
+* [roadmap.md](docs/roadmap.md) — everything MAIC should still become: remote access and a phone client, the harness layers, cai-tools, tools, editor, services.
 * [comfyui-setup.md](docs/comfyui-setup.md) — ComfyUI in its own venv, models on the external drive.
 * [local-llm-benchmarks.md](docs/local-llm-benchmarks.md) — measured tok/s per model and runtime.
 
@@ -127,6 +128,7 @@ sudo ./harness/install-tripwire.sh               # once, see docs/harness.md
 Use:
 
 ```sh
+maic doctor                  # what this machine has and a recommended setup
 maic                         # the agent, in the current directory (see cli/README.md)
 maic -c                      # continue the last session here; maic -r picks one
 maic -p "prompt"             # one turn, no UI

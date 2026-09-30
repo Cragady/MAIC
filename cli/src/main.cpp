@@ -1,3 +1,4 @@
+#include "doctor.hpp"
 #include "headless.hpp"
 #include "maic/artifacts.hpp"
 #include "maic/paths.hpp"
@@ -28,6 +29,7 @@ void usage() {
                  "                                          points at it (default: interactive appends; -p records nothing\n"
                  "                                          unless --record, which forks, or --append)\n"
                  "\n"
+                 "  doctor                     what this machine has, what MAIC needs, a recommended setup\n"
                  "  status                     harness, services, where they run, quick actions\n"
                  "  up <service...|all>        start services\n"
                  "  down <service...|all>      stop services MAIC started\n"
@@ -278,6 +280,7 @@ int main(int argc, char** argv) {
             return std::system("sudo -k && sudo /usr/local/sbin/maic-lock reset") == 0 ? 0 : 1;
         }
         if (cmd == "settings") return cmd_settings(cargs);
+        if (cmd == "doctor") return maic::run_doctor();
         if (cmd == "init") {
             auto ws = std::filesystem::current_path();
             std::filesystem::create_directories(ws / ".maic");

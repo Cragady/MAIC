@@ -8,6 +8,8 @@
 #include <climits>
 
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
 #include <ctime>
 #include <stdexcept>
 
@@ -50,10 +52,16 @@ void SessionLog::create(const std::string& kind, const fs::path& home) {
     fs::create_directories(home);
     fs::permissions(sessions_dir(), fs::perms::owner_all, fs::perm_options::replace);
     fs::permissions(home, fs::perms::owner_all, fs::perm_options::replace);
-    path_ = home / (now("%Y%m%d-%H%M%S") + "-" + kind + "-" + std::to_string(getpid()) + ".jsonl");
-    int fd = open(path_.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    // time-kind-pid; a second session from the same process in the same second gets a sequence suffix.
+    std::string base = now("%Y%m%d-%H%M%S") + "-" + kind + "-" + std::to_string(getpid());
+    int fd = -1;
+    for (int seq = 0; seq < 100 && fd < 0; ++seq) {
+        path_ = home / (base + (seq ? "-" + std::to_string(seq) : "") + ".jsonl");
+        fd = open(path_.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        if (fd < 0 && errno != EEXIST) break;
+    }
     if (fd < 0) {
-        throw std::runtime_error("can't create session log " + path_.string());
+        throw std::runtime_error("can't create session log " + path_.string() + ": " + std::strerror(errno));
     }
     close(fd);
     out_.open(path_, std::ios::app);
