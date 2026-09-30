@@ -41,7 +41,7 @@ The input starts in normal mode, like opening vim: `i` to type. Cursor: a bar in
 
 | Where | Keys |
 | :--- | :--- |
-| insert | type; **Enter** new line; **Esc** to normal; Ctrl-W / Ctrl-U delete word / line; Ctrl-Y pastes the register; ↑ ↓ or Ctrl-P / Ctrl-N prompt history |
+| insert | type; **Enter** new line; **Esc** to normal; Ctrl-W / Ctrl-U delete word / line; Ctrl-Y pastes the register; ↑ ↓ or Ctrl-P / Ctrl-N prompt history, which persists across sessions (the last 500 prompts) |
 | normal (input) | `i a I A o O` insert; `h j k l w b e 0 ^ $` move (Enter = down a line); `f{c} F{c} t{c} T{c}` to a character, `;` `,` repeat, also as operator targets (`dt)`, `cf,`); `x X D C S` edit; `d c y` + motion, `dd cc yy Y`; text objects after `d c y` or in visual mode: `iw aw iW aW i" a" i' i` i( a( ib i[ a[ i{ a{ iB i< a<` (so `ciw`, `di"`, `ya(`, `viw`); `v V` select; `p P` paste; `u` undo, **Ctrl-R** redo (multi-level; an insert session is one step); counts (`3w`); `:e` or **Ctrl-X Ctrl-E** opens the input in `$VISUAL` / `$EDITOR` / nvim as markdown and loads it back when you quit |
 | clipboard | `"+y` / `"*y` before any yank sends it to the system clipboard; `"+p` pastes from it; the **leader** (Space by default, `leader` in settings) then `y` yanks the line (normal) or the selection (visual) to the clipboard, leader then `p`/`P` pastes from it. In the conversation window every yank reaches the clipboard; `yiw`, `yw`, `y$`, `Y`, `yy` work there |
 | normal (input empty) | `j k` Ctrl-D/U Ctrl-F/B `G` scroll the conversation without leaving the input; `v` / `V` jump into the conversation window selecting |
@@ -76,7 +76,8 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:reg` | the yank register |
 | `:undo [N]` | restore the file(s) the agent changed last; every write saves the previous content first |
 | `:copy` / `:export [FILE]` | copy the last reply to the clipboard; write the transcript as markdown |
-| `:stash` / `:pop` | park the input draft and bring it back (survives restarts) |
+| `:stash` / `:pop` | park the input draft and bring it back (survives restarts). `:q` with an unsent draft stashes it for you |
+| `:wq` | send, then quit when the reply is in (Ctrl-C while waiting stays) |
 | `:rename TITLE` | title the session (`maic sessions` shows it); `title_model` in settings auto-titles after the first turn |
 | `:budget [N\|off]` | tokens used; a per-session budget that stops the agent when reached |
 | `:set timestamps on` | a time beside each message (also `timestamps` in settings) |

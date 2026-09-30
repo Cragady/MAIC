@@ -43,6 +43,7 @@ public:
     void undo();
     void redo();
     void remember(const std::string& text);  // prompt history
+    void set_history(std::vector<std::string> items) { history_ = std::move(items); history_pos_ = history_.size(); }
     void history_step(int dir);
     void escape();  // to normal mode, like pressing Esc
     void begin_command(char prefix);  // ':' or '/'

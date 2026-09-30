@@ -156,7 +156,7 @@ const std::vector<CommandInfo>& commands() {
         {"export", {}, "[FILE]", "write the transcript as markdown",
          "*:export* *maic sessions export*\n`:export` writes this session as markdown (## User / ## Assistant, tool calls in fenced blocks) to `<session id>.md` in the workspace, or to FILE. Outside a session: `maic sessions export ID [FILE]` (stdout without FILE)."},
         {"stash", {"pop"}, "", "park the input draft; :pop brings it back",
-         "*:stash* *:pop*\n`:stash` saves the input draft to ~/.local/state/maic/prompt-stash.jsonl and clears the input, so you can ask something else first; `:pop` restores the newest one. Survives restarts."},
+         "*:stash* *:pop*\n`:stash` saves the input draft to ~/.local/state/maic/prompt-stash.jsonl and clears the input, so you can ask something else first; `:pop` restores the newest one. Survives restarts; `:q` with a draft stashes it automatically. Sent prompts are also kept in prompt-history.jsonl, so ↑ / Ctrl-P in the input reach earlier sessions' prompts."},
         {"rename", {"title"}, "TITLE", "title this session",
          "*:rename*\nSets the title `maic sessions` and `:export` show. With `title_model` in settings (for example `title_model = \"qwen3.5:4b\"`) a title is generated after the first turn; a remote title model is never used for a local session."},
         {"budget", {}, "[N|off]", "token budget for this session",
@@ -176,7 +176,10 @@ const std::vector<CommandInfo>& commands() {
         {"trip", {}, "[reason]", "trip the harness now", "*:trip*\nSets the tripwire immediately with no password; nothing runs until `:unlock`. See `:h harness`."},
         {"unlock", {}, "", "reset the harness (sudo password)", "*:unlock*\nResets the tripwire without leaving the session; asks for your sudo password every time."},
         {"!", {}, "cmd", "run cmd in your shell", "*:!*\nSee `:h !`."},
-        {"q", {"quit", "exit", "wq"}, "", "quit", "*:q* *:quit*\nQuits. A running turn is interrupted. The session file is complete at every moment, so nothing is lost."},
+        {"q", {"quit", "exit"}, "", "quit (an unsent draft is stashed)",
+         "*:q* *:quit*\nQuits. A running turn is interrupted. The session file is complete at every moment, and an unsent draft in the input is stashed (`:pop` in the next session brings it back), so nothing is lost. On exit the transcript path and its `maic -r` command are printed."},
+        {"wq", {}, "", "send, then quit when the reply is in",
+         "*:wq*\nSends the input like `:w` and quits once the reply has arrived, as vim's write-and-quit would. Ctrl-C while waiting keeps the session open. With an empty input it is `:q`."},
     };
     return c;
 }

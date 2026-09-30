@@ -183,6 +183,17 @@ public:
         if (auto m = parse_mode(settings_.mode)) agent_.mode = *m;
         view_.set_markdown(settings_.markdown);
         editor_.set_leader(settings_.leader);
+        {
+            // Earlier sessions' prompts, so ↑ / Ctrl-P reach them after a restart (the last 500).
+            std::vector<std::string> items;
+            std::ifstream f(state_dir() / "prompt-history.jsonl");
+            for (std::string l; std::getline(f, l);) {
+                auto j = nlohmann::json::parse(l, nullptr, false);
+                if (j.is_object() && j.contains("text")) items.push_back(j.value("text", ""));
+            }
+            if (items.size() > 500) items.erase(items.begin(), items.end() - 500);
+            editor_.set_history(std::move(items));
+        }
         view_.set_leader(settings_.leader);
         agent_.compaction.at = settings_.compact_at;
         agent_.compaction.keep_results = settings_.compact_keep_results;
@@ -211,6 +222,7 @@ public:
 
     void welcome();
     std::string transcript_path() const { return log_->path().string(); }
+    std::string exit_note() const { return exit_note_; }
     void send(const std::string& text) { submit(text, false); }
     void attach_context(const std::vector<std::filesystem::path>& files) {
         for (const auto& f : files) {
@@ -302,6 +314,8 @@ private:
 
     std::string status_msg_;
     std::atomic<int> tool_calls_{0};  // this turn
+    std::atomic<bool> quit_when_idle_{false};  // :wq
+    std::string exit_note_;
     bool titled_ = false;
     void maybe_title(const std::string& first_prompt);
     void set_title(const std::string& title);
@@ -636,6 +650,7 @@ bool App::handle(Event e) {
     if (asking()) return handle_approval(e);
 
     if (raw == "\x03") {  // Ctrl-C: interrupt, then clear input, then quit
+        if (quit_when_idle_.exchange(false)) post(Kind::Notice, "staying after the reply (:wq cancelled)");
         if (shell_busy_) shell_cancel_ = true;
         else if (busy_) cancel_ = true;
         else if (!editor_.empty()) editor_.clear();
@@ -785,6 +800,10 @@ void App::submit(std::string text, bool now) {
         return;
     }
     editor_.remember(text);
+    {
+        std::ofstream f(state_dir() / "prompt-history.jsonl", std::ios::app);
+        f << nlohmann::json{{"text", text}}.dump() << "\n";
+    }
     editor_.clear();
     view_.scroll_to_bottom();
     if (text[0] == '/' && text.size() > 1 && text[1] != '/' && text[1] != ' ') {
@@ -845,6 +864,10 @@ void App::start_turn(const std::string& text) {
             for (const auto& p : agent_.take_queued()) next += (next.empty() ? "" : "\n\n") + p;
         }
         busy_ = false;
+        if (quit_when_idle_.load() && !cancel_.load()) {
+            quit_when_idle_ = false;
+            screen_.Post([this] { quit(); });
+        }
         screen_.PostEvent(Event::Custom);
     });
 }
@@ -984,7 +1007,16 @@ void App::run_command(const std::string& line) {
         return !busy_;
     };
     try {
-        if (cmd == "q" || cmd == "q!" || cmd == "quit" || cmd == "wq" || cmd == "exit") {
+        if (cmd == "wq") {
+            // Send, then leave once the reply is in. With nothing to send it is just :q.
+            if (!editor_.text().empty()) {
+                quit_when_idle_ = true;
+                submit(editor_.text(), false);
+                post(Kind::Notice, "sending; quitting when the reply is in (Ctrl-C to stay)");
+            } else {
+                quit();
+            }
+        } else if (cmd == "q" || cmd == "q!" || cmd == "quit" || cmd == "exit") {
             quit();
         } else if (cmd == "w" || cmd == "write" || cmd == "send") {
             submit(editor_.text(), arg == "now" || arg == "!");
@@ -1196,6 +1228,12 @@ void App::run_command(const std::string& line) {
 }
 
 void App::quit() {
+    // A draft that was never sent is stashed, so a reflexive :q loses nothing.
+    if (!editor_.text().empty()) {
+        std::ofstream f(state_dir() / "prompt-stash.jsonl", std::ios::app);
+        f << nlohmann::json{{"text", editor_.text()}}.dump() << "\n";
+        exit_note_ = "your unsent input was stashed; :pop in the next session brings it back";
+    }
     shutdown();
     screen_.Exit();
 }
@@ -1233,6 +1271,7 @@ int run_tui(const TuiOptions& options) {
     // directory and is never listed, so this is the only place its path is easy to find.
     std::cout << "transcript" << (settings.record ? "" : " (temporary; gone at logout)") << ": " << app.transcript_path() << "\n"
               << "resume it with: maic -r " << app.transcript_path() << "\n";
+    if (!app.exit_note().empty()) std::cout << app.exit_note() << "\n";
     return 0;
 }
 
