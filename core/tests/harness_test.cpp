@@ -142,10 +142,10 @@ int main() {
         expect(f.check(Action{Action::Kind::Shell, {}, "grep threesome x"}, Mode::Auto, Origin::Local).verdict == Verdict::Deny, "the allow list does not override it");
         Harness g(ws);
         g.set_forbid(Settings{}.forbid);
-        for (const char* hit : {"grep ffm_threesome .", "search MMF_threesomes", "tag: fmo", "FFM", "mfo, rain", "find . -name '*mmo*'"}) {
+        for (const char* hit : {"grep ffo_threesome .", "search MMO_threesomes", "tag: fmo", "OFM", "mof, rain", "find . -name '*ffo*'", "mmos"}) {
             expect(g.forbidden(hit).has_value(), std::string("the default list halts: ") + hit);
         }
-        for (const char* ok : {"ls", "three some", "firmware", "mfmo", "commodore", "affirm"}) {
+        for (const char* ok : {"ls", "ffm", "mmf", "three some", "firmware", "commodore", "affirm", "moo", "info", "from"}) {
             expect(!g.forbidden(ok).has_value(), std::string("and leaves alone: ") + ok);
         }
         Harness bad(ws);
