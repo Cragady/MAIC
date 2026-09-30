@@ -1047,7 +1047,7 @@ void App::start_turn(const std::string& text) {
             try {
                 agent_.submit(next, Origin::Local, *this, cancel_);
             } catch (const std::exception& ex) {
-                view_.append(Kind::Error, ex.what());
+                view_.append(Kind::Error, failure_text(agent_, ex));
             }
             // The footer: model, how long the turn took, how many tools ran.
             double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();

@@ -1,5 +1,9 @@
 #include "commands.hpp"
 
+#include "maic/agent.hpp"
+#include "maic/paths.hpp"
+#include "maic/status.hpp"
+
 #include <algorithm>
 #include <cctype>
 
@@ -332,6 +336,15 @@ std::string help_text(const std::string& topic_in) {
     std::string out = "'" + topic_in + "' matches several topics:\n";
     for (const auto& [name, text] : prefix) out += "  " + name + "\n";
     return out;
+}
+
+std::string failure_text(const Agent& agent, const std::exception& e) {
+    std::string text = e.what();
+    if (dynamic_cast<const TransportError*>(&e)) {
+        std::string hint = unreachable_hint(resolve_model(agent.providers, agent.model).first, load_services(root_dir() / "services"));
+        if (!hint.empty()) text += "\n" + hint;
+    }
+    return text;
 }
 
 }  // namespace maic

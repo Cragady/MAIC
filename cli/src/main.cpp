@@ -113,6 +113,7 @@ int cmd_up(const std::vector<maic::ServiceDef>& services) {
     int rc = 0;
     for (const auto& def : services) {
         try {
+            if (std::string missing = maic::missing_requirement(def); !missing.empty()) throw std::runtime_error(missing);
             std::cout << def.name << ": starting..." << std::flush;
             bool ready = maic::start_service(def);
             std::cout << (ready ? " ready on port " + std::to_string(def.port) : " still starting, check `maic status`") << "\n";
