@@ -6,7 +6,7 @@
 #include "maic/paths.hpp"
 #include "maic/settings.hpp"
 
-#include <httplib.h>
+#include "maic/http.hpp"
 
 #include <atomic>
 #include <chrono>

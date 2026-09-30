@@ -7,7 +7,7 @@
 #include "maic/tripwire.hpp"
 #include "maic/session.hpp"
 
-#include <httplib.h>
+#include "maic/http.hpp"
 
 #include <algorithm>
 #include <chrono>

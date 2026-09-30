@@ -8,6 +8,7 @@
 #include "view.hpp"
 #include "maic/markdown.hpp"
 
+namespace fs = std::filesystem;
 using namespace maic;
 using ftxui::Event;
 
@@ -706,6 +707,17 @@ int main() {
         expect(help_text("Alt+Enter").find("Sends") != std::string::npos && help_text("M-CR") == help_text("alt-enter"), "Alt+Enter in several spellings");
         expect(help_text("mod").find("several") != std::string::npos, "an ambiguous prefix lists the candidates");
         expect(help_text("harn").find("*harness*") == 0, "a unique prefix resolves");
+        {
+            // :open NAME folder / maic open --folder: a file place opens its parent, a directory itself.
+            Settings so;
+            fs::path ws = fs::temp_directory_path() / "maic-editor-open-test";
+            fs::create_directories(ws);
+            std::vector<ServiceDef> none;
+            auto [c1, w1] = open_command("session", so, ws, none, ws / "t.jsonl", "", true);
+            expect(c1.find("xdg-open '" + ws.string() + "'") == 0 && w1.find("holding t.jsonl") != std::string::npos, "--folder on a file place opens its parent");
+            auto [c2, w2] = open_command("workspace", so, ws, none, std::nullopt, "", true);
+            expect(c2.find("xdg-open '" + ws.string() + "'") == 0, "--folder on a directory place opens it");
+        }
         expect(help_text("sess").find("several") != std::string::npos, "sess matches :session and sessions, so it lists both");
         expect(help_text("nope").find("no help") == 0, "an unknown topic says so");
         expect(help_text("f").find("*f*") == 0 && help_text(";") == help_text("f") && help_text(".").find("*.*") == 0 && help_text("m").find("*m*") == 0 &&

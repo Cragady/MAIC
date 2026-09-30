@@ -1727,8 +1727,9 @@ void App::run_command(const std::string& line) {
                 std::istringstream a(arg);
                 std::string name, flag, browser;
                 a >> name >> flag >> browser;
-                if (flag != "--browser") browser = flag;  // `:open comfyui firefox`
-                auto [cmdline, what] = open_command(name, settings_, agent_.harness().workspace(), services(), log_->path(), browser);
+                bool folder = flag == "folder" || flag == "--folder";
+                if (!folder && flag != "--browser") browser = flag;  // `:open comfyui firefox`
+                auto [cmdline, what] = open_command(name, settings_, agent_.harness().workspace(), services(), log_->path(), browser, folder);
                 post(std::system(cmdline.c_str()) == 0 ? Kind::Notice : Kind::Error, "opened " + what);
             } catch (const std::exception& e) {
                 post(Kind::Error, e.what());

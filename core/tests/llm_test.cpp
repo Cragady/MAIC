@@ -3,7 +3,7 @@
 
 #include "maic/llm.hpp"
 
-#include <httplib.h>
+#include "maic/http.hpp"
 
 #include <algorithm>
 #include <chrono>

@@ -3,7 +3,7 @@
 #include "maic/agent.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
-#include <httplib.h>
+#include "maic/http.hpp"
 #include "maic/places.hpp"
 #include "maic/status.hpp"
 #include "maic/vendor.hpp"
@@ -239,7 +239,7 @@ const std::vector<CommandInfo>& commands() {
          "In a session: `:path` lists them, `:path NAME` shows one, `:path NAME copy` puts it on the clipboard (and in the register, so `p` pastes it), `:open NAME` opens it in your file manager.\n"
          "In the shell: `maic path` lists, `maic path NAME` prints one (so `cd \"$(maic path workflows)\"` works), `maic path NAME --copy`, `maic open NAME`. Since a program cannot change its parent shell's directory, `eval \"$(maic shell-init)\"` in your rc file adds `mcd NAME` (cd there), `mpath NAME` and `mcp NAME` with tab completion of the names (zsh, bash, fish)."},
         {"open", {"xdg-open", "browser"}, "NAME|SERVICE [firefox|chrome]", "a service in the browser, a place in the file manager",
-         "*:open* *maic open* *browser* *remote*\n`:open comfyui` opens that service's URL in your browser; `:open server` the maic web client; `:open workflows` a place in the file manager. The browser is `browser` in settings (`default` = the system's, `firefox`, `chrome`) or given after the name. With `remote = \"https://host:7373\"` in settings and that maic-server answering, a service opens the remote's copy (the same port on the remote host; its service must be reachable from here, by listening beyond loopback there or through your tunnel). `maic open` with no name shows a menu."},
+         "*:open* *maic open* *browser* *remote*\n`:open comfyui` opens that service's URL in your browser; `:open server` the maic web client; `:open workflows` a place in the file manager. The browser is `browser` in settings (`default` = the system's, `firefox`, `chrome`) or given after the name. With `remote = \"https://host:7373\"` in settings and that maic-server answering, a service opens the remote's copy (the same port on the remote host; its service must be reachable from here, by listening beyond loopback there or through your tunnel). `maic open` with no name shows a menu. `:open NAME folder` (or `maic open NAME --folder`) opens the containing folder in the file manager instead: a file's parent, a service's vendored checkout. `maic cd NAME` prints the place's directory (a file's parent), so `cd \"$(maic cd NAME)\"` works anywhere; `maic cd NAME --subshell` opens a shell there instead (`exit` returns); `mcd NAME` from `maic shell-init` changes the current shell."},
         {"artifacts", {}, "", "where everything is kept, with sizes", "*:artifacts*\nEvery place MAIC and its services leave things (transcripts, service logs, ComfyUI outputs, ...) with sizes. Clean with `maic artifacts clean OWNER/NAME [--older-than DAYS]`."},
         {"reg", {"register", "registers"}, "", "show the registers", "*:reg*\nShows the unnamed register and every named register `\"a`..`\"z` that holds something. See `:h p`."},
         {"undo", {}, "[N]", "restore the file(s) the agent changed last",
@@ -391,8 +391,20 @@ std::string host_of(const std::string& url) {
 
 std::pair<std::string, std::string> open_command(const std::string& name, const Settings& settings, const std::filesystem::path& workspace,
                                                  const std::vector<ServiceDef>& services, const std::optional<std::filesystem::path>& session,
-                                                 const std::string& browser_override) {
+                                                 const std::string& browser_override, bool folder) {
     std::string browser = browser_override.empty() ? settings.browser : browser_override;
+    if (folder) {
+        auto places = known_places(settings, workspace, services, session);
+        std::string key = name;
+        for (const auto& def : services) {
+            if (def.name == name) key = "vendor/" + name;  // a service's folder is its vendored checkout
+        }
+        const auto& p = find_place(places, key);
+        std::filesystem::path dir = p.is_file ? p.path.parent_path() : p.path;
+        std::error_code ec;
+        if (!std::filesystem::exists(dir, ec)) throw std::runtime_error(dir.string() + " does not exist yet");
+        return {"xdg-open '" + dir.string() + "' >/dev/null 2>&1 &", "the folder " + dir.string() + (p.is_file ? " (holding " + p.path.filename().string() + ")" : "")};
+    }
     if (name == "server" || name == "maic-server") {
         std::string url = !settings.remote.empty() && remote_up(settings.remote) ? settings.remote : "http://" + settings.server.listen;
         if (url.rfind("http", 0) != 0) url = "http://" + url;

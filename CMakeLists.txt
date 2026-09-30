@@ -33,6 +33,8 @@ add_subdirectory(harness)
 # MAIC's ComfyUI chat node, tested against a fake llama-server without ComfyUI.
 add_test(NAME comfy_node COMMAND python3 -m unittest -v test_node
          WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/vendor/comfyui-maic-llamacpp)
+add_test(NAME lint_includes COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/lint_includes.py)
+add_test(NAME cli_smoke COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/cli_smoke.py $<TARGET_FILE:maic>)
 add_test(NAME workflow_edit COMMAND python3 -m unittest -q test_workflow_edit
          WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/tools/comfyui)
 add_test(NAME storyboard COMMAND python3 -m unittest -q test_storyboard

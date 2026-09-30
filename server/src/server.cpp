@@ -10,7 +10,7 @@
 #include "maic/status.hpp"
 #include "maic/tripwire.hpp"
 
-#include <httplib.h>
+#include "maic/http.hpp"
 #include <nlohmann/json.hpp>
 
 #include <fcntl.h>

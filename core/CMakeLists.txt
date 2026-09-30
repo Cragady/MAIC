@@ -28,7 +28,9 @@ add_library(maic_core
     src/vendor.cpp
 )
 target_include_directories(maic_core PUBLIC include)
-target_link_libraries(maic_core PUBLIC nlohmann_json::nlohmann_json PRIVATE httplib::httplib luajit)
+# httplib is PUBLIC on purpose: its OpenSSL support changes the layout of httplib::ClientImpl, so every
+# translation unit that includes <httplib.h> must see the same compile definitions as the core does.
+target_link_libraries(maic_core PUBLIC nlohmann_json::nlohmann_json httplib::httplib PRIVATE luajit)
 target_compile_options(maic_core PRIVATE -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
 # Where services/ and vendor/ live at run time: the source tree, or a checkout a release build names.
 set(MAIC_SOURCE_ROOT "${PROJECT_SOURCE_DIR}" CACHE PATH "MAIC repository the built binary uses as its root")

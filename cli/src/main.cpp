@@ -82,7 +82,10 @@ void usage(std::ostream& out = std::cerr) {
                  "  logs <service> [lines]     the end of a service's log (default 40 lines)\n"
                  "  path [NAME] [--copy]       every place maic knows (workspace, sessions, models, workflows, ...) or one path;\n"
                  "                             --copy puts it on the clipboard; a unique prefix is enough\n"
-                 "  open [NAME|SERVICE] [--browser default|firefox|chrome]\n"
+                 "  cd NAME [--subshell]       print a place's directory (cd \"$(maic cd NAME)\"; a file's parent); --subshell (-s)\n"
+                 "                             opens a shell there instead, exit returns; mcd from shell-init changes this shell\n"
+                 "  open [NAME|SERVICE] [--browser default|firefox|chrome] [--folder]\n"
+                 "                             --folder (or --file-manager, -f) opens the containing folder instead\n"
                  "                             a service (comfyui, llamacpp, server) in the browser, a place in the file manager; no\n"
                  "                             name: a menu. With `remote` in settings and that maic-server up, its copy of the service\n"
                  "  shell-init [zsh|bash|fish] shell functions: mcd NAME (cd there), mpath NAME, mcp NAME; eval \"$(maic shell-init)\"\n"
@@ -238,10 +241,42 @@ int cmd_path(const std::vector<std::string>& args) {
     return 0;
 }
 
+int cmd_cd(const std::vector<std::string>& args) {
+    std::string name;
+    bool subshell = false;
+    for (const auto& a : args) {
+        if (a == "--subshell" || a == "-s") subshell = true;
+        else if (name.empty()) name = a;
+        else throw std::runtime_error("maic cd NAME [--subshell]");
+    }
+    if (name.empty()) throw std::runtime_error("maic cd NAME [--subshell]  (maic path lists the names; mcd from `maic shell-init` changes this shell)");
+    maic::Settings settings = maic::load_settings();
+    auto services = maic::load_services(maic::root_dir() / "services");
+    auto places = maic::known_places(settings, std::filesystem::current_path(), services);
+    const auto& p = maic::find_place(places, name);
+    std::filesystem::path dir = p.is_file ? p.path.parent_path() : p.path;
+    std::error_code ec;
+    if (!std::filesystem::is_directory(dir, ec)) throw std::runtime_error(dir.string() + " does not exist yet");
+    if (!subshell) {
+        std::cout << dir.string() << "\n";  // cd "$(maic cd NAME)"; a process cannot change its parent's directory
+        return 0;
+    }
+    // --subshell: a shell there; `exit` returns here.
+    const char* shell = std::getenv("SHELL");
+    std::string sh = shell && *shell ? shell : "/bin/sh";
+    std::cerr << "entering " << dir.string() << " in " << sh << "  (exit returns; mcd from `maic shell-init` changes this shell instead)\n";
+    if (chdir(dir.c_str()) != 0) throw std::runtime_error("cannot enter " + dir.string());
+    setenv("MAIC_PLACE", p.name.c_str(), 1);
+    execl(sh.c_str(), sh.c_str(), static_cast<char*>(nullptr));
+    throw std::runtime_error("could not start " + sh);
+}
+
 int cmd_open(const std::vector<std::string>& args) {
     std::string name, browser;
+    bool folder = false;
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--browser" && i + 1 < args.size()) browser = args[++i];
+        else if (args[i] == "--folder" || args[i] == "--file-manager" || args[i] == "-f") folder = true;
         else if (name.empty()) name = args[i];
     }
     maic::Settings settings = maic::load_settings();
@@ -265,7 +300,7 @@ int cmd_open(const std::vector<std::string>& args) {
         name = names[picks.front()];
     }
     if (!browser.empty() && browser != "default" && browser != "firefox" && browser != "chrome") throw std::runtime_error("--browser takes default, firefox or chrome");
-    auto [cmd, what] = maic::open_command(name, settings, std::filesystem::current_path(), services, std::nullopt, browser);
+    auto [cmd, what] = maic::open_command(name, settings, std::filesystem::current_path(), services, std::nullopt, browser, folder);
     if (std::system(cmd.c_str()) != 0) throw std::runtime_error("could not open " + what);
     std::cout << "opened " << what << "\n";
     return 0;
@@ -792,6 +827,7 @@ int main(int argc, char** argv) {
         if (cmd == "artifacts") return cmd_artifacts(cargs);
         if (cmd == "path" || cmd == "paths" || cmd == "places") return cmd_path(cargs);
         if (cmd == "open") return cmd_open(cargs);
+        if (cmd == "cd") return cmd_cd(cargs);
         if (cmd == "shell-init") {
             std::string shell = cargs.empty() ? "" : cargs[0];
             if (shell.empty()) {

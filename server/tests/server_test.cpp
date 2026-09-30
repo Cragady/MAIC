@@ -6,7 +6,7 @@
 #include "server.hpp"
 #include "tls.hpp"
 
-#include <httplib.h>
+#include "maic/http.hpp"
 
 #include <sys/stat.h>
 

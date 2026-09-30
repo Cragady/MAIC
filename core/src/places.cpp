@@ -84,7 +84,7 @@ std::string browser_command(const std::string& browser, const std::string& url) 
 std::string shell_init(const std::string& shell) {
     if (shell == "fish") {
         return "# maic shell integration (fish): eval (maic shell-init fish | psub)? Put this in ~/.config/fish/config.fish instead:\n"
-               "function mcd; set -l p (maic path $argv[1]); and cd $p; end\n"
+               "function mcd; set -l p (maic cd $argv[1]); and cd $p; end\n"
                "function mpath; maic path $argv; end\n"
                "function mcp; maic path $argv[1] --copy; end\n"
                "complete -c mcd -f -a '(maic path --names)'\n"
@@ -93,7 +93,7 @@ std::string shell_init(const std::string& shell) {
     }
     std::string s =
         "# maic shell integration: eval \"$(maic shell-init)\" in your rc file\n"
-        "mcd() { local p; p=\"$(maic path \"$1\")\" || return 1; cd \"$p\" || return 1; }\n"
+        "mcd() { local p; p=\"$(maic cd \"$1\")\" || return 1; cd \"$p\" || return 1; }\n"
         "mpath() { maic path \"$@\"; }\n"
         "mcp() { maic path \"$1\" --copy; }\n";
     if (shell == "bash") {

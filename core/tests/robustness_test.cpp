@@ -13,7 +13,7 @@
 #include "maic/tools.hpp"
 #include "maic/vendor.hpp"
 
-#include <httplib.h>
+#include "maic/http.hpp"
 #include "maic/bans.hpp"
 #include "maic/lua.hpp"
 #include "maic/places.hpp"

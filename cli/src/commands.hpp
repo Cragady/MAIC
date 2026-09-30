@@ -51,10 +51,12 @@ void set_context(std::vector<Provider>& providers, int tokens);
 
 // What `maic open NAME` / `:open NAME` should run: a service opens its URL in the chosen browser (the remote
 // maic-server's copy when `remote` is set and answers), anything else opens the place's path with xdg-open.
+// With `folder`, the containing directory is opened in the file manager instead: a file place's parent, a
+// service's vendored checkout (vendor/NAME) when it has one.
 // Returns {command, description}. Throws when NAME is neither a service nor a place.
 std::pair<std::string, std::string> open_command(const std::string& name, const Settings& settings, const std::filesystem::path& workspace,
                                                  const std::vector<ServiceDef>& services, const std::optional<std::filesystem::path>& session,
-                                                 const std::string& browser_override = "");
+                                                 const std::string& browser_override = "", bool folder = false);
 std::string restart_llamacpp_if_changed();
 
 }  // namespace maic

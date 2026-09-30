@@ -1,6 +1,6 @@
 #include "llm_http.hpp"
 
-#include <httplib.h>
+#include "maic/http.hpp"
 
 #include <algorithm>
 #include <cctype>
