@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace maic {
 
@@ -13,6 +14,7 @@ struct HeadlessOptions {
     bool json = false;   // JSONL events on stdout instead of text
     bool think = false;
     std::optional<std::filesystem::path> resume;
+    std::vector<std::filesystem::path> context;  // files attached to the turn before the prompt ("-" = stdin)
     bool record = false;  // write a transcript at all (a one-shot -p leaves nothing behind by default)
     bool append = false;  // with resume: write into the old file (implies record) rather than a new one that points at it
 };

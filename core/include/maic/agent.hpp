@@ -50,6 +50,10 @@ public:
     // about on its next turn. Call only while idle.
     void add_context(const std::string& text);
 
+    // A file's contents as context, labelled with its path ("-" reads stdin). Refuses binary files. Returns a
+    // one-line description for the transcript.
+    std::string add_context_file(const std::filesystem::path& path);
+
     // Messages typed while a turn is running. They reach the model at its next call in the current turn;
     // deliver_now() also aborts the model call in progress so the next one starts at once. Thread-safe.
     void post_message(const std::string& text);

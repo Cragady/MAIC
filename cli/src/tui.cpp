@@ -195,6 +195,15 @@ public:
     ~App() override { shutdown(); }
 
     void welcome();
+    void attach_context(const std::vector<std::filesystem::path>& files) {
+        for (const auto& f : files) {
+            try {
+                view_.append(Kind::Notice, agent_.add_context_file(f));
+            } catch (const std::exception& e) {
+                view_.append(Kind::Error, e.what());
+            }
+        }
+    }
     Element render();
     bool handle(Event e);
 
@@ -985,6 +994,7 @@ int run_tui(const TuiOptions& options) {
     screen.TrackMouse(settings.mouse);
     App app(screen, settings, options.resume, options.append);
     app.welcome();
+    app.attach_context(options.context);
     auto component = CatchEvent(Renderer([&] { return app.render(); }), [&](Event e) { return app.handle(e); });
     screen.Loop(component);
     return 0;

@@ -5,6 +5,9 @@
 
 #include <unistd.h>
 
+#include <fstream>
+#include <iostream>
+#include <iterator>
 #include <thread>
 
 namespace maic {
@@ -176,6 +179,22 @@ void Agent::add_context(const std::string& text) {
 Agent::UsageReport Agent::usage() const {
     std::lock_guard lock(usage_mu_);
     return usage_;
+}
+
+std::string Agent::add_context_file(const std::filesystem::path& path) {
+    std::string text;
+    std::string label = path.string();
+    if (label == "-") {
+        text.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
+        label = "stdin";
+    } else {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) throw std::runtime_error("can't read context file " + label);
+        text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    if (text.find('\0') != std::string::npos) throw std::runtime_error(label + " looks binary; context files must be text");
+    add_context("[Context the user attached from " + label + " (" + std::to_string(text.size()) + " bytes)]\n" + text);
+    return "attached " + label + " (" + std::to_string(text.size()) + " bytes) as context";
 }
 
 void Agent::post_message(const std::string& text) {

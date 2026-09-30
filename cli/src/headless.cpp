@@ -82,12 +82,18 @@ int run_headless(const HeadlessOptions& options) {
         fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
         return 2;
     }
+    bool stdin_for_context = false;
+    for (const auto& c : options.context) stdin_for_context = stdin_for_context || c == "-";
     std::string prompt = options.prompt;
     if (prompt.empty() || prompt == "-") {
+        if (stdin_for_context) {
+            fprintf(stderr, "maic: stdin can be the prompt or a --context file, not both\n");
+            return 2;
+        }
         prompt.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
     }
     if (prompt.empty()) {
-        fprintf(stderr, "maic: nothing to send (give a prompt, or pipe one in)\n");
+        fprintf(stderr, "maic: nothing to send (give a prompt, or pipe one in with -p -)\n");
         return 2;
     }
 
@@ -109,6 +115,14 @@ int run_headless(const HeadlessOptions& options) {
                 !log ? ", not recorded" : options.append ? ", appending to it" : ", writing to a new file that points at it");
     }
     if (agent.remote()) fprintf(stderr, "※ REMOTE model %s: prompts and tool output leave this machine\n", agent.model.c_str());
+    for (const auto& c : options.context) {
+        try {
+            fprintf(stderr, "※ %s\n", agent.add_context_file(c).c_str());
+        } catch (const std::exception& e) {
+            fprintf(stderr, "maic: %s\n", e.what());
+            return 2;
+        }
+    }
 
     std::signal(SIGINT, on_sigint);
     Printer printer(options.json);
@@ -119,6 +133,7 @@ int run_headless(const HeadlessOptions& options) {
         return 1;
     }
     if (!options.json) fprintf(stdout, "\n");
+    fflush(stdout);
     auto u = agent.usage();
     if (u.calls) {
         if (options.json) fprintf(stdout, "%s\n", nlohmann::json{{"type", "usage"}, {"input", u.total_input}, {"output", u.total_output}, {"calls", u.calls}, {"context", u.last.context}}.dump().c_str());

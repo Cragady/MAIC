@@ -167,6 +167,31 @@ int main() {
         expect(agent.queued() == 0 && agent.take_queued().empty(), "the mailbox is drained");
     }
 
+    section("context files");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        std::ofstream(ws / "ctx.txt") << "the word is heron\n";
+        std::string note = agent.add_context_file(ws / "ctx.txt");
+        expect(note.find("ctx.txt") != std::string::npos && note.find("18 bytes") != std::string::npos, "attaching reports the file and size");
+        Recorder r;
+        agent.submit("go", Origin::Local, r, no_cancel);
+        const auto& msgs = fake.requests[0]["messages"];
+        expect(msgs.size() == 3 && msgs[1]["role"] == "user" && msgs[1]["content"].get<std::string>().find("heron") != std::string::npos &&
+               msgs[1]["content"].get<std::string>().find("ctx.txt") != std::string::npos && msgs[2]["content"] == "go",
+               "the file arrives as a labelled user message before the prompt");
+        std::ofstream(ws / "bin.dat", std::ios::binary) << std::string("ab\0cd", 5);
+        bool threw = false;
+        try {
+            agent.add_context_file(ws / "bin.dat");
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw, "a binary file is refused");
+    }
+
     section("cancel");
     {
         FakeOllama fake;
