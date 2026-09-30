@@ -2,6 +2,7 @@
 
 #include "maic/instructions.hpp"
 #include "maic/lua.hpp"
+#include "maic/paths.hpp"
 #include "maic/session.hpp"
 
 #include <algorithm>
@@ -164,6 +165,14 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.compact_keep_results = j.value("compact_keep_results", s.compact_keep_results);
         if (s.leader == "space" || s.leader == "<space>") s.leader = " ";
         if (j.contains("instruction_files")) s.instruction_files = j["instruction_files"].get<std::vector<std::string>>();
+        json server = j.value("server", json::object());
+        s.server.listen = server.value("listen", s.server.listen);
+        if (server.contains("workspaces")) {
+            s.server.workspaces.clear();
+            for (const auto& w : server["workspaces"]) s.server.workspaces.push_back(expand_vars(w.get<std::string>()));
+        }
+        if (server.contains("cert")) s.server.cert = expand_vars(server["cert"].get<std::string>());
+        if (server.contains("key")) s.server.key = expand_vars(server["key"].get<std::string>());
         json providers = j.value("providers", json::object());
         for (const auto& [name, pj] : providers.items()) {
             Provider* p = nullptr;
@@ -296,6 +305,8 @@ void write_default_settings(bool as_json) {
         {"compact_keep_results", d.compact_keep_results},
         {"//sessions_home", "auto: a project's transcripts (it has a MAIC.md) go under sessions/projects/, others under sessions/general/. Or: general, project, a name."},
         {"instruction_files", d.instruction_files},
+        {"//server", "maic server: listen ADDR:PORT (TLS is required off loopback), workspaces remote sessions may open, cert/key (empty: self-signed)."},
+        {"server", {{"listen", d.server.listen}, {"workspaces", json::array()}, {"cert", ""}, {"key", ""}}},
         {"providers", providers},
         {"style", styles},
     };

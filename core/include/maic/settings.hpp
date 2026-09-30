@@ -31,6 +31,14 @@ struct Style {
 //      $HOME down to the workspace; the nearest file wins. settings.lua is meant to be committed with a
 //      project, settings.local.lua is personal.
 // At each location a .json file with the same stem is the fallback when no .lua exists.
+// `maic server`: where it listens, which directories remote sessions may open, and the TLS pair.
+struct ServerSettings {
+    std::string listen = "127.0.0.1:7373";           // loopback needs no TLS; any other address gets it
+    std::vector<std::filesystem::path> workspaces;  // allowed roots for remote sessions; empty = ~/dev2 if it exists, else the current directory
+    std::filesystem::path cert;                     // PEM pair; empty = a self-signed one generated under state/server on first use
+    std::filesystem::path key;
+};
+
 struct Settings {
     std::string model = "qwen3.5:4b";
     std::string mode = "manual";
@@ -53,6 +61,7 @@ struct Settings {
     std::vector<Provider> providers = default_providers();
     std::map<std::string, Style> styles;  // by role, see docs/settings.md; defaults are filled in
     std::vector<std::string> instruction_files = {"MAIC.md", "AGENTS.md"};
+    ServerSettings server;
 
     const Style& style(const std::string& name) const;
 };
