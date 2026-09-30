@@ -48,11 +48,10 @@ The story has `characters[]` (with an `appearance`), a `setting`, and `panels[]`
 - **Judgement, done by the agent, one panel per turn.** `maic-storyboard plan STORY WORKFLOW --panel 7` prints that panel's story values in full, the characters present with their appearance, the setting, what the prompt holds now, the quality baseline the workflow already uses (never changed), and the exact `maic-workflow-edit set ...` command with the baseline filled in and a `YOUR TAGS HERE` slot. The agent writes Danbooru-style tags for that one panel and runs the command. Small enough for a 4B's context.
 - `maic-storyboard check STORY WORKFLOW` lists the panels still on the baseline alone, overlays that differ from the story, and story fields the tool does not map (production notes, dialogue summaries: for a person).
 
-The brief for the agent, once `fill` has run:
+The brief for the agent (all of it):
 
 ```
-Run `maic-storyboard plan STORY WORKFLOW --panel N` for N = 1, then 2, and so on. For each panel, write the
-prompt as Danbooru-style tags from the values it shows (characters present with their appearance, the scene,
-camera, mood), put them in place of YOUR TAGS HERE in the command it prints, keep the baseline exactly, and run
-it. Then run the confirm line. One panel per turn. When all panels are done run `maic-storyboard check`.
+There is a tool called maic-storyboard. Run it with no arguments and follow what it says.
 ```
+
+Which is: ask the user for the story file and the destination workflow; `maic-storyboard start STORY TEMPLATE --out DEST` (copies, fills the overlays, prints panel 1); write that panel's tags into the printed command and run it; `maic-storyboard next` (verifies, prints the next panel, or the same one again if it was not written); repeat until it reports every panel done. `maic-storyboard --help` carries the same instructions. A template is never written in place: `start` refuses `--out` equal to the source unless `--in-place` is given.

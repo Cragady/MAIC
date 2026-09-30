@@ -21,6 +21,9 @@ Non-interactive (an agent through run_shell, or a script):
     workflow_edit.py apply PATH EDITS.json                 a list of {"node": 10, "field": "text", "op": "set"|"append"|"prepend", "value": "..."}
     every writing command takes --dry-run (show the diff, write nothing) and --out PATH (write elsewhere)
 
+Filling a manga workflow from a story JSON? Use `maic-storyboard` instead: it runs this tool for you, one
+panel per turn, and prints the exact `set` command for each prompt.
+
 NODE is the node id (`10`) or, when unique, its title (`"Panel 1 prompt"`). FIELD is the slot name shown by
 inspect (`text`, `seed`, `steps`, `filename_prefix`, ...) or its index (`w0`). Numbers stay numbers: setting
 `steps` to "30" stores 30. The exit code is 0 when the file was written (or the dry run fits), 1 on a bad

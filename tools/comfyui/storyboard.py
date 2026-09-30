@@ -10,7 +10,25 @@ with an appearance each; and a `setting`. Two kinds of work follow from that:
   judgement, done by the agent:      the prompt: the workflow's quality baseline, kept exactly, followed by
                                      Danbooru-style tags for the characters present, the scene, camera, mood
 
+FOR THE AGENT: THE WHOLE JOB IS TWO COMMANDS, REPEATED
+    1. If you do not know both files, ask the user (the question tool) for:
+         - the story file (the reference JSON with characters, setting and panels), and
+         - the destination: the workflow file to write into. A template must not be edited in place: when the
+           user names a template, ask where the finished copy should go, or use its name with -storyboard added.
+    2. Run:   maic-storyboard start STORY.json TEMPLATE_OR_WORKFLOW.json --out DESTINATION.json
+       It copies the workflow to the destination, fills every caption and dialogue overlay by itself, and prints
+       panel 1's work order: the story values, the characters present with their appearance, the baseline to keep,
+       and one maic-workflow-edit command with a YOUR TAGS HERE slot.
+    3. Write that panel's Danbooru-style tags into the slot and run the command exactly as printed.
+    4. Run:   maic-storyboard next
+       It checks the panel was written (if not, it shows the same panel again and says so), then prints the next
+       panel. Repeat 3 and 4, one panel per turn, until it says every panel is done; it ends with the check.
+    `maic-storyboard status` shows where you are. Never edit the story file. Never change the baseline.
+
 Commands:
+    storyboard.py start STORY.json WORKFLOW.json --out DEST.json    copy, fill, and print panel 1's work order
+    storyboard.py next                                             verify the current panel, print the next
+    storyboard.py status                                           which panel is current, what is done
     storyboard.py fill STORY.json WORKFLOW.json [--out PATH] [--dry-run]
         Writes every caption and dialogue line into the overlays and prints the panel list. Run once.
     storyboard.py plan STORY.json WORKFLOW.json --panel N
@@ -32,10 +50,36 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 
-PROMPT_RE = re.compile(r"^Panel (\d+) prompt$")
+STATE_NAME = ".storyboard-state.json"  # written beside the destination workflow
+
+
+def state_path(workflow):
+    return workflow + STATE_NAME
+
+
+def find_state():
+    """The state file in the current directory, or the one named by MAIC_STORYBOARD_STATE."""
+    env = os.environ.get("MAIC_STORYBOARD_STATE")
+    if env and os.path.isfile(env):
+        return env
+    here = [f for f in os.listdir(".") if f.endswith(STATE_NAME)]
+    if len(here) == 1:
+        return here[0]
+    if len(here) > 1:
+        sys.exit("several storyboards are in progress here: " + ", ".join(here) + "; run from a folder with one, or set MAIC_STORYBOARD_STATE")
+    sys.exit("no storyboard in progress here: run `maic-storyboard start STORY WORKFLOW --out DEST` first (in the folder that holds the destination)")
+
+
+def load_state(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_state(path, st):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(st, f, indent=2)
 
 
 def load(path, what):
@@ -119,6 +163,97 @@ def write(wf, path, out, dry_run, before):
         json.dump(wf, f, indent=2, ensure_ascii=False)
         f.write("\n")
     print(f"wrote {target} (previous contents in {target}.bak)" if before else f"wrote {target}")
+
+
+def do_fill(story, wf, verbose=True):
+    nodes, panels = panel_nodes(wf), story_panels(story)
+    changed = 0
+    for n in sorted(panels):
+        p, target = panels[n], nodes.get(n)
+        if not target:
+            if verbose:
+                print(f"panel {n}: the workflow has no panel {n}; skipped")
+            continue
+        caption, dialogue = str(p.get("caption", "") or ""), str(p.get("dialogue", "") or "")
+        if "narration" in target and target["narration"]["widgets_values"][0] != caption:
+            target["narration"]["widgets_values"][0] = caption
+            changed += 1
+        if "dialogue" in target and target["dialogue"]["widgets_values"][0] != dialogue:
+            target["dialogue"]["widgets_values"][0] = dialogue
+            changed += 1
+    return changed
+
+
+def panel_done(nodes, baseline, n):
+    """A panel counts as written when its prompt holds more than the baseline and differs from what start saw."""
+    t = nodes.get(n)
+    if not t or "prompt" not in t:
+        return True
+    cur = t["prompt"]["widgets_values"][0].strip()
+    rest = cur[len(baseline):].strip(" ,") if cur.startswith(baseline) else cur
+    return bool(rest)
+
+
+def cmd_start(args):
+    story, wf = load(args.story, "story"), load(args.workflow, "workflow")
+    dest = args.out
+    if os.path.abspath(dest) == os.path.abspath(args.workflow) and not args.in_place:
+        sys.exit("the destination is the workflow itself; give --out another file, or --in-place if that is what the user wants")
+    nodes, panels = panel_nodes(wf), story_panels(story)
+    baseline = baseline_of(wf, nodes)
+    changed = do_fill(story, wf, verbose=False)
+    # Record which prompts already carried tags when we started, so a panel counts as written only when it changes.
+    initial = {str(n): nodes[n]["prompt"]["widgets_values"][0] for n in nodes if "prompt" in nodes[n]}
+    with open(dest, "w", encoding="utf-8") as f:
+        json.dump(wf, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    order = sorted(set(panels) & set(nodes))
+    st = {"story": os.path.abspath(args.story), "workflow": os.path.abspath(dest), "order": order, "index": 0, "initial": initial, "baseline": baseline}
+    save_state(state_path(dest), st)
+    print(f"storyboard started: {len(order)} panels, captions and dialogue filled ({changed} overlay values), written to {dest}")
+    print(f"state: {state_path(dest)}  (run `maic-storyboard next` from this folder after each panel)\n")
+    print(plan_one(story, wf, nodes, panels, baseline, order[0], dest))
+    print("When this panel's command has run, run:  maic-storyboard next")
+
+
+def cmd_next(args):
+    sp = find_state()
+    st = load_state(sp)
+    story, wf = load(st["story"], "story"), load(st["workflow"], "workflow")
+    nodes, panels = panel_nodes(wf), story_panels(story)
+    baseline, order = st["baseline"], st["order"]
+    i = st["index"]
+    if i < len(order):
+        n = order[i]
+        cur = nodes[n]["prompt"]["widgets_values"][0] if "prompt" in nodes.get(n, {}) else ""
+        if cur == st["initial"].get(str(n)) or not panel_done(nodes, baseline, n):
+            print(f"PANEL {n} IS NOT WRITTEN YET: its prompt is unchanged. Write the tags and run the command below, then run `maic-storyboard next` again.\n")
+            print(plan_one(story, wf, nodes, panels, baseline, n, st["workflow"]))
+            return
+        st["index"] = i + 1
+        save_state(sp, st)
+        i += 1
+        print(f"panel {n} written ({i}/{len(order)} done).\n")
+    if i >= len(order):
+        print("ALL PANELS ARE WRITTEN. Final check:")
+        todo = [n for n in order if not panel_done(nodes, baseline, n)]
+        print(f"prompts still baseline-only: {todo if todo else 'none'}")
+        print(f"finished workflow: {st['workflow']}")
+        print("Tell the user it is done and where the file is. Nothing else to run.")
+        return
+    print(plan_one(story, wf, nodes, panels, baseline, order[i], st["workflow"]))
+    print("When this panel's command has run, run:  maic-storyboard next")
+
+
+def cmd_status(args):
+    sp = find_state()
+    st = load_state(sp)
+    wf = load(st["workflow"], "workflow")
+    nodes = panel_nodes(wf)
+    i, order = st["index"], st["order"]
+    done = [n for n in order[:i]]
+    print(f"story: {st['story']}\nworkflow: {st['workflow']}\npanels: {len(order)}, written: {len(done)}, current: {order[i] if i < len(order) else 'none (finished)'}")
+    print(f"baseline-only prompts right now: {[n for n in order if not panel_done(nodes, st['baseline'], n)] or 'none'}")
 
 
 def cmd_fill(args):
@@ -237,6 +372,16 @@ def cmd_check(args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("start", help="copy, fill, print panel 1: the agent's entry point")
+    p.add_argument("story")
+    p.add_argument("workflow")
+    p.add_argument("--out", required=True, help="the destination workflow (a template is never edited in place)")
+    p.add_argument("--in-place", action="store_true", help="allow --out to be the workflow itself")
+    p.set_defaults(func=cmd_start)
+    p = sub.add_parser("next", help="verify the current panel, print the next")
+    p.set_defaults(func=cmd_next)
+    p = sub.add_parser("status", help="where the storyboard stands")
+    p.set_defaults(func=cmd_status)
     p = sub.add_parser("fill", help="captions and dialogue into the overlays")
     p.add_argument("story")
     p.add_argument("workflow")
@@ -253,6 +398,15 @@ def main():
     p.add_argument("story")
     p.add_argument("workflow")
     p.set_defaults(func=cmd_check)
+    if len(sys.argv) == 1:
+        print("maic-storyboard: merge a story JSON into a MAIC manga workflow, one panel per turn.\n")
+        print("To begin, you need two files. If you do not have them, ask the user:")
+        print("  1. the story file (JSON with characters, setting and panels)")
+        print("  2. the destination workflow to write into (never a template in place; ask where the copy should go)")
+        print("Then run:  maic-storyboard start STORY.json TEMPLATE.json --out DESTINATION.json")
+        print("and after that only:  maic-storyboard next   (once per panel, after running the command it prints)")
+        print("Full help: maic-storyboard --help")
+        return
     args = ap.parse_args()
     args.func(args)
 

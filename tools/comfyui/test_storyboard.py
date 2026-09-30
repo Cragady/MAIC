@@ -91,6 +91,48 @@ class Tests(unittest.TestCase):
         run("fill", self.story, self.wf)
         self.assertNotIn("run `fill`", run("check", self.story, self.wf).stdout)
 
+    def test_start_next_flow(self):
+        dest = os.path.join(os.path.dirname(self.wf), "story-wf.json")
+        cwd = os.path.dirname(self.wf)
+        r = subprocess.run([sys.executable, TOOL, "start", self.story, self.wf, "--out", dest], capture_output=True, text=True, cwd=cwd)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("PANEL 1", r.stdout)
+        self.assertIn("maic-storyboard next", r.stdout)
+        self.assertTrue(os.path.exists(dest + ".storyboard-state.json"))
+        self.assertEqual(json.load(open(self.wf)), WORKFLOW)  # the source is untouched
+        by = {n["title"]: n for n in json.load(open(dest))["nodes"]}
+        self.assertEqual(by["Panel 2 dialogue"]["widgets_values"][0], "JOHN: \"Need a ride?\"")
+        # panel 1 already carried tags in the template, but the agent has not touched it: not written yet
+        r = subprocess.run([sys.executable, TOOL, "next"], capture_output=True, text=True, cwd=cwd)
+        self.assertIn("PANEL 1 IS NOT WRITTEN YET", r.stdout)
+        wf = json.load(open(dest))
+        for n in wf["nodes"]:
+            if n["title"] == "Panel 1 prompt":
+                n["widgets_values"][0] = BASE + ", 1girl, grey hair, bus stop, rain"
+        json.dump(wf, open(dest, "w"))
+        r = subprocess.run([sys.executable, TOOL, "next"], capture_output=True, text=True, cwd=cwd)
+        self.assertIn("panel 1 written (1/2 done)", r.stdout)
+        self.assertIn("PANEL 2", r.stdout)
+        r = subprocess.run([sys.executable, TOOL, "status"], capture_output=True, text=True, cwd=cwd)
+        self.assertIn("current: 2", r.stdout)
+        wf = json.load(open(dest))
+        for n in wf["nodes"]:
+            if n["title"] == "Panel 2 prompt":
+                n["widgets_values"][0] = BASE + ", 1boy, black hair, long coat, car"
+        json.dump(wf, open(dest, "w"))
+        r = subprocess.run([sys.executable, TOOL, "next"], capture_output=True, text=True, cwd=cwd)
+        self.assertIn("ALL PANELS ARE WRITTEN", r.stdout)
+        self.assertIn("baseline-only: none", r.stdout)
+        r = subprocess.run([sys.executable, TOOL, "start", self.story, self.wf, "--out", self.wf], capture_output=True, text=True, cwd=cwd)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("destination is the workflow itself", r.stderr)
+
+    def test_no_arguments_says_how_to_begin(self):
+        r = run()
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("ask the user", r.stdout)
+        self.assertIn("maic-storyboard start", r.stdout)
+
     def test_bad_workflow_layout(self):
         other = self.wf + ".x.json"
         json.dump({"nodes": [node(1, "Note", "", ["x"])]}, open(other, "w"))

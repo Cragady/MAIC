@@ -315,6 +315,8 @@ int main() {
         expect(fed_back && !fs::exists(ws / "note.txt"), "the reason reaches the model as the tool result and nothing was written");
         std::string briefing = fake.requests[0]["messages"][0]["content"];
         expect(briefing.find("maic-workflow-edit inspect FILE --json") != std::string::npos, "the briefing names the workflow editor and how to start with it");
+        expect(briefing.find("maic-storyboard start STORY TEMPLATE --out DEST") != std::string::npos && briefing.find("ask the user for the story file") != std::string::npos,
+               "and the storyboard driver, beginning by asking the user for the files");
     }
 
     section("undo points and nested instructions");
