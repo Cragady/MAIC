@@ -322,6 +322,8 @@ def plan_one(story, wf, nodes, panels, baseline, n, workflow_path):
     lines.append("  YOUR JOB: write this panel's prompt as Danbooru-style tags, comma separated: the characters present (count, then")
     lines.append("  each one's appearance as tags), then the scene from visual_description, camera/framing, and the mood. Keep it")
     lines.append("  under about 60 tags. Do not repeat the baseline; the command below already starts with it. No quotes inside.")
+    lines.append("  vocabulary: the Danbooru tag groups (docs/references/danbooru-tag-groups.md in the MAIC repo): character count first, then")
+    lines.append("  hair, eyes, attire, posture and expression, holding, location, water/lighting, camera.")
     lines.append(f"  baseline (keep exactly): {json.dumps(baseline, ensure_ascii=False)}")
     lines.append(f"  command:  maic-workflow-edit set {shell_quote(workflow_path)} \"Panel {n} prompt\".text \"{baseline}, YOUR TAGS HERE\"")
     lines.append(f"  then:     maic-workflow-edit inspect {shell_quote(workflow_path)} --json | grep -A3 '\"Panel {n} prompt\"'   (to confirm)")
