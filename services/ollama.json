@@ -1,8 +1,8 @@
 {
   "name": "ollama",
-  "description": "Local-only Ollama LLM server (see docs/ollama-setup.md)",
+  "description": "Local-only Ollama LLM server, vendored (maic vendor add ollama; see docs/vendor.md)",
   "command": [
-    "${HOME}/bin/ollama",
+    "${MAIC_VENDOR}/ollama/current/bin/ollama",
     "serve"
   ],
   "env": {
@@ -21,7 +21,7 @@
     {
       "name": "cli-history",
       "description": "prompts typed into `ollama run` (readline history)",
-      "path": "${HOME}/.ollama/history"
+      "path": "${MAIC_VENDOR}/ollama/cli-history"
     }
   ]
 }

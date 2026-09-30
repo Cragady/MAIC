@@ -137,6 +137,7 @@ void apply_file(Settings& s, const fs::path& path) {
         s.sessions_home = j.value("sessions_home", s.sessions_home);
         s.leader = j.value("leader", s.leader);
         s.record = j.value("record", s.record);
+        s.models_dir = j.value("models_dir", s.models_dir);
         s.compact_at = j.value("compact_at", s.compact_at);
         s.compact_keep_results = j.value("compact_keep_results", s.compact_keep_results);
         if (s.leader == "space" || s.leader == "<space>") s.leader = " ";
@@ -236,6 +237,7 @@ void write_default_settings() {
         {"sessions_home", d.sessions_home},
         {"leader", "space"},
         {"record", d.record},
+        {"models_dir", d.models_dir},
         {"compact_at", d.compact_at},
         {"compact_keep_results", d.compact_keep_results},
         {"//sessions_home", "auto: a project's transcripts (it has a MAIC.md) go under sessions/projects/, others under sessions/general/. Or: general, project, a name."},

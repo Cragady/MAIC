@@ -9,6 +9,9 @@
 #include "maic/session.hpp"
 #include "maic/settings.hpp"
 #include "maic/tools.hpp"
+#include "maic/vendor.hpp"
+#include "maic/lua.hpp"
+#include "maic/paths.hpp"
 
 #include <sys/stat.h>
 
@@ -255,6 +258,79 @@ int main() {
         }
         expect(threw, "a broken settings file throws instead of silently using defaults");
         unsetenv("XDG_CONFIG_HOME");
+    }
+
+    section("lua");
+    {
+        std::vector<std::string> notices;
+        Lua lua(ws, [&](const std::string& t) { notices.push_back(t); });
+        auto r = lua.run("print('hi', 2+2) return 'ret'");
+        expect(r.ok && r.output == "hi\t4\nret\n", "print is captured and returned values are shown: " + r.output);
+        r = lua.run("x = 41");
+        r = lua.run("return x + 1");
+        expect(r.ok && r.output == "42\n", "globals persist between runs");
+        r = lua.run("error('boom')");
+        expect(!r.ok && r.output.find("boom") != std::string::npos, "errors come back as text");
+        r = lua.run("this is not lua");
+        expect(!r.ok, "a syntax error is reported, not fatal");
+        write_file(ws / "lua.txt", "from file");
+        r = lua.run("return maic.read('lua.txt')");
+        expect(r.ok && r.output == "from file\n", "maic.read is relative to the workspace");
+        r = lua.run("maic.write('out/made.txt', 'made by lua')");
+        expect(r.ok && read_whole_text(ws / "out" / "made.txt") == "made by lua", "maic.write creates directories and files");
+        r = lua.run("local out, rc = maic.shell('echo shell-ok; exit 3') return out, rc");
+        expect(r.ok && r.output == "shell-ok\n\n3\n", "maic.shell returns output and exit code: " + r.output);
+        r = lua.run("maic.notice('note') return maic.workspace");
+        expect(r.ok && notices.size() == 1 && notices[0] == "note" && r.output == ws.string() + "\n", "maic.notice and maic.workspace");
+        write_file(ws / "script.lua", "#!/usr/bin/env maic lua\nprint(#arg)\n");
+        lua.run("arg = {'a','b'}");
+        r = lua.run_file(ws / "script.lua");
+        expect(r.ok && r.output == "2\n", "run_file skips a shebang and sees arg");
+        r = lua.run("local t = {} for i = 1, 1e6 do t[i] = i end return #t");
+        expect(r.ok && r.output == "1000000\n", "LuaJIT runs a real loop");
+    }
+
+    section("vendor manifest and adopt");
+    {
+        auto entries = load_vendor_manifest();
+        expect(entries.size() >= 3, "the manifest lists the vendored services");
+        auto comfy = find_vendor("comfyui");
+        expect(comfy && comfy->kind == "submodule" && comfy->ref == "v0.38.0" && comfy->path == "vendor/ComfyUI", "comfyui is a submodule pinned to a release tag");
+        auto oll = find_vendor("ollama");
+        expect(oll && oll->kind == "release" && !oll->checksums.empty() && oll->url.find("${VERSION}") != std::string::npos, "ollama is a checksum-verified release");
+        // Adopt into a throwaway state directory, never the real one.
+        fs::path state = ws / "xdg-state";
+        setenv("XDG_STATE_HOME", state.c_str(), 1);
+        fs::path fake_ollama = ws / "fake-ollama" / "v9";
+        write_file(fake_ollama / "bin" / "ollama", "#!/bin/sh\necho ollama version is 9\n");
+        fs::permissions(fake_ollama / "bin" / "ollama", fs::perms::owner_all);
+        VendorEntry e = *oll;
+        e.install.clear();  // no script: adopt only links
+        vendor_adopt(e, fake_ollama);
+        auto st = vendor_status(e);
+        expect(st.linked && st.installed && fs::path(st.target) == fs::weakly_canonical(fake_ollama), "adopt links current at the given install: " + st.target);
+        expect(fs::is_symlink(vendor_link(e)) && vendor_link(e).parent_path() == state / "maic" / "vendor" / "ollama", "the link lives under <state>/vendor/ollama/current");
+        threw = false;
+        try {
+            vendor_adopt(e, ws / "fake-ollama");  // the parent, without bin/ollama
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw, "adopting a directory without bin/ollama is refused");
+        VendorEntry c = *comfy;
+        c.install.clear();
+        threw = false;
+        try {
+            vendor_adopt(c, ws / "fake-ollama");
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw, "adopting a non-ComfyUI directory as comfyui is refused");
+        vendor_unlink(e);
+        expect(!vendor_status(e).linked, "unlink removes the link");
+        expect(expand_vars("${MAIC_VENDOR}/x") == (state / "maic" / "vendor" / "x").string() && expand_vars("${MAIC_STATE}") == (state / "maic").string(),
+               "service files can use ${MAIC_VENDOR} and ${MAIC_STATE}");
+        unsetenv("XDG_STATE_HOME");
     }
 
     section("instructions");

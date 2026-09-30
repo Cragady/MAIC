@@ -1,0 +1,40 @@
+#pragma once
+
+#include <filesystem>
+#include <functional>
+#include <string>
+
+namespace maic {
+
+// LuaJIT, built from the pinned vendor/lua-pins tree, for things that are easier to script than to type:
+// `:lua` in a session, `maic lua FILE`, and (later) tools written in Lua. This runs as the user, with the
+// standard library, like a command in their shell; it is never given to the model.
+//
+// A `maic` table is preloaded:
+//   maic.workspace           the workspace path
+//   maic.version             the maic version string
+//   maic.read(path)          file contents (relative to the workspace)
+//   maic.write(path, text)   create or overwrite a file
+//   maic.shell(cmd)          run cmd in the user's shell; returns output, exit code
+//   maic.notice(text)        show a line in the conversation window (or print, headless)
+class Lua {
+public:
+    explicit Lua(std::filesystem::path workspace, std::function<void(const std::string&)> notice = {});
+    ~Lua();
+    Lua(const Lua&) = delete;
+    Lua& operator=(const Lua&) = delete;
+
+    struct Result {
+        bool ok;
+        std::string output;  // everything print()ed, then the error message when !ok
+    };
+    Result run(const std::string& code, const std::string& chunk_name = "=input");
+    Result run_file(const std::filesystem::path& path);
+
+    struct State;  // public for the C callbacks; not part of the interface
+
+private:
+    State* st_;
+};
+
+}  // namespace maic

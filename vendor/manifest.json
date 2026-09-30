@@ -1,0 +1,28 @@
+{
+  "//": "Services MAIC can install for itself. Submodules are pinned to stable tags or commits; a release is a binary download verified against its published checksum. `maic vendor` reads this.",
+  "comfyui": {
+    "kind": "submodule",
+    "path": "vendor/ComfyUI",
+    "url": "https://github.com/Comfy-Org/ComfyUI",
+    "ref": "v0.38.0",
+    "install": "vendor/comfyui.sh",
+    "description": "ComfyUI in its own Python (uv, 3.13, CUDA 13 torch), API nodes and auto-launch off, models on the external drive",
+    "needs": ["comfyui-ollama"]
+  },
+  "comfyui-ollama": {
+    "kind": "submodule",
+    "path": "vendor/comfyui-ollama",
+    "url": "https://github.com/stavsap/comfyui-ollama",
+    "ref": "6db7560576e5a59488708e6be13e07b5aba2432a",
+    "patches": ["vendor/patches/comfyui-ollama-think.patch"],
+    "description": "Ollama nodes for ComfyUI (custom node), with the think= fix so Qwen3.5 answers instead of reasoning forever"
+  },
+  "ollama": {
+    "kind": "release",
+    "version": "v0.35.0",
+    "url": "https://github.com/ollama/ollama/releases/download/${VERSION}/ollama-linux-amd64.tar.zst",
+    "checksums": "https://github.com/ollama/ollama/releases/download/${VERSION}/sha256sum.txt",
+    "install": "vendor/ollama.sh",
+    "description": "Ollama server, official Linux build, run local-only by services/ollama.json (no cloud, no remotes)"
+  }
+}

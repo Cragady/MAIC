@@ -59,6 +59,11 @@ std::vector<Artifact> list_artifacts(const std::vector<ServiceDef>& services) {
             out.push_back({s.name, a.name, a.description, a.path});
         }
     }
+    for (auto& a : out) {
+        std::error_code ec;
+        fs::path real = fs::weakly_canonical(a.path, ec);
+        if (!ec && real != a.path && fs::exists(a.path, ec)) a.resolved = real.string();
+    }
     return out;
 }
 

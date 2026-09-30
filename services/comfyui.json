@@ -1,8 +1,8 @@
 {
   "name": "comfyui",
-  "description": "ComfyUI image generation, local only (see docs/comfyui-setup.md)",
+  "description": "ComfyUI image generation, local only, vendored (maic vendor add comfyui; see docs/vendor.md)",
   "command": [
-    "${HOME}/dev2/tools-and-things/ComfyUI/.venv/bin/python",
+    "${MAIC_VENDOR}/ComfyUI/.venv/bin/python",
     "main.py",
     "--disable-api-nodes",
     "--disable-auto-launch",
@@ -11,7 +11,7 @@
     "--port",
     "8188"
   ],
-  "cwd": "${HOME}/dev2/tools-and-things/ComfyUI",
+  "cwd": "${MAIC_VENDOR}/ComfyUI",
   "port": 8188,
   "requires": [
     "/run/media/cragady/Extra Storage/LinBox-Overflow/llm-models"
@@ -21,17 +21,22 @@
     {
       "name": "outputs",
       "description": "generated images/videos (embed prompts unless --disable-metadata) and saved story replies",
-      "path": "${HOME}/dev2/tools-and-things/ComfyUI/output"
+      "path": "${MAIC_VENDOR}/ComfyUI/output"
+    },
+    {
+      "name": "workflows",
+      "description": "saved workflows (ComfyUI's user workflow folder points here)",
+      "path": "${MAIC_STATE}/workflows/comfyui"
     },
     {
       "name": "uploads",
       "description": "images loaded into workflows",
-      "path": "${HOME}/dev2/tools-and-things/ComfyUI/input"
+      "path": "${MAIC_VENDOR}/ComfyUI/input"
     },
     {
       "name": "temp",
       "description": "previews and intermediates (also cleared by ComfyUI on start)",
-      "path": "${HOME}/dev2/tools-and-things/ComfyUI/temp"
+      "path": "${MAIC_VENDOR}/ComfyUI/temp"
     }
   ]
 }

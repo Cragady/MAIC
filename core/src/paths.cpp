@@ -56,11 +56,17 @@ std::string expand_vars(std::string_view text) {
         }
         out.append(text.substr(pos, open - pos));
         std::string name(text.substr(open + 2, close - open - 2));
-        const char* value = std::getenv(name.c_str());
-        if (!value) {
-            throw std::runtime_error("environment variable " + name + " is not set");
+        // MAIC's own locations first, so service files never hard-code them.
+        if (name == "MAIC_VENDOR") out.append((state_dir() / "vendor").string());
+        else if (name == "MAIC_STATE") out.append(state_dir().string());
+        else if (name == "MAIC_ROOT") out.append(root_dir().string());
+        else {
+            const char* value = std::getenv(name.c_str());
+            if (!value) {
+                throw std::runtime_error("environment variable " + name + " is not set");
+            }
+            out.append(value);
         }
-        out.append(value);
         pos = close + 1;
     }
     return out;

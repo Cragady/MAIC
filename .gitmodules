@@ -1,0 +1,9 @@
+[submodule "vendor/ComfyUI"]
+	url = https://github.com/Comfy-Org/ComfyUI
+	path = vendor/ComfyUI
+[submodule "vendor/comfyui-ollama"]
+	url = https://github.com/stavsap/comfyui-ollama
+	path = vendor/comfyui-ollama
+[submodule "vendor/lua-pins"]
+	path = vendor/lua-pins
+	url = https://github.com/Cragady/lua-collection-nvim-pins.git

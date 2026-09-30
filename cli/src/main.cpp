@@ -8,7 +8,11 @@
 #include "maic/settings.hpp"
 #include "maic/status.hpp"
 #include "maic/tripwire.hpp"
+#include "maic/lua.hpp"
+#include "maic/vendor.hpp"
 #include "tui.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -35,6 +39,11 @@ void usage() {
                  "                                          points at it (default: interactive appends; -p records nothing\n"
                  "                                          unless --record, which forks, or --append)\n"
                  "\n"
+                 "  vendor                     the services MAIC can install for itself (ComfyUI, Ollama), pinned versions\n"
+                 "  vendor add NAME            fetch, verify, build and link one (network; asks nothing else)\n"
+                 "  vendor adopt NAME PATH     use an install you already have instead of fetching\n"
+                 "  vendor unlink NAME         stop using it (nothing is deleted)\n"
+                 "  lua FILE [args...] | -e CODE   run Lua (LuaJIT, vendored) in this directory with the maic table (maic help lua)\n"
                  "  doctor                     what this machine has, what MAIC needs, a recommended setup\n"
                  "  status                     harness, services, where they run, quick actions\n"
                  "  up <service...|all>        start services\n"
@@ -131,8 +140,8 @@ int cmd_artifacts(const std::vector<std::string>& args) {
         for (const auto& a : artifacts) {
             auto u = maic::measure(a);
             char line[512];
-            snprintf(line, sizeof(line), "%-21s %-10s %-6zu %s\n", (a.owner + "/" + a.name).c_str(), human_bytes(u.bytes).c_str(), u.files, a.path.c_str());
-            std::cout << line << "    " << a.description << "\n";
+            snprintf(line, sizeof(line), "%-21s %-10s %-6zu %s", (a.owner + "/" + a.name).c_str(), human_bytes(u.bytes).c_str(), u.files, a.path.c_str());
+            std::cout << line << (a.resolved.empty() ? "" : " -> " + a.resolved) << "\n    " << a.description << "\n";
         }
         std::cout << "\nclean with: maic artifacts clean OWNER/NAME [--older-than DAYS] [--yes]\n";
         return 0;
@@ -326,6 +335,44 @@ int main(int argc, char** argv) {
         }
         if (cmd == "settings") return cmd_settings(cargs);
         if (cmd == "doctor") return maic::run_doctor();
+        if (cmd == "lua") {
+            if (cargs.empty()) throw std::runtime_error("maic lua FILE [args...] | maic lua -e CODE");
+            maic::Lua lua(std::filesystem::current_path());
+            maic::Lua::Result r;
+            if (cargs[0] == "-e") {
+                if (cargs.size() < 2) throw std::runtime_error("maic lua -e CODE");
+                r = lua.run(cargs[1]);
+            } else {
+                std::string argv_lua = "arg = {";
+                for (size_t i = 1; i < cargs.size(); ++i) argv_lua += "[" + std::to_string(i) + "]=" + nlohmann::json(cargs[i]).dump() + ",";
+                lua.run(argv_lua + "}");
+                r = lua.run_file(cargs[0]);
+            }
+            if (r.ok) std::cout << r.output;
+            else std::cerr << "maic lua: " << r.output << (r.output.empty() || r.output.back() != '\n' ? "\n" : "");
+            return r.ok ? 0 : 1;
+        }
+        if (cmd == "vendor") {
+            auto entries = maic::load_vendor_manifest();
+            if (cargs.empty() || cargs[0] == "list") {
+                std::cout << "vendored services (" << maic::vendor_dir().string() << "):\n";
+                for (const auto& e : entries) {
+                    auto st = maic::vendor_status(e);
+                    std::cout << "  " << e.name << "  " << (e.kind == "submodule" ? e.ref : e.version) << "  "
+                              << (st.installed ? "installed" : st.linked ? "linked" : "not installed") << (st.target.empty() ? "" : "  -> " + st.target) << "\n"
+                              << "    " << e.description << (st.note.empty() ? "" : "\n    " + st.note) << "\n";
+                }
+                return 0;
+            }
+            if (cargs.size() < 2) throw std::runtime_error("maic vendor add|adopt|unlink NAME [PATH]");
+            auto e = maic::find_vendor(cargs[1]);
+            if (!e) throw std::runtime_error("no vendored service named " + cargs[1] + " (maic vendor)");
+            if (cargs[0] == "add") maic::vendor_add(*e);
+            else if (cargs[0] == "adopt" && cargs.size() == 3) maic::vendor_adopt(*e, cargs[2]);
+            else if (cargs[0] == "unlink") maic::vendor_unlink(*e);
+            else throw std::runtime_error("maic vendor add|adopt|unlink NAME [PATH]");
+            return 0;
+        }
         if (cmd == "init") {
             auto ws = std::filesystem::current_path();
             std::filesystem::create_directories(ws / ".maic");

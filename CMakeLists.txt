@@ -23,6 +23,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(nlohmann_json CONFIG REQUIRED)
 
 enable_testing()
+include(vendor/luajit.cmake)
+
 add_subdirectory(core)
 add_subdirectory(cli)
 add_subdirectory(harness)

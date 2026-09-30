@@ -1,0 +1,58 @@
+Third-party source is vendored as SUBMODULES pinned to a commit or tag, never a
+branch head, or as a RELEASE download verified against the checksum the project
+published with it. vendor/manifest.json is the ledger `maic vendor` reads.
+
+    vendor/ComfyUI
+        https://github.com/Comfy-Org/ComfyUI
+        pinned at v0.38.0  (6b747c0428c343e1417219641db93a4fb7cb69ae)
+        built by vendor/comfyui.sh: its own Python via uv, CUDA 13 torch,
+        API nodes and auto-launch off, models on the external drive.
+
+    vendor/comfyui-ollama
+        https://github.com/stavsap/comfyui-ollama
+        pinned at 6db7560576e5a59488708e6be13e07b5aba2432a  (no release tags upstream)
+        patched by vendor/patches/comfyui-ollama-think.patch: the node passes
+        `think` through to Ollama, so Qwen3.5 answers instead of reasoning until
+        the token limit. `maic vendor add` applies it; already-applied is detected.
+
+    vendor/lua-pins
+        https://github.com/Cragady/lua-collection-nvim-pins.git
+        pinned at 37bb6c600a9f16684db5d7d9e49b2bff23332d69
+        The two Lua sources Neovim v0.12.2 pins, each with its own PROVENANCE,
+        upstream url and sha256, and a verify.sh that fetches upstream, checks
+        the hash and diffs the committed tree. MAIC builds
+        luajit-2.1.1774638290/luajit (LuaJIT at fbb36bb6) through
+        vendor/luajit.cmake, OUT OF TREE: the source is copied into the build
+        directory and its own Makefile produces a static libluajit.a there. The
+        submodule is never written to. The URL is https here (the collection is
+        public); ColdFireEmu uses ssh for the same pin by choice.
+
+    ollama  (release, not a submodule)
+        https://github.com/ollama/ollama/releases  v0.35.0
+        vendor/ollama.sh downloads the linux amd64 archive, fetches the
+        release's sha256sum.txt, and refuses to unpack on a mismatch. Ollama is
+        a Go + CUDA build; the official binary is the reproducible artefact.
+
+WHY SUBMODULES AND NOT COPIES. A copy can be incomplete without anyone noticing
+(a .gitignore written from a guess once dropped thirteen real source files from a
+LuaJIT copy elsewhere; only a fresh clone would have shown it). A submodule's
+tree is whatever the pinned commit says it is; we do not filter it, and the pin
+is a hash rather than a copy someone might edit.
+
+WHERE THE RUNNING COPIES LIVE. Not here. ~/.local/state/maic/vendor/<Name> is a
+symlink to a checkout (this repo's, or one the user adopted with
+`maic vendor adopt`), and ~/.local/state/maic/vendor/ollama/current points at a
+release directory. Services and `maic artifacts` go through those links, so a
+user with an existing install keeps it and nothing moves.
+
+CHECKING
+
+    git submodule update --init --recursive
+    vendor/lua-pins/verify.sh                     # needs the network
+    maic vendor                                   # what is linked and installed
+
+BUMPING
+
+Change the ref in vendor/manifest.json, move the submodule to that commit, and
+say why in the commit message and here. Then `maic vendor add NAME` re-runs the
+install script, which updates packages in place. Do not track a branch.

@@ -76,6 +76,9 @@ const std::vector<Topic>& topics() {
          "*providers*\n"
          "Models are `provider/model`: `qwen3.5:9b` (Ollama, local), `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, `openrouter/...`, or any OpenAI-compatible server added in settings. `:model` alone lists providers; `:models` lists what Ollama has.\n\n"
          "A remote provider receives your prompts, every file the agent reads and every command's output; MAIC says so when you switch and shows REMOTE in the status strip. Keys come from an environment variable or a command, never from the settings file. See docs/settings.md."},
+        {"vendor", {"vendored", "install-services", "artifacts-tree"}, "services MAIC installs for itself, and the artifact tree",
+         "*vendor*\n"
+         "`maic vendor` lists the services MAIC can install at pinned versions (ComfyUI as a submodule at a release tag, its Ollama custom node at a pinned commit, Ollama as a checksum-verified release). `maic vendor add NAME` fetches and installs one the way MAIC wants it (own Python, telemetry off, models on the external drive); `maic vendor adopt NAME PATH` uses an install you already have; `maic vendor unlink NAME` stops using it. Everything lives under ~/.local/state/maic/vendor/, workflows under ~/.local/state/maic/workflows/, and `maic artifacts` shows where each thing really is. See docs/vendor.md."},
         {"settings", {"config", "styles", "style", "settings.json"}, "the settings file",
          "*settings*\n"
          "Layered: ~/.config/maic/settings.json, then `.maic/settings.json` and `.maic/settings.local.json` in each directory from under $HOME down to the workspace (nearest wins; settings.json is for the project, settings.local.json is personal). Keys: model, mode, think, markdown, mouse, sessions_home (auto/general/project/name), instruction_files, providers, style. `maic settings init` writes the global one, `:init` scaffolds a project's, `:settings` shows what is in effect. See docs/settings.md."},
@@ -145,6 +148,10 @@ const std::vector<CommandInfo>& commands() {
         {"session", {}, "", "where this transcript is", "*:session*\nThis session's file and the sessions directory. See `:h sessions`."},
         {"artifacts", {}, "", "where everything is kept, with sizes", "*:artifacts*\nEvery place MAIC and its services leave things (transcripts, service logs, ComfyUI outputs, ...) with sizes. Clean with `maic artifacts clean OWNER/NAME [--older-than DAYS]`."},
         {"reg", {"register"}, "", "show the yank register", "*:reg*\nShows the register. See `:h p`."},
+        {"lua", {"luafile", "luajit"}, "CODE", "run Lua (LuaJIT) here; output goes to the model as context",
+         "*:lua* *:luafile* *maic lua*\n"
+         "`:lua CODE` runs Lua in the workspace with LuaJIT (vendored, pinned to the revision Neovim uses); `:luafile PATH` runs a file. Globals persist for the session. Output shows in the conversation and is handed to the model as context, like `!cmd`. Outside a session: `maic lua FILE [args]` or `maic lua -e CODE` (`arg` holds the arguments).\n\n"
+         "The `maic` table: `maic.workspace`, `maic.version`, `maic.read(path)`, `maic.write(path, text)`, `maic.shell(cmd)` (returns output and exit code), `maic.notice(text)`. The standard library is available: this runs as you, like your shell, and is never given to the model."},
         {"compact", {}, "[prune|head|all]", "free context: old tool results first, then the oldest turns",
          "*:compact*\n"
          "Frees context without losing the thread. `:compact` (and the automatic compaction at `compact_at`, 75% of the window by default) does it in this order:\n"

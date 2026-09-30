@@ -88,6 +88,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [ollama-setup.md](docs/ollama-setup.md) — local-only Ollama install, service settings, privacy audit.
 * [harness.md](docs/harness.md) — the safety harness: tripwire (built) and planned layers.
 * [settings.md](docs/settings.md) — the settings file: model providers (local and remote), styles, instruction files.
+* [vendor.md](docs/vendor.md) — the services MAIC installs for itself (ComfyUI, Ollama) at pinned versions, and the artifact tree.
 * [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.
 * [opencode-quick-wins.md](docs/opencode-quick-wins.md) — 23 small, ranked improvements to take from opencode, with file pointers.
 * [cleanroom.md](docs/cleanroom.md) — what may go into MAIC, where the design came from, third-party licenses.
@@ -109,6 +110,7 @@ MAIC/
 ├── cli/        `maic`: the agent UI (vim keys, modes, sessions) and service/harness commands. See cli/README.md
 ├── harness/    maic-lock (root-owned tripwire helper) + its installer
 ├── services/   one JSON file per service MAIC runs (ollama, comfyui)
+├── vendor/     pinned submodules (ComfyUI, comfyui-ollama), patches, install scripts, manifest.json. See docs/vendor.md
 ├── tools/      planned: polyglot agent tools
 ├── server/     planned: remote access, as a client of core
 └── docs/

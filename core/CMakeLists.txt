@@ -8,6 +8,7 @@ add_library(maic_core
     src/harness.cpp
     src/instructions.cpp
     src/llm.cpp
+    src/lua.cpp
     src/markdown.cpp
     src/ollama.cpp
     src/openai.cpp
@@ -19,11 +20,12 @@ add_library(maic_core
     src/status.cpp
     src/tools.cpp
     src/tripwire.cpp
+    src/vendor.cpp
 )
 target_include_directories(maic_core PUBLIC include)
-target_link_libraries(maic_core PUBLIC nlohmann_json::nlohmann_json PRIVATE httplib::httplib)
+target_link_libraries(maic_core PUBLIC nlohmann_json::nlohmann_json PRIVATE httplib::httplib luajit)
 target_compile_options(maic_core PRIVATE -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
-target_compile_definitions(maic_core PRIVATE MAIC_ROOT="${PROJECT_SOURCE_DIR}")
+target_compile_definitions(maic_core PRIVATE MAIC_VERSION="${MAIC_GIT_VERSION}" MAIC_ROOT="${PROJECT_SOURCE_DIR}")
 
 foreach(t harness robustness llm agent)
     add_executable(${t}_test tests/${t}_test.cpp)

@@ -34,6 +34,7 @@ Nearer files win. Scalars replace, `providers` merge by name, `style` merges by 
 | `record` | Keep transcripts of interactive sessions (default `true`). `false` writes them to the runtime directory instead, where they vanish at logout; `--record` / `--no-record` override per session. |
 | `compact_at` | Auto-compact when the last model call used this share of the context window (default `0.75`; `0` disables). Old tool results are stubbed first; the oldest turns are summarised only if that was not enough. See `:h compact`. |
 | `compact_keep_results` | Tool results that are never stubbed, counting from the most recent (default `4`). |
+| `models_dir` | Where model files live: ComfyUI's `checkpoints/ diffusion_models/ loras/ text_encoders/ vae/` and Ollama's `ollama/` store. Used when MAIC installs ComfyUI (see [vendor.md](vendor.md)). |
 | `leader` | The vim leader key for normal and visual modes: `"space"` (default) or a single character. `<leader>y` yanks to the system clipboard, `<leader>p` pastes from it. |
 | `sessions_home` | Where new transcripts go. `auto` (default): under `sessions/projects/<encoded workspace>/` when the workspace has a `MAIC.md` (or one is in effect from a parent directory), else `sessions/general/`. Or force it: `general`, `project`, or any name (`sessions/<name>/`). A project can set this in its `.maic/settings.json`; `maic sessions rehome` moves existing transcripts. |
 

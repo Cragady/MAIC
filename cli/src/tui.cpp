@@ -4,6 +4,7 @@
 #include "editor.hpp"
 #include "maic/agent.hpp"
 #include "maic/artifacts.hpp"
+#include "maic/lua.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
@@ -284,6 +285,7 @@ private:
     std::thread shell_thread_;
 
     std::string status_msg_;
+    std::unique_ptr<Lua> lua_;  // created on first :lua; keeps globals between calls
     bool ctrl_w_pending_ = false;
     bool ctrl_x_pending_ = false;
     size_t palette_sel_ = 0;
@@ -882,6 +884,18 @@ void App::run_command(const std::string& line) {
                 view_.set_all_collapsed(!on);
                 post(Kind::Notice, on ? "tool output shown in full (za folds one, zM all)" : "tool output folded to a preview (za unfolds one, zR all)");
             } else post(Kind::Error, ":set markdown|mouse|tooldetails on|off");
+        } else if (cmd == "lua" || cmd == "luafile") {
+            if (!lua_) lua_ = std::make_unique<Lua>(agent_.harness().workspace(), [this](const std::string& t) { post(Kind::Notice, t); });
+            Lua::Result r = cmd == "lua" ? lua_->run(arg) : lua_->run_file(agent_.harness().resolve(arg));
+            view_.append(Kind::Shell, (cmd == "lua" ? "lua> " : "luafile ") + arg);
+            std::string out = r.output;
+            while (!out.empty() && out.back() == '\n') out.pop_back();
+            view_.append(r.ok ? Kind::ToolOk : Kind::ToolErr, out.empty() ? "(no output)" : out);
+            if (!r.output.empty()) {
+                std::string context = "[The user ran Lua in MAIC: `" + arg + "`]\n" + (r.output.size() > 32 * 1024 ? r.output.substr(0, 32 * 1024) + "\n[truncated]" : r.output);
+                if (busy_) agent_.post_message(context);
+                else agent_.add_context(context);
+            }
         } else if (cmd == "compact") {
             if (idle()) {
                 std::atomic<bool> no{false};

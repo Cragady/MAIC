@@ -17,6 +17,7 @@ struct Artifact {
     std::string name;
     std::string description;
     std::filesystem::path path;  // a directory or a single file
+    std::string resolved;        // where it really is, when `path` goes through a symlink; else ""
 };
 
 struct ArtifactUsage {

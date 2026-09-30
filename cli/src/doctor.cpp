@@ -5,6 +5,7 @@
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
+#include "maic/vendor.hpp"
 #include "maic/session.hpp"
 
 #include <sys/statvfs.h>
@@ -167,6 +168,10 @@ int run_doctor() {
     bool clip = has_program("wl-copy") || has_program("xclip") || has_program("xsel");
     line("clipboard tool (wl-copy / xclip / xsel)", clip, clip ? "" : "yanks still reach the terminal through OSC 52");
     line("nvim (for :e)", has_program("nvim"), "");
+    for (const auto& e : load_vendor_manifest()) {
+        auto st = vendor_status(e);
+        line("vendored " + e.name + " (" + (e.kind == "submodule" ? e.ref : e.version) + ")", st.installed, st.installed ? st.target : st.note);
+    }
     std::cout << "\n";
 
     // ---- models and the recommendation
