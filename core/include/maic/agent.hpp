@@ -76,6 +76,25 @@ public:
     // True when the current model runs off this machine: prompts and tool output leave it.
     bool remote() const { return resolve_model(providers, model).first.remote(); }
 
+    // Compaction. Micaiah's flow: tool results are what fill a context, dialog is cheap, so old tool results go
+    // first (Prune) and the dialog stays intact; only when that is not enough are the oldest turns summarised
+    // (Head), which moves the compaction point forward. All is the traditional whole-history summary.
+    enum class Compaction { Prune, Head, All };
+    struct CompactionSettings {
+        double at = 0.75;         // auto-compact when the last call used this share of the context window
+        int keep_results = 4;     // the most recent tool results always stay intact
+        double head_fraction = 0.5;  // Head summarises this share of the turns, oldest first
+    };
+    CompactionSettings compaction;
+
+    // Runs one stage now (Prune returns how many results it stubbed; Head/All call the model with no tools).
+    // Returns a one-line report. Call only while idle, or from within submit.
+    std::string compact(Compaction stage, const std::atomic<bool>& cancel);
+    // Her default: Prune, then Head only if the estimate says pruning was not enough.
+    std::string compact_auto(const std::atomic<bool>& cancel);
+
+    const std::vector<Message>& messages() const { return messages_; }
+
     // Token accounting: the last model call and this session's running totals. Thread-safe.
     struct UsageReport {
         Usage last;
@@ -114,6 +133,9 @@ private:
     std::deque<std::string> mailbox_;
     std::atomic<bool> deliver_now_{false};
     bool drain_mailbox();  // appends queued messages as user turns; true if any
+    void rewrite_log();    // after compaction: a reset record and the new history, so resume sees the same thing
+    size_t history_bytes() const;
+    std::string summarise(size_t from, size_t to, const std::atomic<bool>& cancel);  // messages [from, to) -> summary text
 };
 
 }  // namespace maic

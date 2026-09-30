@@ -6,6 +6,7 @@
 
 #include <httplib.h>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <thread>
@@ -24,6 +25,7 @@ struct FakeOllama {
     std::vector<json> requests;
     std::mutex mu;
     int delay_ms = 100;
+    int usage_input = 0;  // reported as prompt_eval_count on the final line when set
 
     FakeOllama() {
         port = srv.bind_to_any_port("127.0.0.1");
@@ -38,14 +40,17 @@ struct FakeOllama {
                 if (m["role"] == "user") last = m["content"];
             }
             int delay = delay_ms;
-            res.set_chunked_content_provider("application/x-ndjson", [last, delay](size_t, httplib::DataSink& sink) {
+            int usage = usage_input;
+            res.set_chunked_content_provider("application/x-ndjson", [last, delay, usage](size_t, httplib::DataSink& sink) {
                 std::string out = "echo: " + last;
                 for (size_t i = 0; i < out.size(); i += 4) {
                     std::string line = json{{"message", {{"content", out.substr(i, 4)}}}}.dump() + "\n";
                     if (!sink.write(line.data(), line.size())) return false;
                     std::this_thread::sleep_for(std::chrono::milliseconds(delay));
                 }
-                std::string done = json{{"done", true}}.dump() + "\n";
+                json done_j = {{"done", true}};
+                if (usage) done_j["prompt_eval_count"] = usage, done_j["eval_count"] = 5;
+                std::string done = done_j.dump() + "\n";
                 sink.write(done.data(), done.size());
                 sink.done();
                 return true;
@@ -165,6 +170,85 @@ int main() {
         expect(msgs[msgs.size() - 1]["content"] == "queued before the turn" && msgs[msgs.size() - 2]["content"] == "first",
                "a message queued without deliver_now goes after the turn's own message, in one request");
         expect(agent.queued() == 0 && agent.take_queued().empty(), "the mailbox is drained");
+    }
+
+    section("compaction");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        fs::path path;
+        std::string big(3000, 'x');
+        {
+            SessionLog log("agent-test");
+            path = log.path();
+            Agent agent(ws, "test");
+            agent.providers = {fake.provider()};
+            agent.set_log(&log);
+            // A history with seven tool rounds, built by hand: system, then user/assistant(call)/tool triples.
+            std::vector<Message> hist = {{"system", "sys"}};
+            for (int i = 1; i <= 7; ++i) {
+                hist.push_back({"user", "turn " + std::to_string(i)});
+                hist.push_back({"assistant", "", {{"c" + std::to_string(i), "read_file", {{"path", "f" + std::to_string(i)}}}}});
+                hist.push_back({"tool", "result " + std::to_string(i) + "\n" + big, {}, "read_file", "c" + std::to_string(i)});
+                hist.push_back({"assistant", "reply " + std::to_string(i)});
+            }
+            agent.restore(hist);
+            size_t before = agent.messages().size();
+            std::string r = agent.compact(Agent::Compaction::Prune, no_cancel);
+            expect(r.find("pruned 3 old tool results") == 0, "prune stubs all but the last 4 tool results: " + r);
+            int stubs = 0, intact = 0, dialog = 0;
+            for (const auto& m : agent.messages()) {
+                if (m.role == "tool") (m.content.rfind("[pruned", 0) == 0 ? stubs : intact)++;
+                if (m.role == "user" && m.content.rfind("turn ", 0) == 0) ++dialog;
+            }
+            expect(stubs == 3 && intact == 4 && dialog == 7 && agent.messages().size() == before, "dialog and message count are untouched; only old results are stubbed");
+            expect(agent.messages()[3].content.find("bytes of read_file") != std::string::npos && agent.messages()[3].content.find("2 lines") != std::string::npos,
+                   "a stub says what it replaced: " + agent.messages()[3].content);
+            expect(agent.compact(Agent::Compaction::Prune, no_cancel) == "nothing to prune", "a second prune has nothing to do");
+
+            r = agent.compact(Agent::Compaction::Head, no_cancel);
+            expect(r.find("summarised the oldest") == 0, "head summarises the oldest turns: " + r);
+            const auto& m = agent.messages();
+            expect(m[0].role == "system" && m[1].role == "user" && m[1].content.find("[Handover note") == 0 && m[1].content.find("echo: The conversation") != std::string::npos,
+                   "the summary (from the model, no tools) becomes one user message after the system prompt");
+            int remaining = 0;
+            for (const auto& x : m) remaining += x.role == "user" && x.content.rfind("turn ", 0) == 0;
+            std::string last_reply;
+            for (const auto& x : m) if (x.role == "assistant" && !x.content.empty()) last_reply = x.content;
+            expect(remaining == 4 && last_reply == "reply 7", "the newest half of the turns stays verbatim");
+            expect(fake.requests.back()["tools"].is_null() || fake.requests.back()["tools"].empty(), "the summariser gets no tools");
+            r = agent.compact(Agent::Compaction::All, no_cancel);
+            remaining = 0;
+            for (const auto& x : agent.messages()) remaining += x.role == "user" && x.content.rfind("turn ", 0) == 0;
+            expect(remaining == 0 && agent.messages().size() == 2, "all collapses everything to system + note");
+        }
+        LoadedSession loaded = load_session(path);
+        expect(loaded.messages.size() == 2 && loaded.messages[1].content.find("[Handover note") == 0, "resume after compaction loads the compacted history");
+        expect(std::count_if(loaded.transcript.begin(), loaded.transcript.end(), [](const TranscriptEntry& t) { return t.type == "notice" && t.text.find("compacted") == 0; }) == 3,
+               "the transcript records each compaction");
+
+        // Automatic: a call that reports a nearly full context triggers compaction before the next call.
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.compaction.at = 0.5;
+        std::vector<Message> hist = {{"system", "sys"}};
+        for (int i = 1; i <= 6; ++i) {
+            hist.push_back({"user", "t" + std::to_string(i)});
+            hist.push_back({"assistant", "", {{"k" + std::to_string(i), "read_file", {{"path", "f"}}}}});
+            hist.push_back({"tool", big, {}, "read_file", "k" + std::to_string(i)});
+            hist.push_back({"assistant", "r" + std::to_string(i)});
+        }
+        agent.restore(hist);
+        fake.delay_ms = 1;
+        Recorder r1;
+        agent.submit("go", Origin::Local, r1, no_cancel);  // fake reports no usage: nothing happens
+        expect(!has_notice(r1, "compacting"), "no usage report, no auto-compaction");
+        fake.usage_input = 12000;  // 12000 of 16384 = 73% > 50%
+        Recorder r2;
+        agent.submit("again", Origin::Local, r2, no_cancel);
+        Recorder r3;
+        agent.submit("and again", Origin::Local, r3, no_cancel);
+        expect(has_notice(r3, "compacting") && has_notice(r3, "pruned"), "a full context compacts before the next call, pruning first");
     }
 
     section("context files");

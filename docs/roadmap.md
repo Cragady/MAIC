@@ -20,7 +20,11 @@ From [harness.md](harness.md): doom-loop detection wired to the tripwire; reject
 
 ## 3. Quick wins from opencode
 
-[opencode-quick-wins.md](opencode-quick-wins.md) lists 23 small items. Done so far: token usage and the context readout (18), foldable tool output (19). Next: items 1 to 9 (tool-result quality for small models), then retry with backoff (17), then `:compact` (23).
+[opencode-quick-wins.md](opencode-quick-wins.md) lists 23 small items. Done: 1 to 9 (tool-result quality for small models), 18 (token usage and the context readout), 19 (foldable tool output), 23 (`:compact`, with Micaiah's two-stage design below rather than opencode's whole-history summary). Next: retry with backoff (17), then the under-two-hours leftovers (10 to 16).
+
+## 3a. Compaction
+
+Built as Micaiah specified it: tool results are what fill a context and dialog is cheap, so compaction stubs old tool results first and keeps every word of the dialog; only when that is not enough does it summarise the oldest turns into a handover note, moving the compaction point forward each time so the recent conversation is always verbatim. `:compact all` is the traditional whole-history summary, available but never the default. Consistent flow is preferred over rewind-ability. Still to do: a `:rewind`/`--fork-at` that starts a fork from an earlier record, and letting the cai-tools transcript work (below) reuse the same handover-note format.
 
 ## 4. Absorbing cai-tools
 

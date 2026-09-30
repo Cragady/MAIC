@@ -145,6 +145,12 @@ const std::vector<CommandInfo>& commands() {
         {"session", {}, "", "where this transcript is", "*:session*\nThis session's file and the sessions directory. See `:h sessions`."},
         {"artifacts", {}, "", "where everything is kept, with sizes", "*:artifacts*\nEvery place MAIC and its services leave things (transcripts, service logs, ComfyUI outputs, ...) with sizes. Clean with `maic artifacts clean OWNER/NAME [--older-than DAYS]`."},
         {"reg", {"register"}, "", "show the yank register", "*:reg*\nShows the register. See `:h p`."},
+        {"compact", {}, "[prune|head|all]", "free context: old tool results first, then the oldest turns",
+         "*:compact*\n"
+         "Frees context without losing the thread. `:compact` (and the automatic compaction at `compact_at`, 75% of the window by default) does it in this order:\n"
+         "1. **prune**: every tool result except the most recent few (`compact_keep_results`, 4) is replaced by a one-line stub saying what it was; the dialog stays word for word. Tool output is what fills a context; dialog is cheap.\n"
+         "2. **head**: only if pruning was not enough, the oldest half of the turns is summarised into a handover note (objective, details, work state, next move, files) and the rest stays verbatim. Each time this happens the compaction point moves forward, so the recent conversation is always intact.\n\n"
+         "`:compact prune`, `:compact head` run one stage; `:compact all` is the traditional whole-conversation summary. The session file keeps everything that was said: compaction is recorded, never edited into the past. After any compaction, assistant turns replay as plain text (provider thinking blocks are dropped)."},
         {"clear", {}, "", "start a new conversation", "*:clear*\nForgets the conversation (the session file keeps everything). Waits until the agent is idle."},
         {"trip", {}, "[reason]", "trip the harness now", "*:trip*\nSets the tripwire immediately with no password; nothing runs until `:unlock`. See `:h harness`."},
         {"unlock", {}, "", "reset the harness (sudo password)", "*:unlock*\nResets the tripwire without leaving the session; asks for your sudo password every time."},
@@ -175,6 +181,7 @@ std::vector<std::string> complete_argument(const std::string& command, const std
     std::string cmd = lower(command);
     if (cmd == "mode") candidates = {"manual", "auto-read", "edit", "auto", "plan"};
     else if (cmd == "set") candidates = {"markdown", "mouse", "tooldetails"};
+    else if (cmd == "compact") candidates = {"prune", "head", "all"};
     else if (cmd == "think") candidates = {"on", "off"};
     else if (cmd == "w" || cmd == "write" || cmd == "send") candidates = {"now"};
     else if (cmd == "up" || cmd == "down") candidates = ctx.services;

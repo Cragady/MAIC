@@ -177,6 +177,112 @@ void Agent::add_context(const std::string& text) {
     push({"user", text});
 }
 
+size_t Agent::history_bytes() const {
+    size_t n = 0;
+    for (const auto& m : messages_) n += m.content.size() + (m.raw.is_null() ? 0 : m.raw.dump().size()) + 40;
+    return n;
+}
+
+void Agent::rewrite_log() {
+    if (!log_) return;
+    log_->write("reset", {{"messages", messages_.size()}});
+    for (const auto& m : messages_) log_->write("msg", message_to_json(m));
+}
+
+std::string Agent::summarise(size_t from, size_t to, const std::atomic<bool>& cancel) {
+    std::string transcript;
+    for (size_t i = from; i < to; ++i) {
+        const auto& m = messages_[i];
+        if (m.role == "system") continue;
+        if (m.role == "user") transcript += "[User]: " + m.content + "\n\n";
+        else if (m.role == "assistant") {
+            if (!m.content.empty()) transcript += "[Assistant]: " + m.content + "\n\n";
+            for (const auto& c : m.tool_calls) transcript += "[Assistant tool call]: " + c.name + "(" + c.arguments.dump() + ")\n\n";
+        } else if (m.role == "tool") {
+            transcript += "[Tool result]: " + (m.content.size() > 2000 ? m.content.substr(0, 2000) + " ..." : m.content) + "\n\n";
+        }
+    }
+    std::vector<Message> req = {
+        {"system", "You write a handover note for a coding agent that is about to lose the conversation below from its context. "
+                   "Write only the note, in markdown with exactly these sections: ## Objective, ## Important details, "
+                   "## Work state (Completed / Active / Blocked), ## Next move, ## Relevant files. Terse bullets. Keep exact "
+                   "paths, commands, names and numbers. Include decisions the user made and anything they asked to remember. "
+                   "If the conversation contains an earlier handover note, merge it in; it will be discarded. Do not mention "
+                   "that context was compacted."},
+        {"user", "The conversation:\n\n" + transcript + "\nWrite the handover note."},
+    };
+    auto [provider, model_name] = resolve_model(providers, model);
+    ChatOptions options{model_name, false};
+    Message reply = chat(provider, options, req, nlohmann::json::array(), [](std::string_view, bool) {}, cancel);
+    return reply.content;
+}
+
+std::string Agent::compact(Compaction stage, const std::atomic<bool>& cancel) {
+    if (messages_.size() < 3) return "nothing to compact";
+    size_t before = history_bytes();
+    std::string report;
+    if (stage == Compaction::Prune) {
+        // Stub every tool result except the most recent keep_results.
+        int seen = 0;
+        size_t stubbed = 0;
+        for (size_t i = messages_.size(); i-- > 0;) {
+            auto& m = messages_[i];
+            if (m.role != "tool") continue;
+            if (++seen <= compaction.keep_results) continue;
+            if (m.content.rfind("[pruned", 0) == 0) continue;
+            size_t lines = std::count(m.content.begin(), m.content.end(), '\n') + 1;
+            m.content = "[pruned " + std::to_string(lines) + " lines / " + std::to_string(m.content.size()) + " bytes of " + m.tool_name +
+                        " output to save context; call the tool again if you need it]";
+            ++stubbed;
+        }
+        if (!stubbed) return "nothing to prune";
+        report = "pruned " + std::to_string(stubbed) + " old tool result" + (stubbed == 1 ? "" : "s");
+    } else {
+        // Summarise messages [1, cut) into one user message; the system prompt at 0 stays.
+        size_t turns = 0;
+        for (const auto& m : messages_) turns += m.role == "user";
+        size_t target = stage == Compaction::All ? turns : std::max<size_t>(1, static_cast<size_t>(turns * compaction.head_fraction));
+        size_t cut = 1, seen = 0;
+        for (size_t i = 1; i < messages_.size(); ++i) {
+            if (messages_[i].role == "user" && ++seen > target) {
+                cut = i;
+                break;
+            }
+            cut = i + 1;
+        }
+        // Never cut inside a tool round: a tool_call must keep its result.
+        while (cut < messages_.size() && messages_[cut].role == "tool") ++cut;
+        if (cut <= 1) return "nothing to summarise";
+        std::string summary = summarise(1, cut, cancel);
+        std::vector<Message> rest(messages_.begin() + static_cast<long>(cut), messages_.end());
+        messages_.resize(1);
+        messages_.push_back({"user", "[Handover note for the earlier part of this conversation]\n" + summary});
+        messages_.insert(messages_.end(), rest.begin(), rest.end());
+        report = (stage == Compaction::All ? "summarised the whole conversation" : "summarised the oldest " + std::to_string(cut - 1) + " messages");
+        if (log_) log_->write("compact", {{"stage", stage == Compaction::All ? "all" : "head"}, {"summary", summary}, {"messages", cut - 1}});
+    }
+    // Edited history can't carry provider thinking blocks; replay assistant turns as plain text from here on.
+    for (auto& m : messages_) {
+        if (m.role == "assistant") m.raw = nullptr, m.raw_kind.clear();
+    }
+    if (stage == Compaction::Prune && log_) log_->write("compact", {{"stage", "prune"}, {"bytes_before", before}, {"bytes_after", history_bytes()}});
+    rewrite_log();
+    size_t after = history_bytes();
+    return report + " (" + std::to_string(before / 1024) + " KB -> " + std::to_string(after / 1024) + " KB of history)";
+}
+
+std::string Agent::compact_auto(const std::atomic<bool>& cancel) {
+    UsageReport u = usage();
+    size_t before = history_bytes();
+    std::string report = compact(Compaction::Prune, cancel);
+    // Was pruning enough? Estimate the next call's size from the byte ratio.
+    if (u.last.context > 0 && u.last.input > 0 && before > 0) {
+        double est = static_cast<double>(u.last.input) * history_bytes() / before;
+        if (est / u.last.context >= compaction.at) report += "; " + compact(Compaction::Head, cancel);
+    }
+    return report;
+}
+
 Agent::UsageReport Agent::usage() const {
     std::lock_guard lock(usage_mu_);
     return usage_;
@@ -244,6 +350,14 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
     ChatOptions options{model_name, think};
     for (int step = 0; step < kMaxSteps; ++step) {
         if (drain_mailbox()) events.on_notice("delivered your queued message");
+        {
+            UsageReport u = usage();
+            if (u.last.context > 0 && compaction.at > 0 && static_cast<double>(u.last.input) / u.last.context >= compaction.at) {
+                events.on_notice("context at " + std::to_string(100 * u.last.input / u.last.context) + "%: compacting (" + compact_auto(cancel) + ")");
+                std::lock_guard lock(usage_mu_);
+                usage_.last.input = 0;  // until the next call reports the real size
+            }
+        }
         Message reply;
         try {
             // A queued message with deliver_now aborts this call; the retry below starts with the message included.

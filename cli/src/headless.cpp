@@ -108,6 +108,8 @@ int run_headless(const HeadlessOptions& options) {
     agent.providers = settings.providers;
     agent.mode = *mode;
     agent.think = options.think || settings.think;
+    agent.compaction.at = settings.compact_at;
+    agent.compaction.keep_results = settings.compact_keep_results;
     agent.set_log(log.get());
     if (options.resume) {
         LoadedSession old = load_session(*options.resume);

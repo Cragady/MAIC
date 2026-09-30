@@ -41,7 +41,9 @@ struct Settings {
     // "project", or a name under sessions/.
     std::string sessions_home = "auto";
     std::string leader = " ";
-    bool record = true;  // keep transcripts of interactive sessions (maic --no-record for one session)  // the vim leader key in normal and visual modes (Space, as in her nvim)
+    bool record = true;
+    double compact_at = 0.75;      // auto-compact at this share of the context window; 0 turns it off
+    int compact_keep_results = 4;  // tool results that never get pruned (the most recent)  // keep transcripts of interactive sessions (maic --no-record for one session)  // the vim leader key in normal and visual modes (Space, as in her nvim)
     std::vector<std::filesystem::path> sources;  // the files that were read, in order
     std::vector<Provider> providers = default_providers();
     std::map<std::string, Style> styles;  // by role, see docs/settings.md; defaults are filled in

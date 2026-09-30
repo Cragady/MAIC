@@ -177,6 +177,8 @@ public:
         view_.set_markdown(settings_.markdown);
         editor_.set_leader(settings_.leader);
         view_.set_leader(settings_.leader);
+        agent_.compaction.at = settings_.compact_at;
+        agent_.compaction.keep_results = settings_.compact_keep_results;
         if (resume) {
             LoadedSession old = load_session(*resume);
             for (const auto& t : old.transcript) {
@@ -880,6 +882,14 @@ void App::run_command(const std::string& line) {
                 view_.set_all_collapsed(!on);
                 post(Kind::Notice, on ? "tool output shown in full (za folds one, zM all)" : "tool output folded to a preview (za unfolds one, zR all)");
             } else post(Kind::Error, ":set markdown|mouse|tooldetails on|off");
+        } else if (cmd == "compact") {
+            if (idle()) {
+                std::atomic<bool> no{false};
+                if (arg == "all") post(Kind::Notice, agent_.compact(Agent::Compaction::All, no));
+                else if (arg == "head") post(Kind::Notice, agent_.compact(Agent::Compaction::Head, no));
+                else if (arg == "prune") post(Kind::Notice, agent_.compact(Agent::Compaction::Prune, no));
+                else post(Kind::Notice, agent_.compact_auto(no));
+            }
         } else if (cmd == "clear") {
             if (idle()) {
                 agent_.clear();

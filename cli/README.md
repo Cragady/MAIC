@@ -72,6 +72,7 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:instructions` | the MAIC.md / AGENTS.md files in effect |
 | `:session` / `:artifacts` | where this transcript is; where everything is kept, with sizes |
 | `:reg` | the yank register |
+| `:compact [prune\|head\|all]` | free context. Default order: stub old tool results (dialog untouched), then, only if still needed, summarise the oldest turns into a handover note. `all` is a whole-conversation summary. Runs automatically at `compact_at` (75%) |
 | `:clear` | start a new conversation (the session file keeps both) |
 | `:trip REASON` / `:unlock` | trip the harness now; reset it without leaving the session (asks for your sudo password) |
 | `:h [TOPIC]` | vim-style help. `:h` alone is an index; `:h w`, `:h u`, `:h Ctrl-W`, `:h Alt+Enter`, `:h modes`, `:h harness`, `:h sessions`; a unique prefix is enough and an ambiguous one lists the candidates |

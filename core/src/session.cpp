@@ -219,6 +219,10 @@ void load_into(LoadedSession& out, const fs::path& path, size_t limit, int depth
             out.mode = j.value("mode", out.mode);
         } else if (type == "msg") {
             out.messages.push_back(message_from_json(j));
+        } else if (type == "reset") {
+            out.messages.clear();  // compaction re-dumps the history; the transcript stays
+        } else if (type == "compact") {
+            out.transcript.push_back({"notice", "compacted (" + j.value("stage", "") + ")" + (j.contains("summary") ? ":\n" + j.value("summary", "") : "")});
         } else if (type == "clear") {
             out.messages.clear();
             out.transcript.clear();
