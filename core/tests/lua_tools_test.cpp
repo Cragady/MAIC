@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <unistd.h>
 #include <filesystem>
 #include <fstream>
 #include <thread>
@@ -44,6 +45,7 @@ bool has_notice(const LuaToolSet& set, const std::string& what) {
 }  // namespace
 
 int main() {
+    setenv("MAIC_TRIPWIRE_FILE", ("/tmp/maic-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);  // never the machine's lock
     fs::path ws = fs::temp_directory_path() / "maic-lua-tools-test";
     fs::remove_all(ws);
     fs::create_directories(ws / "cfg");

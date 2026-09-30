@@ -1,7 +1,10 @@
+#include <unistd.h>
+#include <cstdlib>
 // The agent loop against a fake Ollama: mid-turn messages, deliver-now, cancellation, resume.
 #include "check.hpp"
 
 #include "maic/agent.hpp"
+#include "maic/tripwire.hpp"
 #include "maic/session.hpp"
 
 #include <httplib.h>
@@ -135,6 +138,7 @@ bool has_notice(const Recorder& r, const std::string& what) {
 }  // namespace
 
 int main() {
+    setenv("MAIC_TRIPWIRE_FILE", ("/tmp/maic-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);  // never the machine's lock
     fs::path ws = fs::temp_directory_path() / "maic-agent-test";
     fs::remove_all(ws);
     fs::create_directories(ws);
@@ -374,6 +378,17 @@ int main() {
         int refused = 0;
         for (const auto& t : r.results) refused += t.find("REFUSED") == 0;
         expect(r.results.size() == 4 && refused == 2, "the third and fourth identical calls are refused (" + std::to_string(refused) + ")");
+        // Five harmless repeats end the turn instead of tripping the lock.
+        Agent h(ws, "test");
+        h.providers = {fake.provider()};
+        h.mode = Mode::Auto;
+        h.review_with_model = false;
+        fake.calls_left = 8;
+        Recorder rh;
+        h.submit("loop", Origin::Local, rh, no_cancel);
+        bool ended = false;
+        for (const auto& n : rh.notices) ended = ended || n.find("kept repeating the same harmless call") != std::string::npos;
+        expect(ended && rh.results.size() == 5 && rh.results.back().find("The turn ends here") != std::string::npos && !tripwire_state(), "a fifth harmless repeat ends the turn with a note and never trips");
 
         Agent b(ws, "test");
         b.providers = {fake.provider()};

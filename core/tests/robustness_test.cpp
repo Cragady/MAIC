@@ -16,6 +16,7 @@
 #include <httplib.h>
 #include "maic/bans.hpp"
 #include "maic/lua.hpp"
+#include "maic/places.hpp"
 #include "maic/paths.hpp"
 
 #include <netinet/in.h>
@@ -69,6 +70,7 @@ std::string read_whole_text(const fs::path& p) {
 }  // namespace
 
 int main() {
+    setenv("MAIC_TRIPWIRE_FILE", ("/tmp/maic-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);  // never the machine's lock
     fs::path home = std::getenv("HOME");
     fs::path ws = home / ".cache" / "maic-robustness-test";  // under $HOME so artifact cleaning is allowed
     fs::remove_all(ws);
@@ -721,6 +723,43 @@ int main() {
         write_file(ws / "proj" / ".maic" / "settings.lua", "return { bans = { strings = {'lol'}, tokens = {42, 'x'}, retries = 1 } }");
         Settings s3 = load_settings(ws / "proj");
         expect(s3.bans.strings == std::vector<std::string>{"lol"} && s3.bans.tokens.size() == 2 && s3.bans.retries == 1, "bans load from settings");
+        fs::remove(ws / "proj" / ".maic" / "settings.lua");
+    }
+
+    section("places");
+    {
+        Settings s;
+        s.models_dir = (ws / "mdl").string();
+        auto services = load_services(root_dir() / "services");
+        auto places = known_places(s, ws, services, ws / "t.jsonl");
+        auto has = [&](const std::string& n) { return std::any_of(places.begin(), places.end(), [&](const Place& p) { return p.name == n; }); };
+        expect(has("workspace") && has("session") && has("sessions") && has("settings") && has("models") && has("models/llamacpp") && has("workflows") && has("templates") && has("comfyui/outputs") && has("maic/sessions"),
+               "the registry has MAIC's places, the models root, and every artifact as owner/name");
+        expect(find_place(places, "workspace").path == ws && find_place(places, "session").path == ws / "t.jsonl" && find_place(places, "models").path == ws / "mdl", "exact names resolve");
+        expect(find_place(places, "worksp").name == "workspace" && find_place(places, "templ").name == "templates" && find_place(places, "outputs").name == "comfyui/outputs", "a unique prefix resolves; a top-level name wins over owner/name");
+        bool ambiguous = false;
+        try {
+            find_place(places, "sess");  // session and sessions are both top-level names here
+        } catch (const std::exception& e) {
+            ambiguous = std::string(e.what()).find("several") != std::string::npos && std::string(e.what()).find("session, sessions") != std::string::npos;
+        }
+        expect(ambiguous, "an ambiguous prefix lists the candidates");
+        bool none = false;
+        try {
+            find_place(places, "zzz");
+        } catch (const std::exception& e) {
+            none = std::string(e.what()).find("no place named") == 0;
+        }
+        expect(none, "an unknown name lists the places");
+        std::string zsh = shell_init("zsh"), bash = shell_init("bash"), fish = shell_init("fish");
+        expect(zsh.find("mcd()") != std::string::npos && zsh.find("compdef") != std::string::npos && bash.find("complete -F") != std::string::npos && fish.find("function mcd") != std::string::npos,
+               "shell-init gives mcd with completion for zsh, bash and fish");
+        std::set<std::string> names;
+        for (const auto& p : places) expect(names.insert(p.name).second, "place names are unique: " + p.name);
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { allow = { 'pytest *' } }");
+        Settings sa = load_settings(ws / "proj");
+        expect(std::find(sa.allow.begin(), sa.allow.end(), "pytest *") != sa.allow.end() && std::find(sa.allow.begin(), sa.allow.end(), "maic-storyboard*") != sa.allow.end(),
+               "allow patterns from settings add to the default helpers");
         fs::remove(ws / "proj" / ".maic" / "settings.lua");
     }
 

@@ -8,6 +8,7 @@
 #include <fstream>
 
 #include <cstdlib>
+#include <unistd.h>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -45,6 +46,7 @@ void read(const Harness& h, Mode mode, const std::string& path, Verdict want) {
 }  // namespace
 
 int main() {
+    setenv("MAIC_TRIPWIRE_FILE", ("/tmp/maic-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);  // never the machine's lock
     fs::path ws = fs::temp_directory_path() / "maic-harness-test";
     fs::remove_all(ws);
     fs::create_directories(ws);
@@ -126,6 +128,21 @@ int main() {
     read(h, Mode::Auto, "innocent/id_ed25519", Verdict::Deny);
 
     shell(h, Mode::Auto, "echo " + std::string(20000, 'a'), Verdict::Deny);
+
+    std::cout << "allow list\n";
+    {
+        Harness a(ws);
+        a.set_allow({"maic-storyboard*", "pytest *"});
+        auto d = a.check(Action{Action::Kind::Shell, {}, "pytest tests/ -q"}, Mode::Manual, Origin::Local);
+        expect(d.verdict == Verdict::Allow && d.trusted, "an allowed pattern runs without asking, even in manual mode, and is trusted");
+        expect(a.check(Action{Action::Kind::Shell, {}, "maic-storyboard next"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow, "MAIC's helpers run in auto-read");
+        expect(a.check(Action{Action::Kind::Shell, {}, "maic-storyboard next"}, Mode::Plan, Origin::Local).verdict == Verdict::Deny, "plan mode still refuses one that could write");
+        expect(a.check(Action{Action::Kind::Shell, {}, "maic-storyboard status"}, Mode::Plan, Origin::Local).verdict == Verdict::Allow, "but its looking-only shapes are read-only");
+        expect(a.check(Action{Action::Kind::Shell, {}, "sudo pytest"}, Mode::Auto, Origin::Local).verdict == Verdict::Trip, "trip patterns win over the allow list");
+        expect(!a.check(Action{Action::Kind::Shell, {}, "make"}, Mode::Auto, Origin::Local).trusted, "an ordinary auto-mode allow is not trusted (the reviewer still sees it)");
+        expect(a.harmless(Action{Action::Kind::Shell, {}, "maic-workflow-edit inspect wf.json --json"}) && a.harmless(Action{Action::Kind::Read, ws / "x"}) && !a.harmless(Action{Action::Kind::Write, ws / "x"}) && !a.harmless(Action{Action::Kind::Shell, {}, "make"}),
+               "harmless: reads, read-only and helper commands; not writes or other commands");
+    }
 
     std::cout << "workdir\n";
     {

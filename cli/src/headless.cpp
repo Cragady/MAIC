@@ -188,6 +188,7 @@ int run_headless(const HeadlessOptions& options) {
     agent.system_prefix = resolve_system_prompt(settings.system_prompt);
     agent.prefill = resolve_system_prompt(settings.prefill);
     agent.rules = settings.rules;
+    agent.set_allow(settings.allow);
     agent.reload_instructions();
     agent.bans = settings.bans;
     {

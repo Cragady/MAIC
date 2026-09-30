@@ -142,6 +142,9 @@ public:
     // This many denials by the user in one turn end the turn.
     int denials_limit = 3;
 
+    // Commands the user pre-approved (see Harness::set_allow); from settings `allow`.
+    void set_allow(std::vector<std::string> patterns) { harness_.set_allow(std::move(patterns)); }
+
     // Names of instruction files (MAIC.md, AGENTS.md, ...) looked for beside files the model reads.
     void set_instruction_names(std::vector<std::string> names);
 
@@ -253,6 +256,7 @@ private:
     std::string last_call_;
     int repeats_ = 0;
     int denials_ = 0;
+    bool stuck_ = false;  // the same harmless call kept repeating: end the turn, do not trip
 };
 
 }  // namespace maic

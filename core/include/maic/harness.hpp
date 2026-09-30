@@ -42,6 +42,7 @@ struct Decision {
     Verdict verdict;
     std::string reason;
     bool read_only_sandbox = false;  // run with the workspace mounted read-only too
+    bool trusted = false;            // on the allow list: no second reader, and never a reason to trip on repeats
 };
 
 // Commands that only look at things (ls, grep, git log, ...), with no redirection or substitution.
@@ -65,13 +66,23 @@ public:
     // What "always allow" remembers for the session: the file for writes, the program for commands.
     static std::string approval_key(const Action& action);
 
+    // Commands the user pre-approved (glob patterns over the whole command line, `*` and `?`): allowed in
+    // every mode but plan without asking or review. Trip patterns are checked first and still win.
+    void set_allow(std::vector<std::string> patterns) { allow_ = std::move(patterns); }
+    const std::vector<std::string>& allow() const { return allow_; }
+    bool allowed_by_list(const std::string& command) const;
+    // A repeat of this action is harmless (a read, a read-only or allow-listed command): refuse, never trip.
+    bool harmless(const Action& action) const;
+
 private:
     bool in_workspace(const std::filesystem::path& p) const;
+
     Decision check_shell(const std::string& command, Mode mode) const;
     Decision check_write(const std::filesystem::path& p, Mode mode) const;
     Decision check_read(const std::filesystem::path& p, Mode mode) const;
 
     std::filesystem::path workspace_;
+    std::vector<std::string> allow_;
     std::vector<std::filesystem::path> secret_paths_;     // never read, never written
     std::vector<std::filesystem::path> system_paths_;     // never written
     std::vector<std::filesystem::path> sensitive_paths_;  // always asked before writing, whatever the mode

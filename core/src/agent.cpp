@@ -455,6 +455,12 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
                 return;
             }
         }
+        if (stuck_) {
+            stuck_ = false;
+            events.on_notice("the agent kept repeating the same harmless call; stopped so you can say what to do next");
+            push({"user", "[stopped: you repeated the same call five times; wait for the user's instructions]"});
+            return;
+        }
         if (denials_ >= denials_limit) {
             events.on_notice(std::to_string(denials_) + " denials this turn; stopping so you can say what you want instead");
             push({"user", "[stopped: the user denied " + std::to_string(denials_) + " actions this turn; wait for new instructions]"});
@@ -650,6 +656,13 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
     std::string sig = name + "\x1f" + call.arguments.dump();
     repeats_ = sig == last_call_ ? repeats_ + 1 : 1;
     last_call_ = sig;
+    if (repeats_ >= repeat_trip && harness_.harmless(action)) {
+        // A confused model re-running a read or a harmless helper is not an attack: stop the turn instead.
+        stuck_ = true;
+        record["decision"] = "deny";
+        record["reason"] = "repeated harmless call";
+        return result("REFUSED: this exact call has been made " + std::to_string(repeats_) + " times in a row and it changes nothing. The turn ends here; the user will say what to do next.", false);
+    }
     if (repeats_ >= repeat_trip) {
         try {
             trip_tripwire("repeated call: " + summary + " x" + std::to_string(repeats_));
@@ -729,8 +742,8 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
         d = {Verdict::Allow, "allowed earlier this session"};
         user_allowed = true;
     }
-    // The second reader: only for what would otherwise run silently.
-    if (d.verdict == Verdict::Allow && !user_allowed && action.kind != Action::Kind::Read && review_with_model) {
+    // The second reader: only for what would otherwise run silently, and never for allow-listed commands.
+    if (d.verdict == Verdict::Allow && !user_allowed && !d.trusted && action.kind != Action::Kind::Read && review_with_model) {
         Decision r = review(action, summary, preview);
         record["review"] = {{"verdict", verdict_name(r.verdict)}, {"reason", r.reason}};
         if (r.verdict != Verdict::Allow) {

@@ -1,5 +1,7 @@
 #include "maic/harness.hpp"
 
+#include <fnmatch.h>
+
 #include "maic/paths.hpp"
 
 #include <cstdlib>
@@ -221,6 +223,34 @@ Decision Harness::check(const Action& action, Mode mode, Origin origin) const {
     return d;
 }
 
+namespace {
+
+// MAIC's own helpers: their looking-only invocations count as read-only commands.
+bool helper_read_only(const std::string& command) {
+    std::istringstream in(command);
+    std::string prog, sub;
+    in >> prog >> sub;
+    if (prog == "maic-storyboard") return sub.empty() || sub == "status" || sub == "plan" || sub == "check" || sub == "--help" || sub == "-h";
+    if (prog == "maic-workflow-edit") return sub == "inspect" || sub == "--help" || sub == "-h";
+    if (prog == "maic") return sub == "path" || sub == "status" || sub == "artifacts" || sub == "sessions" || sub == "help" || sub == "vendor" || sub == "doctor" || sub == "tools";
+    return false;
+}
+
+}  // namespace
+
+bool Harness::allowed_by_list(const std::string& command) const {
+    for (const auto& p : allow_) {
+        if (fnmatch(p.c_str(), command.c_str(), 0) == 0) return true;
+    }
+    return false;
+}
+
+bool Harness::harmless(const Action& action) const {
+    if (action.kind == Action::Kind::Read) return true;
+    if (action.kind != Action::Kind::Shell) return false;
+    return is_read_only_command(action.command) || helper_read_only(action.command) || allowed_by_list(action.command);
+}
+
 Decision Harness::check_shell(const std::string& command, Mode mode) const {
     // std::regex recurses per character; a huge command could overflow the stack while being vetted.
     if (command.size() > 8 * 1024) {
@@ -231,7 +261,11 @@ Decision Harness::check_shell(const std::string& command, Mode mode) const {
             return {Verdict::Trip, p.why};
         }
     }
-    bool read_only = is_read_only_command(command);
+    bool read_only = is_read_only_command(command) || helper_read_only(command);
+    if (allowed_by_list(command)) {
+        if (mode == Mode::Plan && !read_only) return {Verdict::Deny, "plan mode only runs read-only commands"};
+        return {Verdict::Allow, "on the allow list", read_only, true};
+    }
     switch (mode) {
         case Mode::Plan:
             if (read_only) return {Verdict::Allow, "read-only command", true};

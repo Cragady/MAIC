@@ -64,7 +64,8 @@ const std::vector<Topic>& topics() {
          "- **tripwire**: a root-owned lock. `:trip REASON` (or the [t] answer at an approval, or a dangerous command) sets it instantly with no password. While tripped nothing runs, but the session survives. `:unlock` resets it and asks for your sudo password.\n"
          "- **sandbox**: every model-run command executes in bubblewrap: only the workspace writable, secrets hidden, no network, no sudo, a timeout.\n"
          "- **approval**: y / n / N (no, and type a sentence the model gets as the reason) / a (always this file or program, this session) / t (trip). Edits show the lines that would change.\n"
-         "- **repeated calls**: the same call three times in a row is refused; five times trips the lock. Three denials by you in one turn end the turn.\n"
+         "- **repeated calls**: the same call three times in a row is refused; five times trips the lock when it is a write or a command that could change something, and just ends the turn when it is harmless (a read, a read-only or allow-listed command). Three denials by you in one turn end the turn.\n"
+         "- **allow list**: commands you pre-approved run without asking or review; see `:h allow`.\n"
          "- **undo points**: every file the agent changes is saved first; `:undo` restores. See `:h undo`.\n\n"
          "Details and the planned layers: docs/harness.md."},
         {"sessions", {"session", "resume", "transcript", "transcripts"}, "transcripts, -c, -r, forking",
@@ -210,6 +211,9 @@ const std::vector<CommandInfo>& commands() {
          "*:sampling* *sampling* *xtc* *--xtc* *--sampling*\n"
          "On the command line: `--xtc 0.5` or `--xtc 0.5,0.1` (probability, threshold) and `--sampling KEY=VALUE` (repeatable) set them for one run, over the settings. In a session: `:sampling` shows what is sent with every request; `:sampling temperature 0.7`, `:sampling min_p 0.05`, `:sampling seed 7` set a key for this session (over `sampling = { ... }` in settings and `providers.<name>.options.sampling`, which wins over the global table); `:sampling unset KEY`, `:sampling reset`.\n\n"
          "**XTC** (exclude top choices) is a sampler that, with probability P, drops every token above threshold T except the least likely of them, so the model is pushed off its most predictable path, which is where refusals and stock phrases live. `:sampling xtc 0.5 0.1` (or `sampling = { xtc_probability = 0.5, xtc_threshold = 0.1 }`). It exists in llama.cpp's server, koboldcpp, text-generation-webui and other llama.cpp-based OpenAI-compatible servers, where MAIC sends it as `xtc_probability` / `xtc_threshold`. Ollama's API has no XTC (its options are temperature, top_k, top_p, min_p, seed, repeat_penalty, num_predict), and Anthropic's current models take no sampling parameters, so nothing is sent there; the keys are kept for when you switch provider. Bans and XTC combine: XTC changes what the model is likely to say, bans catch what it says anyway."},
+        {"allow", {"allowlist", "whitelist", "permission"}, "[PATTERN|remove N]", "commands pre-approved: no asking, no review",
+         "*:allow* *allow*\n"
+         "A list of command patterns (glob over the whole command line: `pytest *`, `npm test`, `git status*`) that run in every mode but plan without an approval prompt and without the reviewer. MAIC's own helpers are on it by default (`maic-storyboard*`, `maic-workflow-edit*`, `maic path*`, `maic status*`, `maic artifacts*`, `maic sessions*`). Trip patterns (sudo, rm -rf /, ...) are checked first and still win, and the sandbox still applies. `:allow` lists, `:allow PATTERN` adds for this session, `:allow remove N`; `allow = { ... }` in settings keeps them (layers add up). A repeated identical call that is harmless (a read, a read-only or allowed command) is refused after three and ends the turn after five; only a repeated write or other command trips the lock."},
         {"rule", {"rules", "standing-rule"}, "[TEXT|remove N|clear]", "a standing instruction, reminded every turn",
          "*:rule* *--rule* *rules*\n"
          "A one-line instruction the model is asked to follow: `:rule Always answer in French`, `--rule TEXT` (repeatable), `rules = { ... }` in settings (layers add up). Rules travel with the operator text: they lead and close the system prompt and are appended to each of your messages as the model sees them, which is what a small model needs once tools are attached. `:rule` lists them, `:rule remove N`, `:rule clear`; a change mid-session is appended as a system note. A rule is a request the model can still drop; when the first words of every reply must be exact, use `:prefix` instead. `:system` is the same mechanism for a whole block of operator text."},
@@ -225,6 +229,12 @@ const std::vector<CommandInfo>& commands() {
         {"instructions", {"no-instructions", "load_instructions"}, "[on|off]", "the MAIC.md / AGENTS.md files in effect, or switch them off",
          "*:instructions* *--no-instructions*\nLists the instruction files the model sees, re-read every turn. `:instructions off` stops loading them (global, project and nested) for the next turns; `on` brings them back. `--no-instructions` on the command line or `load_instructions = false` in settings starts that way. Independent of `:system`. See `:h instructions`."},
         {"session", {}, "", "where this transcript is", "*:session*\nThis session's file and the sessions directory. See `:h sessions`."},
+        {"path", {"paths", "places", "mcd", "cd"}, "[NAME] [copy]", "a place maic knows: show it, or copy it to the clipboard",
+         "*:path* *:open* *maic path* *mcd*\n"
+         "MAIC keeps a registry of every place it knows by a short name: `workspace`, `session` (this transcript), `sessions`, `state`, `config`, `settings`, `instructions`, `logs`, `root`, `tools`, `models`, `models/llamacpp`, `vendor`, `vendor/<service>`, `workflows`, `templates`, and every `maic artifacts` entry as `owner/name`. A unique prefix is enough (`:path work`, `:path sess`).\n\n"
+         "In a session: `:path` lists them, `:path NAME` shows one, `:path NAME copy` puts it on the clipboard (and in the register, so `p` pastes it), `:open NAME` opens it in your file manager.\n"
+         "In the shell: `maic path` lists, `maic path NAME` prints one (so `cd \"$(maic path workflows)\"` works), `maic path NAME --copy`, `maic open NAME`. Since a program cannot change its parent shell's directory, `eval \"$(maic shell-init)\"` in your rc file adds `mcd NAME` (cd there), `mpath NAME` and `mcp NAME` with tab completion of the names (zsh, bash, fish)."},
+        {"open", {"xdg-open"}, "NAME", "open a place in the file manager", "*:open*\n`:open workflows` opens that place with xdg-open. Names as for `:path`."},
         {"artifacts", {}, "", "where everything is kept, with sizes", "*:artifacts*\nEvery place MAIC and its services leave things (transcripts, service logs, ComfyUI outputs, ...) with sizes. Clean with `maic artifacts clean OWNER/NAME [--older-than DAYS]`."},
         {"reg", {"register", "registers"}, "", "show the registers", "*:reg*\nShows the unnamed register and every named register `\"a`..`\"z` that holds something. See `:h p`."},
         {"undo", {}, "[N]", "restore the file(s) the agent changed last",
@@ -286,6 +296,8 @@ std::vector<std::string> complete_argument(const std::string& command, const std
     else if (cmd == "instructions") candidates = {"on", "off"};
     else if (cmd == "ban") candidates = {"add", "token", "remove", "tokens", "clear", "retries", "case", "list"};
     else if (cmd == "harness") candidates = {"smart", "dumb"};
+    else if (cmd == "allow") candidates = {"remove", "list"};
+    else if (cmd == "path" || cmd == "open") candidates = {"workspace", "session", "sessions", "state", "config", "settings", "instructions", "logs", "root", "tools", "models", "vendor", "workflows", "templates", "comfyui/outputs", "comfyui/workflows", "comfyui/templates", "maic/sessions", "maic/service-logs"};
     else if (cmd == "sampling") candidates = {"xtc", "temperature", "top_k", "top_p", "min_p", "seed", "repeat_penalty", "dry_multiplier", "top_n_sigma", "unset", "reset"};
     else if (cmd == "compact") candidates = {"prune", "head", "all"};
     else if (cmd == "think") candidates = {"on", "off"};

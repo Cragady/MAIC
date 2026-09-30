@@ -5,6 +5,7 @@
 #include "maic/agent.hpp"
 #include "maic/artifacts.hpp"
 #include "maic/clipboard.hpp"
+#include "maic/places.hpp"
 #include "maic/vendor.hpp"
 #include "maic/lua.hpp"
 #include "maic/paths.hpp"
@@ -233,6 +234,7 @@ public:
         agent_.system_prefix = resolve_system_prompt(settings_.system_prompt);
         agent_.prefill = resolve_system_prompt(settings_.prefill);
         agent_.rules = settings_.rules;
+        agent_.set_allow(settings_.allow);
         agent_.reload_instructions();
         agent_.bans = settings_.bans;
         apply_sampling();
@@ -1578,6 +1580,27 @@ void App::run_command(const std::string& line) {
             } else {
                 post(Kind::Error, ":sampling [KEY VALUE | xtc P [T] | unset KEY | reset]");
             }
+        } else if (cmd == "allow") {
+            std::istringstream a(arg);
+            std::string sub;
+            a >> sub;
+            std::string rest;
+            std::getline(a >> std::ws, rest);
+            auto al = agent_.harness().allow();
+            if (arg.empty() || arg == "list") {
+                std::string out = "allowed command patterns (" + std::to_string(al.size()) + "; no asking, no review, trip patterns still win):";
+                for (size_t i = 0; i < al.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". " + al[i];
+                out += "\n:allow PATTERN adds one (glob over the whole command, e.g. `pytest *`) · :allow remove N";
+                post(Kind::Notice, out);
+            } else if (sub == "remove" && !rest.empty()) {
+                size_t n = static_cast<size_t>(std::atoi(rest.c_str()));
+                if (n >= 1 && n <= al.size()) al.erase(al.begin() + static_cast<long>(n - 1)), agent_.set_allow(al), post(Kind::Notice, "removed");
+                else post(Kind::Error, "no pattern " + rest);
+            } else {
+                al.push_back(arg);
+                agent_.set_allow(al);
+                post(Kind::Notice, "allowed: " + arg + " (this session; put it under `allow` in settings to keep it)");
+            }
         } else if (cmd == "rule" || cmd == "rules") {
             std::istringstream a(arg);
             std::string sub;
@@ -1669,6 +1692,37 @@ void App::run_command(const std::string& line) {
             post(Kind::Notice, "this session: " + log_path() + (settings_.record ? "\nhome: " + log_->path().parent_path().lexically_relative(sessions_dir()).string() +
                                    "  (maic sessions rehome " + log_->path().stem().string() + " project|general|NAME moves it)" : "\nnot kept: it lives in the runtime directory and is gone at logout") + "\n"
                                    "all sessions: " + sessions_dir().string() + "\n`maic sessions` lists them, `maic artifacts` cleans");
+        } else if (cmd == "path" || cmd == "paths") {
+            std::istringstream a(arg);
+            std::string name, what;
+            a >> name >> what;
+            auto places = known_places(settings_, agent_.harness().workspace(), services(), log_->path());
+            if (name.empty()) {
+                std::string out = "places (:path NAME shows one, :path NAME copy puts it on the clipboard, :open NAME opens it):";
+                for (const auto& p : places) out += "\n  " + p.name + "  " + p.path.string();
+                post(Kind::Notice, out);
+            } else {
+                try {
+                    const auto& p = find_place(places, name);
+                    if (what == "copy" || what == "yank" || what == "y") {
+                        register_ = p.path.string();
+                        post(Kind::Notice, p.path.string() + "\ncopied (" + copy_to_clipboard(p.path.string()) + ")");
+                    } else {
+                        post(Kind::Notice, p.name + ": " + p.path.string() + "  (" + p.description + ")");
+                    }
+                } catch (const std::exception& e) {
+                    post(Kind::Error, e.what());
+                }
+            }
+        } else if (cmd == "open") {
+            try {
+                auto places = known_places(settings_, agent_.harness().workspace(), services(), log_->path());
+                const auto& p = find_place(places, arg);
+                std::string cmdline = "xdg-open '" + p.path.string() + "' >/dev/null 2>&1 &";
+                post(std::system(cmdline.c_str()) == 0 ? Kind::Notice : Kind::Error, "opened " + p.path.string());
+            } catch (const std::exception& e) {
+                post(Kind::Error, e.what());
+            }
         } else if (cmd == "artifacts") {
             std::string out = "where MAIC and its services keep things:";
             for (const auto& a : list_artifacts(services())) {

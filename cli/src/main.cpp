@@ -11,7 +11,9 @@
 #include "maic/status.hpp"
 #include "maic/tripwire.hpp"
 #include "maic/bans.hpp"
+#include "maic/clipboard.hpp"
 #include "maic/lua.hpp"
+#include "maic/places.hpp"
 #include "maic/lua_tools.hpp"
 #include "maic/vendor.hpp"
 #include "server.hpp"
@@ -77,6 +79,10 @@ void usage(std::ostream& out = std::cerr) {
                  "  up <service...|all>        start services\n"
                  "  down <service...|all>      stop services MAIC started\n"
                  "  logs <service> [lines]     the end of a service's log (default 40 lines)\n"
+                 "  path [NAME] [--copy]       every place maic knows (workspace, sessions, models, workflows, ...) or one path;\n"
+                 "                             --copy puts it on the clipboard; a unique prefix is enough\n"
+                 "  open NAME                  open a place in your file manager (xdg-open)\n"
+                 "  shell-init [zsh|bash|fish] shell functions: mcd NAME (cd there), mpath NAME, mcp NAME; eval \"$(maic shell-init)\"\n"
                  "  artifacts                  where MAIC and its services keep transcripts, logs and outputs\n"
                  "  artifacts clean OWNER/NAME [--older-than DAYS] [--yes]\n"
                  "  sessions                   list session transcripts (where started, where last opened)\n"
@@ -168,6 +174,55 @@ std::string human_bytes(uintmax_t b) {
     char buf[32];
     snprintf(buf, sizeof(buf), u == 0 ? "%.0f %s" : "%.1f %s", v, units[u]);
     return buf;
+}
+
+int cmd_path(const std::vector<std::string>& args) {
+    maic::Settings settings = maic::load_settings();
+    auto services = maic::load_services(maic::root_dir() / "services");
+    auto places = maic::known_places(settings, std::filesystem::current_path(), services);
+    bool copy = false, names_only = false;
+    std::string query;
+    for (const auto& a : args) {
+        if (a == "--copy" || a == "-c") copy = true;
+        else if (a == "--names") names_only = true;
+        else if (query.empty()) query = a;
+        else throw std::runtime_error("maic path [NAME] [--copy]");
+    }
+    if (names_only) {
+        for (const auto& p : places) std::cout << p.name << "\n";
+        return 0;
+    }
+    if (query.empty()) {
+        std::cout << "PLACE                 PATH\n";
+        for (const auto& p : places) {
+            std::error_code ec;
+            std::string mark = !std::filesystem::exists(p.path, ec) ? "  (missing)" : p.is_file ? "" : "/";
+            char line[400];
+            snprintf(line, sizeof(line), "%-21s %s%s\n", p.name.c_str(), p.path.c_str(), mark.c_str());
+            std::cout << line << "    " << p.description << "\n";
+        }
+        std::cout << "maic path NAME prints one (a unique prefix is enough); --copy puts it on the clipboard; maic open NAME opens it;\n"
+                     "eval \"$(maic shell-init)\" gives your shell mcd NAME, mpath NAME and mcp NAME.\n";
+        return 0;
+    }
+    const auto& p = maic::find_place(places, query);
+    std::cout << p.path.string() << "\n";
+    if (copy) std::cerr << "copied (" << maic::copy_to_clipboard(p.path.string()) << ")\n";
+    return 0;
+}
+
+int cmd_open(const std::vector<std::string>& args) {
+    if (args.empty()) throw std::runtime_error("maic open NAME (maic path lists the names)");
+    maic::Settings settings = maic::load_settings();
+    auto services = maic::load_services(maic::root_dir() / "services");
+    auto places = maic::known_places(settings, std::filesystem::current_path(), services);
+    const auto& p = maic::find_place(places, args[0]);
+    std::error_code ec;
+    if (!std::filesystem::exists(p.path, ec)) throw std::runtime_error(p.path.string() + " does not exist yet");
+    std::string cmd = "xdg-open " + std::string("'") + p.path.string() + "' >/dev/null 2>&1 &";
+    if (std::system(cmd.c_str()) != 0) throw std::runtime_error("xdg-open failed");
+    std::cout << "opened " << p.path.string() << "\n";
+    return 0;
 }
 
 int cmd_artifacts(const std::vector<std::string>& args) {
@@ -638,6 +693,17 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (cmd == "artifacts") return cmd_artifacts(cargs);
+        if (cmd == "path" || cmd == "paths" || cmd == "places") return cmd_path(cargs);
+        if (cmd == "open") return cmd_open(cargs);
+        if (cmd == "shell-init") {
+            std::string shell = cargs.empty() ? "" : cargs[0];
+            if (shell.empty()) {
+                const char* sh = std::getenv("SHELL");
+                shell = sh && std::string(sh).find("bash") != std::string::npos ? "bash" : sh && std::string(sh).find("fish") != std::string::npos ? "fish" : "zsh";
+            }
+            std::cout << maic::shell_init(shell);
+            return 0;
+        }
 
         auto services = maic::load_services(maic::root_dir() / "services");
         if (cmd == "status") {

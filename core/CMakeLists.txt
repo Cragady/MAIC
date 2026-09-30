@@ -16,6 +16,7 @@ add_library(maic_core
     src/ollama.cpp
     src/openai.cpp
     src/paths.cpp
+    src/places.cpp
     src/redact.cpp
     src/sandbox.cpp
     src/service.cpp
