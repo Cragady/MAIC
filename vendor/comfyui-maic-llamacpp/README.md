@@ -33,7 +33,7 @@ Errors are node errors with the server's reply text; an unreachable server says 
 | always remembers | `keep_context` on (the default) |
 | outputs `result`, `thinking`, `meta`, `history` | `response`, `thinking`, `session_id`; `meta` is gone (connect the server node to each chat node) |
 
-`example_workflows/Story chat (llama.cpp).json` is the old Story chat on these nodes. The deep pass is a second server node pointing at the same server, still muted: llama-server loads one GGUF, so a second model means a second `llama-server` on another port (`maic vendor` will grow that later); until then the deep pass runs on whatever `maic vendor use llamacpp` linked.
+`example_workflows/story-chat-llamacpp.json` is the old Story chat on these nodes. The deep pass is a second server node pointing at the same server, still muted: llama-server loads one GGUF, so a second model means a second `llama-server` on another port (`maic vendor` will grow that later); until then the deep pass runs on whatever `maic vendor use llamacpp` linked.
 
 ## Test
 
