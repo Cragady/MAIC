@@ -16,6 +16,8 @@ maic --harness dumb --accept-dumb-auto --prefix "Sure thing" --ban "I cannot gen
 
 maic --harness dumb --accept-dumb-auto --prefix "Sure thing" --ban "I cannot generate" --ban "I can't generate" --ban "I cannot assist" --ban "I can't assist" --no-instructions
 
+maic -pi "There is a tool called maic-storyboard. Run it with no arguments and follow what it says." --model llamacpp/Qwen3.5-9B-Q4_K_M --no-record --harness dumb --accept-dumb-auto --prefix "Sure thing" --ban "I cannot generate" --ban "I can't generate" --ban "I cannot assist" --ban "I can't assist" --no-instructions
+
 # Or any combination you want.
 ```
 
