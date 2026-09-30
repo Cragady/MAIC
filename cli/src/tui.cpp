@@ -34,6 +34,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <iostream>
 #include <iterator>
 #include <mutex>
 #include <optional>
@@ -195,6 +196,7 @@ public:
     ~App() override { shutdown(); }
 
     void welcome();
+    void send(const std::string& text) { submit(text, false); }
     void attach_context(const std::vector<std::filesystem::path>& files) {
         for (const auto& f : files) {
             try {
@@ -992,9 +994,12 @@ int run_tui(const TuiOptions& options) {
     }
     auto screen = ScreenInteractive::Fullscreen();
     screen.TrackMouse(settings.mouse);
+    std::string first = options.initial_prompt;
+    if (first == "-") first.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
     App app(screen, settings, options.resume, options.append);
     app.welcome();
     app.attach_context(options.context);
+    if (!first.empty()) app.send(first);
     auto component = CatchEvent(Renderer([&] { return app.render(); }), [&](Event e) { return app.handle(e); });
     screen.Loop(component);
     return 0;

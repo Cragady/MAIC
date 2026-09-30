@@ -62,6 +62,13 @@ const std::vector<Topic>& topics() {
          "- `maic -c` continues the newest session from the current directory; `maic -r` picks from a list; `maic -r ID` (a unique prefix is enough).\n"
          "- Interactive resumes append to the same file. `--no-append` writes a new file that only points at the old one and the number of records loaded, which is also how a session forks. `maic -p` records nothing unless `--record` (a fork when resuming) or `--append`.\n"
          "- A session that ended mid tool call resumes from the last complete step. The model is told it resumed, with the current mode and instructions."},
+        {"headless", {"-p", "print", "cli", "command-line", "context", "-C", "--context", "interactive", "-i"}, "maic -p, stdin, --context files, --interactive",
+         "*headless* *-p* *--context* *--interactive*\n"
+         "`maic -p \"prompt\"` runs one turn without the UI: the reply streams to stdout, tool activity to stderr. `maic -p -` takes the prompt from stdin (`cat dialog.txt | maic -p -`). `--json` prints events as JSON lines. Approvals are asked on the terminal when there is one, otherwise denied; `--mode auto-read` is the usual choice for scripts.\n\n"
+         "**Context.** `--context FILE` (`-C`) attaches a text file to the conversation before the prompt, labelled with its path; repeat it for several; `-C -` reads stdin (then the prompt must be an argument). Combine with `-c` / `-r` to put a file in front of an old conversation. Binary files are refused. The same flag works for the interactive `maic`.\n\n"
+         "**Transcripts.** A headless run keeps no transcript unless `--record` (with `-c`/`-r`: a new file that points at the old one, a fork) or `--append` (writes into the old file).\n\n"
+         "**--interactive** (`-i`) with `-p` opens an interactive session that starts with the prompt already sent. It follows interactive rules whatever the order of the flags: a transcript is always kept, `-c`/`-r` continue in the same file unless `--no-append`; `--record` is redundant and `--json` is ignored.\n\n"
+         "`maic help TOPIC` prints these pages outside a session."},
         {"queue", {"queued", "mid-turn", "interrupt"}, "sending while the agent works",
          "*queue*\n"
          "Sending while the agent is busy queues the message; it reaches the model at its next step in the current turn. `:w now` delivers it immediately: the current output is abandoned and the model is asked again with your message included. Messages still queued when a turn ends start the next turn. Ctrl-C interrupts the turn instead."},

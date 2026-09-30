@@ -1,3 +1,4 @@
+#include "commands.hpp"
 #include "doctor.hpp"
 #include "headless.hpp"
 #include "maic/artifacts.hpp"
@@ -24,6 +25,7 @@ void usage() {
                  "       maic -c                            continue the last session started in this directory\n"
                  "       maic -r [ID]                       resume a session by id (or pick from a list)\n"
                  "       maic -p \"prompt\" [--json] [--think] one turn without the UI (prompt \"-\" reads stdin; -c/-r work here too)\n"
+                 "       maic -p \"prompt\" --interactive     an interactive session that opens with that prompt sent (-i)\n"
                  "       --context FILE, -C FILE            attach a text file to the conversation before the prompt; repeatable;\n"
                  "                                          FILE \"-\" reads stdin (then the prompt can't also be stdin)\n"
                  "       --record                           with -p: keep a transcript (a one-shot -p writes none by default)\n"
@@ -46,6 +48,8 @@ void usage() {
                  "                             go under sessions/projects/); :init in a session also drafts the MAIC.md\n"
                  "  trip [reason]              trip the harness lock now (blocks all actions until unlocked)\n"
                  "  unlock                     reset the harness lock (asks for your sudo password)\n"
+                 "\n"
+                 "  help [TOPIC]               the same pages as :h inside a session: maic help headless, sessions, modes, keys, ...\n"
                  "\n"
                  "modes: manual, auto-read, edit, auto, plan\n";
 }
@@ -223,6 +227,7 @@ int main(int argc, char** argv) {
         maic::TuiOptions tui;
         maic::HeadlessOptions headless;
         bool print = false;
+        bool interactive = false;
         std::optional<bool> append;
         bool continue_last = false;
         std::optional<std::string> resume_id;
@@ -246,6 +251,7 @@ int main(int argc, char** argv) {
             } else if (a == "--record" || a == "--transcript") headless.record = true;
             else if (a == "--append") append = true;
             else if (a == "--no-append") append = false;
+            else if (a == "--interactive" || a == "-i") interactive = true;
             else if (a == "--context" || a == "-C") {
                 std::string f = value("--context");
                 tui.context.push_back(f);
@@ -253,6 +259,10 @@ int main(int argc, char** argv) {
             } else if (a == "--json") headless.json = true;
             else if (a == "--think") headless.think = true;
             else if (a == "-h" || a == "--help" || a == "help") {
+                if (i + 1 < args.size()) {
+                    std::cout << maic::help_text(args[i + 1]) << "\n";
+                    return 0;
+                }
                 usage();
                 return 0;
             } else if (a == "-V" || a == "--version" || a == "version") {
@@ -263,6 +273,13 @@ int main(int argc, char** argv) {
         if (continue_last || resume) tui.resume = headless.resume = pick_session(continue_last, resume_id);
         if (append) tui.append = headless.append = *append;
         if (headless.append) headless.record = true;
+        if (print && interactive) {
+            // An interactive session that starts with the prompt: interactive transcript rules apply, whatever
+            // the order of the flags. --json has no meaning here.
+            if (headless.json) std::cerr << "maic: --json applies to headless runs only; ignoring it\n";
+            tui.initial_prompt = headless.prompt.empty() ? "-" : headless.prompt;
+            return maic::run_tui(tui);
+        }
         if (print) return maic::run_headless(headless);
         if (rest.empty()) return maic::run_tui(tui);
 
