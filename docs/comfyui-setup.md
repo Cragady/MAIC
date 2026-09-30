@@ -115,6 +115,6 @@ Negative: `nsfw, worst quality, old, early, low quality, lowres, signature, user
 | Manga 4-panel short (NoobAI) | 4 panels, shared character tags, fixed seeds, narration captions, stitched 2x2 page |
 | Manga 4-panel short (NoobAI) - BETA captions | Same, plus dialogue as caption strips until speech bubbles are ready |
 | Manga 4-panel short (Anima) [+ BETA] | Anima versions of the above |
-| Story chat (llama.cpp) | Story co-writer on MAIC's llama-server: quick pass with memory, optional muted deep pass on the same conversation. Ships in `vendor/comfyui-maic-llamacpp/example_workflows/`, so the template browser lists it under comfyui-maic-llamacpp |
+| story-chat-llamacpp | Story co-writer on MAIC's llama-server: quick pass with memory, optional muted deep pass on the same conversation. Ships in `vendor/comfyui-maic-llamacpp/example_workflows/`, so the template browser lists it under comfyui-maic-llamacpp |
 
 Text in images: diffusion models garble lettering. Current approach: generate clean panels (negative prompt includes `text, speech bubble`), then add text with the **Draw Text Overlay** node (captions), Krita/GIMP (bubbles), or Qwen-Image-Edit (in progress).
