@@ -75,12 +75,13 @@ std::string Provider::api_key() const {
 
 std::vector<Provider> default_providers() {
     return {
-        {"ollama", "ollama", "http://127.0.0.1:11434", "", "", nlohmann::json::object()},
         // llama.cpp's OpenAI-compatible endpoint (services/llamacpp.json). Everything in `sampling` is merged into
         // the request, so logit_bias, xtc_probability, xtc_threshold, dry_multiplier, grammar and json_schema all reach it.
         // llama.cpp's OpenAI-compatible server: thinking is switched per request, the context matches
         // services/llamacpp.json, and later system messages go as user notes (the default for this kind).
         {"llamacpp", "openai", "http://127.0.0.1:8081/v1", "", "", {{"thinking_controls", true}, {"context_window", 16384}}},
+        // Kept as an option; never chosen for a bare model name (see resolve_model).
+        {"ollama", "ollama", "http://127.0.0.1:11434", "", "", nlohmann::json::object()},
         {"anthropic", "anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "",
          {{"max_tokens", 64000}, {"effort", "high"}, {"think_effort", "xhigh"}, {"fallbacks", "default"}}},
         {"deepseek", "openai", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "", nlohmann::json::object()},
@@ -96,7 +97,33 @@ std::pair<Provider, std::string> resolve_model(const std::vector<Provider>& prov
             if (p.name == prefix) return {p, model.substr(slash + 1)};
         }
     }
-    return {providers.front(), model};
+    // A bare name never lands on Ollama by accident: it goes to the first provider whose name does not
+    // match [Oo]llama. Ollama is used only when the model is written as ollama/NAME.
+    for (const auto& p : providers) {
+        std::string lower = p.name;
+        for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (lower.find("ollama") == std::string::npos) return {p, model};
+    }
+    throw std::runtime_error("model '" + model + "' names no provider, and only Ollama providers are configured; write it as ollama/" + model + " to use Ollama on purpose");
+}
+
+std::vector<std::string> list_openai_models(const Provider& provider) {
+    size_t root = provider.base_url.find("://");
+    size_t slash = root == std::string::npos ? std::string::npos : provider.base_url.find('/', root + 3);
+    std::string host = slash == std::string::npos ? provider.base_url : provider.base_url.substr(0, slash);
+    std::string prefix = slash == std::string::npos ? "" : provider.base_url.substr(slash);
+    httplib::Client client(host);
+    client.set_connection_timeout(5);
+    httplib::Headers headers;
+    if (!provider.api_key_env.empty() || !provider.api_key_command.empty()) headers.emplace("Authorization", "Bearer " + provider.api_key());
+    auto res = client.Get(prefix + "/models", headers);
+    if (!res || res->status != 200) throw std::runtime_error("can't list models on " + provider.base_url + " (is it running?)");
+    std::vector<std::string> out;
+    for (const auto& m : nlohmann::json::parse(res->body, nullptr, false).value("data", nlohmann::json::array())) {
+        if (m.contains("id") && m["id"].is_string()) out.push_back(m["id"].get<std::string>());
+    }
+    std::sort(out.begin(), out.end());
+    return out;
 }
 
 std::vector<std::string> list_ollama_models(const Provider& provider) {

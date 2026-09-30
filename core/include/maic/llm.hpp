@@ -101,6 +101,8 @@ using TextSink = std::function<void(std::string_view delta, bool thinking)>;
 
 // Names of the models an Ollama server has (GET /api/tags).
 std::vector<std::string> list_ollama_models(const Provider& provider);
+// GET <base_url>/models on an OpenAI-compatible server (llama.cpp's router lists every GGUF it can load).
+std::vector<std::string> list_openai_models(const Provider& provider);
 
 // Tool schemas are given in OpenAI/Ollama function format and converted per provider.
 // Throws Cancelled if `cancel` is set, std::runtime_error on transport or API errors.

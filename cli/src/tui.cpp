@@ -5,6 +5,7 @@
 #include "maic/agent.hpp"
 #include "maic/artifacts.hpp"
 #include "maic/clipboard.hpp"
+#include "maic/vendor.hpp"
 #include "maic/lua.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
@@ -543,9 +544,11 @@ std::vector<std::string> App::installed_models() {
     std::vector<std::string> out;
     for (size_t i = 0; i < agent_.providers.size(); ++i) {
         const auto& p = agent_.providers[i];
-        if (p.kind != "ollama" || p.remote()) continue;
+        if (p.remote()) continue;
         try {
-            for (const auto& m : list_ollama_models(p)) out.push_back(i == 0 ? m : p.name + "/" + m);
+            std::vector<std::string> names = p.kind == "ollama" ? list_ollama_models(p) : p.kind == "openai" ? list_openai_models(p) : std::vector<std::string>{};
+            // The first provider's models complete bare; the rest need their prefix (Ollama always does).
+            for (const auto& m : names) out.push_back(i == 0 ? m : p.name + "/" + m);
         } catch (const std::exception&) {
         }
     }
@@ -1188,7 +1191,8 @@ void App::run_lua(const std::string& code, bool from_file) {
     }
 }
 
-void App::set_model(const std::string& model) {
+void App::set_model(const std::string& model_in) {
+    std::string model = resolve_model_alias(model_in);
     auto [provider, name] = resolve_model(agent_.providers, model);
     agent_.model = model;
     apply_sampling();
@@ -1268,12 +1272,17 @@ void App::run_command(const std::string& line) {
             }
         } else if (cmd == "models") {
             auto [provider, name] = resolve_model(agent_.providers, agent_.model);
-            if (provider.kind != "ollama") post(Kind::Notice, "listing is only available for Ollama providers");
-            else {
-                std::string out = "models on " + provider.name + ":";
-                for (const auto& m : list_ollama_models(provider)) out += "\n  " + m;
-                post(Kind::Notice, out);
+            std::string out = "models on " + provider.name + " (" + provider.base_url + "):";
+            try {
+                std::vector<std::string> names = provider.kind == "ollama" ? list_ollama_models(provider) : list_openai_models(provider);
+                for (const auto& m : names) out += "\n  " + provider.name + "/" + m + (provider.name + "/" + m == agent_.model ? "   (in use)" : "");
+                if (provider.name == "llamacpp") {
+                    out += "\nfiles under " + llamacpp_models_root().string() + " (a subdirectory holds a GGUF plus its mmproj); one model is resident at a time; :model llamacpp/NAME switches";
+                }
+            } catch (const std::exception& e) {
+                out += "\n  " + std::string(e.what());
             }
+            post(Kind::Notice, out);
         } else if (cmd == "think") {
             if (idle()) agent_.think = arg != "off", post(Kind::Notice, agent_.think ? "thinking on (slower, better on hard problems)" : "thinking off");
         } else if (cmd == "set") {
@@ -1694,6 +1703,7 @@ void App::shutdown() {
 int run_tui(const TuiOptions& options) {
     Settings settings = load_settings();
     if (options.model) settings.model = *options.model;
+    settings.model = resolve_model_alias(settings.model);
     if (options.mode) settings.mode = *options.mode;
     if (options.record) settings.record = *options.record;
     if (options.system) settings.system_prompt = *options.system;

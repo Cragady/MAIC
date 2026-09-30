@@ -56,6 +56,15 @@ void vendor_unlink(const VendorEntry& e);
 // <state>/vendor/llamacpp/current-model.gguf: the symlink services/llamacpp.json loads. `vendor use` points it
 // at a GGUF (by suffix, or by the GGUF magic for a suffixless Ollama blob); nothing is copied.
 std::filesystem::path vendor_model_link(const VendorEntry& e);
+// <models_dir>/llamacpp: what the router serves. Every GGUF there (or a subdirectory holding one plus an
+// mmproj) is a model whose id is the file's stem.
+std::filesystem::path llamacpp_models_root();
+// The router id of the GGUF `vendor use` linked as current, "" when none.
+std::string llamacpp_current_id();
+// "llamacpp/current" -> "llamacpp/<id of the linked GGUF>"; anything else unchanged. "" id leaves it as is.
+std::string resolve_model_alias(const std::string& model);
+// Router ids of the GGUFs under the models root, sorted.
+std::vector<std::string> llamacpp_model_ids();
 void vendor_use(const VendorEntry& e, const std::filesystem::path& model);
 
 // Downloads a GGUF with curl into `into` (default: <models_dir>/llamacpp, else <state>/vendor/llamacpp/models),

@@ -84,7 +84,7 @@ struct FakeOllama {
         srv.stop();
         thread.join();
     }
-    Provider provider() const { return {"ollama", "ollama", "http://127.0.0.1:" + std::to_string(port)}; }
+    Provider provider() const { return {"fake", "ollama", "http://127.0.0.1:" + std::to_string(port)}; }
 };
 
 struct Recorder : AgentEvents {

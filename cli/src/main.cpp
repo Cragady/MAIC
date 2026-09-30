@@ -65,7 +65,7 @@ void usage(std::ostream& out = std::cerr) {
                  "  vendor                     the services MAIC can install for itself (ComfyUI, Ollama, llama.cpp), pinned versions\n"
                  "  vendor add NAME            fetch, verify, build and link one (network; asks nothing else)\n"
                  "  vendor adopt NAME PATH     use an install you already have instead of fetching\n"
-                 "  vendor use llamacpp PATH   the GGUF llama-server loads (a link; an upstream-format GGUF, not an Ollama blob)\n"
+                 "  vendor use llamacpp PATH   the GGUF that llamacpp/current means (a file under the models directory)\n"
                  "  vendor model llamacpp URL SHA256 [--into DIR]   download a GGUF, verify it, link it as the model\n"
                  "  vendor unlink NAME         stop using it (nothing is deleted)\n"
                  "  lua [FILE [args...] | -e CODE]   Lua (vendored LuaJIT) here, with the maic table; no arguments: a REPL (maic help lua)\n"
@@ -343,6 +343,13 @@ int cmd_settings(const std::vector<std::string>& args) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Service files reach the models directory as ${MAIC_MODELS}; it comes from settings.
+    try {
+        maic::Settings early = maic::load_settings();
+        if (!early.models_dir.empty()) setenv("MAIC_MODELS_DIR", early.models_dir.c_str(), 0);
+    } catch (const std::exception&) {
+        // a broken settings file is reported by whichever command loads it properly
+    }
     std::vector<std::string> args;
     // Clustered short flags: -pi is -p -i. A flag that takes a value (-m, -C) must come last in a cluster.
     for (int i = 1; i < argc; ++i) {

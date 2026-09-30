@@ -63,8 +63,8 @@ std::string missing_requirement(const ServiceDef& def) {
     std::error_code ec;
     for (const auto& path : def.requires_paths) {
         if (std::filesystem::exists(path, ec)) continue;
-        if (auto v = find_vendor(def.name); v && vendor_model_link(*v) == path) {
-            return def.name + " needs a model: maic vendor use " + def.name + " /path/model.gguf (maic vendor shows what is linked)";
+        if (def.name == "llamacpp") {
+            return def.name + " needs a models directory: put a GGUF under " + path.string() + " or run maic vendor model llamacpp URL SHA256 (models_dir in settings moves it)";
         }
         return def.name + " needs " + path.string() + " (is the drive mounted?)";
     }

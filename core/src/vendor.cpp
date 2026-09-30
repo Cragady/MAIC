@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -114,7 +115,10 @@ VendorStatus vendor_status(const VendorEntry& e) {
     VendorStatus s;
     fs::path link = vendor_link(e);
     std::error_code ec;
-    if (e.name == "llamacpp" && fs::is_symlink(vendor_model_link(e), ec)) s.model = fs::read_symlink(vendor_model_link(e), ec).string();
+    if (e.name == "llamacpp") {
+        std::string id = llamacpp_current_id();
+        if (!id.empty()) s.model = id + "  (" + fs::read_symlink(vendor_model_link(e), ec).string() + ")";
+    }
     if (fs::is_symlink(link, ec)) {
         s.linked = true;
         s.target = fs::read_symlink(link, ec).string();
@@ -198,12 +202,69 @@ fs::path vendor_model_link(const VendorEntry& e) {
     return vendor_dir() / e.name / "current-model.gguf";
 }
 
+fs::path llamacpp_models_root() {
+    Settings s = load_settings();
+    return (s.models_dir.empty() ? state_dir() / "models" : fs::path(s.models_dir)) / "llamacpp";
+}
+
+namespace {
+
+// A GGUF's router id: the subdirectory's name when it sits in one (the multimodal layout), else its stem.
+std::string router_id(const fs::path& gguf, const fs::path& root) {
+    std::error_code ec;
+    fs::path rel = fs::weakly_canonical(gguf, ec).lexically_relative(fs::weakly_canonical(root, ec));
+    if (rel.empty() || *rel.begin() == "..") return "";
+    if (rel.has_parent_path() && !rel.parent_path().empty()) return rel.begin()->string();
+    return gguf.stem().string();
+}
+
+}  // namespace
+
+std::string llamacpp_current_id() {
+    auto e = find_vendor("llamacpp");
+    if (!e) return "";
+    std::error_code ec;
+    fs::path link = vendor_model_link(*e);
+    if (!fs::is_symlink(link, ec)) return "";
+    return router_id(fs::read_symlink(link, ec), llamacpp_models_root());
+}
+
+std::string resolve_model_alias(const std::string& model) {
+    if (model != "llamacpp/current") return model;
+    std::string id = llamacpp_current_id();
+    return id.empty() ? model : "llamacpp/" + id;
+}
+
+std::vector<std::string> llamacpp_model_ids() {
+    std::vector<std::string> out;
+    std::error_code ec;
+    fs::path root = llamacpp_models_root();
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (entry.is_directory(ec)) {
+            for (const auto& f : fs::directory_iterator(entry.path(), ec)) {
+                std::string n = f.path().filename().string();
+                if (f.path().extension() == ".gguf" && n.rfind("mmproj", 0) != 0) {
+                    out.push_back(entry.path().filename().string());
+                    break;
+                }
+            }
+        } else if (entry.path().extension() == ".gguf") {
+            out.push_back(entry.path().stem().string());
+        }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 void vendor_use(const VendorEntry& e, const fs::path& model) {
     if (e.name != "llamacpp") throw std::runtime_error("maic vendor use picks the GGUF for llamacpp; " + e.name + " takes no model");
     std::error_code ec;
     fs::path target = fs::weakly_canonical(model, ec);
     if (!fs::is_regular_file(target, ec)) throw std::runtime_error("not a file: " + model.string());
     if (!is_gguf(target)) throw std::runtime_error(model.string() + " is not a GGUF (no .gguf suffix and no GGUF header)");
+    if (router_id(target, llamacpp_models_root()).empty()) {
+        throw std::runtime_error("the server only sees GGUFs under " + llamacpp_models_root().string() + "; move or link the file there (a subdirectory named after the file when an mmproj goes with it), or maic vendor model llamacpp URL SHA256");
+    }
     fs::path link = vendor_model_link(e);
     fs::create_directories(link.parent_path());
     if (fs::is_symlink(link, ec)) fs::remove(link);
@@ -221,7 +282,7 @@ fs::path vendor_model(const VendorEntry& e, const std::string& url, const std::s
     fs::path dir = into;
     if (dir.empty()) {
         Settings s = load_settings();
-        dir = s.models_dir.empty() ? vendor_dir() / "llamacpp" / "models" : fs::path(s.models_dir) / "llamacpp";
+        dir = llamacpp_models_root();
     }
     fs::create_directories(dir);
     std::string name = url.substr(url.find_last_of('/') + 1);
@@ -247,7 +308,11 @@ fs::path vendor_model(const VendorEntry& e, const std::string& url, const std::s
     }
     fs::rename(part, final);
     std::cout << "sha256 ok: " << final.string() << "\n";
-    vendor_use(e, final);
+    if (router_id(final, llamacpp_models_root()).empty()) {
+        std::cout << "not under " << llamacpp_models_root().string() << ", so the server will not list it; move it there to use it\n";
+    } else {
+        vendor_use(e, final);
+    }
     return final;
 }
 

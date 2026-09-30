@@ -71,7 +71,7 @@ int main() {
     auto [p1, m1] = resolve_model(provs, "anthropic/claude-opus-5-5");
     expect(p1.name == "anthropic" && m1 == "claude-opus-5-5", "anthropic/claude-opus-5-5 -> anthropic, claude-opus-5-5");
     auto [p2, m2] = resolve_model(provs, "hf.co/org/some-model:Q4");
-    expect(p2.name == "ollama" && m2 == "hf.co/org/some-model:Q4", "an unknown prefix stays a whole Ollama model name");
+    expect(p2.name == "llamacpp" && m2 == "hf.co/org/some-model:Q4", "an unknown prefix stays a whole model name on the first non-Ollama provider");
     auto by_name = [&](const std::string& n) { return *std::find_if(provs.begin(), provs.end(), [&](const Provider& p) { return p.name == n; }); };
     expect(!by_name("ollama").remote() && !by_name("llamacpp").remote() && by_name("anthropic").remote(), "ollama and llamacpp are local, anthropic is remote");
 
@@ -395,6 +395,25 @@ int main() {
         auto b2 = json::parse(g.last_body);
         expect(b2["options"]["stop"][0] == "STOP" && b2["options"]["temperature"] == 0.1 && b2["options"]["top_k"] == 20 && !b2.contains("logit_bias") && !b2["options"].contains("logit_bias"),
                "Ollama requests carry stop and sampler options in `options`, never logit_bias");
+    }
+
+    section("bare model names and listing");
+    {
+        auto ps = default_providers();
+        expect(ps.front().name == "llamacpp", "llamacpp is the first provider");
+        auto [p, name] = resolve_model(ps, "qwen3.5:9b");
+        expect(p.name == "llamacpp" && name == "qwen3.5:9b", "a bare name goes to llamacpp, never to Ollama");
+        auto [po, no] = resolve_model(ps, "ollama/qwen3.5:9b");
+        expect(po.name == "ollama" && no == "qwen3.5:9b", "ollama/NAME is the only way to Ollama");
+        std::vector<Provider> only_ollama = {{"ollama", "ollama", "http://127.0.0.1:11434"}, {"MyOllama", "openai", "http://127.0.0.1:1"}};
+        bool threw = false;
+        try { resolve_model(only_ollama, "x"); } catch (const std::exception& e) { threw = std::string(e.what()).find("ollama/x") != std::string::npos; }
+        expect(threw, "with only [Oo]llama providers a bare name is refused with the fix spelled out");
+        Fake f;
+        f.srv.Get("/v1/models", [](const httplib::Request&, httplib::Response& res) { res.set_content(R"({"data":[{"id":"Qwen3.5-9B-Q4_K_M"},{"id":"Qwen3.5-4B-Q4_K_M"}]})", "application/json"); });
+        f.start();
+        auto ids = list_openai_models({"lab", "openai", f.url() + "/v1"});
+        expect(ids == std::vector<std::string>{"Qwen3.5-4B-Q4_K_M", "Qwen3.5-9B-Q4_K_M"}, "an OpenAI-compatible server's models are listed by id, sorted");
     }
 
     section("cancel");

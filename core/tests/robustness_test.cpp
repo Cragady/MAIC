@@ -451,37 +451,43 @@ int main() {
         expect(!vendor_status(e).linked, "unlink removes the link");
         VendorEntry l = *lc;
         l.install.clear();
-        write_file(ws / "models" / "notes.txt", "not a model\n");
-        write_file(ws / "models" / "tiny.gguf", "fake\n");
-        write_file(ws / "models" / "sha256-blob", "GGUFxxxx");  // an Ollama blob: no suffix, the format's magic
+        // No models_dir configured (a config dir of our own, not the real one): the root is <state>/models/llamacpp.
+        setenv("XDG_CONFIG_HOME", (ws / "xdg-config-empty").c_str(), 1);
+        fs::path root = state / "maic" / "models" / "llamacpp";
+        expect(llamacpp_models_root() == root && expand_vars("${MAIC_MODELS}/llamacpp") == root.string(), "without models_dir the models root is <state>/models/llamacpp, for the helper and the service alike");
+        write_file(root / "notes.txt", "not a model\n");
+        write_file(root / "tiny.gguf", "fake\n");
+        write_file(root / "sha256-blob", "GGUFxxxx");  // a suffixless GGUF: the format's magic
         threw = false;
         try {
-            vendor_use(l, ws / "models" / "notes.txt");
+            vendor_use(l, root / "notes.txt");
         } catch (const std::exception&) {
             threw = true;
         }
         expect(threw && !fs::is_symlink(vendor_model_link(l)), "vendor use refuses a file that is not a GGUF");
         threw = false;
         try {
-            vendor_use(l, ws / "models" / "missing.gguf");
+            vendor_use(l, root / "missing.gguf");
         } catch (const std::exception&) {
             threw = true;
         }
         expect(threw, "vendor use refuses a missing path");
-        vendor_use(l, ws / "models" / "tiny.gguf");
+        vendor_use(l, root / "tiny.gguf");
         expect(vendor_model_link(l) == state / "maic" / "vendor" / "llamacpp" / "current-model.gguf" && fs::is_symlink(vendor_model_link(l)) &&
-                   fs::read_symlink(vendor_model_link(l)) == fs::weakly_canonical(ws / "models" / "tiny.gguf"),
+                   fs::read_symlink(vendor_model_link(l)) == fs::weakly_canonical(root / "tiny.gguf"),
                "vendor use links current-model.gguf at the file");
-        vendor_use(l, ws / "models" / "sha256-blob");
+        expect(llamacpp_current_id() == "tiny" && resolve_model_alias("llamacpp/current") == "llamacpp/tiny", "and llamacpp/current resolves to its router id");
+        vendor_use(l, root / "sha256-blob");
         expect(fs::read_symlink(vendor_model_link(l)).filename() == "sha256-blob", "a suffixless GGUF is accepted by its magic and replaces the link");
-        expect(vendor_status(l).model == fs::read_symlink(vendor_model_link(l)).string(), "vendor status shows the model");
+        expect(vendor_status(l).model.rfind("sha256-blob", 0) == 0, "vendor status shows the model id");
         threw = false;
         try {
-            vendor_use(e, ws / "models" / "tiny.gguf");
+            vendor_use(e, root / "tiny.gguf");
         } catch (const std::exception&) {
             threw = true;
         }
         expect(threw, "vendor use is refused for a service that takes no model");
+        unsetenv("XDG_CONFIG_HOME");
         expect(expand_vars("${MAIC_VENDOR}/x") == (state / "maic" / "vendor" / "x").string() && expand_vars("${MAIC_STATE}") == (state / "maic").string(),
                "service files can use ${MAIC_VENDOR} and ${MAIC_STATE}");
         unsetenv("XDG_STATE_HOME");
@@ -505,23 +511,24 @@ int main() {
             }
             return false;
         };
-        expect(svc && svc->port == 8081 && pair("--host", "127.0.0.1") && pair("--port", "8081") && pair("--alias", "current") && arg("--jinja"),
-               "services/llamacpp.json: loopback, port 8081, served as `current`, jinja templates");
-        expect(svc && lc && svc->requires_paths.size() == 1 && svc->requires_paths[0] == vendor_model_link(*lc) && pair("--model", vendor_model_link(*lc).string()),
-               "the service loads and requires the current-model.gguf link");
+        setenv("XDG_CONFIG_HOME", (ws / "xdg-config-empty").c_str(), 1);
+        fs::path root = state / "maic" / "models" / "llamacpp";
+        expect(svc && svc->port == 8081 && pair("--host", "127.0.0.1") && pair("--port", "8081") && pair("--models-dir", root.string()) && pair("--models-max", "1") && arg("--jinja"),
+               "services/llamacpp.json: loopback, port 8081, router mode over the models root, one resident model, jinja templates");
+        expect(svc && lc && svc->requires_paths.size() == 1 && svc->requires_paths[0] == root, "the service requires the models root");
         // The same definition on a port nothing listens on, so this passes whatever is running on 8081 here.
         ServiceDef def = *svc;
         def.port = closed_port();
         Provider p{"llamacpp", "openai", "http://127.0.0.1:" + std::to_string(def.port) + "/v1", "", "", json::object()};
         std::string hint = unreachable_hint(p, {def});
-        expect(hint.find("maic up llamacpp") != std::string::npos && hint.find("maic vendor use llamacpp") != std::string::npos,
-               "no model linked: the hint says to start it and how to link a model: " + hint);
-        expect(missing_requirement(def).find("maic vendor use llamacpp") != std::string::npos, "maic up refuses with the same hint while no GGUF is linked");
-        write_file(ws / "models" / "m.gguf", "fake\n");
-        vendor_use(*lc, ws / "models" / "m.gguf");
+        expect(hint.find("maic up llamacpp") != std::string::npos && hint.find("maic vendor model llamacpp") != std::string::npos,
+               "no models root yet: the hint says to start it and how to get a model: " + hint);
+        expect(missing_requirement(def).find("maic vendor model llamacpp") != std::string::npos, "maic up refuses with the same hint while the root is missing");
+        fs::create_directories(root);
         hint = unreachable_hint(p, {def});
-        expect(missing_requirement(def).empty() && hint.find("maic up llamacpp") != std::string::npos && hint.find("vendor use") == std::string::npos,
-               "model linked: the hint is to start it: " + hint);
+        expect(missing_requirement(def).empty() && hint.find("maic up llamacpp") != std::string::npos && hint.find("vendor model") == std::string::npos,
+               "models root present: the hint is to start it: " + hint);
+        unsetenv("XDG_CONFIG_HOME");
         expect(unreachable_hint(Provider{"lab", "openai", "http://127.0.0.1:9/v1", "", "", json::object()}, {def}).empty(), "a provider no service backs gets no hint");
         ChatOptions o;
         o.retries = 0;
@@ -651,8 +658,11 @@ int main() {
             }
             fs::path state = ws / "xdg-state-model";
             setenv("XDG_STATE_HOME", state.c_str(), 1);
+            setenv("XDG_CONFIG_HOME", (ws / "no-config").c_str(), 1);
+            fs::create_directories(ws / "no-config" / "maic");
+            write_file(ws / "no-config" / "maic" / "settings.lua", "return { models_dir = '" + (ws / "mroot").string() + "' }");
             auto ll = find_vendor("llamacpp");
-            fs::path into = ws / "models-into";
+            fs::path into = ws / "mroot" / "llamacpp";
             bool threw_hash = false;
             try {
                 vendor_model(*ll, url, std::string(64, '0'), into);
@@ -669,6 +679,26 @@ int main() {
                 threw_short = true;
             }
             expect(threw_short, "the SHA-256 is required");
+            // Router ids: a flat GGUF by stem, a subdirectory by its name; `current` resolves to the linked id.
+            fs::create_directories(ws / "mroot" / "llamacpp" / "Big-Q4");
+            write_file(ws / "mroot" / "llamacpp" / "Big-Q4" / "Big-Q4.gguf", "GGUF....");
+            write_file(ws / "mroot" / "llamacpp" / "Big-Q4" / "mmproj-F16.gguf", "GGUF....");
+            write_file(ws / "mroot" / "llamacpp" / "Small-Q4.gguf", "GGUF....");
+            write_file(ws / "mroot" / "llamacpp" / "notes.txt", "x");
+            expect(llamacpp_models_root() == ws / "mroot" / "llamacpp", "the models root follows models_dir");
+            expect(llamacpp_model_ids() == std::vector<std::string>{"Big-Q4", "Small-Q4", "tiny"}, "ids: subdirectory name or file stem, mmproj and other files ignored");
+            vendor_use(*ll, ws / "mroot" / "llamacpp" / "Big-Q4" / "Big-Q4.gguf");
+            expect(llamacpp_current_id() == "Big-Q4" && resolve_model_alias("llamacpp/current") == "llamacpp/Big-Q4", "current resolves to the linked file's router id");
+            expect(resolve_model_alias("ollama/x") == "ollama/x", "other models pass through");
+            write_file(ws / "elsewhere.gguf", "GGUF....");
+            bool outside = false;
+            try {
+                vendor_use(*ll, ws / "elsewhere.gguf");
+            } catch (const std::exception& e) {
+                outside = std::string(e.what()).find("only sees GGUFs under") != std::string::npos;
+            }
+            expect(outside, "a GGUF outside the models root is refused with the layout explained");
+            unsetenv("XDG_CONFIG_HOME");
             srv.stop();
             th.join();
             unsetenv("XDG_STATE_HOME");

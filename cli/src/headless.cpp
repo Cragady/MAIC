@@ -4,6 +4,7 @@
 #include "maic/agent.hpp"
 #include "maic/session.hpp"
 #include "maic/settings.hpp"
+#include "maic/vendor.hpp"
 
 #include <unistd.h>
 
@@ -114,6 +115,7 @@ private:
 int run_headless(const HeadlessOptions& options) {
     Settings settings = load_settings();
     if (options.model) settings.model = *options.model;
+    settings.model = resolve_model_alias(settings.model);
     if (options.mode) settings.mode = *options.mode;
     if (options.system) settings.system_prompt = *options.system;
     if (options.prefill) settings.prefill = *options.prefill;

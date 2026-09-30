@@ -60,6 +60,11 @@ std::string expand_vars(std::string_view text) {
         if (name == "MAIC_VENDOR") out.append((state_dir() / "vendor").string());
         else if (name == "MAIC_STATE") out.append(state_dir().string());
         else if (name == "MAIC_ROOT") out.append(root_dir().string());
+        else if (name == "MAIC_MODELS") {
+            // The models directory from settings (main() exports it), else a default under the state directory.
+            const char* m = std::getenv("MAIC_MODELS_DIR");
+            out.append(m && *m ? std::string(m) : (state_dir() / "models").string());
+        }
         else {
             const char* value = std::getenv(name.c_str());
             if (!value) {

@@ -78,7 +78,7 @@ struct FakeOllama {
         srv.stop();
         thread.join();
     }
-    Provider provider() const { return {"ollama", "ollama", "http://127.0.0.1:" + std::to_string(port)}; }
+    Provider provider() const { return {"fake", "ollama", "http://127.0.0.1:" + std::to_string(port)}; }
     json last_request() {
         std::lock_guard lock(mu);
         return requests.back();

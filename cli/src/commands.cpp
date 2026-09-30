@@ -3,6 +3,7 @@
 #include "maic/agent.hpp"
 #include "maic/paths.hpp"
 #include "maic/status.hpp"
+#include "maic/vendor.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -179,7 +180,7 @@ const std::vector<CommandInfo>& commands() {
         {"mode", {}, "NAME", "set the agent mode",
          "*:mode*\n`:mode manual|auto-read|edit|auto|plan`. Shift-Tab cycles them. See `:h modes`."},
         {"model", {}, "[NAME]", "switch model, or list providers",
-         "*:model*\n`:model NAME` switches (when the agent is idle): `llamacpp/current`, `ollama/qwen3.5:9b`, `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists the providers. Switching to a remote provider prints what will leave this machine. See `:h providers`."},
+         "*:model*\n`:model NAME` switches (when the agent is idle): any GGUF under the models directory by name (`llamacpp/Qwen3.5-9B-Q4_K_M`; the server loads it on demand and unloads the previous one), `llamacpp/current` (the one `maic vendor use` linked), `ollama/qwen3.5:9b`, `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists the providers. Switching to a remote provider prints what will leave this machine. See `:h providers`."},
         {"models", {}, "", "models the Ollama server has", "*:models*\nLists the models on the current Ollama provider (`ollama list`). llama.cpp serves one GGUF at a time, the one `maic vendor` shows; `maic vendor use llamacpp PATH` changes it."},
         {"think", {}, "on|off", "let the model reason first", "*:think*\n`:think on` asks the model to reason before answering: slower, better on hard problems. Anthropic models then use the provider's `think_effort`."},
         {"set", {}, "markdown|mouse on|off", "rendering and mouse toggles",
@@ -351,6 +352,12 @@ std::string failure_text(const Agent& agent, const std::exception& e) {
     if (dynamic_cast<const TransportError*>(&e)) {
         std::string hint = unreachable_hint(resolve_model(agent.providers, agent.model).first, load_services(root_dir() / "services"));
         if (!hint.empty()) text += "\n" + hint;
+    } else if (const auto* api = dynamic_cast<const ApiError*>(&e); api && api->status == 400 && text.find("not found") != std::string::npos) {
+        auto [provider, name] = resolve_model(agent.providers, agent.model);
+        if (provider.name == "llamacpp") {
+            text += "\nllama.cpp serves the GGUFs under " + llamacpp_models_root().string() + " by file name (:models lists them, maic vendor model fetches one)";
+            if (name.find(':') != std::string::npos) text += "; a name like " + name + " is an Ollama tag, which needs ollama/" + name + " on purpose";
+        }
     }
     return text;
 }
