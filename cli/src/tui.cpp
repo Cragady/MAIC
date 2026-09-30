@@ -288,6 +288,8 @@ private:
 
     std::string status_msg_;
     std::unique_ptr<Lua> lua_;  // created on first :lua; keeps globals between calls
+    bool lua_mode_ = false;     // :lua with no argument: sends go to Lua until :chat (or :lua again)
+    void run_lua(const std::string& code, bool from_file);
     bool ctrl_w_pending_ = false;
     bool ctrl_x_pending_ = false;
     size_t palette_sel_ = 0;
@@ -320,7 +322,7 @@ void App::welcome() {
 
 Element App::render_input(size_t width, int& rows) {
     bool insert = editor_.mode() == Editor::Mode::Insert;
-    std::string pre = insert ? "❯ " : "│ ";
+    std::string pre = lua_mode_ ? (insert ? "lua❯" : "lua│") : insert ? "❯ " : "│ ";
     size_t avail = width > 3 ? width - 2 : 1;
     auto lines = editor_.text().empty() ? std::vector<StyledLine>{{}} : markdown_lines(editor_.text());
     auto chunks = chunk_rows(lines, avail);
@@ -457,6 +459,7 @@ Element App::render_top_status() {
     if (size_t q = agent_.queued()) right.push_back(text(" · " + std::to_string(q) + " queued (:w now)") | decorate(settings_.style("notice")));
     if (busy_) right.push_back(text(" · working… ctrl-c interrupts") | decorate(settings_.style("notice")));
     if (shell_busy_) right.push_back(text(" · shell running") | decorate(settings_.style("shell")));
+    if (lua_mode_) right.push_back(text(" · LUA MODE (:chat returns)") | decorate(settings_.style("shell")));
     right.push_back(text(" "));
     return hbox({hbox(left), filler(), hbox(right)}) | decorate(settings_.style("status"));
 }
@@ -723,6 +726,10 @@ void App::submit(std::string text, bool now) {
         run_shell(text.substr(1));
         return;
     }
+    if (lua_mode_) {
+        run_lua(text, false);
+        return;
+    }
     if (busy_) {
         view_.append(Kind::User, text);
         agent_.post_message(text);
@@ -817,6 +824,26 @@ void App::edit_externally() {
     editor_.escape();
 }
 
+void App::run_lua(const std::string& code, bool from_file) {
+    if (!lua_) lua_ = std::make_unique<Lua>(agent_.harness().workspace(), [this](const std::string& t) { post(Kind::Notice, t); });
+    Lua::Result r;
+    if (from_file) r = lua_->run_file(agent_.harness().resolve(code));
+    else if (!code.empty() && code[0] == '=') r = lua_->run("return " + code.substr(1));
+    else {
+        // An expression shows its value; a statement runs as is.
+        r = lua_->compiles("return " + code) ? lua_->run("return " + code) : lua_->run(code);
+    }
+    view_.append(Kind::Shell, (from_file ? "luafile " : "lua> ") + code);
+    std::string out = r.output;
+    while (!out.empty() && out.back() == '\n') out.pop_back();
+    view_.append(r.ok ? Kind::ToolOk : Kind::ToolErr, out.empty() ? "(no output)" : out);
+    if (!r.output.empty()) {
+        std::string context = "[The user ran Lua in MAIC: `" + code + "`]\n" + (r.output.size() > 32 * 1024 ? r.output.substr(0, 32 * 1024) + "\n[truncated]" : r.output);
+        if (busy_) agent_.post_message(context);
+        else agent_.add_context(context);
+    }
+}
+
 void App::set_model(const std::string& model) {
     auto [provider, name] = resolve_model(agent_.providers, model);
     agent_.model = model;
@@ -887,17 +914,15 @@ void App::run_command(const std::string& line) {
                 post(Kind::Notice, on ? "tool output shown in full (za folds one, zM all)" : "tool output folded to a preview (za unfolds one, zR all)");
             } else post(Kind::Error, ":set markdown|mouse|tooldetails on|off");
         } else if (cmd == "lua" || cmd == "luafile") {
-            if (!lua_) lua_ = std::make_unique<Lua>(agent_.harness().workspace(), [this](const std::string& t) { post(Kind::Notice, t); });
-            Lua::Result r = cmd == "lua" ? lua_->run(arg) : lua_->run_file(agent_.harness().resolve(arg));
-            view_.append(Kind::Shell, (cmd == "lua" ? "lua> " : "luafile ") + arg);
-            std::string out = r.output;
-            while (!out.empty() && out.back() == '\n') out.pop_back();
-            view_.append(r.ok ? Kind::ToolOk : Kind::ToolErr, out.empty() ? "(no output)" : out);
-            if (!r.output.empty()) {
-                std::string context = "[The user ran Lua in MAIC: `" + arg + "`]\n" + (r.output.size() > 32 * 1024 ? r.output.substr(0, 32 * 1024) + "\n[truncated]" : r.output);
-                if (busy_) agent_.post_message(context);
-                else agent_.add_context(context);
+            if (cmd == "lua" && arg.empty()) {
+                lua_mode_ = !lua_mode_;
+                post(Kind::Notice, lua_mode_ ? "Lua mode: what you send runs in LuaJIT (globals persist). :chat or :lua returns to the model." : "back to the model");
+            } else {
+                run_lua(arg, cmd == "luafile");
             }
+        } else if (cmd == "chat") {
+            lua_mode_ = false;
+            post(Kind::Notice, "back to the model");
         } else if (cmd == "compact") {
             if (idle()) {
                 std::atomic<bool> no{false};

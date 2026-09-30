@@ -348,6 +348,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
     push({"user", text});
 
     ChatOptions options{model_name, think};
+    options.notice = [&](const std::string& t) { events.on_notice(t); };
     for (int step = 0; step < kMaxSteps; ++step) {
         if (drain_mailbox()) events.on_notice("delivered your queued message");
         {

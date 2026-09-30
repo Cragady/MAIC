@@ -95,7 +95,7 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
     auto r = stream_post(provider.base_url, "/chat/completions", headers, dump(body),
                          [&](std::string_view d) { lines.feed(d, on_line); }, cancel);
     lines.finish(on_line);
-    if (r.status != 200) throw std::runtime_error(api_error(provider.name, r));
+    if (r.status != 200) throw_api_error(provider.name, r);
     if (!error.empty()) throw std::runtime_error(provider.name + ": " + error);
 
     reply.usage.context = provider.options.value("context_window", 0);

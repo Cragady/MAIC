@@ -255,6 +255,27 @@ nlohmann::json Lua::eval_table_file(const fs::path& path) {
     return eval_table(code, "@" + path.string());
 }
 
+bool Lua::incomplete(const std::string& code) {
+    lua_State* L = st_->L;
+    int rc = luaL_loadbuffer(L, code.data(), code.size(), "=input");
+    bool unfinished = false;
+    if (rc == LUA_ERRSYNTAX) {
+        size_t len = 0;
+        const char* msg = lua_tolstring(L, -1, &len);
+        std::string m(msg ? msg : "", len);
+        unfinished = m.find("'<eof>'") != std::string::npos && m.find("near '<eof>'") == m.size() - 12;
+    }
+    lua_pop(L, 1);
+    return unfinished;
+}
+
+bool Lua::compiles(const std::string& code) {
+    lua_State* L = st_->L;
+    bool ok = luaL_loadbuffer(L, code.data(), code.size(), "=input") == 0;
+    lua_pop(L, 1);
+    return ok;
+}
+
 Lua::Result Lua::run_file(const fs::path& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return {false, "can't read " + path.string()};

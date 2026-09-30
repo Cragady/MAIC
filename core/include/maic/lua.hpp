@@ -31,6 +31,10 @@ public:
         std::string output;  // everything print()ed, then the error message when !ok
     };
     Result run(const std::string& code, const std::string& chunk_name = "=input");
+    // True when `code` is syntactically unfinished (a REPL should keep reading lines).
+    bool incomplete(const std::string& code);
+    // True when `code` parses (nothing is run).
+    bool compiles(const std::string& code);
     Result run_file(const std::filesystem::path& path);
 
     // Runs a chunk that returns a table and converts it to JSON (settings.lua). Sequences (1..n) become arrays,

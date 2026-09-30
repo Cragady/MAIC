@@ -3,7 +3,9 @@
 #include <httplib.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <random>
 #include <cstdlib>
 #include <filesystem>
 #include <thread>
@@ -105,12 +107,59 @@ std::vector<std::string> list_ollama_models(const Provider& provider) {
     return out;
 }
 
-Message chat(const Provider& provider, const ChatOptions& options, const std::vector<Message>& messages,
-             const nlohmann::json& tools, const TextSink& on_text, const std::atomic<bool>& cancel) {
+namespace {
+
+Message chat_once(const Provider& provider, const ChatOptions& options, const std::vector<Message>& messages,
+                  const nlohmann::json& tools, const TextSink& on_text, const std::atomic<bool>& cancel) {
     if (provider.kind == "ollama") return detail::chat_ollama(provider, options, messages, tools, on_text, cancel);
     if (provider.kind == "anthropic") return detail::chat_anthropic(provider, options, messages, tools, on_text, cancel);
     if (provider.kind == "openai") return detail::chat_openai(provider, options, messages, tools, on_text, cancel);
     throw std::runtime_error(provider.name + ": unknown provider kind '" + provider.kind + "' (ollama, anthropic, openai)");
+}
+
+bool sleep_unless_cancelled(int ms, const std::atomic<bool>& cancel) {
+    for (int waited = 0; waited < ms; waited += 50) {
+        if (cancel.load()) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::min(50, ms - waited)));
+    }
+    return !cancel.load();
+}
+
+}  // namespace
+
+Message chat(const Provider& provider, const ChatOptions& options, const std::vector<Message>& messages,
+             const nlohmann::json& tools, const TextSink& on_text, const std::atomic<bool>& cancel) {
+    std::mt19937 rng{std::random_device{}()};
+    for (int attempt = 0;; ++attempt) {
+        bool streamed = false;
+        auto sink = [&](std::string_view d, bool t) {
+            streamed = true;
+            on_text(d, t);
+        };
+        int wait_ms = 0;
+        std::string why;
+        try {
+            return chat_once(provider, options, messages, tools, sink, cancel);
+        } catch (const ApiError& e) {
+            bool retryable = e.status == 429 || e.status == 408 || e.status == 409 || e.status >= 500;
+            if (!retryable || streamed || attempt >= options.retries) throw;
+            wait_ms = e.retry_after_ms;
+            why = "HTTP " + std::to_string(e.status);
+        } catch (const TransportError& e) {
+            if (streamed || attempt >= options.retries) throw;
+            why = e.what();
+        }
+        if (wait_ms <= 0) {
+            int base = options.retry_base_ms << attempt;  // 2 s, 4 s, 8 s
+            std::uniform_int_distribution<int> jitter(-base / 4, base / 4);
+            wait_ms = std::min(30000, base + jitter(rng));
+        }
+        if (options.notice) {
+            options.notice(provider.name + ": " + why + "; retrying in " + std::to_string((wait_ms + 500) / 1000) + " s (" + std::to_string(attempt + 1) +
+                           "/" + std::to_string(options.retries) + ")");
+        }
+        if (!sleep_unless_cancelled(wait_ms, cancel)) throw Cancelled();
+    }
 }
 
 namespace detail {
@@ -129,6 +178,10 @@ std::string api_error(const std::string& provider, const HttpResult& r) {
     }
     if (msg.empty()) msg = r.error_body.substr(0, 300);
     return provider + " returned HTTP " + std::to_string(r.status) + (msg.empty() ? "" : ": " + msg);
+}
+
+void throw_api_error(const std::string& provider, const HttpResult& r) {
+    throw ApiError(r.status, api_error(provider, r), r.retry_after_ms);
 }
 
 HttpResult stream_post(const std::string& base_url, const std::string& path,
@@ -195,10 +248,14 @@ HttpResult stream_post(const std::string& base_url, const std::string& path,
     watcher.join();
     if (cancel.load()) throw Cancelled();
     if (!ok) {
-        throw std::runtime_error("can't reach " + base_url + " (" + httplib::to_string(err) + ")");
+        throw TransportError("can't reach " + base_url + " (" + httplib::to_string(err) + ")");
     }
     result.status = res.status;
     if (result.status != 200 && result.error_body.empty()) result.error_body = res.body.substr(0, 4096);
+    if (res.has_header("Retry-After")) {
+        std::string ra = res.get_header_value("Retry-After");
+        if (!ra.empty() && std::isdigit(static_cast<unsigned char>(ra[0]))) result.retry_after_ms = std::atoi(ra.c_str()) * 1000;
+    }
     return result;
 }
 

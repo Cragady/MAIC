@@ -259,6 +259,89 @@ int main() {
         expect(f.last_headers.find("Authorization") == f.last_headers.end(), "no key configured -> no auth header (local servers)");
     }
 
+    section("retry with backoff");
+    {
+        Fake f;
+        int calls = 0;
+        f.srv.Post("/api/chat", [&](const httplib::Request&, httplib::Response& res) {
+            if (++calls < 3) {
+                res.status = 503;
+                res.set_header("Retry-After", "0");
+                res.set_content("{\"error\":\"overloaded\"}", "application/json");
+                return;
+            }
+            res.set_content(R"({"message":{"content":"finally"}})" "\n", "application/x-ndjson");
+        });
+        f.start();
+        std::vector<std::string> notices;
+        ChatOptions opt{"test-model"};
+        opt.retry_base_ms = 10;
+        opt.notice = [&](const std::string& n) { notices.push_back(n); };
+        auto m = chat({"ollama", "ollama", f.url()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+        expect(m.content == "finally" && calls == 3 && notices.size() == 2 && notices[0].find("HTTP 503") != std::string::npos,
+               "503 is retried with a notice each time, then succeeds");
+    }
+    {
+        Fake f;
+        int calls = 0;
+        f.srv.Post("/api/chat", [&](const httplib::Request&, httplib::Response& res) {
+            ++calls;
+            res.status = 400;
+            res.set_content("{\"error\":\"bad request\"}", "application/json");
+        });
+        f.start();
+        ChatOptions opt{"test-model"};
+        opt.retry_base_ms = 10;
+        std::string msg;
+        try { chat({"ollama", "ollama", f.url()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError& e) { msg = e.what(); }
+        expect(calls == 1 && msg.find("400") != std::string::npos, "a 400 is not retried and comes back as ApiError");
+    }
+    {
+        Fake f;
+        int calls = 0;
+        f.srv.Post("/api/chat", [&](const httplib::Request&, httplib::Response& res) {
+            ++calls;
+            res.status = 500;
+            res.set_content("{}", "application/json");
+        });
+        f.start();
+        ChatOptions opt{"test-model"};
+        opt.retries = 2;
+        opt.retry_base_ms = 10;
+        bool threw = false;
+        try { chat({"ollama", "ollama", f.url()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError&) { threw = true; }
+        expect(threw && calls == 3, "gives up after the configured retries (1 try + 2 retries)");
+    }
+    {
+        // A failure after output started is not retried (it would duplicate what the user saw).
+        Fake f;
+        int calls = 0;
+        f.srv.Post("/api/chat", [&](const httplib::Request&, httplib::Response& res) {
+            ++calls;
+            res.set_chunked_content_provider("application/x-ndjson", [](size_t, httplib::DataSink& sink) {
+                std::string line = R"({"message":{"content":"partial"}})" "\n";
+                sink.write(line.data(), line.size());
+                return false;  // drop the connection
+            });
+        });
+        f.start();
+        ChatOptions opt{"test-model"};
+        opt.retry_base_ms = 10;
+        std::string streamed;
+        try { chat({"ollama", "ollama", f.url()}, opt, hello, json::array(), [&](std::string_view d, bool) { streamed += d; }, no_cancel); } catch (const std::exception&) {}
+        expect(calls == 1, "no retry once output has streamed");
+    }
+    {
+        ChatOptions opt{"test-model"};
+        opt.retries = 2;
+        opt.retry_base_ms = 10;
+        std::vector<std::string> notices;
+        opt.notice = [&](const std::string& n) { notices.push_back(n); };
+        std::string msg;
+        try { chat({"ollama", "ollama", "http://127.0.0.1:1"}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const TransportError& e) { msg = e.what(); }
+        expect(notices.size() == 2 && msg.find("can't reach") != std::string::npos, "connection failures are retried too, then reported as TransportError");
+    }
+
     section("cancel");
     {
         Fake f;

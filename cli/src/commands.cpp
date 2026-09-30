@@ -126,8 +126,8 @@ const std::vector<CommandInfo>& commands() {
          "*:ww*\nThe same as `:w now`: sends immediately even while the agent is working. See `:h w`."},
         {"e", {"edit", "nvim"}, "", "edit the input in nvim",
          "*:e* *:edit* *:nvim*\nOpens the input in $VISUAL, $EDITOR or nvim as a markdown file; when you quit, the file becomes the input (one undo step). A non-zero exit leaves the input unchanged. Also Ctrl-X Ctrl-E."},
-        {"h", {"help"}, "[topic]", "this help, or :h TOPIC",
-         "*:h* *:help*\n`:h` alone lists every topic. `:h TOPIC` shows one: a command (`:h w`), a key (`:h u`, `:h Ctrl-W`, `:h Alt+Enter`) or a concept (`:h modes`, `:h harness`, `:h sessions`). A unique prefix is enough; several matches give a list."},
+        {"h", {"help", "topics"}, "[topic]", "this help, or :h TOPIC",
+         "*:h* *:help* *maic help*\n`:h` alone lists every topic. `:h TOPIC` shows one: a command (`:h w`), a key (`:h u`, `:h Ctrl-W`, `:h Alt+Enter`) or a concept (`:h modes`, `:h harness`, `:h sessions`). A unique prefix is enough; several matches give a list.\n\nOutside a session `maic help` prints the command summary and `maic help TOPIC` one of these pages, both on stdout so they pipe (`maic help lua | less`, `maic help | grep vendor`). `maic help topics` prints the index."},
         {"mode", {}, "NAME", "set the agent mode",
          "*:mode*\n`:mode manual|auto-read|edit|auto|plan`. Shift-Tab cycles them. See `:h modes`."},
         {"model", {}, "[NAME]", "switch model, or list providers",
@@ -148,9 +148,10 @@ const std::vector<CommandInfo>& commands() {
         {"session", {}, "", "where this transcript is", "*:session*\nThis session's file and the sessions directory. See `:h sessions`."},
         {"artifacts", {}, "", "where everything is kept, with sizes", "*:artifacts*\nEvery place MAIC and its services leave things (transcripts, service logs, ComfyUI outputs, ...) with sizes. Clean with `maic artifacts clean OWNER/NAME [--older-than DAYS]`."},
         {"reg", {"register"}, "", "show the yank register", "*:reg*\nShows the register. See `:h p`."},
-        {"lua", {"luafile", "luajit"}, "CODE", "run Lua (LuaJIT) here; output goes to the model as context",
-         "*:lua* *:luafile* *maic lua*\n"
-         "`:lua CODE` runs Lua in the workspace with LuaJIT (vendored, pinned to the revision Neovim uses); `:luafile PATH` runs a file. Globals persist for the session. Output shows in the conversation and is handed to the model as context, like `!cmd`. Outside a session: `maic lua FILE [args]` or `maic lua -e CODE` (`arg` holds the arguments).\n\n"
+        {"lua", {"luafile", "luajit", "repl", "chat"}, "[CODE]", "run Lua (LuaJIT) here, or enter Lua mode; :chat returns",
+         "*:lua* *:luafile* *:chat* *maic lua*\n"
+         "`:lua CODE` runs Lua in the workspace with LuaJIT (vendored, pinned to the revision Neovim uses); an expression shows its value, `=expr` forces that. `:luafile PATH` runs a file. `:lua` with nothing after it enters **Lua mode**: the input box becomes a REPL (prompt `lua❯`), every send runs in Lua, and `:chat` (or `:lua` again) returns to the model. Globals persist for the session. Output shows in the conversation and is handed to the model as context, like `!cmd`.\n\n"
+         "Outside a session: `maic lua` is a REPL (`=expr`, multi-line continuation, Ctrl-D leaves), `maic lua FILE [args]` runs a file (`arg` holds the arguments), `maic lua -e CODE` a snippet.\n\n"
          "The `maic` table: `maic.workspace`, `maic.version`, `maic.read(path)`, `maic.write(path, text)`, `maic.shell(cmd)` (returns output and exit code), `maic.notice(text)`. The standard library is available: this runs as you, like your shell, and is never given to the model."},
         {"compact", {}, "[prune|head|all]", "free context: old tool results first, then the oldest turns",
          "*:compact*\n"
@@ -211,8 +212,8 @@ std::vector<std::string> complete_argument(const std::string& command, const std
 std::string help_text(const std::string& topic_in) {
     std::string topic = normalize(topic_in);
     while (!topic.empty() && topic.back() == ' ') topic.pop_back();
-    if (topic.empty()) {
-        std::string out = "*help* Type `:h TOPIC` for one of these (a unique prefix is enough):\n\n**commands**\n";
+    if (topic.empty() || topic == "topics") {
+        std::string out = "*help* Type `:h TOPIC` (or `maic help TOPIC`) for one of these; a unique prefix is enough:\n\n**commands**\n";
         for (const auto& c : commands()) out += "  :" + c.name + (c.args.empty() ? "" : " " + c.args) + "  " + c.summary + "\n";
         out += "\n**topics and keys**\n";
         for (const auto& t : topics()) out += "  " + t.name + "  " + t.summary + "\n";

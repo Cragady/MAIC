@@ -15,7 +15,11 @@ namespace maic::detail {
 struct HttpResult {
     int status = 0;
     std::string error_body;  // first few KB of a non-200 body
+    int retry_after_ms = 0;  // from Retry-After, when the server sent one
 };
+
+// Throws ApiError for a non-200 result, with the provider's message.
+[[noreturn]] void throw_api_error(const std::string& provider, const HttpResult& r);
 
 // POSTs `body` to base_url + path and feeds the response body to `on_data` as it arrives. Cancel closes the
 // connection even while nothing is arriving. Throws Cancelled, or runtime_error when the host can't be reached.

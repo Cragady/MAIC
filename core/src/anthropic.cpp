@@ -196,7 +196,7 @@ Message chat_anthropic(const Provider& provider, const ChatOptions& options, con
             r.error_body.find("not supported") != std::string::npos) {
             continue;  // this model takes no mid-conversation system messages; resend them as notes
         }
-        if (r.status != 200) throw std::runtime_error(api_error(provider.name, r));
+        if (r.status != 200) throw_api_error(provider.name, r);
         if (!error.empty()) throw std::runtime_error(provider.name + ": " + error);
 
         Message reply{"assistant", "", {}, "", "", false, "anthropic", nlohmann::json::array()};

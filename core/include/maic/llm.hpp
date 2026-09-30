@@ -68,10 +68,27 @@ struct ChatOptions {
     std::string model;  // without the provider prefix
     bool think = false;
     int num_ctx = 16384;  // ollama only
+    // Retry on 429, 5xx and connection failures, only while nothing has been streamed yet: 2 s, doubling,
+    // 25% jitter, 30 s cap, Retry-After honoured. `notice` hears about each wait.
+    int retries = 3;
+    int retry_base_ms = 2000;
+    std::function<void(const std::string&)> notice;
 };
 
 struct Cancelled : std::runtime_error {
     Cancelled() : std::runtime_error("cancelled") {}
+};
+
+// A provider answered with an error status. `retry_after_ms` is from the Retry-After header when present.
+struct ApiError : std::runtime_error {
+    int status;
+    int retry_after_ms;
+    ApiError(int status, std::string message, int retry_after_ms = 0) : std::runtime_error(std::move(message)), status(status), retry_after_ms(retry_after_ms) {}
+};
+
+// The host could not be reached or the connection dropped before any response arrived.
+struct TransportError : std::runtime_error {
+    using std::runtime_error::runtime_error;
 };
 
 // Receives streamed text as it arrives; `thinking` marks reasoning rather than the answer.

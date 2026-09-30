@@ -14,6 +14,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -25,8 +27,8 @@
 
 namespace {
 
-void usage() {
-    std::cerr << "usage: maic [--model M] [--mode MODE]      the agent, in this directory\n"
+void usage(std::ostream& out = std::cerr) {
+    out << "usage: maic [--model M] [--mode MODE]      the agent, in this directory\n"
                  "       maic -c                            continue the last session started in this directory\n"
                  "       maic -r [ID]                       resume a session by id (or pick from a list)\n"
                  "       maic -p \"prompt\" [--json] [--think] one turn without the UI (prompt \"-\" reads stdin; -c/-r work here too)\n"
@@ -43,7 +45,7 @@ void usage() {
                  "  vendor add NAME            fetch, verify, build and link one (network; asks nothing else)\n"
                  "  vendor adopt NAME PATH     use an install you already have instead of fetching\n"
                  "  vendor unlink NAME         stop using it (nothing is deleted)\n"
-                 "  lua FILE [args...] | -e CODE   run Lua (LuaJIT, vendored) in this directory with the maic table (maic help lua)\n"
+                 "  lua [FILE [args...] | -e CODE]   Lua (vendored LuaJIT) here, with the maic table; no arguments: a REPL (maic help lua)\n"
                  "  doctor                     what this machine has, what MAIC needs, a recommended setup\n"
                  "  status                     harness, services, where they run, quick actions\n"
                  "  up <service...|all>        start services\n"
@@ -60,7 +62,8 @@ void usage() {
                  "  trip [reason]              trip the harness lock now (blocks all actions until unlocked)\n"
                  "  unlock                     reset the harness lock (asks for your sudo password)\n"
                  "\n"
-                 "  help [TOPIC]               the same pages as :h inside a session: maic help headless, sessions, modes, keys, ...\n"
+                 "  help [TOPIC]               this text, or one page: maic help help lists the topics; help headless,\n"
+                 "                             sessions, modes, keys, vendor, lua, settings, ... (the same pages as :h)\n"
                  "\n"
                  "modes: manual, auto-read, edit, auto, plan\n";
 }
@@ -295,7 +298,7 @@ int main(int argc, char** argv) {
                     std::cout << maic::help_text(args[i + 1]) << "\n";
                     return 0;
                 }
-                usage();
+                usage(std::cout);  // asked for: stdout, so it pipes
                 return 0;
             } else if (a == "-V" || a == "--version" || a == "version") {
                 std::cout << "maic " MAIC_VERSION "\n";
@@ -342,9 +345,28 @@ int main(int argc, char** argv) {
         if (cmd == "settings") return cmd_settings(cargs);
         if (cmd == "doctor") return maic::run_doctor();
         if (cmd == "lua") {
-            if (cargs.empty()) throw std::runtime_error("maic lua FILE [args...] | maic lua -e CODE");
             maic::Lua lua(std::filesystem::current_path());
             maic::Lua::Result r;
+            if (cargs.empty() || cargs[0] == "-i") {
+                // A REPL, like `luajit -i`: `=expr` shows a value, unfinished lines continue, Ctrl-D leaves.
+                bool tty = isatty(STDIN_FILENO);
+                if (tty) std::cout << "maic lua (" << lua.run("return jit.version").output << "  Ctrl-D leaves; =expr shows a value; the maic table is loaded)\n";
+                std::string chunk;
+                for (std::string line;;) {
+                    if (tty) std::cout << (chunk.empty() ? "lua> " : "...> ") << std::flush;
+                    if (!std::getline(std::cin, line)) break;
+                    if (chunk.empty() && !line.empty() && line[0] == '=') line = "return " + line.substr(1);
+                    chunk += (chunk.empty() ? "" : "\n") + line;
+                    if (lua.incomplete(chunk)) continue;
+                    // Statements print nothing; an expression is run as `return expr` so `1+1` shows 2.
+                    maic::Lua::Result res = lua.compiles("return " + chunk) ? lua.run("return " + chunk) : lua.run(chunk);
+                    if (!res.ok) std::cout << "error: " << res.output << (res.output.empty() || res.output.back() != '\n' ? "\n" : "");
+                    else if (!res.output.empty()) std::cout << res.output;
+                    chunk.clear();
+                }
+                if (tty) std::cout << "\n";
+                return 0;
+            }
             if (cargs[0] == "-e") {
                 if (cargs.size() < 2) throw std::runtime_error("maic lua -e CODE");
                 r = lua.run(cargs[1]);

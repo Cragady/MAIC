@@ -69,7 +69,7 @@ Message chat_ollama(const Provider& provider, const ChatOptions& options, const 
                          [&](std::string_view d) { lines.feed(d, handle_line); }, cancel);
     lines.finish(handle_line);
     if (!error.empty()) throw std::runtime_error(provider.name + ": " + error);
-    if (r.status != 200) throw std::runtime_error(api_error(provider.name, r));
+    if (r.status != 200) throw_api_error(provider.name, r);
     reply.usage.context = options.num_ctx;
     return reply;
 }

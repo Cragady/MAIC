@@ -74,7 +74,7 @@ So to change something while keeping the original safe: put the original in `tem
 
 ## LuaJIT
 
-`vendor/lua-pins` is Micaiah's `lua-collection-nvim-pins`, pinned at `37bb6c6`: the exact LuaJIT and PUC Lua revisions Neovim v0.12.2 builds against, each with its own PROVENANCE, upstream hash and `verify.sh`. `vendor/luajit.cmake` copies the LuaJIT tree into the build directory and runs its own Makefile there (`libluajit.a`, static, PIC), so the submodule is never written to. It links into `maic_core` and powers `:lua`, `:luafile` and `maic lua` (see `:h lua`). This is the first of the polyglot tool runtimes from the roadmap.
+`vendor/lua-pins` is Micaiah's `lua-collection-nvim-pins`, pinned at `37bb6c6`: the exact LuaJIT and PUC Lua revisions Neovim v0.12.2 builds against, each with its own PROVENANCE, upstream hash and `verify.sh`. `vendor/luajit.cmake` copies the LuaJIT tree into the build directory and runs its own Makefile there (`libluajit.a`, static, PIC), so the submodule is never written to. It links into `maic_core` and powers `:lua`, `:luafile`, Lua mode in the session, and the `maic lua` REPL (see `:h lua`). This is the first of the polyglot tool runtimes from the roadmap.
 
 ## Windows
 

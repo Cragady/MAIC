@@ -20,7 +20,7 @@ From [harness.md](harness.md): doom-loop detection wired to the tripwire; reject
 
 ## 3. Quick wins from opencode
 
-[opencode-quick-wins.md](opencode-quick-wins.md) lists 23 small items. Done: 1 to 9 (tool-result quality for small models), 18 (token usage and the context readout), 19 (foldable tool output), 23 (`:compact`, with Micaiah's two-stage design below rather than opencode's whole-history summary). Next: retry with backoff (17), then the under-two-hours leftovers (10 to 16).
+[opencode-quick-wins.md](opencode-quick-wins.md) lists 23 small items. Done: 1 to 9 (tool-result quality for small models), 18 (token usage and the context readout), 19 (foldable tool output), 23 (`:compact`, with Micaiah's two-stage design below rather than opencode's whole-history summary). Also done: retry with backoff on 429/5xx and connection failures, only before any output has streamed, with Retry-After honoured (17). Next: the under-two-hours leftovers (10 to 16).
 
 ## 3a. Compaction
 
