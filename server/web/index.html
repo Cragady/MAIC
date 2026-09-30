@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>MAIC</title>
+<style>
+  :root {
+    --bg: #14151a; --panel: #1d1f26; --line: #2c2f3a; --fg: #e6e6ea; --dim: #9a9db0;
+    --accent: #5aa9ff; --ok: #4ec98a; --warn: #f2c14e; --bad: #ff6b6b; --user: #24303f;
+    --tap: 44px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f5f5f7; --panel: #ffffff; --line: #d9dbe3; --fg: #1a1a1f; --dim: #666a7a; --user: #e3eefb; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  button, select, input, textarea { font: inherit; color: inherit; }
+  button { min-height: var(--tap); padding: 0 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); cursor: pointer; }
+  button:active { filter: brightness(1.25); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+  button.ok { background: var(--ok); border-color: var(--ok); color: #10321f; }
+  select, input, textarea { min-height: var(--tap); padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  textarea { resize: none; width: 100%; }
+  header { position: sticky; top: 0; z-index: 2; display: flex; gap: 8px; align-items: center; padding: 8px 12px; padding-top: max(8px, env(safe-area-inset-top));
+    background: var(--panel); border-bottom: 1px solid var(--line); }
+  header .status { flex: 1; min-width: 0; font-size: 14px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  header .status b { color: var(--fg); }
+  .tripped { color: var(--bad); font-weight: 700; }
+  .armed { color: var(--ok); }
+  .remote { color: var(--warn); font-weight: 700; }
+  main { flex: 1; overflow-y: auto; padding: 12px; -webkit-overflow-scrolling: touch; }
+  .screen { display: none; }
+  .screen.on { display: block; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin: 0 0 12px; }
+  .card h2 { margin: 0 0 8px; font-size: 17px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row > * { flex: 1 1 auto; }
+  .entry { margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; }
+  .entry.user { background: var(--user); border-radius: 12px; padding: 10px 12px; margin-left: 15%; }
+  .entry.thinking { color: var(--dim); font-style: italic; }
+  .entry.notice { color: var(--warn); font-size: 14px; }
+  .entry.error { color: var(--bad); }
+  .entry.tool { font-size: 14px; }
+  .entry.tool summary { color: var(--accent); cursor: pointer; min-height: 32px; display: flex; align-items: center; }
+  .entry.tool pre { margin: 6px 0 0; padding: 8px; background: var(--bg); border-radius: 8px; overflow-x: auto; font-size: 13px; white-space: pre-wrap; }
+  .entry.tool.bad summary { color: var(--bad); }
+  .session { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; text-align: left; margin-bottom: 8px; padding: 10px 14px; }
+  .session small { color: var(--dim); }
+  #approval { border-color: var(--warn); }
+  #approval pre { max-height: 40vh; overflow: auto; background: var(--bg); padding: 8px; border-radius: 8px; font-size: 13px; white-space: pre-wrap; }
+  #approval .row button { flex: 1 1 30%; }
+  footer { position: sticky; bottom: 0; padding: 8px 12px; padding-bottom: max(8px, env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--line); }
+  footer .row { align-items: flex-end; flex-wrap: nowrap; }
+  footer textarea { flex: 1; }
+  footer button { flex: 0 0 auto; }
+  .hint { color: var(--dim); font-size: 14px; }
+  .usage { color: var(--dim); font-size: 13px; text-align: right; }
+</style>
+</head>
+<body>
+<header>
+  <button id="sessionsBtn" title="sessions">&#9776;</button>
+  <div class="status" id="status">connecting</div>
+  <select id="mode" title="mode">
+    <option value="manual">manual</option><option value="auto-read">auto-read</option><option value="edit">edit</option>
+    <option value="auto">auto</option><option value="plan">plan</option>
+  </select>
+</header>
+
+<main>
+  <section id="tokenScreen" class="screen">
+    <div class="card">
+      <h2>Token</h2>
+      <p class="hint">Made on the workstation with <code>maic server token new NAME</code>. It stays in this browser only.</p>
+      <div class="row"><input id="tokenInput" placeholder="paste the token" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button class="primary" id="tokenSave">Save</button></div>
+      <p class="hint" id="tokenError"></p>
+    </div>
+  </section>
+
+  <section id="sessionsScreen" class="screen">
+    <div class="card">
+      <h2>New session</h2>
+      <div class="row"><input id="newWorkspace" placeholder="workspace (default: the first allowed root)">
+        <button class="primary" id="newSession">Start</button></div>
+      <p class="hint" id="roots"></p>
+    </div>
+    <div id="sessionList"></div>
+    <div class="card"><div class="row"><button class="danger" id="tripBtn">Trip the harness</button></div>
+      <p class="hint">Stops every action until <code>maic unlock</code> is run at the workstation. There is no remote unlock.</p></div>
+  </section>
+
+  <section id="chatScreen" class="screen">
+    <div id="entries"></div>
+    <div class="card" id="approval" hidden>
+      <h2>Approve?</h2>
+      <div id="approvalSummary" style="font-weight:600"></div>
+      <div class="hint" id="approvalReason"></div>
+      <pre id="approvalPreview" hidden></pre>
+      <div class="row" style="margin-top:8px">
+        <button class="ok" data-choice="yes">Yes</button>
+        <button data-choice="always" id="alwaysBtn">Always</button>
+        <button data-choice="no">No</button>
+      </div>
+      <div class="row" style="margin-top:8px"><input id="feedback" placeholder="no, and tell the model why">
+        <button data-choice="no-reason">No, with reason</button></div>
+      <div class="row" style="margin-top:8px"><button class="danger" data-choice="trip">Trip the harness</button></div>
+    </div>
+    <div class="usage" id="usage"></div>
+  </section>
+</main>
+
+<footer id="composer" hidden>
+  <div class="row">
+    <textarea id="input" rows="2" placeholder="message" enterkeyhint="send"></textarea>
+    <button class="primary" id="send">Send</button>
+    <button class="danger" id="stop" hidden>Stop</button>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const state = { token: '', session: null, seq: 0, running: false, reading: false, approval: null, status: null };
+  try { state.token = localStorage.getItem('maic.token') || ''; } catch (e) {}
+
+  function show(screen) {
+    for (const s of document.querySelectorAll('.screen')) s.classList.toggle('on', s.id === screen);
+    $('composer').hidden = screen !== 'chatScreen';
+  }
+
+  async function api(path, options = {}) {
+    const headers = Object.assign({ 'Authorization': 'Bearer ' + state.token }, options.headers || {});
+    if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+    const res = await fetch(path, Object.assign({}, options, { headers, body: options.body === undefined ? undefined : JSON.stringify(options.body) }));
+    if (res.status === 401) { tokenScreen('The server did not accept that token.'); throw new Error('unauthorized'); }
+    if (res.status === 429) { tokenScreen('Too many failed attempts; wait a minute.'); throw new Error('rate limited'); }
+    return res;
+  }
+
+  async function json(path, options) {
+    const res = await api(path, options);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+    return body;
+  }
+
+  function tokenScreen(message) {
+    $('tokenError').textContent = message || '';
+    $('tokenInput').value = '';
+    show('tokenScreen');
+  }
+
+  function statusLine() {
+    const s = state.status;
+    if (!s) return;
+    const harness = s.harness.tripped ? '<span class="tripped">TRIPPED</span>' : '<span class="armed">armed</span>';
+    const model = state.session ? state.session.model : s.model;
+    const remote = (state.session ? state.session.remote_model : s.remote_model) ? ' <span class="remote">REMOTE</span>' : '';
+    const mode = state.session ? state.session.mode : s.mode;
+    $('status').innerHTML = harness + ' · <b>' + escape(model) + '</b>' + remote + ' · ' + escape(mode) + (state.running ? ' · working' : '');
+    $('mode').value = mode;
+  }
+
+  function escape(t) { return String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+  async function loadStatus() {
+    state.status = await json('/api/status');
+    $('roots').textContent = 'allowed roots: ' + state.status.workspaces.join(', ');
+    statusLine();
+  }
+
+  async function loadSessions() {
+    const { sessions } = await json('/api/sessions');
+    const list = $('sessionList');
+    list.innerHTML = '';
+    if (!sessions.length) list.innerHTML = '<p class="hint">No sessions on the server yet.</p>';
+    for (const s of sessions.slice().reverse()) {
+      const b = document.createElement('button');
+      b.className = 'session';
+      b.innerHTML = '<span>' + escape(s.workspace.split('/').pop() || s.workspace) + '<br><small>' + escape(s.id) + '</small></span>' +
+                    '<small>' + escape(s.mode) + (s.running ? ' · working' : '') + ' · ' + s.turns + ' turn' + (s.turns === 1 ? '' : 's') + '</small>';
+      b.onclick = () => openSession(s.id);
+      list.appendChild(b);
+    }
+    show('sessionsScreen');
+  }
+
+  // Rendering: every event type becomes one entry; consecutive text deltas share one.
+  let lastText = null;
+  function addEntry(cls, text) {
+    const div = document.createElement('div');
+    div.className = 'entry ' + cls;
+    div.textContent = text;
+    $('entries').appendChild(div);
+    lastText = null;
+    scrollDown();
+    return div;
+  }
+  function addTool(summary, body, ok) {
+    const d = document.createElement('details');
+    d.className = 'entry tool' + (ok === false ? ' bad' : '');
+    const s = document.createElement('summary');
+    s.textContent = summary;
+    d.appendChild(s);
+    if (body) { const p = document.createElement('pre'); p.textContent = body; d.appendChild(p); }
+    $('entries').appendChild(d);
+    lastText = null;
+    scrollDown();
+  }
+  function appendText(text, thinking) {
+    if (!lastText || lastText.thinking !== thinking) {
+      lastText = { el: addEntry(thinking ? 'assistant thinking' : 'assistant', ''), thinking };
+    }
+    lastText.el.textContent += text;
+    scrollDown();
+  }
+  function scrollDown() {
+    const m = document.querySelector('main');
+    if (m.scrollHeight - m.scrollTop - m.clientHeight < 200) m.scrollTop = m.scrollHeight;
+  }
+
+  function handle(e) {
+    if (typeof e.seq === 'number') state.seq = e.seq + 1;
+    switch (e.type) {
+      case 'user': addEntry('user', e.text); break;
+      case 'text': appendText(e.text, e.thinking); break;
+      case 'tool_call': addTool(e.summary, '', true); break;
+      case 'tool_result': {
+        const last = $('entries').lastElementChild;
+        if (last && last.tagName === 'DETAILS' && !last.querySelector('pre')) {
+          const p = document.createElement('pre'); p.textContent = e.text; last.appendChild(p);
+          if (!e.ok) last.classList.add('bad');
+        } else addTool(e.ok ? 'result' : 'failed', e.text, e.ok);
+        break;
+      }
+      case 'notice': addEntry('notice', e.text); break;
+      case 'error': addEntry('error', e.text); break;
+      case 'approval': showApproval(e); break;
+      case 'approval_answered': hideApproval(); addEntry('notice', 'approval: ' + e.choice); break;
+      case 'mode': if (state.session) state.session.mode = e.mode; statusLine(); break;
+      case 'done':
+        state.running = false;
+        $('stop').hidden = true;
+        $('usage').textContent = e.usage.calls ? 'tokens: ' + e.usage.input + ' in, ' + e.usage.output + ' out over ' + e.usage.calls + ' calls' +
+          (e.usage.context ? ' (context ' + e.usage.last_input + '/' + e.usage.context + ')' : '') : '';
+        if (e.interrupted) addEntry('notice', 'interrupted');
+        statusLine();
+        break;
+    }
+  }
+
+  // Server-sent events over fetch: works in Safari and Chrome, and lets us send the bearer header.
+  async function readStream(res) {
+    state.reading = true;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let cut;
+        while ((cut = buffer.indexOf('\n\n')) >= 0) {
+          const block = buffer.slice(0, cut);
+          buffer = buffer.slice(cut + 2);
+          for (const line of block.split('\n')) {
+            if (line.startsWith('data: ')) { try { handle(JSON.parse(line.slice(6))); } catch (err) { console.error(err); } }
+          }
+        }
+      }
+    } finally {
+      state.reading = false;
+    }
+    // The connection ended while a turn still runs (screen lock, network blip): pick up where we were.
+    if (state.running && state.session) setTimeout(attach, 1000);
+  }
+
+  async function attach() {
+    if (state.reading || !state.session) return;
+    try {
+      const res = await api('/api/sessions/' + state.session.id + '/events?after=' + state.seq);
+      if (res.ok) await readStream(res);
+    } catch (e) { console.error(e); }
+  }
+
+  async function openSession(id) {
+    const s = await json('/api/sessions/' + id);
+    state.session = s;
+    state.seq = 0;
+    state.running = s.running;
+    $('entries').innerHTML = '';
+    $('usage').textContent = '';
+    lastText = null;
+    hideApproval();
+    for (const e of s.entries) handle(e);
+    state.seq = s.seq;
+    if (s.usage && s.usage.calls) handle({ type: 'done', usage: s.usage });
+    state.running = s.running;
+    $('stop').hidden = !s.running;
+    if (s.pending_approval) showApproval(s.pending_approval);
+    show('chatScreen');
+    statusLine();
+    document.querySelector('main').scrollTop = 1e9;
+    if (s.running) attach();
+  }
+
+  async function send() {
+    const text = $('input').value.trim();
+    if (!text || !state.session) return;
+    $('input').value = '';
+    state.running = true;
+    $('stop').hidden = false;
+    statusLine();
+    try {
+      const res = await api('/api/sessions/' + state.session.id + '/messages', { method: 'POST', body: { text } });
+      if (!res.ok) { const b = await res.json().catch(() => ({})); addEntry('error', b.error || ('HTTP ' + res.status)); state.running = false; return; }
+      await readStream(res);
+    } catch (e) { addEntry('error', String(e.message || e)); }
+  }
+
+  function showApproval(a) {
+    state.approval = a;
+    $('approvalSummary').textContent = a.summary + (a.origin === 'remote' ? '  (remote request)' : '');
+    $('approvalReason').textContent = a.reason;
+    $('approvalPreview').hidden = !a.preview;
+    $('approvalPreview').textContent = a.preview || '';
+    $('alwaysBtn').textContent = 'Always: ' + (a.always_covers || 'this');
+    $('feedback').value = '';
+    $('approval').hidden = false;
+    scrollDown();
+    if (navigator.vibrate) navigator.vibrate(80);
+  }
+  function hideApproval() { state.approval = null; $('approval').hidden = true; }
+
+  async function answer(choice) {
+    const a = state.approval;
+    if (!a) return;
+    const body = { choice: choice === 'no-reason' ? 'no' : choice };
+    if (choice === 'no-reason') body.feedback = $('feedback').value.trim();
+    if (choice === 'trip' && !confirm('Trip the harness? Every action stops until maic unlock at the workstation.')) return;
+    try {
+      await json('/api/sessions/' + state.session.id + '/approvals/' + a.id, { method: 'POST', body });
+      hideApproval();
+    } catch (e) { addEntry('error', String(e.message || e)); }
+  }
+
+  $('tokenSave').onclick = async () => {
+    state.token = $('tokenInput').value.trim();
+    try { localStorage.setItem('maic.token', state.token); } catch (e) {}
+    try { await loadStatus(); await loadSessions(); } catch (e) {}
+  };
+  $('tokenInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('tokenSave').onclick(); });
+  $('sessionsBtn').onclick = () => { loadStatus().catch(() => {}); loadSessions().catch((e) => $('sessionList').textContent = e.message); };
+  $('newSession').onclick = async () => {
+    const body = { mode: $('mode').value };
+    const ws = $('newWorkspace').value.trim();
+    if (ws) body.workspace = ws;
+    try { const s = await json('/api/sessions', { method: 'POST', body }); await openSession(s.id); }
+    catch (e) { alert(e.message); }
+  };
+  $('mode').onchange = async () => {
+    if (!state.session) return;
+    try { state.session = await json('/api/sessions/' + state.session.id + '/mode', { method: 'POST', body: { mode: $('mode').value } }); statusLine(); }
+    catch (e) { alert(e.message); }
+  };
+  $('send').onclick = send;
+  $('input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); } });
+  $('stop').onclick = () => state.session && json('/api/sessions/' + state.session.id + '/interrupt', { method: 'POST', body: {} }).catch(() => {});
+  for (const b of document.querySelectorAll('#approval button')) b.onclick = () => answer(b.dataset.choice);
+  $('tripBtn').onclick = async () => {
+    const reason = prompt('Trip the harness. Reason?', 'tripped from the phone');
+    if (reason === null) return;
+    try { await json('/api/trip', { method: 'POST', body: { reason } }); await loadStatus(); alert('Tripped. Unlock at the workstation with maic unlock.'); }
+    catch (e) { alert(e.message); }
+  };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadStatus().catch(() => {}); if (state.running) attach(); } });
+  setInterval(() => { if (!document.hidden && !state.reading) loadStatus().catch(() => {}); }, 30000);
+
+  (async () => {
+    if (!state.token) return tokenScreen('');
+    try { await loadStatus(); await loadSessions(); } catch (e) { if (!$('tokenScreen').classList.contains('on')) $('status').textContent = e.message; }
+  })();
+})();
+</script>
+</body>
+</html>

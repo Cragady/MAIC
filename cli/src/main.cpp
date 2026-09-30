@@ -10,6 +10,7 @@
 #include "maic/tripwire.hpp"
 #include "maic/lua.hpp"
 #include "maic/vendor.hpp"
+#include "server.hpp"
 #include "tui.hpp"
 
 #include <nlohmann/json.hpp>
@@ -62,6 +63,9 @@ void usage(std::ostream& out = std::cerr) {
                  "  settings init [--json]|path  write the global settings file (Lua; --json for JSON), or show where it goes\n"
                  "  init                       scaffold this project: MAIC.md and .maic/settings.lua (transcripts then\n"
                  "                             go under sessions/projects/); :init in a session also drafts the MAIC.md\n"
+                 "  server start [--listen ADDR:PORT] [--model M] [--mode MODE]   the remote-access server and its web client\n"
+                 "  server token new|list|revoke [NAME]   per-device bearer tokens for it\n"
+                 "  server status              its configuration, and whether it is up (maic help server)\n"
                  "  trip [reason]              trip the harness lock now (blocks all actions until unlocked)\n"
                  "  unlock                     reset the harness lock (asks for your sudo password)\n"
                  "\n"
@@ -357,6 +361,12 @@ int main(int argc, char** argv) {
             return std::system("sudo -k && sudo /usr/local/sbin/maic-lock reset") == 0 ? 0 : 1;
         }
         if (cmd == "settings") return cmd_settings(cargs);
+        if (cmd == "server") {
+            // --model and --mode were taken by the agent options above; the server wants them too.
+            if (tui.model) cargs.insert(cargs.end(), {"--model", *tui.model});
+            if (tui.mode) cargs.insert(cargs.end(), {"--mode", *tui.mode});
+            return maic::server::run_server_command(cargs);
+        }
         if (cmd == "doctor") return maic::run_doctor();
         if (cmd == "lua") {
             maic::Lua lua(std::filesystem::current_path());

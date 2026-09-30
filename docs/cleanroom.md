@@ -42,9 +42,9 @@ Where an outside approach and MAIC's rules cannot both hold, MAIC's rules win an
 | Component | License | Used for |
 | :--- | :--- | :--- |
 | FTXUI 5 | MIT | terminal UI |
-| cpp-httplib 0.15 | MIT | HTTP client (providers), test servers |
+| cpp-httplib 0.15 | MIT | HTTP client (providers), the server, test servers |
 | nlohmann-json 3.11 | MIT | JSON |
-| OpenSSL 3 (through vcpkg) | Apache-2.0 | HTTPS to remote providers |
+| OpenSSL 3 (through vcpkg) | Apache-2.0 | HTTPS to remote providers; the server's TLS, self-signed certificate, token hashing and random tokens |
 | bubblewrap (system package, called as a program) | LGPL-2.0+ | the command sandbox; not linked, only executed |
 | glibc regex (`regcomp`) | LGPL, system library | `search_files` |
 

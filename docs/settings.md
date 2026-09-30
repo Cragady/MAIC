@@ -57,6 +57,7 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 | `title_model` | A model that names the session after its first turn, for `maic sessions` (default off). A remote model is never used for a local session. |
 | `timestamps` | Show a time beside each conversation entry (default `false`; `:set timestamps on`). |
 | `leader` | The vim leader key for normal and visual modes: `"space"` (default) or a single character. `<leader>y` yanks to the system clipboard, `<leader>p` pastes from it. |
+| `server` | `maic server`: `listen` (default `127.0.0.1:7373`; any other address turns TLS on), `workspaces` (directories a remote session may open; default `~/dev2`, else the current directory), `cert` and `key` (a PEM pair; empty makes a self-signed one under `~/.local/state/maic/server/`). See [remote.md](remote.md). |
 | `sessions_home` | Where new transcripts go. `auto` (default): under `sessions/projects/<encoded workspace>/` when the workspace has a `MAIC.md` (or one is in effect from a parent directory), else `sessions/general/`. Or force it: `general`, `project`, or any name (`sessions/<name>/`). A project can set this in its `.maic/settings.json`; `maic sessions rehome` moves existing transcripts. |
 
 ## Providers
