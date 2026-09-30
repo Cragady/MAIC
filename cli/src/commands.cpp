@@ -89,6 +89,17 @@ const std::vector<Topic>& topics() {
         {"settings", {"config", "styles", "style", "settings.lua", "settings.json"}, "the settings file",
          "*settings*\n"
          "Lua files returning a table (JSON works too). Layered: ~/.config/maic/settings.lua, then `.maic/settings.lua` and `.maic/settings.local.lua` in each directory from under $HOME down to the workspace (nearest wins; settings.lua is for the project, settings.local.lua is personal). A file is code: `os.getenv`, `maic.hostname`, `maic.home` for per-machine choices. Keys: model, mode, think, markdown, mouse, record, compact_at, sessions_home (auto/general/project/name), models_dir, leader, instruction_files, providers, style. `maic settings init` writes the global one, `:init` scaffolds a project's, `:settings` shows what is in effect. See docs/settings.md."},
+        {"tools", {"tool", "lua-tools", "glob", "question", "todo-tool", "user-tools"}, "the model's tools, and writing your own in Lua",
+         "*tools*\n"
+         "Built in: `read_file`, `list_dir`, `glob` (files by name pattern), `search_files` (grep -E), `write_file`, `edit_file`, `run_shell` (bubblewrap sandbox), "
+         "`question` (asks you something, with options; a number picks, or type an answer, Esc gives none) and `todo` (the model's plan; `:todo` shows it, the status strip counts it). "
+         "Every one goes through the harness. `:tools` lists them with any tools of your own.\n\n"
+         "**Your own tools** are Lua files: `.maic/tools/<name>.lua` in the workspace or `~/.config/maic/tools/<name>.lua`, loaded when a session starts. A file returns a table: "
+         "`name`, `description`, `parameters` (a JSON schema as a Lua table) and `run = function(args) ... end` returning a string or a table. The model calls it like any other tool. "
+         "Each call runs in its own LuaJIT state with only the base, string, table, math and bit libraries: no io, os, require or load. Inside, `maic.read(path)`, `maic.write(path, text)`, "
+         "`maic.list(path)`, `maic.search(pattern, path)` and `maic.shell(cmd, opts)` each go through the harness exactly as the built-in tool would (policy, your approval, the sandbox); a denial "
+         "is a Lua error carrying the reason, so the tool fails and the model sees why. `maic.json_encode` / `maic.json_decode` convert. A tool is stopped after 60 s or on Ctrl-C, and its output is capped at 64 KB. "
+         "A file that fails to load is skipped with a notice. `maic tools` lists them outside a session. Format and a complete example: docs/tools.md and tools/examples/word-count.lua."},
         {"instructions", {"maic.md", "agents.md", "claude.md"}, "standing instructions the model always sees",
          "*instructions*\n"
          "~/.config/maic/MAIC.md, then every MAIC.md or AGENTS.md from under $HOME down to the workspace, re-read at the start of every turn (32 KB each). `:instructions` shows what is in effect."},
@@ -144,7 +155,11 @@ const std::vector<CommandInfo>& commands() {
         {"set", {}, "markdown|mouse on|off", "rendering and mouse toggles",
          "*:set*\n`:set markdown off` shows the conversation as raw text; `on` renders it. `:set mouse off` stops the scroll wheel and gives the terminal its normal mouse selection back. `:set tooldetails on` shows tool output in full instead of an 8-line preview (in the conversation window `za` folds or unfolds one result, `zR` unfolds all, `zM` folds all). markdown and mouse persist through settings.lua."},
         {"status", {}, "", "harness, services, model, session",
-         "*:status*\nThe harness state, every service with where it runs (host process, pid, url) and a quick action, the model and whether it is remote, this session's file, the mode, and queued messages."},
+         "*:status*\nThe harness state, every service with where it runs (host process, pid, url) and a quick action, the model and whether it is remote, this session's file, the mode, queued messages, the user-defined tools and the model's todo list."},
+        {"todo", {"plan"}, "", "the model's plan (the todo tool)",
+         "*:todo*\nShows the list the model keeps with its `todo` tool during multi-step work: `[x]` done, `[ ]` not yet. The status strip shows `todo n/m done` while there is one; `:clear` drops it. See `:h tools`."},
+        {"tools", {}, "", "the model's tools, built in and yours",
+         "*:tools* *maic tools*\nLists the built-in tools and every user-defined Lua tool with its file and description, plus files that were skipped and why. Outside a session `maic tools` does the same. Writing one: `:h tools` (the topic) and docs/tools.md."},
         {"up", {}, "SERVICE", "start a service", "*:up*\n`:up ollama` starts a service MAIC manages (ollama, comfyui). Refused while the harness is tripped."},
         {"down", {}, "SERVICE", "stop a service MAIC started", "*:down*\n`:down ollama` stops it. MAIC only stops what it started."},
         {"init", {}, "", "scaffold MAIC.md and .maic/settings.lua, then draft the MAIC.md",

@@ -45,6 +45,36 @@ public:
         if (json_) emit({{"type", "notice"}, {"text", text}});
         else fprintf(stderr, "※ %s\n", text.c_str());
     }
+    std::string question(const std::string& text, const std::vector<std::string>& options) override {
+        if (json_) emit({{"type", "question"}, {"text", text}, {"options", options}});
+        if (!isatty(STDIN_FILENO)) {
+            if (!json_) fprintf(stderr, "? %s\n  (no terminal to answer on)\n", text.c_str());
+            return "";
+        }
+        fprintf(stderr, "\n? %s\n", text.c_str());
+        for (size_t i = 0; i < options.size(); ++i) fprintf(stderr, "  [%zu] %s\n", i + 1, options[i].c_str());
+        fprintf(stderr, options.empty() ? "answer (empty = none): " : "answer (a number, or your own words; empty = none): ");
+        fflush(stderr);
+        std::string line;
+        if (!std::getline(std::cin, line)) return "";
+        if (!options.empty() && !line.empty() && line.find_first_not_of("0123456789") == std::string::npos) {
+            size_t n = std::stoul(line);
+            if (n >= 1 && n <= options.size()) return options[n - 1];
+        }
+        return line;
+    }
+    void on_todo(const std::vector<TodoItem>& items) override {
+        if (json_) {
+            nlohmann::json list = nlohmann::json::array();
+            for (const auto& t : items) list.push_back({{"text", t.text}, {"done", t.done}});
+            emit({{"type", "todo"}, {"items", list}});
+            return;
+        }
+        size_t done = 0;
+        for (const auto& t : items) done += t.done;
+        fprintf(stderr, "※ todo %zu/%zu done\n", done, items.size());
+        for (const auto& t : items) fprintf(stderr, "  %s %s\n", t.done ? "[x]" : "[ ]", t.text.c_str());
+    }
     ApprovalAnswer ask(const ApprovalRequest& r) override {
         if (!isatty(STDIN_FILENO)) {
             if (json_) emit({{"type", "denied"}, {"summary", r.summary}, {"reason", "no terminal to ask on"}});
@@ -126,6 +156,7 @@ int run_headless(const HeadlessOptions& options) {
                 options.append ? ", appending to it" : options.record ? ", writing to a new file that points at it" : ", temporary transcript");
     }
     if (agent.remote()) fprintf(stderr, "※ REMOTE model %s: prompts and tool output leave this machine\n", agent.model.c_str());
+    for (const auto& n : agent.tool_notices()) fprintf(stderr, "※ %s\n", n.c_str());
     for (const auto& c : options.context) {
         try {
             fprintf(stderr, "※ %s\n", agent.add_context_file(c).c_str());
