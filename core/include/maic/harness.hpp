@@ -10,10 +10,11 @@ namespace maic {
 
 // How much the agent may do without asking. Cycled with Shift-Tab in the CLI.
 enum class Mode {
-    Manual,  // ask before any write or command
-    Edit,    // file edits inside the workspace are automatic; commands ask
-    Auto,    // edits and sandboxed commands inside the workspace are automatic
-    Plan,    // read-only
+    Manual,    // ask before any write or command
+    AutoRead,  // reads anywhere and read-only commands are automatic; writes and other commands ask
+    Edit,      // file edits inside the workspace are automatic; commands ask
+    Auto,      // edits and sandboxed commands inside the workspace are automatic
+    Plan,      // read-only: reads and read-only commands only
 };
 
 std::string_view mode_name(Mode mode);
@@ -39,7 +40,12 @@ enum class Verdict {
 struct Decision {
     Verdict verdict;
     std::string reason;
+    bool read_only_sandbox = false;  // run with the workspace mounted read-only too
 };
+
+// Commands that only look at things (ls, grep, git log, ...), with no redirection or substitution.
+// Allowed ones still run in a fully read-only sandbox, so a wrong guess can't change anything.
+bool is_read_only_command(const std::string& command);
 
 class Harness {
 public:

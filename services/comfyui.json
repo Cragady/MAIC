@@ -2,11 +2,36 @@
   "name": "comfyui",
   "description": "ComfyUI image generation, local only (see docs/comfyui-setup.md)",
   "command": [
-    "${HOME}/dev2/tools-and-things/ComfyUI/.venv/bin/python", "main.py",
-    "--disable-api-nodes", "--disable-auto-launch", "--listen", "127.0.0.1", "--port", "8188"
+    "${HOME}/dev2/tools-and-things/ComfyUI/.venv/bin/python",
+    "main.py",
+    "--disable-api-nodes",
+    "--disable-auto-launch",
+    "--listen",
+    "127.0.0.1",
+    "--port",
+    "8188"
   ],
   "cwd": "${HOME}/dev2/tools-and-things/ComfyUI",
   "port": 8188,
-  "requires": ["/run/media/cragady/Extra Storage/LinBox-Overflow/llm-models"],
-  "ready_timeout": 120
+  "requires": [
+    "/run/media/cragady/Extra Storage/LinBox-Overflow/llm-models"
+  ],
+  "ready_timeout": 120,
+  "artifacts": [
+    {
+      "name": "outputs",
+      "description": "generated images/videos (embed prompts unless --disable-metadata) and saved story replies",
+      "path": "${HOME}/dev2/tools-and-things/ComfyUI/output"
+    },
+    {
+      "name": "uploads",
+      "description": "images loaded into workflows",
+      "path": "${HOME}/dev2/tools-and-things/ComfyUI/input"
+    },
+    {
+      "name": "temp",
+      "description": "previews and intermediates (also cleared by ComfyUI on start)",
+      "path": "${HOME}/dev2/tools-and-things/ComfyUI/temp"
+    }
+  ]
 }

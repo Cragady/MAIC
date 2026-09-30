@@ -23,8 +23,8 @@ struct ToolResult {
     std::string text;
 };
 
-// Runs an already-approved call.
+// Runs an already-approved call. `read_only_sandbox` mounts the workspace read-only for run_shell.
 ToolResult run_tool(const Harness& harness, const std::string& name, const nlohmann::json& args,
-                    const std::atomic<bool>& cancel);
+                    bool read_only_sandbox, const std::atomic<bool>& cancel);
 
 }  // namespace maic

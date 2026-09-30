@@ -21,14 +21,14 @@ namespace {
 constexpr size_t kHeadBytes = 24 * 1024;
 constexpr size_t kTailBytes = 8 * 1024;
 
-std::vector<std::string> bwrap_args(const std::string& command, const fs::path& workspace) {
+std::vector<std::string> bwrap_args(const std::string& command, const fs::path& workspace, bool read_only) {
     std::vector<std::string> args = {
         "bwrap",
         "--ro-bind", "/", "/",
         "--dev", "/dev",
         "--proc", "/proc",
         "--tmpfs", "/tmp",
-        "--bind", workspace.string(), workspace.string(),
+        read_only ? "--ro-bind" : "--bind", workspace.string(), workspace.string(),
     };
     // Hide secrets behind empty directories. /var/lib/maic stays visible read-only so tools can see the lock.
     fs::path home = std::getenv("HOME");
@@ -58,9 +58,9 @@ std::string trim_output(std::string out) {
 
 }  // namespace
 
-SandboxResult run_sandboxed(const std::string& command, const fs::path& workspace, std::chrono::seconds timeout,
-                            const std::atomic<bool>& cancel) {
-    std::vector<std::string> args = bwrap_args(command, workspace);
+SandboxResult run_sandboxed(const std::string& command, const fs::path& workspace, bool read_only,
+                            std::chrono::seconds timeout, const std::atomic<bool>& cancel) {
+    std::vector<std::string> args = bwrap_args(command, workspace, read_only);
     std::vector<char*> argv;
     for (auto& a : args) {
         argv.push_back(a.data());

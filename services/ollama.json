@@ -1,7 +1,10 @@
 {
   "name": "ollama",
   "description": "Local-only Ollama LLM server (see docs/ollama-setup.md)",
-  "command": ["${HOME}/bin/ollama", "serve"],
+  "command": [
+    "${HOME}/bin/ollama",
+    "serve"
+  ],
   "env": {
     "OLLAMA_MODELS": "/run/media/cragady/Extra Storage/LinBox-Overflow/llm-models/ollama",
     "OLLAMA_HOST": "127.0.0.1:11434",
@@ -10,6 +13,15 @@
     "OLLAMA_CLOUD_BASE_URL": "http://127.0.0.1:9"
   },
   "port": 11434,
-  "requires": ["/run/media/cragady/Extra Storage/LinBox-Overflow/llm-models/ollama"],
-  "ready_timeout": 30
+  "requires": [
+    "/run/media/cragady/Extra Storage/LinBox-Overflow/llm-models/ollama"
+  ],
+  "ready_timeout": 30,
+  "artifacts": [
+    {
+      "name": "cli-history",
+      "description": "prompts typed into `ollama run` (readline history)",
+      "path": "${HOME}/.ollama/history"
+    }
+  ]
 }

@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <regex>
+#include <set>
 #include <sstream>
 
 namespace maic {
@@ -61,11 +62,69 @@ bool under_any(const fs::path& p, const std::vector<fs::path>& roots) {
     return false;
 }
 
+std::vector<std::string> split_words(const std::string& segment) {
+    std::istringstream in(segment);
+    std::vector<std::string> words;
+    for (std::string w; in >> w;) words.push_back(w);
+    return words;
+}
+
+bool read_only_segment(const std::string& segment) {
+    static const std::set<std::string> programs = {
+        "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag", "find", "fd", "tree", "wc", "file",
+        "stat", "du", "df", "pwd", "echo", "printf", "which", "type", "whoami", "id", "uname", "date", "sort",
+        "uniq", "cut", "tr", "sed", "jq", "diff", "cmp", "md5sum", "sha1sum", "sha256sum", "basename", "dirname",
+        "realpath", "readlink", "nl", "column", "xxd", "hexdump", "strings", "true", "false", "test", "git",
+    };
+    static const std::set<std::string> git_read = {"status", "log", "diff", "show", "blame", "ls-files", "rev-parse",
+                                                   "describe", "shortlog", "grep", "remote", "branch", "tag"};
+    auto words = split_words(segment);
+    if (words.empty() || !programs.count(words[0])) return false;
+    for (const auto& w : words) {
+        if (words[0] == "find" && (w == "-delete" || w.rfind("-exec", 0) == 0 || w.rfind("-ok", 0) == 0 || w.rfind("-fprint", 0) == 0 || w == "-fls")) return false;
+        if (words[0] == "sed" && (w == "-i" || w.rfind("-i", 0) == 0 || w == "--in-place")) return false;
+    }
+    if (words[0] == "git") {
+        if (words.size() < 2 || !git_read.count(words[1])) return false;
+        // branch/tag/remote only when listing
+        if ((words[1] == "branch" || words[1] == "tag" || words[1] == "remote") && words.size() > 2) {
+            for (size_t i = 2; i < words.size(); ++i) {
+                if (words[i] != "-a" && words[i] != "-v" && words[i] != "-vv" && words[i] != "-r" && words[i] != "--list" && words[i] != "-l") return false;
+            }
+        }
+    }
+    return true;
+}
+
 }  // namespace
+
+bool is_read_only_command(const std::string& command) {
+    // No redirection, substitution, backgrounding or multi-line scripts.
+    for (const char* bad : {">", "<", "`", "$(", "\n", "\r"}) {
+        if (command.find(bad) != std::string::npos) return false;
+    }
+    std::string rest = command;
+    for (const char* sep : {"&&", "||"}) {
+        for (size_t p; (p = rest.find(sep)) != std::string::npos;) rest.replace(p, 2, ";");
+    }
+    if (rest.find('&') != std::string::npos) return false;
+    for (char& c : rest) {
+        if (c == '|') c = ';';
+    }
+    std::istringstream in(rest);
+    bool any = false;
+    for (std::string segment; std::getline(in, segment, ';');) {
+        if (segment.find_first_not_of(" \t") == std::string::npos) continue;
+        if (!read_only_segment(segment)) return false;
+        any = true;
+    }
+    return any;
+}
 
 std::string_view mode_name(Mode mode) {
     switch (mode) {
         case Mode::Manual: return "manual";
+        case Mode::AutoRead: return "auto-read";
         case Mode::Edit: return "edit";
         case Mode::Auto: return "auto";
         case Mode::Plan: return "plan";
@@ -74,7 +133,7 @@ std::string_view mode_name(Mode mode) {
 }
 
 std::optional<Mode> parse_mode(std::string_view name) {
-    for (Mode m : {Mode::Manual, Mode::Edit, Mode::Auto, Mode::Plan}) {
+    for (Mode m : {Mode::Manual, Mode::AutoRead, Mode::Edit, Mode::Auto, Mode::Plan}) {
         if (mode_name(m) == name) {
             return m;
         }
@@ -84,7 +143,8 @@ std::optional<Mode> parse_mode(std::string_view name) {
 
 Mode next_mode(Mode mode) {
     switch (mode) {
-        case Mode::Manual: return Mode::Edit;
+        case Mode::Manual: return Mode::AutoRead;
+        case Mode::AutoRead: return Mode::Edit;
         case Mode::Edit: return Mode::Auto;
         case Mode::Auto: return Mode::Plan;
         case Mode::Plan: return Mode::Manual;
@@ -157,13 +217,23 @@ Decision Harness::check(const Action& action, Mode mode, Origin origin) const {
 }
 
 Decision Harness::check_shell(const std::string& command, Mode mode) const {
+    // std::regex recurses per character; a huge command could overflow the stack while being vetted.
+    if (command.size() > 8 * 1024) {
+        return {Verdict::Deny, "command too long to vet (over 8 KB); write it to a script file instead"};
+    }
     for (const auto& p : trip_patterns()) {
         if (std::regex_search(command, p.re)) {
             return {Verdict::Trip, p.why};
         }
     }
+    bool read_only = is_read_only_command(command);
     switch (mode) {
-        case Mode::Plan: return {Verdict::Deny, "plan mode is read-only"};
+        case Mode::Plan:
+            if (read_only) return {Verdict::Allow, "read-only command", true};
+            return {Verdict::Deny, "plan mode only runs read-only commands"};
+        case Mode::AutoRead:
+            if (read_only) return {Verdict::Allow, "read-only command", true};
+            return {Verdict::Ask, "may change files or the system"};
         case Mode::Auto: return {Verdict::Allow, "auto mode (sandboxed)"};
         default: return {Verdict::Ask, "runs a command"};
     }
@@ -182,7 +252,7 @@ Decision Harness::check_write(const fs::path& p, Mode mode) const {
     if (!in_workspace(p)) {
         return {Verdict::Ask, "outside the workspace"};
     }
-    if (mode == Mode::Manual) {
+    if (mode == Mode::Manual || mode == Mode::AutoRead) {
         return {Verdict::Ask, "edits a file"};
     }
     return {Verdict::Allow, std::string(mode_name(mode)) + " mode"};
@@ -192,7 +262,7 @@ Decision Harness::check_read(const fs::path& p, Mode mode) const {
     if (is_secret(p)) {
         return {Verdict::Deny, "credentials and keys are never read"};
     }
-    if (in_workspace(p) || mode == Mode::Auto) {
+    if (in_workspace(p) || mode == Mode::Auto || mode == Mode::AutoRead) {
         return {Verdict::Allow, "read"};
     }
     return {Verdict::Ask, "reads outside the workspace"};

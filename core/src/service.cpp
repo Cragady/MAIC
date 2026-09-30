@@ -181,6 +181,14 @@ std::vector<ServiceDef> load_services(const fs::path& dir) {
                 def.requires_paths.emplace_back(expand_vars(p.get<std::string>()));
             }
             def.ready_timeout = std::chrono::seconds(j.value("ready_timeout", 30));
+            def.runtime = j.value("runtime", "host");
+            if (def.runtime != "host") {
+                throw std::runtime_error("runtime '" + def.runtime + "' is not implemented yet (only \"host\")");
+            }
+            for (const auto& a : j.value("artifacts", nlohmann::json::array())) {
+                def.artifacts.push_back({a.at("name").get<std::string>(), a.value("description", ""),
+                                         expand_vars(a.at("path").get<std::string>())});
+            }
             if (def.command.empty()) {
                 throw std::runtime_error("command is empty");
             }

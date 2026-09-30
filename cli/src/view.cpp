@@ -1,0 +1,450 @@
+#include "view.hpp"
+
+#include "editor.hpp"
+#include "maic/clipboard.hpp"
+#include "style.hpp"
+
+#include <algorithm>
+#include <cctype>
+
+namespace maic {
+
+using namespace ftxui;
+
+namespace {
+
+const char* prefix(Kind k) {
+    switch (k) {
+        case Kind::User: return "❯ ";
+        case Kind::Assistant: return "● ";
+        case Kind::Thinking: return "✻ ";
+        case Kind::Tool: return "▸ ";
+        case Kind::ToolOk:
+        case Kind::ToolErr: return "  ⎿ ";
+        case Kind::Notice: return "※ ";
+        case Kind::Error: return "✗ ";
+        case Kind::Shell: return "$ ";
+    }
+    return "";
+}
+
+const char* style_name(Kind k) {
+    switch (k) {
+        case Kind::User: return "user";
+        case Kind::Assistant: return "assistant";
+        case Kind::Thinking: return "thinking";
+        case Kind::Tool: return "tool";
+        case Kind::ToolOk: return "tool_ok";
+        case Kind::ToolErr: return "tool_err";
+        case Kind::Notice: return "notice";
+        case Kind::Error: return "error";
+        case Kind::Shell: return "shell";
+    }
+    return "assistant";
+}
+
+bool attached(Kind k) {
+    return k == Kind::ToolOk || k == Kind::ToolErr;
+}
+
+std::string lower(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+}  // namespace
+
+void View::append(Kind kind, std::string text) {
+    std::lock_guard lock(mu_);
+    entries_.push_back({kind, std::move(text)});
+    ++version_;
+}
+
+void View::append_to_last(Kind kind, std::string_view delta) {
+    std::lock_guard lock(mu_);
+    if (entries_.empty() || entries_.back().kind != kind) entries_.push_back({kind, ""});
+    entries_.back().text += delta;
+    ++version_;
+}
+
+void View::clear() {
+    std::lock_guard lock(mu_);
+    entries_.clear();
+    ++version_;
+    scroll_ = 0;
+    cur_line_ = cur_col_ = 0;
+    visual_ = VisualMode::None;
+    matches_.clear();
+}
+
+size_t View::size() const {
+    std::lock_guard lock(mu_);
+    return entries_.size();
+}
+
+void View::set_focused(bool on) {
+    focused_ = on;
+    visual_ = VisualMode::None;
+    pending_.clear();
+    if (on && !lines_.empty()) {
+        // Start on the last visible line.
+        int bottom = static_cast<int>(lines_.size()) - scroll_;
+        cur_line_ = static_cast<size_t>(std::max(0, bottom - 1));
+        cur_col_ = 0;
+    }
+}
+
+void View::layout(size_t width) {
+    std::vector<Entry> snapshot;
+    unsigned version;
+    {
+        std::lock_guard lock(mu_);
+        if (version_ == laid_out_version_ && width == laid_out_width_) return;
+        snapshot = entries_;
+        version = version_;
+    }
+    lines_.clear();
+    for (size_t e = 0; e < snapshot.size(); ++e) {
+        const auto& entry = snapshot[e];
+        if (e > 0 && !attached(entry.kind)) lines_.push_back({{}, Kind::Assistant, e, 0, 0, false});
+        size_t pre = utf8_len(prefix(entry.kind));
+        bool use_md = markdown_ && (entry.kind == Kind::Assistant || entry.kind == Kind::User);
+        // Tool output and shell output keep tabs; the renderer drops them, so expand.
+        auto source = use_md ? markdown_lines(entry.text) : plain_lines(entry.text);
+        size_t offset = 0;
+        bool first = true;
+        for (const auto& src : source) {
+            std::string raw = line_text(src);
+            StyledLine expanded;
+            for (const auto& sp : src) {
+                std::string t = sp.text;
+                for (size_t p; (p = t.find('\t')) != std::string::npos;) t.replace(p, 1, "    ");
+                expanded.push_back({t, sp.flags});
+            }
+            auto wrapped = wrap_line(expanded, width > pre ? width - pre : 8);
+            size_t line_off = offset;
+            for (size_t w = 0; w < wrapped.size(); ++w) {
+                // Byte range in the entry: walk the raw text by the columns this row shows (a tab shows as 4).
+                size_t shown = utf8_len(line_text(wrapped[w]));
+                size_t end = line_off;
+                size_t seen = 0;
+                while (end < line_off + raw.size() && seen < shown) {
+                    size_t n = utf8_next(entry.text, end);
+                    seen += raw[end - line_off] == '\t' ? 4 : 1;
+                    end = n;
+                }
+                lines_.push_back({wrapped[w], entry.kind, e, line_off, end, first});
+                first = false;
+                line_off = end;
+                if (line_off < offset + raw.size() && entry.text[line_off] == ' ') ++line_off;  // the dropped soft-break space
+            }
+            offset += raw.size() + 1;  // past the newline
+        }
+    }
+    laid_out_version_ = version;
+    laid_out_width_ = width;
+    if (!pattern_.empty()) find_matches();
+    if (cur_line_ >= lines_.size()) cur_line_ = lines_.empty() ? 0 : lines_.size() - 1;
+}
+
+std::string View::text_of(const Line& l) const {
+    std::lock_guard lock(mu_);
+    if (l.entry >= entries_.size()) return "";
+    const auto& t = entries_[l.entry].text;
+    return t.substr(std::min(l.begin, t.size()), l.end > l.begin ? l.end - l.begin : 0);
+}
+
+void View::scroll_by(int lines) {
+    scroll_ = std::max(0, scroll_ + lines);
+}
+
+void View::scroll_to_top() {
+    scroll_ = std::max(0, static_cast<int>(lines_.size()) - last_height_);
+}
+
+void View::scroll_to_bottom() {
+    scroll_ = 0;
+}
+
+void View::page(int direction) {
+    scroll_by(-direction * std::max(1, last_height_ - 2));
+}
+
+void View::half_page(int direction) {
+    scroll_by(-direction * std::max(1, last_height_ / 2));
+}
+
+void View::move_cursor_line(int delta) {
+    if (lines_.empty()) return;
+    long target = static_cast<long>(cur_line_) + delta;
+    cur_line_ = static_cast<size_t>(std::clamp<long>(target, 0, static_cast<long>(lines_.size()) - 1));
+    size_t w = line_width(lines_[cur_line_].spans);
+    if (cur_col_ >= w) cur_col_ = w ? w - 1 : 0;
+}
+
+void View::ensure_cursor_visible(int height) {
+    int total = static_cast<int>(lines_.size());
+    int bottom = total - scroll_;
+    int top = std::max(0, bottom - height);
+    int cur = static_cast<int>(cur_line_);
+    if (cur < top) scroll_ = total - (cur + height);
+    else if (cur >= bottom) scroll_ = total - cur - 1;
+    scroll_ = std::clamp(scroll_, 0, std::max(0, total - height));
+}
+
+void View::find_matches() {
+    matches_.clear();
+    if (pattern_.empty()) return;
+    bool fold = lower(pattern_) == pattern_;  // smartcase
+    std::string needle = fold ? lower(pattern_) : pattern_;
+    for (size_t i = 0; i < lines_.size(); ++i) {
+        std::string hay = line_text(lines_[i].spans);
+        if (fold) hay = lower(hay);
+        for (size_t p = hay.find(needle); p != std::string::npos; p = hay.find(needle, p + 1)) {
+            matches_.push_back({i, utf8_len(hay.substr(0, p))});
+        }
+    }
+}
+
+void View::search(const std::string& pattern) {
+    pattern_ = pattern;
+    find_matches();
+}
+
+std::string View::search_next(int direction) {
+    if (matches_.empty()) return pattern_.empty() ? "no search pattern" : "no matches for /" + pattern_;
+    // First match after (or before) the cursor.
+    size_t best = matches_.size();
+    for (size_t i = 0; i < matches_.size(); ++i) {
+        auto [l, c] = matches_[i];
+        bool after = l > cur_line_ || (l == cur_line_ && c > cur_col_);
+        bool before = l < cur_line_ || (l == cur_line_ && c < cur_col_);
+        if (direction > 0 && after) {
+            best = i;
+            break;
+        }
+        if (direction < 0 && before) best = i;
+    }
+    if (best == matches_.size()) best = direction > 0 ? 0 : matches_.size() - 1;  // wrap around
+    cur_line_ = matches_[best].first;
+    cur_col_ = matches_[best].second;
+    return "match " + std::to_string(best + 1) + " of " + std::to_string(matches_.size());
+}
+
+std::string View::yank_selection() {
+    if (lines_.empty()) return "";
+    size_t a = std::min(cur_line_, anchor_line_), b = std::max(cur_line_, anchor_line_);
+    size_t ca = cur_line_ < anchor_line_ || (cur_line_ == anchor_line_ && cur_col_ <= anchor_col_) ? cur_col_ : anchor_col_;
+    size_t cb = ca == cur_col_ && a == cur_line_ && !(cur_line_ == anchor_line_ && cur_col_ == anchor_col_) ? anchor_col_ : cur_col_;
+    if (a == b) ca = std::min(cur_col_, anchor_col_), cb = std::max(cur_col_, anchor_col_);
+    std::string out;
+    size_t last_entry = ~size_t(0);
+    for (size_t i = a; i <= b; ++i) {
+        const Line& l = lines_[i];
+        if (l.entry != last_entry && last_entry != ~size_t(0)) out += "\n";
+        last_entry = l.entry;
+        std::string t = text_of(l);
+        if (visual_ == VisualMode::Char) {
+            size_t from = i == a ? utf8_offset(t, ca) : 0;
+            size_t to = i == b ? utf8_offset(t, cb + 1) : t.size();
+            t = t.substr(std::min(from, t.size()), to > from ? to - from : 0);
+        }
+        // Consecutive wrapped rows of one source line rejoin with the space the wrap dropped.
+        if (i > a && lines_[i - 1].entry == l.entry) {
+            bool same_source = lines_[i - 1].end <= l.begin && l.begin - lines_[i - 1].end <= 1 && !l.first;
+            out += same_source && lines_[i - 1].end != l.begin ? " " : same_source ? "" : "\n";
+        }
+        out += t;
+    }
+    return out;
+}
+
+std::string View::handle(const Event& e, int height) {
+    const std::string& k = e.input();
+    last_height_ = height;
+    if (e == Event::Escape) {
+        if (visual_ != VisualMode::None) return visual_ = VisualMode::None, "";
+        pending_.clear();
+        count_ = 0;
+        return "";
+    }
+    if (k.size() == 1 && std::isdigit(static_cast<unsigned char>(k[0])) && (k != "0" || count_ > 0)) {
+        count_ = std::min(count_ * 10 + (k[0] - '0'), 9999);
+        return "";
+    }
+    int n = std::max(count_, 1);
+    count_ = 0;
+    if (!pending_.empty()) {
+        std::string op = pending_;
+        pending_.clear();
+        if (op == "g" && k == "g") {
+            cur_line_ = 0;
+            cur_col_ = 0;
+        } else if (op == "y" && k == "y") {
+            anchor_line_ = cur_line_;
+            visual_ = VisualMode::Line;
+            std::string text = yank_selection();
+            visual_ = VisualMode::None;
+            *register_ = text;
+            return "yanked 1 line (" + copy_to_clipboard(text) + ")";
+        } else if (op == "\"" && (k == "+" || k == "*")) {
+            pending_ = "\"+";
+        } else if (op == "\"+" && k == "y" && visual_ != VisualMode::None) {
+            std::string text = yank_selection();
+            visual_ = VisualMode::None;
+            *register_ = text;
+            return "yanked (" + copy_to_clipboard(text) + ")";
+        }
+        ensure_cursor_visible(height);
+        return "";
+    }
+    if (k == "j" || e == Event::ArrowDown) move_cursor_line(n);
+    else if (k == "k" || e == Event::ArrowUp) move_cursor_line(-n);
+    else if (k == "\x04") move_cursor_line(height / 2);
+    else if (k == "\x15") move_cursor_line(-height / 2);
+    else if (k == "\x06" || e == Event::PageDown) move_cursor_line(height - 2);
+    else if (k == "\x02" || e == Event::PageUp) move_cursor_line(-(height - 2));
+    else if (k == "\x05") scroll_by(-n), (void)0;
+    else if (k == "\x19") scroll_by(n), (void)0;
+    else if (k == "G") move_cursor_line(static_cast<int>(lines_.size()));
+    else if (k == "y" && visual_ != VisualMode::None) {
+        std::string text = yank_selection();
+        visual_ = VisualMode::None;
+        *register_ = text;
+        size_t nl = std::count(text.begin(), text.end(), '\n') + 1;
+        ensure_cursor_visible(height);
+        return "yanked " + std::to_string(nl) + (nl == 1 ? " line (" : " lines (") + copy_to_clipboard(text) + ")";
+    } else if (k == "g" || k == "y" || k == "\"") pending_ = k;
+    else if (k == "h" || e == Event::ArrowLeft) cur_col_ = cur_col_ >= static_cast<size_t>(n) ? cur_col_ - n : 0;
+    else if (k == "l" || e == Event::ArrowRight) {
+        size_t w = lines_.empty() ? 0 : line_width(lines_[cur_line_].spans);
+        cur_col_ = std::min(cur_col_ + n, w ? w - 1 : 0);
+    } else if (k == "0" || k == "^") cur_col_ = 0;
+    else if (k == "$") cur_col_ = lines_.empty() ? 0 : std::max<size_t>(1, line_width(lines_[cur_line_].spans)) - 1;
+    else if (k == "w" || k == "b" || k == "e") {
+        if (!lines_.empty()) {
+            std::string t = line_text(lines_[cur_line_].spans);
+            size_t off = utf8_offset(t, cur_col_);
+            if (k == "w") {
+                int cls = off < t.size() ? char_class(t[off]) : 0;
+                while (off < t.size() && cls != 0 && char_class(t[off]) == cls) off = utf8_next(t, off);
+                while (off < t.size() && char_class(t[off]) == 0) off = utf8_next(t, off);
+                if (off >= t.size() && cur_line_ + 1 < lines_.size()) {
+                    move_cursor_line(1);
+                    cur_col_ = 0;
+                    ensure_cursor_visible(height);
+                    return "";
+                }
+            } else if (k == "b") {
+                if (off == 0 && cur_line_ > 0) {
+                    move_cursor_line(-1);
+                    cur_col_ = std::max<size_t>(1, line_width(lines_[cur_line_].spans)) - 1;
+                    ensure_cursor_visible(height);
+                    return "";
+                }
+                while (off > 0 && char_class(t[utf8_prev(t, off)]) == 0) off = utf8_prev(t, off);
+                if (off > 0) {
+                    int cls = char_class(t[utf8_prev(t, off)]);
+                    while (off > 0 && char_class(t[utf8_prev(t, off)]) == cls) off = utf8_prev(t, off);
+                }
+            } else {
+                off = utf8_next(t, off);
+                while (off < t.size() && char_class(t[off]) == 0) off = utf8_next(t, off);
+                if (off < t.size()) {
+                    int cls = char_class(t[off]);
+                    while (utf8_next(t, off) < t.size() && char_class(t[utf8_next(t, off)]) == cls) off = utf8_next(t, off);
+                } else {
+                    off = t.empty() ? 0 : utf8_prev(t, t.size());
+                }
+            }
+            cur_col_ = utf8_len(t.substr(0, std::min(off, t.size())));
+        }
+    } else if (k == "v" || k == "V") {
+        VisualMode want = k == "v" ? VisualMode::Char : VisualMode::Line;
+        if (visual_ == want) visual_ = VisualMode::None;
+        else {
+            if (visual_ == VisualMode::None) anchor_line_ = cur_line_, anchor_col_ = cur_col_;
+            visual_ = want;
+        }
+    } else if (k == "n") {
+        std::string msg = search_next(1);
+        ensure_cursor_visible(height);
+        return msg;
+    } else if (k == "N") {
+        std::string msg = search_next(-1);
+        ensure_cursor_visible(height);
+        return msg;
+    } else if (k == "o" && visual_ != VisualMode::None) {
+        std::swap(anchor_line_, cur_line_);
+        std::swap(anchor_col_, cur_col_);
+    }
+    ensure_cursor_visible(height);
+    return "";
+}
+
+std::string View::status_hint() const {
+    if (focused_ && !lines_.empty()) return std::to_string(cur_line_ + 1) + "/" + std::to_string(lines_.size());
+    if (scroll_ > 0) return "↑" + std::to_string(scroll_) + " (G follows)";
+    return "";
+}
+
+Element View::render(const Settings& settings, size_t width, int height) {
+    last_height_ = height;
+    layout(width);
+    if (scroll_ > 0 && lines_.size() > last_total_) scroll_ += static_cast<int>(lines_.size() - last_total_);  // hold the view still
+    last_total_ = lines_.size();
+    int total = static_cast<int>(lines_.size());
+    scroll_ = std::clamp(scroll_, 0, std::max(0, total - height));
+    int bottom = total - scroll_;
+    int top = std::max(0, bottom - height);
+
+    const Style& visual_style = settings.style("visual");
+    const Style& search_style = settings.style("search");
+    const Style& cursor_line_style = settings.style("cursor_line");
+    static const Style cursor_style{std::nullopt, std::nullopt, false, false, false, false, true};
+
+    size_t sel_a = 0, sel_b = 0, sel_ca = 0, sel_cb = 0;
+    if (visual_ != VisualMode::None) {
+        sel_a = std::min(cur_line_, anchor_line_);
+        sel_b = std::max(cur_line_, anchor_line_);
+        bool cursor_first = cur_line_ < anchor_line_ || (cur_line_ == anchor_line_ && cur_col_ <= anchor_col_);
+        sel_ca = cursor_first ? cur_col_ : anchor_col_;
+        sel_cb = cursor_first ? anchor_col_ : cur_col_;
+    }
+
+    Elements rows;
+    for (int i = bottom - top; i < height; ++i) rows.push_back(text(""));
+    for (int i = top; i < bottom; ++i) {
+        const Line& l = lines_[static_cast<size_t>(i)];
+        size_t pre_len = 0;
+        StyledLine shown = l.spans;
+        std::string pre = l.first ? prefix(l.kind) : std::string(utf8_len(prefix(l.kind)), ' ');
+        if (!l.spans.empty() || l.first) {
+            shown.insert(shown.begin(), Span{pre, MdNone});
+            pre_len = utf8_len(pre);
+        }
+        std::vector<Overlay> overlays;
+        size_t li = static_cast<size_t>(i);
+        size_t w = line_width(l.spans);
+        if (visual_ != VisualMode::None && li >= sel_a && li <= sel_b) {
+            size_t from = 0, to = w;
+            if (visual_ == VisualMode::Char) {
+                if (li == sel_a) from = sel_ca;
+                if (li == sel_b) to = std::min(w, sel_cb + 1);
+            }
+            overlays.push_back({pre_len + from, pre_len + std::max(to, from + 1), &visual_style});
+        }
+        for (const auto& [ml, mc] : matches_) {
+            if (ml == li) overlays.push_back({pre_len + mc, pre_len + mc + utf8_len(pattern_), &search_style});
+        }
+        if (focused_ && li == cur_line_) {
+            overlays.push_back({0, pre_len + std::max<size_t>(w, 1), &cursor_line_style});
+            overlays.push_back({pre_len + cur_col_, pre_len + cur_col_ + 1, &cursor_style});
+            if (w == 0) shown.push_back(Span{" ", MdNone});
+        }
+        rows.push_back(render_line(settings, shown, settings.style(style_name(l.kind)), overlays));
+    }
+    return vbox(rows);
+}
+
+}  // namespace maic

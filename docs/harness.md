@@ -76,13 +76,25 @@ Every agent tool call goes through `Agent::run_tool_call` (`core/src/agent.cpp`)
    * killed at its timeout (default 120 s, max 600 s); output capped at 32 KB
 7. **Tests**: `build/core/harness_test` (also `ctest --test-dir build`). It checks every policy rule above and makes real escape attempts against the sandbox: writing to home and `/var/tmp`, reading `~/.ssh`, the network, `sudo`, `no_new_privs`, timeouts, and symlink tricks.
 
+8. **The model is briefed.** The system prompt tells it where it is, what the tools do, what each mode allows, that DENIED/BLOCKED results are final and not to be worked around, that a trip stops everything until the user resets it, and that it cannot escalate. Briefing a model on the rules is not enforcement (the layers above are), but it cuts down on wasted retries.
+9. **Read-only sandbox** for commands the harness recognises as read-only (auto-read and plan modes): the workspace itself is mounted read-only, so a misjudged command still changes nothing.
+10. **Session transcripts** (`core/src/session.cpp`): every message as sent, every tool call with the harness's decision, 0600 in a 0700 directory. `maic sessions`, `maic artifacts` and `maic artifacts clean` manage them.
+11. **Remote models are labelled.** Switching to a provider off this machine prints what leaves the machine, and the status strip shows `REMOTE`.
+
 **Planned:**
 
 * **Landlock** as a second filesystem fence applied by the core itself, and **resource limits** (memory, process count).
-* **Repeated denials** tripping the lock.
-* **Audit log**: append-only, one line per tool call (time, origin, tool, arguments, decision, exit code) in `~/.local/state/maic/audit.log`.
-* **Undo points**: a git snapshot before a tool writes into a git workspace.
+* **Repeated denials and doom loops** tripping the lock (the same call three times in a row, or three denials in one turn).
+* **Reject with feedback**: an approval answer that carries a sentence to the model ("no, use the test config instead").
+* **A diff at the approval prompt** for edits, and **git undo points** before a tool writes into a git workspace.
+* **An additive `permission` block in settings** (allow / ask / deny per tool or command pattern) that can only add restrictions or pre-approve harmless commands, never touch trip patterns, secrets or system paths.
 * **Per-tool network grants**: some future tools will need the network, declared in their manifest.
+* **Permission profiles by role** (orchestrator, builder, scout, reviewer) for sessions and future subagents: mode, write paths, network and budgets per profile, narrowing only. See [cleanroom.md](cleanroom.md).
+* **Token and cost budgets** per session, from the usage figures providers return.
+* **Forkable transcripts**: `maic -r ID --fork-at N` continues from an earlier point in a new session file; the parent is never edited.
+* **Docker as a service runtime** (`"runtime": "docker"` in `services/*.json`): the service manager would start and stop containers and `:status` would show them the same way.
+
+The comparison with opencode that produced several of these is in [opencode-comparison.md](opencode-comparison.md).
 
 Existing protections in the service manager (`core/src/service.cpp`):
 

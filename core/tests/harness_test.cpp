@@ -1,6 +1,11 @@
 // Checks the harness policy and the sandbox against real attempts. Never trips the real tripwire.
+#include "check.hpp"
+
 #include "maic/harness.hpp"
 #include "maic/sandbox.hpp"
+#include "maic/tools.hpp"
+
+#include <fstream>
 
 #include <cstdlib>
 #include <filesystem>
@@ -11,13 +16,6 @@ namespace fs = std::filesystem;
 using namespace maic;
 
 namespace {
-
-int failures = 0;
-
-void expect(bool ok, const std::string& what) {
-    std::cout << (ok ? "  ok    " : "  FAIL  ") << what << "\n";
-    failures += !ok;
-}
 
 const char* name(Verdict v) {
     switch (v) {
@@ -77,7 +75,29 @@ int main() {
     shell(h, Mode::Auto, "systemctl status", Verdict::Allow);
     shell(h, Mode::Auto, "crontab -l", Verdict::Allow);
     shell(h, Mode::Auto, "git status", Verdict::Allow);
-    shell(h, Mode::Plan, "ls", Verdict::Deny);
+    shell(h, Mode::Plan, "ls -la", Verdict::Allow);
+    shell(h, Mode::Plan, "make", Verdict::Deny);
+
+    std::cout << "auto-read: read-only commands run, anything else asks\n";
+    shell(h, Mode::AutoRead, "ls -la src", Verdict::Allow);
+    shell(h, Mode::AutoRead, "grep -rn TODO . | head -20", Verdict::Allow);
+    shell(h, Mode::AutoRead, "git log --oneline -5 && git status", Verdict::Allow);
+    shell(h, Mode::AutoRead, "find . -name '*.o'", Verdict::Allow);
+    shell(h, Mode::AutoRead, "find . -name '*.o' -delete", Verdict::Ask);
+    shell(h, Mode::AutoRead, "find . -exec rm {} +", Verdict::Ask);
+    shell(h, Mode::AutoRead, "sed -i s/a/b/ f.txt", Verdict::Ask);
+    shell(h, Mode::AutoRead, "echo hi > f.txt", Verdict::Ask);
+    shell(h, Mode::AutoRead, "cat $(which ls)", Verdict::Ask);
+    shell(h, Mode::AutoRead, "git commit -am x", Verdict::Ask);
+    shell(h, Mode::AutoRead, "git branch -D main", Verdict::Ask);
+    shell(h, Mode::AutoRead, "make", Verdict::Ask);
+    shell(h, Mode::AutoRead, "rm -rf build", Verdict::Ask);
+    shell(h, Mode::AutoRead, "sleep 100 &", Verdict::Ask);
+    write(h, Mode::AutoRead, "src/a.cpp", Verdict::Ask);
+    read(h, Mode::AutoRead, "/etc/hostname", Verdict::Allow);
+    read(h, Mode::AutoRead, "~/.ssh/config", Verdict::Deny);
+    auto ro = h.check({Action::Kind::Shell, {}, "ls"}, Mode::AutoRead, Origin::Local);
+    expect(ro.read_only_sandbox, "auto-read commands get a read-only sandbox");
 
     std::cout << "writes\n";
     write(h, Mode::Manual, "src/a.cpp", Verdict::Ask);
@@ -105,13 +125,15 @@ int main() {
     read(h, Mode::Auto, "~/.ssh/id_ed25519", Verdict::Deny);
     read(h, Mode::Auto, "innocent/id_ed25519", Verdict::Deny);
 
+    shell(h, Mode::Auto, "echo " + std::string(20000, 'a'), Verdict::Deny);
+
     std::cout << "remote origin is always asked\n";
     auto d = h.check({Action::Kind::Write, h.resolve("a.txt"), ""}, Mode::Auto, Origin::Remote);
     expect(d.verdict == Verdict::Ask, "auto-mode write from a remote origin -> ask");
 
     std::cout << "sandbox\n";
     std::atomic<bool> no{false};
-    auto run = [&](const std::string& cmd) { return run_sandboxed(cmd, ws, std::chrono::seconds(20), no); };
+    auto run = [&](const std::string& cmd) { return run_sandboxed(cmd, ws, false, std::chrono::seconds(20), no); };
 
     auto r = run("echo sandboxed > inside.txt && cat inside.txt");
     expect(r.exit_code == 0 && fs::exists(ws / "inside.txt"), "can write inside the workspace");
@@ -136,10 +158,20 @@ int main() {
     r = run("grep NoNewPrivs /proc/self/status");
     expect(r.output.find("NoNewPrivs:\t1") != std::string::npos, "no_new_privs is set");
 
+    r = run_sandboxed("echo x > ro.txt", ws, true, std::chrono::seconds(20), no);
+    expect(r.exit_code != 0 && !fs::exists(ws / "ro.txt"), "read-only sandbox can't write even in the workspace");
+
+    {
+        // search_files on a huge single line with a backtracking-heavy pattern must not crash (it used to).
+        std::ofstream(ws / "minified.js") << std::string(3 * 1024 * 1024, 'x') << "chat log\n";
+        std::ofstream(ws / "normal.txt") << "a chat about a log\n";
+        auto sr = run_tool(h, "search_files", {{"pattern", "chat.*log"}, {"path", "."}}, false, no);
+        expect(sr.ok && sr.text.find("normal.txt") != std::string::npos, "search_files survives a 3 MB line and still finds matches");
+    }
+
     r = run("sleep 30");
     expect(r.timed_out, "timeout kills a runaway command");
 
     fs::remove_all(ws);
-    std::cout << (failures ? std::to_string(failures) + " FAILED\n" : "all passed\n");
-    return failures ? 1 : 0;
+    return finish();
 }

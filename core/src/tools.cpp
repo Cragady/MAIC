@@ -3,8 +3,9 @@
 #include "maic/sandbox.hpp"
 
 #include <algorithm>
+#include <regex.h>
+
 #include <fstream>
-#include <regex>
 #include <sstream>
 
 namespace maic {
@@ -17,6 +18,7 @@ constexpr size_t kMaxReadLines = 2000;
 constexpr size_t kMaxLineChars = 2000;
 constexpr size_t kMaxListEntries = 500;
 constexpr size_t kMaxSearchHits = 200;
+constexpr size_t kMaxSearchLine = 64 * 1024;  // longer lines are minified/generated; skip them
 constexpr int kDefaultShellTimeout = 120;
 constexpr int kMaxShellTimeout = 600;
 
@@ -101,13 +103,19 @@ ToolResult list_dir(const fs::path& p) {
     return {true, entries.empty() ? "(empty directory)" : out.str()};
 }
 
+// POSIX extended regex (grep -E syntax). std::regex recurses per character and overflows the stack on long
+// lines, which crashed MAIC; glibc's matcher doesn't.
 ToolResult search_files(const Harness& harness, const fs::path& root, const std::string& pattern) {
-    std::regex re;
-    try {
-        re = std::regex(pattern, std::regex::ECMAScript);
-    } catch (const std::regex_error& e) {
-        return {false, std::string("bad regex: ") + e.what()};
+    regex_t re;
+    if (int rc = regcomp(&re, pattern.c_str(), REG_EXTENDED | REG_NOSUB); rc != 0) {
+        char msg[256];
+        regerror(rc, &re, msg, sizeof(msg));
+        return {false, std::string("bad regex: ") + msg};
     }
+    struct Free {
+        regex_t* r;
+        ~Free() { regfree(r); }
+    } free_re{&re};
     std::ostringstream out;
     size_t hits = 0;
     auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied);
@@ -125,7 +133,10 @@ ToolResult search_files(const Harness& harness, const fs::path& root, const std:
             if (line.find('\0') != std::string::npos) {
                 break;  // binary file
             }
-            if (std::regex_search(line, re)) {
+            if (line.size() > kMaxSearchLine) {
+                continue;
+            }
+            if (regexec(&re, line.c_str(), 0, nullptr, 0) == 0) {
                 out << fs::relative(it->path(), harness.workspace()).string() << ":" << n << ": "
                     << line.substr(0, 300) << "\n";
                 ++hits;
@@ -152,9 +163,9 @@ ToolResult edit_file(const fs::path& p, const std::string& old_s, const std::str
     return {true, "edited " + p.string()};
 }
 
-ToolResult run_shell(const Harness& harness, const nlohmann::json& args, const std::atomic<bool>& cancel) {
+ToolResult run_shell(const Harness& harness, const nlohmann::json& args, bool read_only, const std::atomic<bool>& cancel) {
     int secs = std::clamp(args.value("timeout_seconds", kDefaultShellTimeout), 1, kMaxShellTimeout);
-    auto r = run_sandboxed(arg(args, "command"), harness.workspace(), std::chrono::seconds(secs), cancel);
+    auto r = run_sandboxed(arg(args, "command"), harness.workspace(), read_only, std::chrono::seconds(secs), cancel);
     std::string status = r.timed_out   ? "timed out after " + std::to_string(secs) + "s"
                          : r.cancelled ? "cancelled"
                                        : "exit code " + std::to_string(r.exit_code);
@@ -172,7 +183,7 @@ const nlohmann::json& tool_schemas() {
            {"path"}),
         fn("list_dir", "List a directory. Directories end with /.",
            {{"path", {{"type", "string"}, {"description", "Directory path; '.' for the workspace"}}}}, {"path"}),
-        fn("search_files", "Search file contents with a regular expression (ECMAScript syntax). Skips .git, build and similar.",
+        fn("search_files", "Search file contents with an extended regular expression (grep -E syntax). Skips .git, build and similar.",
            {{"pattern", {{"type", "string"}}}, {"path", {{"type", "string"}, {"description", "Directory to search; default '.'"}}}},
            {"pattern"}),
         fn("write_file", "Create or overwrite a file with the given content.",
@@ -205,7 +216,7 @@ std::string tool_summary(const std::string& name, const nlohmann::json& args) {
 }
 
 ToolResult run_tool(const Harness& harness, const std::string& name, const nlohmann::json& args,
-                    const std::atomic<bool>& cancel) {
+                    bool read_only_sandbox, const std::atomic<bool>& cancel) {
     try {
         if (name == "read_file") return read_file(harness.resolve(arg(args, "path")), args);
         if (name == "list_dir") return list_dir(harness.resolve(arg(args, "path")));
@@ -216,7 +227,7 @@ ToolResult run_tool(const Harness& harness, const std::string& name, const nlohm
             return {true, "wrote " + p.string()};
         }
         if (name == "edit_file") return edit_file(harness.resolve(arg(args, "path")), arg(args, "old_string"), arg(args, "new_string"));
-        if (name == "run_shell") return run_shell(harness, args, cancel);
+        if (name == "run_shell") return run_shell(harness, args, read_only_sandbox, cancel);
         return {false, "unknown tool: " + name};
     } catch (const std::exception& e) {
         return {false, e.what()};

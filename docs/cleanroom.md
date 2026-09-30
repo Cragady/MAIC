@@ -1,0 +1,51 @@
+# Cleanroom policy
+
+MAIC is written so that nothing closed-source ends up in it. This page says what may go in, where the design so far came from, and what the third-party code is licensed under.
+
+## Rules
+
+Allowed as input:
+
+* Public API documentation and published protocol formats (the Anthropic Messages API, the Ollama and OpenAI-compatible HTTP APIs, SSE, JSON, bubblewrap's command line, Linux man pages).
+* The observed behaviour of tools used as products (how Claude Code's modes, queued messages, `-c`/`-r` or approval prompts feel). Behaviour and conventions are reimplemented from a description; no source is involved.
+* Open-source code under MIT, BSD, Apache-2.0 or similar. Reading it for ideas is fine. Copying code into MAIC requires keeping its license notice next to the copied part and listing it below.
+* Design documents, generated or written, as long as they contain ideas rather than someone else's code.
+
+Not allowed:
+
+* Source, decompiled output or internal documents of closed-source software, including anything that was leaked. If such material is seen, the part of MAIC it relates to is not touched until it can be written from a clean description.
+* Code under copyleft licenses that would change MAIC's licensing (GPL, AGPL) unless that decision is made deliberately and recorded here.
+* Anything that phones home or reports usage; see the No Internet rule in [harness.md](harness.md).
+
+## Where the design came from
+
+| Source | Kind | How it was used |
+| :--- | :--- | :--- |
+| Micaiah's own requirements and the language notes in `programming-lang-for-agentic-cli.md` | design | The architecture: C++ core, tripwire with sudo unlock, sandboxed tools, vim interface. |
+| Claude Code, as a product | behaviour | Modes, the approval prompt, queued mid-turn messages, `-c` / `-r`, `-p`, instruction files. Reimplemented from the observed behaviour. No source was available or used. |
+| opencode (MIT, `~/dev2/tools-and-things/opencode`) | open source, read only | Feature comparison in [opencode-comparison.md](opencode-comparison.md). No code copied. |
+| A generated "cleanroom harness spec" (Google) | design | Two ideas kept for the plan: per-role permission profiles (sandbox paths, network, budgets per agent role), and a forkable transcript tree. Its SQL and JSON schema were not adopted; see below. |
+| Anthropic API reference, Ollama and OpenAI API references | public docs | The provider clients in `core/src/anthropic.cpp`, `ollama.cpp`, `openai.cpp`. |
+
+### How the spec's ideas map onto MAIC
+
+Both fit as layers on the existing design; neither replaces the tripwire.
+
+* **Permission profiles by role** (orchestrator, builder, scout, reviewer): a profile is a named bundle of mode, allowed write paths, network yes/no and budgets, chosen per session or per future subagent. It can narrow what the harness allows or pre-approve harmless commands. It can never widen past the fixed rules: trip patterns, secrets, system paths and remote-origin asking stay as they are in every profile. This is the same rule as the planned additive `permission` block.
+* **Forkable transcripts**: sessions stay JSONL (one file, append-only, readable with any tool) instead of a relational tree. A fork is a new session file whose `start` record names the parent file and the record index it forked at; `maic -r ID --fork-at N` would replay the parent up to N and continue in the new file. The parent is never edited, which is also what the Anthropic history check needs.
+* **Budgets**: per-command time limits exist; memory limits are planned with `prlimit`; token and cost budgets need the usage figures every provider returns, which will be recorded per turn in the session file first.
+
+Where an outside approach and MAIC's rules cannot both hold, MAIC's rules win and the other approach becomes an opt-in mode with a clear name, never the default. Two things get no mode at all: turning approvals off globally, and a permanent "always allow" that outlives the session.
+
+## Third-party code in the build
+
+| Component | License | Used for |
+| :--- | :--- | :--- |
+| FTXUI 5 | MIT | terminal UI |
+| cpp-httplib 0.15 | MIT | HTTP client (providers), test servers |
+| nlohmann-json 3.11 | MIT | JSON |
+| OpenSSL 3 (through vcpkg) | Apache-2.0 | HTTPS to remote providers |
+| bubblewrap (system package, called as a program) | LGPL-2.0+ | the command sandbox; not linked, only executed |
+| glibc regex (`regcomp`) | LGPL, system library | `search_files` |
+
+No code has been copied from another project into MAIC's sources.

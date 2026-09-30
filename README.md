@@ -87,6 +87,9 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 
 * [ollama-setup.md](docs/ollama-setup.md) — local-only Ollama install, service settings, privacy audit.
 * [harness.md](docs/harness.md) — the safety harness: tripwire (built) and planned layers.
+* [settings.md](docs/settings.md) — the settings file: model providers (local and remote), styles, instruction files.
+* [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.
+* [cleanroom.md](docs/cleanroom.md) — what may go into MAIC, where the design came from, third-party licenses.
 * [comfyui-setup.md](docs/comfyui-setup.md) — ComfyUI in its own venv, models on the external drive.
 * [local-llm-benchmarks.md](docs/local-llm-benchmarks.md) — measured tok/s per model and runtime.
 
@@ -99,8 +102,9 @@ MAIC is the control plane for the local AI stack and, eventually, a C++ agentic 
 
 ```
 MAIC/
-├── core/       C++ library: agent loop, Ollama client, tools, harness policy, sandbox, service manager, tripwire
-├── cli/        `maic`: the agent UI (vim keys, modes) and service/harness commands. See cli/README.md
+├── core/       C++ library: agent loop, model providers (Ollama, Anthropic, OpenAI-compatible), tools, harness
+│               policy, sandbox, sessions, settings, service manager, tripwire
+├── cli/        `maic`: the agent UI (vim keys, modes, sessions) and service/harness commands. See cli/README.md
 ├── harness/    maic-lock (root-owned tripwire helper) + its installer
 ├── services/   one JSON file per service MAIC runs (ollama, comfyui)
 ├── tools/      planned: polyglot agent tools
@@ -123,6 +127,8 @@ Use:
 
 ```sh
 maic                         # the agent, in the current directory (see cli/README.md)
+maic -c                      # continue the last session here; maic -r picks one
+maic -p "prompt"             # one turn, no UI
 maic status                  # harness state + every service
 maic up ollama comfyui       # or: maic up all
 maic down all
@@ -131,7 +137,7 @@ maic trip "reason"           # panic button, no password
 maic unlock                  # needs your sudo password
 ```
 
-State lives in `~/.local/state/maic/`: `run/<service>.pid` (PID plus process start time, so a reused PID is never mistaken for the service) and `logs/<service>.log`.
+State lives in `~/.local/state/maic/`: `run/<service>.pid` (PID plus process start time, so a reused PID is never mistaken for the service), `logs/<service>.log`, and `sessions/*.jsonl`. Settings and standing instructions live in `~/.config/maic/` ([docs/settings.md](docs/settings.md)).
 
 ## Immediate Steps
 

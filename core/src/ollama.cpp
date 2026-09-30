@@ -1,15 +1,9 @@
-#include "maic/ollama.hpp"
+// Ollama's native /api/chat: NDJSON stream, tools in function format, arguments as objects.
+#include "llm_http.hpp"
 
-#include <httplib.h>
-
-#include <thread>
-
-namespace maic {
+namespace maic::detail {
 
 namespace {
-
-constexpr const char* kHost = "127.0.0.1";
-constexpr int kPort = 11434;
 
 nlohmann::json to_json(const Message& m) {
     nlohmann::json j = {{"role", m.role}, {"content", m.content}};
@@ -19,16 +13,14 @@ nlohmann::json to_json(const Message& m) {
             j["tool_calls"].push_back({{"function", {{"name", call.name}, {"arguments", call.arguments}}}});
         }
     }
-    if (!m.tool_name.empty()) {
-        j["tool_name"] = m.tool_name;
-    }
+    if (!m.tool_name.empty()) j["tool_name"] = m.tool_name;
     return j;
 }
 
 }  // namespace
 
-Message ollama_chat(const ChatOptions& options, const std::vector<Message>& messages, const nlohmann::json& tools,
-                    const TextSink& on_text, const std::atomic<bool>& cancel) {
+Message chat_ollama(const Provider& provider, const ChatOptions& options, const std::vector<Message>& messages,
+                    const nlohmann::json& tools, const TextSink& on_text, const std::atomic<bool>& cancel) {
     nlohmann::json body = {
         {"model", options.model},
         {"stream", true},
@@ -37,92 +29,46 @@ Message ollama_chat(const ChatOptions& options, const std::vector<Message>& mess
         {"messages", nlohmann::json::array()},
     };
     for (const auto& m : messages) {
+        if (m.role == "assistant" && m.content.empty() && m.tool_calls.empty()) continue;
         body["messages"].push_back(to_json(m));
     }
-    if (!tools.empty()) {
-        body["tools"] = tools;
-    }
+    if (!tools.empty()) body["tools"] = tools;
 
-    Message reply{"assistant", "", {}, ""};
-    std::string pending;  // partial NDJSON line between chunks
+    Message reply{"assistant", "", {}, "", "", false, "", nullptr};
     std::string error;
-
     auto handle_line = [&](const std::string& line) {
-        if (line.empty()) {
-            return;
-        }
         auto j = nlohmann::json::parse(line, nullptr, false);
-        if (j.is_discarded()) {
-            return;
-        }
+        if (!j.is_object()) return;
         if (j.contains("error")) {
-            error = j["error"].get<std::string>();
+            error = j["error"].is_string() ? j["error"].get<std::string>() : j["error"].dump();
             return;
         }
-        const auto& msg = j.value("message", nlohmann::json::object());
-        if (auto t = msg.value("thinking", ""); !t.empty()) {
-            on_text(t, true);
-        }
-        if (auto c = msg.value("content", ""); !c.empty()) {
-            reply.content += c;
-            on_text(c, false);
-        }
-        for (const auto& call : msg.value("tool_calls", nlohmann::json::array())) {
-            const auto& fn = call.at("function");
-            reply.tool_calls.push_back({fn.at("name").get<std::string>(), fn.value("arguments", nlohmann::json::object())});
-        }
-    };
-
-    httplib::Client client(kHost, kPort);
-    client.set_connection_timeout(5);
-    client.set_read_timeout(600);
-
-    httplib::Request req;
-    req.method = "POST";
-    req.path = "/api/chat";
-    req.set_header("Content-Type", "application/json");
-    req.body = body.dump();
-    req.content_receiver = [&](const char* data, size_t len, uint64_t, uint64_t) {
-        pending.append(data, len);
-        for (size_t nl; (nl = pending.find('\n')) != std::string::npos;) {
-            handle_line(pending.substr(0, nl));
-            pending.erase(0, nl + 1);
-        }
-        return !cancel.load();
-    };
-
-    // The receiver only sees cancel when data arrives. While the model loads or reads a long prompt nothing
-    // does, so a watcher closes the socket instead.
-    std::atomic<bool> finished{false};
-    std::thread watcher([&] {
-        while (!finished.load()) {
-            if (cancel.load()) {
-                client.stop();
-                return;
+        // Anything malformed in a line is skipped rather than thrown through the HTTP client.
+        try {
+            const auto& msg = j.value("message", nlohmann::json::object());
+            if (auto t = msg.value("thinking", ""); !t.empty()) on_text(t, true);
+            if (auto c = msg.value("content", ""); !c.empty()) {
+                reply.content += c;
+                on_text(c, false);
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            for (const auto& call : msg.value("tool_calls", nlohmann::json::array())) {
+                const auto& fn = call.value("function", nlohmann::json::object());
+                if (!fn.contains("name") || !fn["name"].is_string()) continue;
+                auto args = fn.value("arguments", nlohmann::json::object());
+                reply.tool_calls.push_back({call.value("id", ""), fn["name"].get<std::string>(),
+                                            args.is_object() ? args : nlohmann::json::object()});
+            }
+        } catch (const nlohmann::json::exception&) {
         }
-    });
+    };
 
-    httplib::Response res;
-    httplib::Error err = httplib::Error::Success;
-    bool ok = client.send(req, res, err);
-    finished = true;
-    watcher.join();
-    if (cancel.load()) {
-        throw Cancelled();
-    }
-    if (!ok) {
-        throw std::runtime_error("can't reach Ollama at 127.0.0.1:11434 (" + httplib::to_string(err) + "). Is it running? `maic up ollama`");
-    }
-    handle_line(pending);
-    if (!error.empty()) {
-        throw std::runtime_error("Ollama: " + error);
-    }
-    if (res.status != 200) {
-        throw std::runtime_error("Ollama returned HTTP " + std::to_string(res.status));
-    }
+    LineSplitter lines;
+    auto r = stream_post(provider.base_url, "/api/chat", {}, dump(body),
+                         [&](std::string_view d) { lines.feed(d, handle_line); }, cancel);
+    lines.finish(handle_line);
+    if (!error.empty()) throw std::runtime_error(provider.name + ": " + error);
+    if (r.status != 200) throw std::runtime_error(api_error(provider.name, r));
     return reply;
 }
 
-}  // namespace maic
+}  // namespace maic::detail

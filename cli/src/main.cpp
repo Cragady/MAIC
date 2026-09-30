@@ -1,5 +1,10 @@
+#include "headless.hpp"
+#include "maic/artifacts.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
+#include "maic/session.hpp"
+#include "maic/settings.hpp"
+#include "maic/status.hpp"
 #include "maic/tripwire.hpp"
 #include "tui.hpp"
 
@@ -14,55 +19,34 @@
 namespace {
 
 void usage() {
-    std::cerr << "usage: maic                 start the agent in this directory (MAIC_MODEL picks the model)\n"
-                 "       maic <command> [args]\n"
+    std::cerr << "usage: maic [--model M] [--mode MODE]      the agent, in this directory\n"
+                 "       maic -c                            continue the last session started in this directory\n"
+                 "       maic -r [ID]                       resume a session by id (or pick from a list)\n"
+                 "       maic -p \"prompt\" [--json] [--think] one turn without the UI (prompt \"-\" reads stdin; -c/-r work here too)\n"
                  "\n"
-                 "  status                  show every service\n"
-                 "  up <service...|all>     start services\n"
-                 "  down <service...|all>   stop services MAIC started\n"
-                 "  logs <service> [lines]  show the end of a service's log (default 40 lines)\n"
-                 "  trip [reason]           trip the harness lock now (blocks all actions until unlocked)\n"
-                 "  unlock                  reset the harness lock (asks for your sudo password)\n";
+                 "  status                     harness, services, where they run, quick actions\n"
+                 "  up <service...|all>        start services\n"
+                 "  down <service...|all>      stop services MAIC started\n"
+                 "  logs <service> [lines]     the end of a service's log (default 40 lines)\n"
+                 "  artifacts                  where MAIC and its services keep transcripts, logs and outputs\n"
+                 "  artifacts clean OWNER/NAME [--older-than DAYS] [--yes]\n"
+                 "  sessions                   list session transcripts\n"
+                 "  settings init|path         write a documented settings file, or show where it goes\n"
+                 "  trip [reason]              trip the harness lock now (blocks all actions until unlocked)\n"
+                 "  unlock                     reset the harness lock (asks for your sudo password)\n"
+                 "\n"
+                 "modes: manual, auto-read, edit, auto, plan\n";
 }
 
 std::vector<maic::ServiceDef> select(const std::vector<maic::ServiceDef>& all, const std::vector<std::string>& names) {
-    if (names.size() == 1 && names[0] == "all") {
-        return all;
-    }
+    if (names.size() == 1 && names[0] == "all") return all;
     std::vector<maic::ServiceDef> out;
     for (const auto& name : names) {
         auto it = std::find_if(all.begin(), all.end(), [&](const auto& d) { return d.name == name; });
-        if (it == all.end()) {
-            throw std::runtime_error("unknown service: " + name);
-        }
+        if (it == all.end()) throw std::runtime_error("unknown service: " + name);
         out.push_back(*it);
     }
     return out;
-}
-
-int cmd_status(const std::vector<maic::ServiceDef>& services) {
-    if (auto state = maic::tripwire_state()) {
-        std::cout << "harness: TRIPPED\n" << *state << "\n";
-    } else {
-        std::cout << "harness: armed\n";
-    }
-    for (const auto& def : services) {
-        auto st = maic::service_status(def);
-        std::string state;
-        switch (st.state) {
-            case maic::ServiceState::Running:
-                state = "running (pid " + std::to_string(st.pid) + (st.port_open ? ")" : ", port not open yet)");
-                break;
-            case maic::ServiceState::Foreign:
-                state = "port " + std::to_string(def.port) + " in use, not started by MAIC";
-                break;
-            case maic::ServiceState::Stopped:
-                state = "stopped";
-                break;
-        }
-        std::cout << def.name << ": " << state << "\n";
-    }
-    return 0;
 }
 
 int cmd_up(const std::vector<maic::ServiceDef>& services) {
@@ -96,25 +80,6 @@ int cmd_down(const std::vector<maic::ServiceDef>& services) {
     return rc;
 }
 
-int cmd_trip(const std::vector<std::string>& words) {
-    std::string reason = "manual trip";
-    for (size_t i = 0; i < words.size(); ++i) {
-        reason += (i == 0 ? ": " : " ") + words[i];
-    }
-    maic::trip_tripwire(reason);
-    std::cout << "harness: TRIPPED. Nothing will run until `maic unlock`.\n";
-    return 0;
-}
-
-int cmd_unlock() {
-    if (!maic::tripwire_state()) {
-        std::cout << "harness: not tripped\n";
-        return 0;
-    }
-    // Drop any cached sudo login first so unlocking always needs the password.
-    return std::system("sudo -k && sudo /usr/local/sbin/maic-lock reset") == 0 ? 0 : 1;
-}
-
 int cmd_logs(const maic::ServiceDef& def, size_t lines) {
     std::ifstream in(maic::service_log_path(def));
     if (!in) {
@@ -124,13 +89,110 @@ int cmd_logs(const maic::ServiceDef& def, size_t lines) {
     std::deque<std::string> tail;
     for (std::string line; std::getline(in, line);) {
         tail.push_back(std::move(line));
-        if (tail.size() > lines) {
-            tail.pop_front();
+        if (tail.size() > lines) tail.pop_front();
+    }
+    for (const auto& line : tail) std::cout << line << "\n";
+    return 0;
+}
+
+std::string human_bytes(uintmax_t b) {
+    const char* units[] = {"B", "KB", "MB", "GB", "TB"};
+    double v = static_cast<double>(b);
+    int u = 0;
+    while (v >= 1024 && u < 4) v /= 1024, ++u;
+    char buf[32];
+    snprintf(buf, sizeof(buf), u == 0 ? "%.0f %s" : "%.1f %s", v, units[u]);
+    return buf;
+}
+
+int cmd_artifacts(const std::vector<std::string>& args) {
+    auto services = maic::load_services(maic::root_dir() / "services");
+    auto artifacts = maic::list_artifacts(services);
+    if (args.empty() || args[0] == "list") {
+        std::cout << "OWNER/NAME            SIZE       FILES  PATH\n";
+        for (const auto& a : artifacts) {
+            auto u = maic::measure(a);
+            char line[512];
+            snprintf(line, sizeof(line), "%-21s %-10s %-6zu %s\n", (a.owner + "/" + a.name).c_str(), human_bytes(u.bytes).c_str(), u.files, a.path.c_str());
+            std::cout << line << "    " << a.description << "\n";
         }
+        std::cout << "\nclean with: maic artifacts clean OWNER/NAME [--older-than DAYS] [--yes]\n";
+        return 0;
     }
-    for (const auto& line : tail) {
-        std::cout << line << "\n";
+    if (args[0] == "clean" && args.size() >= 2) {
+        std::optional<std::chrono::hours> older;
+        bool yes = false;
+        for (size_t i = 2; i < args.size(); ++i) {
+            if (args[i] == "--older-than" && i + 1 < args.size()) older = std::chrono::hours(24 * std::stoi(args[++i]));
+            else if (args[i] == "--yes" || args[i] == "-y") yes = true;
+            else throw std::runtime_error("unknown option " + args[i]);
+        }
+        auto it = std::find_if(artifacts.begin(), artifacts.end(), [&](const auto& a) { return a.owner + "/" + a.name == args[1]; });
+        if (it == artifacts.end()) throw std::runtime_error("unknown artifact " + args[1] + " (see `maic artifacts`)");
+        auto u = maic::measure(*it, older);
+        if (u.files == 0) {
+            std::cout << "nothing to remove\n";
+            return 0;
+        }
+        std::cout << "remove " << u.files << " files (" << human_bytes(u.bytes) << ") from " << it->path.string() << "? [y/N] ";
+        if (!yes) {
+            std::string line;
+            std::getline(std::cin, line);
+            if (line != "y" && line != "Y") {
+                std::cout << "kept\n";
+                return 0;
+            }
+        } else {
+            std::cout << "yes\n";
+        }
+        auto removed = maic::clean(*it, older);
+        std::cout << "removed " << removed.files << " files (" << human_bytes(removed.bytes) << ")\n";
+        return 0;
     }
+    usage();
+    return 2;
+}
+
+void print_sessions(const std::vector<maic::SessionInfo>& sessions) {
+    for (size_t i = 0; i < sessions.size(); ++i) {
+        const auto& s = sessions[i];
+        std::cout << "  " << i + 1 << ". " << s.id << "  " << s.turns << " turn" << (s.turns == 1 ? "" : "s") << "  " << s.workspace << "\n"
+                  << "     " << (s.first_prompt.empty() ? "(no prompt yet)" : s.first_prompt) << "\n";
+    }
+}
+
+// -c: the newest session from this directory. -r ID: that session. -r alone: choose from a numbered list.
+std::filesystem::path pick_session(bool continue_last, const std::optional<std::string>& id) {
+    if (continue_last) {
+        auto here = maic::list_sessions(std::filesystem::current_path());
+        if (here.empty()) throw std::runtime_error("no earlier session in " + std::filesystem::current_path().string());
+        return here.front().path;
+    }
+    if (id) {
+        auto s = maic::find_session(*id);
+        if (!s) throw std::runtime_error("no session matching '" + *id + "' (maic sessions)");
+        return s->path;
+    }
+    auto all = maic::list_sessions();
+    if (all.empty()) throw std::runtime_error("no sessions yet");
+    if (all.size() > 15) all.resize(15);
+    std::cerr << "sessions (newest first):\n";
+    print_sessions(all);
+    std::cerr << "resume which? [1-" << all.size() << "] ";
+    std::string line;
+    std::getline(std::cin, line);
+    size_t n = line.empty() ? 0 : std::stoul(line);
+    if (n < 1 || n > all.size()) throw std::runtime_error("cancelled");
+    return all[n - 1].path;
+}
+
+int cmd_settings(const std::vector<std::string>& args) {
+    if (!args.empty() && args[0] == "init") {
+        maic::write_default_settings();
+        std::cout << "wrote " << maic::settings_path().string() << "\n";
+        return 0;
+    }
+    std::cout << maic::settings_path().string() << (std::filesystem::exists(maic::settings_path()) ? "" : "  (not created yet: maic settings init)") << "\n";
     return 0;
 }
 
@@ -138,33 +200,81 @@ int cmd_logs(const maic::ServiceDef& def, size_t lines) {
 
 int main(int argc, char** argv) {
     std::vector<std::string> args(argv + 1, argv + argc);
-    if (args.empty()) {
-        const char* model = std::getenv("MAIC_MODEL");
-        return maic::run_tui(model && *model ? model : "qwen3.5:4b");
-    }
     try {
-        const std::string& cmd = args[0];
-        std::vector<std::string> rest(args.begin() + 1, args.end());
+        // Options that apply to the agent (TUI or headless).
+        maic::TuiOptions tui;
+        maic::HeadlessOptions headless;
+        bool print = false;
+        bool continue_last = false;
+        std::optional<std::string> resume_id;
+        bool resume = false;
+        std::vector<std::string> rest;
+        for (size_t i = 0; i < args.size(); ++i) {
+            const std::string& a = args[i];
+            auto value = [&](const char* flag) {
+                if (i + 1 >= args.size()) throw std::runtime_error(std::string(flag) + " needs a value");
+                return args[++i];
+            };
+            if (a == "--model" || a == "-m") tui.model = headless.model = value("--model");
+            else if (a == "--mode") tui.mode = headless.mode = value("--mode");
+            else if (a == "-p" || a == "--print") {
+                print = true;
+                if (i + 1 < args.size() && args[i + 1].rfind("--", 0) != 0) headless.prompt = args[++i];
+            } else if (a == "-c" || a == "--continue") continue_last = true;
+            else if (a == "-r" || a == "--resume") {
+                resume = true;
+                if (i + 1 < args.size() && args[i + 1][0] != '-') resume_id = args[++i];
+            } else if (a == "--json") headless.json = true;
+            else if (a == "--think") headless.think = true;
+            else if (a == "-h" || a == "--help" || a == "help") {
+                usage();
+                return 0;
+            } else rest.push_back(a);
+        }
+        if (continue_last || resume) tui.resume = headless.resume = pick_session(continue_last, resume_id);
+        if (print) return maic::run_headless(headless);
+        if (rest.empty()) return maic::run_tui(tui);
+
+        const std::string& cmd = rest[0];
+        std::vector<std::string> cargs(rest.begin() + 1, rest.end());
 
         // The lock commands come first so a broken service file can never block them.
         if (cmd == "trip") {
-            return cmd_trip(rest);
+            std::string reason = "manual trip";
+            for (size_t i = 0; i < cargs.size(); ++i) reason += (i == 0 ? ": " : " ") + cargs[i];
+            maic::trip_tripwire(reason);
+            std::cout << "harness: TRIPPED. Nothing will run until `maic unlock`.\n";
+            return 0;
         }
-        if (cmd == "unlock" && rest.empty()) {
-            return cmd_unlock();
+        if (cmd == "unlock") {
+            if (!maic::tripwire_state()) {
+                std::cout << "harness: not tripped\n";
+                return 0;
+            }
+            // Drop any cached sudo login first so unlocking always needs the password.
+            return std::system("sudo -k && sudo /usr/local/sbin/maic-lock reset") == 0 ? 0 : 1;
         }
+        if (cmd == "settings") return cmd_settings(cargs);
+        if (cmd == "sessions") {
+            std::cout << maic::sessions_dir().string() << "\n";
+            print_sessions(maic::list_sessions());
+            std::cout << "resume one with: maic -r ID   (or maic -c for the newest from the current directory)\n";
+            return 0;
+        }
+        if (cmd == "artifacts") return cmd_artifacts(cargs);
 
         auto services = maic::load_services(maic::root_dir() / "services");
         if (cmd == "status") {
-            return cmd_status(services);
+            std::cout << maic::format_status(maic::status_report(services));
+            return 0;
         }
-        if ((cmd == "up" || cmd == "down") && !rest.empty()) {
-            auto selected = select(services, rest);
+        if ((cmd == "up" || cmd == "down") && !cargs.empty()) {
+            auto selected = select(services, cargs);
             return cmd == "up" ? cmd_up(selected) : cmd_down(selected);
         }
-        if (cmd == "logs" && (rest.size() == 1 || rest.size() == 2)) {
-            size_t lines = rest.size() == 2 ? std::stoul(rest[1]) : 40;
-            return cmd_logs(select(services, {rest[0]}).front(), lines);
+        if (cmd == "logs" && (cargs.size() == 1 || cargs.size() == 2)) {
+            size_t lines = cargs.size() == 2 ? std::stoul(cargs[1]) : 40;
+            return cmd_logs(select(services, {cargs[0]}).front(), lines);
         }
         usage();
         return 2;

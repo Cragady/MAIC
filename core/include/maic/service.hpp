@@ -10,6 +10,13 @@
 
 namespace maic {
 
+// A place where a service leaves things on disk (outputs, logs, histories), so MAIC can show and clean it.
+struct ArtifactDef {
+    std::string name;
+    std::string description;
+    std::filesystem::path path;
+};
+
 // A long-running local process MAIC starts and stops, loaded from services/<name>.json.
 struct ServiceDef {
     std::string name;
@@ -20,6 +27,8 @@ struct ServiceDef {
     int port = 0;
     std::vector<std::filesystem::path> requires_paths;
     std::chrono::seconds ready_timeout{30};
+    std::vector<ArtifactDef> artifacts;
+    std::string runtime = "host";  // "host": a process MAIC starts. "docker" is reserved for a container runtime.
 };
 
 std::vector<ServiceDef> load_services(const std::filesystem::path& dir);
