@@ -4,3 +4,4 @@ build-asan/
 .playground/
 vcpkg_installed/
 .claude/
+__pycache__/
