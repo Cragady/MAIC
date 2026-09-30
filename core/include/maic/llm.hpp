@@ -57,7 +57,7 @@ struct Provider {
     std::string api_key() const;  // throws with a clear message when it can't be found
 };
 
-// ollama (local), anthropic, deepseek, openrouter. Settings can add or override providers by name.
+// ollama and llamacpp (local), anthropic, deepseek, openrouter. Settings can add or override providers by name.
 std::vector<Provider> default_providers();
 
 // "anthropic/claude-opus-5-5" -> the anthropic provider and "claude-opus-5-5". A string whose prefix isn't a

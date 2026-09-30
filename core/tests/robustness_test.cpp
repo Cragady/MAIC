@@ -387,6 +387,17 @@ int main() {
         expect(comfy && comfy->kind == "submodule" && comfy->ref == "v0.38.0" && comfy->path == "vendor/ComfyUI", "comfyui is a submodule pinned to a release tag");
         auto oll = find_vendor("ollama");
         expect(oll && oll->kind == "release" && !oll->checksums.empty() && oll->url.find("${VERSION}") != std::string::npos, "ollama is a checksum-verified release");
+        auto lc = find_vendor("llamacpp");
+        auto release_tag = [](const std::string& ref) {  // b<number>, llama.cpp's release tags
+            return ref.size() > 1 && ref[0] == 'b' && ref.find_first_not_of("0123456789", 1) == std::string::npos;
+        };
+        expect(lc && lc->kind == "submodule" && lc->path == "vendor/llama.cpp" && release_tag(lc->ref) && lc->install == "vendor/llamacpp.sh",
+               "llamacpp is a submodule pinned to a release tag: " + (lc ? lc->ref : std::string("missing")));
+        bool loopback = false;
+        for (const auto& p : default_providers()) {
+            if (p.name == "llamacpp") loopback = p.kind == "openai" && !p.remote() && p.base_url.rfind("http://127.0.0.1:", 0) == 0;
+        }
+        expect(loopback, "default providers have llamacpp: OpenAI-compatible on loopback");
         // Adopt into a throwaway state directory, never the real one.
         fs::path state = ws / "xdg-state";
         setenv("XDG_STATE_HOME", state.c_str(), 1);
@@ -417,6 +428,39 @@ int main() {
         expect(threw, "adopting a non-ComfyUI directory as comfyui is refused");
         vendor_unlink(e);
         expect(!vendor_status(e).linked, "unlink removes the link");
+        VendorEntry l = *lc;
+        l.install.clear();
+        write_file(ws / "models" / "notes.txt", "not a model\n");
+        write_file(ws / "models" / "tiny.gguf", "fake\n");
+        write_file(ws / "models" / "sha256-blob", "GGUFxxxx");  // an Ollama blob: no suffix, the format's magic
+        threw = false;
+        try {
+            vendor_use(l, ws / "models" / "notes.txt");
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw && !fs::is_symlink(vendor_model_link(l)), "vendor use refuses a file that is not a GGUF");
+        threw = false;
+        try {
+            vendor_use(l, ws / "models" / "missing.gguf");
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw, "vendor use refuses a missing path");
+        vendor_use(l, ws / "models" / "tiny.gguf");
+        expect(vendor_model_link(l) == state / "maic" / "vendor" / "llamacpp" / "current-model.gguf" && fs::is_symlink(vendor_model_link(l)) &&
+                   fs::read_symlink(vendor_model_link(l)) == fs::weakly_canonical(ws / "models" / "tiny.gguf"),
+               "vendor use links current-model.gguf at the file");
+        vendor_use(l, ws / "models" / "sha256-blob");
+        expect(fs::read_symlink(vendor_model_link(l)).filename() == "sha256-blob", "a suffixless GGUF is accepted by its magic and replaces the link");
+        expect(vendor_status(l).model == fs::read_symlink(vendor_model_link(l)).string(), "vendor status shows the model");
+        threw = false;
+        try {
+            vendor_use(e, ws / "models" / "tiny.gguf");
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw, "vendor use is refused for a service that takes no model");
         expect(expand_vars("${MAIC_VENDOR}/x") == (state / "maic" / "vendor" / "x").string() && expand_vars("${MAIC_STATE}") == (state / "maic").string(),
                "service files can use ${MAIC_VENDOR} and ${MAIC_STATE}");
         unsetenv("XDG_STATE_HOME");

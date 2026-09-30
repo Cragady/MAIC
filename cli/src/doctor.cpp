@@ -171,6 +171,7 @@ int run_doctor() {
     for (const auto& e : load_vendor_manifest()) {
         auto st = vendor_status(e);
         line("vendored " + e.name + " (" + (e.kind == "submodule" ? e.ref : e.version) + ")", st.installed, st.installed ? st.target : st.note);
+        if (e.name == "llamacpp" && st.installed) line("llama.cpp model", !st.model.empty(), st.model.empty() ? "maic vendor use llamacpp PATH" : st.model);
     }
     std::cout << "\n";
 

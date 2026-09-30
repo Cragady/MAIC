@@ -1,0 +1,24 @@
+{
+  "name": "llamacpp",
+  "description": "llama.cpp server, local only, vendored (maic vendor add llamacpp, then maic vendor use llamacpp PATH to pick the GGUF; see docs/llamacpp.md)",
+  "command": [
+    "${MAIC_VENDOR}/llamacpp/bin/llama-server",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8081",
+    "--model",
+    "${MAIC_STATE}/vendor/llamacpp/current-model.gguf",
+    "--ctx-size",
+    "16384",
+    "--jinja",
+    "-ngl",
+    "99"
+  ],
+  "port": 8081,
+  "requires": [
+    "${MAIC_STATE}/vendor/llamacpp/current-model.gguf"
+  ],
+  "ready_timeout": 120,
+  "artifacts": []
+}

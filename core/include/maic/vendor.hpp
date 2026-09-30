@@ -38,6 +38,7 @@ struct VendorStatus {
     bool installed = false;  // the install script's `check` passes (or, without a script, the link resolves)
     std::string target;      // where the link points
     std::string note;
+    std::string model;       // llamacpp: the GGUF current-model.gguf points at; empty until `vendor use`
 };
 VendorStatus vendor_status(const VendorEntry& e);
 
@@ -51,5 +52,10 @@ void vendor_add(const VendorEntry& e);
 
 // Removes the link only; a checkout or downloaded release stays until the user deletes it.
 void vendor_unlink(const VendorEntry& e);
+
+// <state>/vendor/llamacpp/current-model.gguf: the symlink services/llamacpp.json loads. `vendor use` points it
+// at a GGUF (by suffix, or by the GGUF magic for a suffixless Ollama blob); nothing is copied.
+std::filesystem::path vendor_model_link(const VendorEntry& e);
+void vendor_use(const VendorEntry& e, const std::filesystem::path& model);
 
 }  // namespace maic
