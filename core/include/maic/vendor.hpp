@@ -58,4 +58,9 @@ void vendor_unlink(const VendorEntry& e);
 std::filesystem::path vendor_model_link(const VendorEntry& e);
 void vendor_use(const VendorEntry& e, const std::filesystem::path& model);
 
+// Downloads a GGUF with curl into `into` (default: <models_dir>/llamacpp, else <state>/vendor/llamacpp/models),
+// refuses to keep it unless its SHA-256 matches `sha256`, then links it as the current model. The only
+// network access in MAIC besides `vendor add`, and only because the user typed it.
+std::filesystem::path vendor_model(const VendorEntry& e, const std::string& url, const std::string& sha256, const std::filesystem::path& into = {});
+
 }  // namespace maic

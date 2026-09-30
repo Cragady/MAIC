@@ -63,7 +63,8 @@ void usage(std::ostream& out = std::cerr) {
                  "  vendor                     the services MAIC can install for itself (ComfyUI, Ollama, llama.cpp), pinned versions\n"
                  "  vendor add NAME            fetch, verify, build and link one (network; asks nothing else)\n"
                  "  vendor adopt NAME PATH     use an install you already have instead of fetching\n"
-                 "  vendor use llamacpp PATH   the GGUF llama-server loads (a link; an Ollama blob works too)\n"
+                 "  vendor use llamacpp PATH   the GGUF llama-server loads (a link; an upstream-format GGUF, not an Ollama blob)\n"
+                 "  vendor model llamacpp URL SHA256 [--into DIR]   download a GGUF, verify it, link it as the model\n"
                  "  vendor unlink NAME         stop using it (nothing is deleted)\n"
                  "  lua [FILE [args...] | -e CODE]   Lua (vendored LuaJIT) here, with the maic table; no arguments: a REPL (maic help lua)\n"
                  "  tools                      the user-defined Lua tools this directory's sessions get (maic help tools)\n"
@@ -552,8 +553,15 @@ int main(int argc, char** argv) {
             if (cargs[0] == "add") maic::vendor_add(*e);
             else if (cargs[0] == "adopt" && cargs.size() == 3) maic::vendor_adopt(*e, cargs[2]);
             else if (cargs[0] == "use" && cargs.size() == 3) maic::vendor_use(*e, cargs[2]);
+            else if (cargs[0] == "model" && cargs.size() >= 4) {
+                std::filesystem::path into;
+                for (size_t i = 4; i + 1 < cargs.size(); ++i) {
+                    if (cargs[i] == "--into") into = cargs[i + 1];
+                }
+                maic::vendor_model(*e, cargs[2], cargs[3], into);
+            }
             else if (cargs[0] == "unlink") maic::vendor_unlink(*e);
-            else throw std::runtime_error("maic vendor add|adopt|use|unlink NAME [PATH]");
+            else throw std::runtime_error("maic vendor add|adopt|use|model|unlink NAME [PATH | URL SHA256]");
             return 0;
         }
         if (cmd == "init") {

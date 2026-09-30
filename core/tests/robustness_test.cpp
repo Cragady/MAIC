@@ -12,6 +12,8 @@
 #include "maic/status.hpp"
 #include "maic/tools.hpp"
 #include "maic/vendor.hpp"
+
+#include <httplib.h>
 #include "maic/bans.hpp"
 #include "maic/lua.hpp"
 #include "maic/paths.hpp"
@@ -631,6 +633,46 @@ int main() {
         write_file(ws / "proj" / ".maic" / "settings.lua", "return { harness = 'dumb', reviewer_model = 'ollama/qwen3.5:4b', dumb_auto_ok = true }");
         Settings sh = load_settings(ws / "proj");
         expect(sh.harness == "dumb" && sh.reviewer_model == "ollama/qwen3.5:4b" && sh.dumb_auto_ok, "harness, reviewer_model and dumb_auto_ok load from settings");
+        {
+            // vendor model: a checked download from a local server, never linked on a hash mismatch.
+            httplib::Server srv;
+            std::string blob = std::string("GGUF") + std::string(64, 'x');
+            srv.Get("/m/tiny.gguf", [&](const httplib::Request&, httplib::Response& res) { res.set_content(blob, "application/octet-stream"); });
+            int port = srv.bind_to_any_port("127.0.0.1");
+            std::thread th([&] { srv.listen_after_bind(); });
+            srv.wait_until_ready();
+            std::string url = "http://127.0.0.1:" + std::to_string(port) + "/m/tiny.gguf";
+            std::string good;
+            {
+                FILE* p = popen(("printf '%s' '" + blob + "' | sha256sum").c_str(), "r");
+                char buf[128] = "";
+                if (p && fgets(buf, sizeof(buf), p)) good = std::string(buf).substr(0, 64);
+                if (p) pclose(p);
+            }
+            fs::path state = ws / "xdg-state-model";
+            setenv("XDG_STATE_HOME", state.c_str(), 1);
+            auto ll = find_vendor("llamacpp");
+            fs::path into = ws / "models-into";
+            bool threw_hash = false;
+            try {
+                vendor_model(*ll, url, std::string(64, '0'), into);
+            } catch (const std::exception& ex) {
+                threw_hash = std::string(ex.what()).find("SHA-256 mismatch") != std::string::npos;
+            }
+            expect(threw_hash && !fs::exists(into / "tiny.gguf") && !fs::exists(into / "tiny.gguf.part"), "a hash mismatch discards the download and links nothing");
+            fs::path got = vendor_model(*ll, url, good, into);
+            expect(got == into / "tiny.gguf" && fs::exists(got) && fs::read_symlink(vendor_model_link(*ll)) == fs::weakly_canonical(got), "a matching hash keeps the file and links it as the model");
+            bool threw_short = false;
+            try {
+                vendor_model(*ll, url, "abc", into);
+            } catch (const std::exception&) {
+                threw_short = true;
+            }
+            expect(threw_short, "the SHA-256 is required");
+            srv.stop();
+            th.join();
+            unsetenv("XDG_STATE_HOME");
+        }
         write_file(ws / "proj" / ".maic" / "settings.lua", "return { harness = 'clever' }");
         bool bad_harness = false;
         try {

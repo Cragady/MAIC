@@ -6,6 +6,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -208,6 +210,45 @@ void vendor_use(const VendorEntry& e, const fs::path& model) {
     else if (fs::exists(link, ec)) throw std::runtime_error(link.string() + " exists and is not a link; remove it first");
     fs::create_symlink(target, link);
     std::cout << link.string() << " -> " << target.string() << "\n";
+}
+
+fs::path vendor_model(const VendorEntry& e, const std::string& url, const std::string& sha256, const fs::path& into) {
+    if (e.name != "llamacpp") throw std::runtime_error("maic vendor model fetches a GGUF for llamacpp; " + e.name + " takes no model");
+    require_armed("download a model");
+    if (sha256.size() != 64 || sha256.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
+        throw std::runtime_error("the SHA-256 is required (64 hex characters; Hugging Face shows it under the file's LFS details), so a bad download is never linked");
+    }
+    fs::path dir = into;
+    if (dir.empty()) {
+        Settings s = load_settings();
+        dir = s.models_dir.empty() ? vendor_dir() / "llamacpp" / "models" : fs::path(s.models_dir) / "llamacpp";
+    }
+    fs::create_directories(dir);
+    std::string name = url.substr(url.find_last_of('/') + 1);
+    if (auto q = name.find('?'); q != std::string::npos) name = name.substr(0, q);
+    if (name.empty() || name.find("..") != std::string::npos) throw std::runtime_error("cannot take a file name from " + url);
+    fs::path part = dir / (name + ".part"), final = dir / name;
+    std::error_code ec;
+    if (fs::exists(final, ec)) throw std::runtime_error(final.string() + " already exists; maic vendor use llamacpp " + final.string() + " links it");
+    std::cout << "downloading " << name << " ...\n";
+    run_or_throw("curl -fL --retry 3 --progress-bar -o " + sh(part.string()) + " " + sh(url), "download");
+    std::string want = sha256;
+    for (auto& c : want) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    std::string have;
+    {
+        FILE* p = popen(("sha256sum " + sh(part.string())).c_str(), "r");
+        char buf[128] = "";
+        if (p && fgets(buf, sizeof(buf), p)) have = std::string(buf).substr(0, 64);
+        if (p) pclose(p);
+    }
+    if (have != want) {
+        fs::remove(part, ec);
+        throw std::runtime_error("SHA-256 mismatch for " + name + ": expected " + want + ", got " + (have.empty() ? "nothing" : have) + "; the file was discarded");
+    }
+    fs::rename(part, final);
+    std::cout << "sha256 ok: " << final.string() << "\n";
+    vendor_use(e, final);
+    return final;
 }
 
 }  // namespace maic
