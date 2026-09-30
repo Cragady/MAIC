@@ -208,6 +208,9 @@ public:
         agent_.compaction.keep_results = settings_.compact_keep_results;
         agent_.budget_tokens = settings_.budget_tokens;
         agent_.set_instruction_names(settings_.instruction_files);
+        agent_.load_instruction_files = settings_.load_instructions;
+        agent_.system_prefix = resolve_system_prompt(settings_.system_prompt);
+        agent_.reload_instructions();
         view_.set_timestamps(settings_.timestamps);
         if (resume) {
             LoadedSession old = load_session(*resume, fork_at.value_or(~size_t(0)));
@@ -1301,8 +1304,27 @@ void App::run_command(const std::string& line) {
                        "what the project is, how it is built and tested, the conventions to follow, and anything an agent should know before editing. "
                        "Keep it under 60 lines. Use write_file for MAIC.md only.", false);
             }
+        } else if (cmd == "system") {
+            if (!arg.empty() && idle()) {
+                agent_.system_prefix = resolve_system_prompt(arg);
+                post(Kind::Notice, "operator instructions set for the next turns");
+            } else if (arg.empty()) {
+                post(Kind::Notice, agent_.system_prefix.empty() ? "no operator instructions (:system TEXT or :system @file sets them; --system on the command line)"
+                                                                 : "operator instructions (placed first in the system prompt):\n" + agent_.system_prefix);
+            }
         } else if (cmd == "instructions") {
             agent_.reload_instructions();
+            if (!agent_.load_instruction_files) {
+                post(Kind::Notice, "instruction files are disabled for this session (--no-instructions or load_instructions = false); :instructions on enables them");
+                if (arg == "on") agent_.load_instruction_files = true, agent_.reload_instructions(), post(Kind::Notice, "instruction files enabled");
+                return;
+            }
+            if (arg == "off") {
+                agent_.load_instruction_files = false;
+                agent_.reload_instructions();
+                post(Kind::Notice, "instruction files disabled for the next turns");
+                return;
+            }
             std::string out = "instruction files in effect (re-read every turn):";
             for (const auto& f : agent_.instructions()) out += "\n  " + f.path.string() + "  (" + std::to_string(f.text.size()) + " bytes)";
             if (agent_.instructions().empty()) out += "\n  none. Create " + global_instructions_path().string() + " or a MAIC.md / AGENTS.md in the workspace.";
@@ -1371,6 +1393,8 @@ int run_tui(const TuiOptions& options) {
     if (options.model) settings.model = *options.model;
     if (options.mode) settings.mode = *options.mode;
     if (options.record) settings.record = *options.record;
+    if (options.system) settings.system_prompt = *options.system;
+    if (options.load_instructions) settings.load_instructions = *options.load_instructions;
     if (!parse_mode(settings.mode)) {
         fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
         return 2;

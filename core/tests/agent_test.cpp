@@ -461,6 +461,40 @@ int main() {
         unsetenv("XDG_CONFIG_HOME");
     }
 
+    section("operator prompt and instruction switch");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        std::ofstream(ws / "MAIC.md") << "project rule: always say pelican";
+        fs::create_directories(ws / "deep");
+        std::ofstream(ws / "deep" / "AGENTS.md") << "deep rule";
+        std::ofstream(ws / "deep" / "f.txt") << "x";
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        agent.system_prefix = "You are a terse reviewer.";
+        agent.reload_instructions();
+        Recorder r;
+        agent.submit("hi", Origin::Local, r, no_cancel);
+        std::string sys = fake.requests[0]["messages"][0]["content"];
+        expect(sys.rfind("# Operator instructions", 0) == 0 && sys.find("terse reviewer") < sys.find("inside MAIC"), "the operator text leads the system prompt");
+        expect(sys.find("project rule: always say pelican") != std::string::npos, "instruction files still load alongside it");
+
+        Agent bare(ws, "test");
+        bare.providers = {fake.provider()};
+        bare.mode = Mode::Auto;
+        bare.load_instruction_files = false;
+        bare.reload_instructions();
+        Recorder rb;
+        fake.tool_call = json{{"name", "read_file"}, {"arguments", {{"path", "deep/f.txt"}}}};
+        fake.calls_left = 1;
+        bare.submit("read", Origin::Local, rb, no_cancel);
+        std::string sys2 = fake.requests.back()["messages"][0]["content"];
+        expect(sys2.find("pelican") == std::string::npos && sys2.find("Operator") == std::string::npos, "with the switch off no instruction file is loaded");
+        expect(!rb.results.empty() && rb.results[0].find("deep rule") == std::string::npos, "and none is attached on read");
+        fs::remove(ws / "MAIC.md");
+    }
+
     section("context files");
     {
         FakeOllama fake;

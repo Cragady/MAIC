@@ -114,6 +114,8 @@ int run_headless(const HeadlessOptions& options) {
     Settings settings = load_settings();
     if (options.model) settings.model = *options.model;
     if (options.mode) settings.mode = *options.mode;
+    if (options.system) settings.system_prompt = *options.system;
+    if (options.load_instructions) settings.load_instructions = *options.load_instructions;
     auto mode = parse_mode(settings.mode);
     if (!mode) {
         fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
@@ -148,6 +150,9 @@ int run_headless(const HeadlessOptions& options) {
     agent.compaction.keep_results = settings.compact_keep_results;
     agent.budget_tokens = settings.budget_tokens;
     agent.set_instruction_names(settings.instruction_files);
+    agent.load_instruction_files = settings.load_instructions;
+    agent.system_prefix = resolve_system_prompt(settings.system_prompt);
+    agent.reload_instructions();
     agent.set_log(log.get());
     if (options.resume) {
         LoadedSession old = load_session(*options.resume, options.fork_at.value_or(~size_t(0)));

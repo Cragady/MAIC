@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <stdexcept>
 
 namespace maic {
@@ -165,6 +166,8 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.compact_keep_results = j.value("compact_keep_results", s.compact_keep_results);
         if (s.leader == "space" || s.leader == "<space>") s.leader = " ";
         if (j.contains("instruction_files")) s.instruction_files = j["instruction_files"].get<std::vector<std::string>>();
+        s.load_instructions = j.value("load_instructions", s.load_instructions);
+        s.system_prompt = j.value("system_prompt", s.system_prompt);
         json server = j.value("server", json::object());
         s.server.listen = server.value("listen", s.server.listen);
         if (server.contains("workspaces")) {
@@ -229,6 +232,17 @@ Settings load_settings(const fs::path& workspace) {
 
 Settings load_settings() {
     return load_settings(fs::current_path());
+}
+
+std::string resolve_system_prompt(const std::string& value) {
+    if (value.empty() || value[0] != '@') return value;
+    std::string p = value.substr(1);
+    if (!p.empty() && p[0] == '~') p = std::string(std::getenv("HOME")) + p.substr(1);
+    std::ifstream in(p);
+    if (!in) throw std::runtime_error("system prompt file not found: " + p);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    while (!text.empty() && (text.back() == '\n' || text.back() == ' ')) text.pop_back();
+    return text;
 }
 
 fs::path resolve_sessions_home(const Settings& settings, const fs::path& workspace) {
@@ -305,6 +319,9 @@ void write_default_settings(bool as_json) {
         {"compact_keep_results", d.compact_keep_results},
         {"//sessions_home", "auto: a project's transcripts (it has a MAIC.md) go under sessions/projects/, others under sessions/general/. Or: general, project, a name."},
         {"instruction_files", d.instruction_files},
+        {"load_instructions", d.load_instructions},
+        {"system_prompt", d.system_prompt},
+        {"//system_prompt", "text placed first in every system prompt, or \"@~/path/to/file.md\"; independent of instruction files"},
         {"//server", "maic server: listen ADDR:PORT (TLS is required off loopback), workspaces remote sessions may open, cert/key (empty: self-signed)."},
         {"server", {{"listen", d.server.listen}, {"workspaces", json::array()}, {"cert", ""}, {"key", ""}}},
         {"providers", providers},

@@ -15,7 +15,9 @@ struct TuiOptions {
     std::optional<size_t> fork_at;  // with resume: fork from its first N records (append is then false)
     std::vector<std::filesystem::path> context;  // files attached to the conversation before the first turn
     std::string initial_prompt;
-    std::optional<bool> record;  // overrides settings.record                  // sent as the first turn (maic -p "..." --interactive); "-" reads stdin
+    std::optional<bool> record;  // overrides settings.record
+    std::optional<std::string> system;        // --system TEXT|@FILE, overrides settings.system_prompt
+    std::optional<bool> load_instructions;    // --no-instructions                  // sent as the first turn (maic -p "..." --interactive); "-" reads stdin
 };
 
 // The interactive agent: full-screen, vim-style input and navigation.

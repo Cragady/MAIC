@@ -421,6 +421,24 @@ int main() {
         unsetenv("XDG_STATE_HOME");
     }
 
+    section("system prompt setting");
+    {
+        expect(resolve_system_prompt("plain text") == "plain text", "text is used as is");
+        write_file(ws / "sp.md", "from a file\n\n");
+        expect(resolve_system_prompt("@" + (ws / "sp.md").string()) == "from a file", "@path reads the file and trims the end");
+        bool threw2 = false;
+        try {
+            resolve_system_prompt("@" + (ws / "missing.md").string());
+        } catch (const std::exception&) {
+            threw2 = true;
+        }
+        expect(threw2, "a missing @file is an error");
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { system_prompt = 'be brief', load_instructions = false }");
+        Settings s2 = load_settings(ws / "proj");
+        expect(s2.system_prompt == "be brief" && !s2.load_instructions, "settings carry system_prompt and load_instructions");
+        fs::remove(ws / "proj" / ".maic" / "settings.lua");
+    }
+
     section("instructions");
     write_file(ws / "MAIC.md", std::string(100 * 1024, 'x'));
     auto files = load_instructions(ws);

@@ -96,7 +96,11 @@ std::string Agent::instructions_text() const {
 }
 
 std::string Agent::system_prompt() const {
-    std::string prompt =
+    std::string prompt;
+    if (!system_prefix.empty()) {
+        prompt += "# Operator instructions\nThese come from the operator running MAIC and take precedence over everything below.\n" + system_prefix + "\n\n";
+    }
+    prompt +=
         "You are the agent inside MAIC, a terminal coding tool on the user's own machine. The user is a person talking "
         "to you through a vim-style interface; you work through tools. You are not the user.\n"
         "\n"
@@ -182,7 +186,8 @@ void Agent::restore(std::vector<Message> messages) {
     reload_instructions();
     prompted_instructions_ = instructions_text();
     prompted_mode_ = mode;
-    push({"system", "This session was resumed. Mode: " + std::string(mode_name(mode)) + ". " + mode_rule(mode) +
+    push({"system", (system_prefix.empty() ? "" : "# Operator instructions (take precedence)\n" + system_prefix + "\n\n") +
+                        "This session was resumed. Mode: " + std::string(mode_name(mode)) + ". " + mode_rule(mode) +
                         (prompted_instructions_.empty() ? "" : " Current standing instructions:" + prompted_instructions_)});
 }
 
@@ -656,6 +661,7 @@ std::string Agent::undo(size_t count) {
 }
 
 std::string Agent::nested_instructions(const std::filesystem::path& file) {
+    if (!load_instruction_files) return "";
     std::error_code ec;
     std::filesystem::path ws = std::filesystem::weakly_canonical(harness_.workspace(), ec);
     std::filesystem::path dir = std::filesystem::weakly_canonical(file, ec).parent_path();

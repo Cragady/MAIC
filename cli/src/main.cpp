@@ -41,6 +41,8 @@ void usage(std::ostream& out = std::cerr) {
                  "       maic -p \"prompt\" --interactive     an interactive session that opens with that prompt sent (-i)\n"
                  "       --context FILE, -C FILE            attach a text file to the conversation before the prompt; repeatable;\n"
                  "                                          FILE \"-\" reads stdin (then the prompt can't also be stdin)\n"
+                 "       --system TEXT|@FILE, -S            operator instructions placed first in the system prompt (front-loads behaviour)\n"
+                 "       --no-instructions                  load no MAIC.md / AGENTS.md anywhere; combines with --system\n"
                  "       --record / --no-record             keep a transcript or not (interactive: yes by default, or \"record\" in\n"
                  "                                          settings; -p: none by default)\n"
                  "       --append / --no-append             with -c/-r: write into the old session file, or into a new one that\n"
@@ -374,6 +376,8 @@ int main(int argc, char** argv) {
             else if (a == "--no-append") append = false;
             else if (a == "--fork-at") tui.fork_at = headless.fork_at = std::stoul(value("--fork-at"));
             else if (a == "--interactive" || a == "-i") interactive = true;
+            else if (a == "--system" || a == "-S") tui.system = headless.system = value("--system");
+            else if (a == "--no-instructions") tui.load_instructions = headless.load_instructions = false;
             else if (a == "--context" || a == "-C") {
                 std::string f = value("--context");
                 tui.context.push_back(f);

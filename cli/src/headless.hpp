@@ -15,6 +15,8 @@ struct HeadlessOptions {
     bool think = false;
     std::optional<std::filesystem::path> resume;
     std::vector<std::filesystem::path> context;  // files attached to the turn before the prompt ("-" = stdin)
+    std::optional<std::string> system;
+    std::optional<bool> load_instructions;
     bool record = false;  // write a transcript at all (a one-shot -p leaves nothing behind by default)
     bool append = false;  // with resume: write into the old file (implies record) rather than a new one that points at it
     std::optional<size_t> fork_at;  // with resume: fork from its first N records (append is then false)

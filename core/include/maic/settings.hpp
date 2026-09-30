@@ -61,6 +61,8 @@ struct Settings {
     std::vector<Provider> providers = default_providers();
     std::map<std::string, Style> styles;  // by role, see docs/settings.md; defaults are filled in
     std::vector<std::string> instruction_files = {"MAIC.md", "AGENTS.md"};
+    bool load_instructions = true;  // false: no MAIC.md / AGENTS.md anywhere
+    std::string system_prompt;      // text placed first in the system prompt; "@path" reads a file (~ expands)
     ServerSettings server;
 
     const Style& style(const std::string& name) const;
@@ -71,6 +73,9 @@ std::filesystem::path settings_path();
 // Loads the layers for `workspace` over the defaults. Missing files are fine; a broken one throws with the line.
 Settings load_settings(const std::filesystem::path& workspace);
 Settings load_settings();  // for the current directory
+
+// The text of a system_prompt setting or --system argument: as given, or the file's contents for "@path".
+std::string resolve_system_prompt(const std::string& value);
 
 // Resolves "auto" for a workspace: the project home when a MAIC.md is in effect there, else general.
 std::filesystem::path resolve_sessions_home(const Settings& settings, const std::filesystem::path& workspace);

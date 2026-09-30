@@ -140,6 +140,12 @@ public:
     // Names of instruction files (MAIC.md, AGENTS.md, ...) looked for beside files the model reads.
     void set_instruction_names(std::vector<std::string> names);
 
+    // Operator text placed at the very top of the system prompt, before MAIC's own briefing. Independent of
+    // instruction files: use both, either, or neither.
+    std::string system_prefix;
+    // When false, no MAIC.md / AGENTS.md is loaded or attached, anywhere.
+    bool load_instruction_files = true;
+
     // Token accounting: the last model call and this session's running totals. Thread-safe.
     struct UsageReport {
         Usage last;
@@ -153,7 +159,9 @@ public:
 
     // MAIC.md / AGENTS.md files in effect. Re-read from disk at the start of every turn.
     const std::vector<InstructionFile>& instructions() const { return instructions_; }
-    void reload_instructions() { instructions_ = load_instructions(harness_.workspace(), instruction_names_); }
+    void reload_instructions() {
+        instructions_ = load_instruction_files ? load_instructions(harness_.workspace(), instruction_names_) : std::vector<InstructionFile>{};
+    }
 
     // The model's current plan, replaced whole by every todo call; cleared with the conversation.
     const std::vector<TodoItem>& todo() const { return todo_; }
