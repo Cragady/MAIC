@@ -89,6 +89,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [harness.md](docs/harness.md) — the safety harness: tripwire (built) and planned layers.
 * [settings.md](docs/settings.md) — the settings file: model providers (local and remote), styles, instruction files.
 * [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.
+* [opencode-quick-wins.md](docs/opencode-quick-wins.md) — 23 small, ranked improvements to take from opencode, with file pointers.
 * [cleanroom.md](docs/cleanroom.md) — what may go into MAIC, where the design came from, third-party licenses.
 * [comfyui-setup.md](docs/comfyui-setup.md) — ComfyUI in its own venv, models on the external drive.
 * [local-llm-benchmarks.md](docs/local-llm-benchmarks.md) — measured tok/s per model and runtime.
