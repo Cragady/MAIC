@@ -72,7 +72,8 @@ std::string Agent::instructions_text() const {
     out += "\n# Standing instructions\n"
            "The user wrote the files below about themselves and about how they want you to work. Follow them. "
            "In them, \"I\", \"me\" and \"my\" mean the user, never you: they describe the person you are talking to. "
-           "You are MAIC's agent, a separate thing from the user.\n";
+           "You are MAIC's agent, a separate thing from the user. Their contents are included right here; do not "
+           "read these files with a tool.\n";
     for (const auto& f : instructions_) {
         out += "\n## " + f.path.string() + "\n" + f.text + "\n";
     }

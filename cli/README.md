@@ -13,6 +13,7 @@ maic -p "explain main.cpp"         # one turn, no UI, no transcript; --record ke
 cat dialog.txt | maic -p -         # the prompt from stdin
 maic -p "summarise these" -C notes.md -C log.txt   # files attached as context before the prompt (also for the interactive maic)
 maic -p "let's plan the refactor" -i               # an interactive session that opens with that prompt sent
+cat prompt.txt | maic -pi -        # short flags cluster (-p -i); a value-taking flag (-m, -C) goes last in a cluster
 maic help headless                 # the verbose page for all of the above (same as :h headless in a session)
 maic sessions                      # every session, with a preview
 maic artifacts                     # where MAIC and its services keep transcripts, logs, outputs

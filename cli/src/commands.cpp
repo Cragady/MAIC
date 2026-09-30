@@ -68,7 +68,7 @@ const std::vector<Topic>& topics() {
          "**Context.** `--context FILE` (`-C`) attaches a text file to the conversation before the prompt, labelled with its path; repeat it for several; `-C -` reads stdin (then the prompt must be an argument). Combine with `-c` / `-r` to put a file in front of an old conversation. Binary files are refused. The same flag works for the interactive `maic`.\n\n"
          "**Transcripts.** A headless run keeps no transcript unless `--record` (with `-c`/`-r`: a new file that points at the old one, a fork) or `--append` (writes into the old file).\n\n"
          "**--interactive** (`-i`) with `-p` opens an interactive session that starts with the prompt already sent. It follows interactive rules whatever the order of the flags: a transcript is always kept, `-c`/`-r` continue in the same file unless `--no-append`; `--record` is redundant and `--json` is ignored.\n\n"
-         "`maic help TOPIC` prints these pages outside a session."},
+         "Short flags cluster: `maic -pi -` is `-p -i -`; a flag that takes a value (`-m`, `-C`) goes last in a cluster. `maic help TOPIC` prints these pages outside a session."},
         {"queue", {"queued", "mid-turn", "interrupt"}, "sending while the agent works",
          "*queue*\n"
          "Sending while the agent is busy queues the message; it reaches the model at its next step in the current turn. `:w now` delivers it immediately: the current output is abandoned and the model is asked again with your message included. Messages still queued when a turn ends start the next turn. Ctrl-C interrupts the turn instead."},

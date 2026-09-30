@@ -11,6 +11,7 @@
 #include "tui.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <deque>
 #include <fstream>
@@ -221,7 +222,18 @@ int cmd_settings(const std::vector<std::string>& args) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::vector<std::string> args(argv + 1, argv + argc);
+    std::vector<std::string> args;
+    // Clustered short flags: -pi is -p -i. A flag that takes a value (-m, -C) must come last in a cluster.
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        bool cluster = a.size() > 2 && a[0] == '-' && a[1] != '-' &&
+                       std::all_of(a.begin() + 1, a.end(), [](unsigned char c) { return std::isalpha(c); });
+        if (!cluster) {
+            args.push_back(a);
+            continue;
+        }
+        for (size_t j = 1; j < a.size(); ++j) args.push_back(std::string("-") + a[j]);
+    }
     try {
         // Options that apply to the agent (TUI or headless).
         maic::TuiOptions tui;
@@ -243,7 +255,10 @@ int main(int argc, char** argv) {
             else if (a == "--mode") tui.mode = headless.mode = value("--mode");
             else if (a == "-p" || a == "--print") {
                 print = true;
-                if (i + 1 < args.size() && args[i + 1].rfind("--", 0) != 0) headless.prompt = args[++i];
+                // The prompt is the next token unless that is another flag; a bare "-" means stdin.
+                if (i + 1 < args.size() && (args[i + 1] == "-" || args[i + 1][0] != '-')) headless.prompt = args[++i];
+            } else if (a == "-" && print && headless.prompt.empty()) {
+                headless.prompt = "-";  // `maic -pi -`: the stdin marker after other flags
             } else if (a == "-c" || a == "--continue") continue_last = true;
             else if (a == "-r" || a == "--resume") {
                 resume = true;
@@ -269,6 +284,11 @@ int main(int argc, char** argv) {
                 std::cout << "maic " MAIC_VERSION "\n";
                 return 0;
             } else rest.push_back(a);
+        }
+        // `maic -pi "text"` or `maic -pC file "text"`: with -p given and no prompt yet, one leftover word is the prompt.
+        if (print && headless.prompt.empty() && rest.size() == 1) {
+            headless.prompt = rest[0];
+            rest.clear();
         }
         if (continue_last || resume) tui.resume = headless.resume = pick_session(continue_last, resume_id);
         if (append) tui.append = headless.append = *append;
