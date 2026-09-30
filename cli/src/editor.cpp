@@ -55,11 +55,47 @@ void Editor::set_text(std::string text) {
     clamp_normal();
 }
 
+void Editor::replace_text(std::string text) {
+    save_undo();
+    set_text(std::move(text));
+}
+
 void Editor::clear() {
     text_.clear();
     cursor_ = 0;
     pending_.clear();
     count_ = 0;
+    undo_.clear();
+    redo_.clear();
+}
+
+void Editor::save_undo() {
+    if (!undo_.empty() && undo_.back().first == text_) {
+        undo_.back().second = cursor_;
+        return;
+    }
+    undo_.push_back({text_, cursor_});
+    redo_.clear();
+    if (undo_.size() > 200) undo_.erase(undo_.begin());
+}
+
+void Editor::undo() {
+    while (!undo_.empty() && undo_.back().first == text_) undo_.pop_back();  // skip no-op snapshots
+    if (undo_.empty()) return;
+    redo_.push_back({text_, cursor_});
+    text_ = undo_.back().first;
+    cursor_ = std::min(undo_.back().second, text_.size());
+    undo_.pop_back();
+    clamp_normal();
+}
+
+void Editor::redo() {
+    if (redo_.empty()) return;
+    undo_.push_back({text_, cursor_});
+    text_ = redo_.back().first;
+    cursor_ = std::min(redo_.back().second, text_.size());
+    redo_.pop_back();
+    clamp_normal();
 }
 
 void Editor::remember(const std::string& text) {
@@ -96,7 +132,8 @@ void Editor::clamp_normal() {
     if (mode_ != Mode::Insert && mode_ != Mode::Command && cursor_ >= text_.size() && !text_.empty()) cursor_ = utf8_prev(text_, text_.size());
 }
 
-void Editor::enter_insert(size_t at) {
+void Editor::enter_insert(size_t at, bool snapshot) {
+    if (snapshot) save_undo();  // the whole insert session undoes as one step
     cursor_ = std::min(at, text_.size());
     mode_ = Mode::Insert;
 }
@@ -194,12 +231,8 @@ size_t Editor::motion_target(const std::string& k, int n, bool& inclusive) {
 Editor::Result Editor::handle(const Event& e) {
     Result result;
     switch (mode_) {
-        case Mode::Insert:
-            if (!handle_insert(e) && e == Event::Return) result.action = Action::Submit;
-            break;
-        case Mode::Normal:
-            if (!handle_normal(e) && e == Event::Return) result.action = Action::Submit;
-            break;
+        case Mode::Insert: handle_insert(e); break;
+        case Mode::Normal: handle_normal(e); break;
         case Mode::Visual:
         case Mode::VisualLine: handle_visual(e); break;
         case Mode::Command: handle_command(e, result); break;
@@ -211,12 +244,9 @@ bool Editor::handle_insert(const Event& e) {
     const std::string& k = e.input();
     if (e == Event::Escape) return escape(), true;
     if (e == Event::Return) {
-        // Backslash-Enter continues on a new line (terminals can't tell Shift-Enter or Ctrl-J from Enter).
-        if (cursor_ > 0 && text_[cursor_ - 1] == '\\') {
-            text_[cursor_ - 1] = '\n';
-            return true;
-        }
-        return false;  // the app submits
+        text_.insert(cursor_, "\n");
+        ++cursor_;
+        return true;
     }
     if (e == Event::Backspace) {
         if (cursor_ > 0) delete_range(utf8_prev(text_, cursor_), cursor_, false);
@@ -248,7 +278,7 @@ bool Editor::handle_insert(const Event& e) {
 bool Editor::handle_normal(const Event& e) {
     const std::string& k = e.input();
     if (e == Event::Escape) return pending_.clear(), count_ = 0, true;
-    if (e == Event::Return) return false;  // the app submits
+    if (k == "\x12") return redo(), true;  // Ctrl-R
 
     if (k.size() == 1 && std::isdigit(static_cast<unsigned char>(k[0])) && (k != "0" || count_ > 0)) {
         count_ = std::min(count_ * 10 + (k[0] - '0'), 9999);
@@ -271,7 +301,7 @@ bool Editor::handle_normal(const Event& e) {
             *register_ = text_;
             text_.clear();
             cursor_ = 0;
-            if (op == "c") mode_ = Mode::Insert;
+            if (op == "c") enter_insert(0, false);
             return true;
         }
         static const char* motions[] = {"w", "b", "e", "h", "l", "0", "^", "$", "j", "k"};
@@ -297,8 +327,8 @@ bool Editor::handle_normal(const Event& e) {
             }
             save_undo();
             delete_range(start, end, true);
-            if (op == "c") mode_ = Mode::Insert;
-            clamp_normal();
+            if (op == "c") enter_insert(cursor_, false);
+            else clamp_normal();
             return true;
         }
         return true;  // unknown pair: dropped, like vim
@@ -331,19 +361,16 @@ bool Editor::handle_normal(const Event& e) {
         size_t end = cursor_;
         while (end < text_.size() && text_[end] != '\n') ++end;
         delete_range(cursor_, end, true);
-        if (k == "C") mode_ = Mode::Insert;
-        return clamp_normal(), true;
+        if (k == "C") enter_insert(cursor_, false);
+        else clamp_normal();
+        return true;
     }
     if (k == "S") {
         save_undo();
         text_.clear();
-        return enter_insert(0), true;
+        return enter_insert(0, false), true;
     }
-    if (k == "u") {
-        std::swap(text_, undo_.first);
-        std::swap(cursor_, undo_.second);
-        return clamp_normal(), true;
-    }
+    if (k == "u") return undo(), true;
     if (k == ":" || k == "/") {
         begin_command(k[0]);
         return true;
@@ -351,7 +378,8 @@ bool Editor::handle_normal(const Event& e) {
     if (k == "\x10") return history_step(-1), true;
     if (k == "\x0e") return history_step(1), true;
     static const char* motions[] = {"w", "b", "e", "h", "l", "0", "^", "$", "j", "k"};
-    std::string key = e == Event::ArrowLeft ? "h" : e == Event::ArrowRight ? "l" : e == Event::ArrowUp ? "k" : e == Event::ArrowDown ? "j" : k;
+    std::string key = e == Event::ArrowLeft ? "h" : e == Event::ArrowRight ? "l" : e == Event::ArrowUp ? "k" : e == Event::ArrowDown ? "j"
+                      : e == Event::Return ? "j" : k;
     if (std::find(std::begin(motions), std::end(motions), key) != std::end(motions)) {
         bool inclusive = false;
         motion_target(key, n, inclusive);
@@ -384,8 +412,9 @@ bool Editor::handle_visual(const Event& e) {
         }
         save_undo();
         delete_range(a, b, true);
-        mode_ = k == "c" ? Mode::Insert : Mode::Normal;
-        return clamp_normal(), true;
+        if (k == "c") enter_insert(cursor_, false);
+        else mode_ = Mode::Normal, clamp_normal();
+        return true;
     }
     if (k == "o") return std::swap(anchor_, cursor_), true;
     if (k == "p") {

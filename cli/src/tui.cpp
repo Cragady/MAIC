@@ -31,7 +31,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <future>
+#include <iterator>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -226,6 +228,7 @@ private:
     void run_shell(const std::string& command);
     void set_model(const std::string& model);
     void set_focus(Focus f);
+    void edit_externally();
     void quit();
     void shutdown();
 
@@ -251,6 +254,7 @@ private:
 
     std::string status_msg_;
     bool ctrl_w_pending_ = false;
+    bool ctrl_x_pending_ = false;
     bool quit_armed_ = false;
     bool ctrl_c_is_key_ = false;
     int view_height_ = 10;
@@ -262,7 +266,7 @@ void App::welcome() {
     std::string files;
     for (const auto& f : agent_.instructions()) files += (files.empty() ? "" : ", ") + f.path.string();
     view_.append(Kind::Notice, "session transcript: " + log_.path().string() + (files.empty() ? "" : "\ninstructions: " + files));
-    view_.append(Kind::Notice, "Type and press Enter (or :w). Esc = normal mode: j/k scroll, Ctrl-W k = enter the conversation window, :help for everything.");
+    view_.append(Kind::Notice, "Press i to type, Alt+Enter (or :w) to send, Enter for a new line. Esc = normal mode: j/k scroll, u/Ctrl-R undo/redo, :e opens nvim, Ctrl-W k = conversation window, :help for everything.");
     if (agent_.remote()) view_.append(Kind::Error, "This model runs off this machine: prompts, files the agent reads and command output are sent to it.");
     try {
         for (const auto& s : load_services(root_dir() / "services")) {
@@ -415,6 +419,11 @@ bool App::handle(Event e) {
     // A fast Esc followed by a key arrives as one Alt-sequence ("\x1b:"). Vim users type that constantly,
     // so split it back into Esc plus the keys. Real escape sequences (CSI "\x1b[", SS3 "\x1bO") pass through.
     const std::string& raw = e.input();
+    // Alt+Enter sends (nvim has no default Alt mappings, so nothing is lost). Terminals send it as Esc + Enter.
+    if (raw == "\x1b\r" || raw == "\x1b\n") {
+        if (!asking()) submit(editor_.text(), false);
+        return true;
+    }
     if (!e.is_mouse() && raw.size() >= 2 && raw[0] == '\x1b' && raw[1] != '[' && raw[1] != 'O') {
         handle(Event::Escape);
         for (size_t i = 1; i < raw.size(); i = utf8_next(raw, i)) handle(Event::Character(raw.substr(i, utf8_next(raw, i) - i)));
@@ -458,6 +467,16 @@ bool App::handle(Event e) {
     }
     if (raw == "\x17" && (focus_ == Focus::Conversation || editor_.mode() != Editor::Mode::Insert || editor_.empty())) {
         ctrl_w_pending_ = true;
+        return true;
+    }
+    // Ctrl-X Ctrl-E: edit the input in nvim, the shell convention.
+    if (ctrl_x_pending_) {
+        ctrl_x_pending_ = false;
+        if (raw == "\x05") edit_externally();
+        return true;
+    }
+    if (raw == "\x18") {
+        ctrl_x_pending_ = true;
         return true;
     }
 
@@ -509,8 +528,7 @@ bool App::handle(Event e) {
         if (e == Event::PageDown) return view_.page(1), true;
     }
     auto r = editor_.handle(e);
-    if (r.action == Editor::Action::Submit) submit(editor_.text(), false);
-    else if (r.action == Editor::Action::Command) run_command(r.text);
+    if (r.action == Editor::Action::Command) run_command(r.text);
     else if (r.action == Editor::Action::Search) {
         view_.search(r.text);
         set_focus(Focus::Conversation);
@@ -626,6 +644,35 @@ void App::run_shell(const std::string& command) {
     });
 }
 
+// Opens the input in $VISUAL / $EDITOR (default nvim) as a markdown file and loads it back on exit.
+void App::edit_externally() {
+    char path[] = "/tmp/maic-input-XXXXXX.md";
+    int fd = mkstemps(path, 3);
+    if (fd < 0) {
+        post(Kind::Error, "can't create a temporary file for the editor");
+        return;
+    }
+    const std::string& current = editor_.text();
+    [[maybe_unused]] ssize_t w = write(fd, current.data(), current.size());
+    close(fd);
+    const char* editor = std::getenv("VISUAL");
+    if (!editor || !*editor) editor = std::getenv("EDITOR");
+    if (!editor || !*editor) editor = "nvim";
+    std::string command = std::string(editor) + " " + path;
+    int rc = 0;
+    screen_.WithRestoredIO([&] { rc = std::system(command.c_str()); })();
+    std::ifstream in(path);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    unlink(path);
+    while (!text.empty() && (text.back() == '\n' || text.back() == ' ')) text.pop_back();
+    if (rc != 0) {
+        post(Kind::Error, std::string(editor) + " exited with status " + std::to_string(rc) + "; input unchanged");
+        return;
+    }
+    editor_.replace_text(text);
+    editor_.escape();
+}
+
 void App::set_model(const std::string& model) {
     auto [provider, name] = resolve_model(agent_.providers, model);
     agent_.model = model;
@@ -656,10 +703,13 @@ void App::run_command(const std::string& line) {
             quit();
         } else if (cmd == "w" || cmd == "write" || cmd == "send") {
             submit(editor_.text(), arg == "now" || arg == "!");
+        } else if (cmd == "e" || cmd == "edit" || cmd == "nvim") {
+            edit_externally();
         } else if (cmd == "h" || cmd == "help") {
             post(Kind::Notice,
-                 "INPUT (a small vim): i a I A o O · h j k l w b e 0 $ · x X D C S · d/c/y + motion · dd cc yy · v V · p P · u · Enter or :w sends\n"
-                 "  \\ then Enter = new line · Ctrl-W/U delete word/line · Ctrl-Y paste register · Ctrl-P/N or ↑↓ prompt history\n"
+                 "INPUT (a small vim, starts in normal mode): Alt+Enter or :w sends · Enter = new line · :e or Ctrl-X Ctrl-E edits in nvim\n"
+                 "  i a I A o O · h j k l w b e 0 $ · x X D C S · d/c/y + motion · dd cc yy · v V · p P · u undo · Ctrl-R redo\n"
+                 "  insert mode: Ctrl-W/U delete word/line · Ctrl-Y paste register · Ctrl-P/N or ↑↓ prompt history\n"
                  "CONVERSATION WINDOW: Ctrl-W k enters it, Ctrl-W j (or Esc, i, Enter) returns · j k h l w b e 0 $ gg G Ctrl-D/U/F/B\n"
                  "  v/V select · y yank (also to the clipboard) · yy line · /pattern n N search · :cmd works there too\n"
                  "FROM INPUT NORMAL MODE: j/k Ctrl-D/U/F/B G scroll the conversation · scroll wheel too (insert mode: prompt history)\n"

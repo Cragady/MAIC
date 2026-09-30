@@ -21,15 +21,17 @@ Editor::Result keys(Editor& ed, const std::string& seq) {
         else if (seq.compare(i, 4, "<bs>") == 0) e = Event::Backspace, i += 4;
         else if (seq.compare(i, 5, "<c-w>") == 0) e = Event::Character("\x17"), i += 5;
         else if (seq.compare(i, 5, "<c-u>") == 0) e = Event::Character("\x15"), i += 5;
+        else if (seq.compare(i, 5, "<c-r>") == 0) e = Event::Character("\x12"), i += 5;
         else e = Event::Character(seq.substr(i, utf8_next(seq, i) - i)), i = utf8_next(seq, i);
         last = ed.handle(e);
     }
     return last;
 }
 
+// A fresh editor with `typed` entered in insert mode (the editor itself starts in normal mode).
 Editor fresh(const std::string& typed = "") {
     Editor ed(&reg);
-    keys(ed, typed);
+    keys(ed, "i" + typed);
     return ed;
 }
 
@@ -43,18 +45,23 @@ void check(const std::string& typed, const std::string& then, const std::string&
 
 int main() {
     section("insert mode");
+    {
+        Editor ed(&reg);
+        expect(ed.mode() == Editor::Mode::Normal, "starts in normal mode");
+    }
     check("hello world", "", "hello world", "typing");
     check("hello world", "<bs><bs>", "hello wor", "backspace");
     check("hello world", "<c-w>", "hello ", "Ctrl-W deletes a word");
     check("hello world", "<c-u>", "", "Ctrl-U deletes the line");
     check("héllo wörld", "<bs>", "héllo wörl", "backspace is UTF-8 aware");
     {
-        Editor ed = fresh("line one\\");
-        keys(ed, "<cr>line two");
-        expect(ed.text() == "line one\nline two", "backslash-Enter inserts a newline");
-        Editor sender = fresh("send me");
-        auto r = keys(sender, "<cr>");
-        expect(r.action == Editor::Action::Submit, "Enter submits");
+        Editor ed = fresh("line one");
+        auto r = keys(ed, "<cr>line two");
+        expect(ed.text() == "line one\nline two" && r.action == Editor::Action::None, "Enter inserts a newline and sends nothing");
+        keys(ed, "<esc>gg");
+        expect(ed.cursor() == 0, "gg goes to the start");
+        keys(ed, "<cr>");
+        expect(ed.cursor() == 9, "Enter in normal mode moves down a line");
     }
 
     section("normal mode motions and operators");
@@ -67,6 +74,30 @@ int main() {
     check("one two three", "<esc>03x", " two three", "3x");
     check("one two three", "<esc>dd", "", "dd clears");
     check("one two three", "<esc>ddu", "one two three", "u undoes");
+    {
+        Editor ed = fresh("one two three");
+        keys(ed, "<esc>0dwdw");
+        expect(ed.text() == "three", "two deletes");
+        keys(ed, "u");
+        expect(ed.text() == "two three", "u undoes the last one");
+        keys(ed, "u");
+        expect(ed.text() == "one two three", "u again undoes the first");
+        keys(ed, "<c-r>");
+        expect(ed.text() == "two three", "Ctrl-R redoes");
+        keys(ed, "<c-r><c-r>");
+        expect(ed.text() == "three", "redo stops at the end of the stack");
+        keys(ed, "0x");
+        keys(ed, "<c-r>");
+        expect(ed.text() == "hree", "a new change clears the redo stack");
+        Editor ins = fresh("abc");
+        keys(ins, "<esc>A def<esc>A ghi<esc>u");
+        expect(ins.text() == "abc def", "an insert session undoes as one step");
+        keys(ins, "u");
+        expect(ins.text() == "abc", "and the earlier session as another");
+        Editor cw = fresh("one two");
+        keys(cw, "<esc>0cwONE<esc>u");
+        expect(cw.text() == "one two", "cw and its typing undo together");
+    }
     check("one two three", "<esc>0ea!<esc>", "one! two three", "e then a inserts after the word end");
     check("one two three", "<esc>Ino <esc>", "no one two three", "I inserts at the start");
     check("one two three", "<esc>A!<esc>", "one two three!", "A appends at the end");

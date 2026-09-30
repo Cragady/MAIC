@@ -29,12 +29,12 @@ The strip above the input shows the agent mode, the model, whether it is local o
 
 ## Keys
 
-The input starts in insert mode. Cursor: a bar in insert mode, a block in normal mode.
+The input starts in normal mode, like opening vim: `i` to type. Cursor: a bar in insert mode, a block in normal mode. **Alt+Enter** (or `:w`) sends from any mode; **Enter** is a newline. nvim has no default Alt mappings, so nothing is lost.
 
 | Where | Keys |
 | :--- | :--- |
-| insert | type; **Enter** or `:w` sends; **`\` then Enter** starts a new line; **Esc** to normal; Ctrl-W / Ctrl-U delete word / line; Ctrl-Y pastes the register; ↑ ↓ or Ctrl-P / Ctrl-N prompt history |
-| normal (input) | `i a I A o O` insert; `h j k l w b e 0 ^ $` move; `x X D C S` edit; `d c y` + motion, `dd cc yy`; `v V` select; `p P` paste; `u` undo; counts (`3w`); **Enter** sends |
+| insert | type; **Enter** new line; **Esc** to normal; Ctrl-W / Ctrl-U delete word / line; Ctrl-Y pastes the register; ↑ ↓ or Ctrl-P / Ctrl-N prompt history |
+| normal (input) | `i a I A o O` insert; `h j k l w b e 0 ^ $` move (Enter = down a line); `x X D C S` edit; `d c y` + motion, `dd cc yy`; `v V` select; `p P` paste; `u` undo, **Ctrl-R** redo (multi-level; an insert session is one step); counts (`3w`); `:e` or **Ctrl-X Ctrl-E** opens the input in `$VISUAL` / `$EDITOR` / nvim as markdown and loads it back when you quit |
 | normal (input empty) | `j k` Ctrl-D/U Ctrl-F/B `G` scroll the conversation without leaving the input; `v` / `V` jump into the conversation window selecting |
 | conversation window | **Ctrl-W k** enters, **Ctrl-W j** (or Esc, `i`, Enter) returns; `j k h l w b e 0 $ gg G` Ctrl-D/U/F/B move; `v` / `V` select; `y` yanks (to the register **and** the system clipboard); `yy` a line; `/pattern` then `n` / `N` search (smart case); `o` swaps selection ends |
 | anywhere | **Shift-Tab** cycles the mode; **Ctrl-C** interrupts the agent, else stops a `!command`, else clears the input, else (twice) quits; scroll wheel scrolls the conversation (in insert mode: prompt history) |
@@ -50,7 +50,8 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 
 | Command | Does |
 | :--- | :--- |
-| `:w` | send the input. `:w now` sends immediately even while the agent is working (see below) |
+| `:w` | send the input (same as Alt+Enter). `:w now` sends immediately even while the agent is working (see below) |
+| `:e` | edit the input in nvim (`$VISUAL`, then `$EDITOR`, then `nvim`); a non-zero exit leaves the input unchanged |
 | `:mode manual\|auto-read\|edit\|auto\|plan` | set the agent mode |
 | `:model NAME` | switch model (when idle): `qwen3.5:9b`, `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists providers |
 | `:models` | models the Ollama server has |
