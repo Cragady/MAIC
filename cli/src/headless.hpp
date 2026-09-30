@@ -18,6 +18,7 @@ struct HeadlessOptions {
     std::optional<std::string> system;
     std::optional<bool> load_instructions;
     std::vector<std::string> bans;
+    std::vector<std::string> ban_patterns;
     std::optional<std::string> harness;
     bool accept_dumb_auto = false;
     bool record = false;  // write a transcript at all (a one-shot -p leaves nothing behind by default)

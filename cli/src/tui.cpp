@@ -25,6 +25,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <regex.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -257,8 +258,16 @@ public:
     // The current provider's `sampling` settings table, merged into every request.
     void apply_sampling() {
         auto [provider, name] = resolve_model(agent_.providers, agent_.model);
-        agent_.sampling = provider.options.value("sampling", nlohmann::json());
+        nlohmann::json s = settings_.sampling.is_object() ? settings_.sampling : nlohmann::json::object();
+        nlohmann::json per_provider = provider.options.value("sampling", nlohmann::json::object());
+        for (const auto& [k, v] : per_provider.items()) s[k] = v;
+        for (const auto& [k, v] : live_sampling_.items()) {
+            if (v.is_null()) s.erase(k);
+            else s[k] = v;
+        }
+        agent_.sampling = s;
     }
+    nlohmann::json live_sampling_ = nlohmann::json::object();  // :sampling changes, over the settings
     std::string transcript_path() const { return log_->path().string(); }
     std::string exit_note() const { return exit_note_; }
     void send(const std::string& text) { submit(text, false); }
@@ -1427,11 +1436,32 @@ void App::run_command(const std::string& line) {
             if (sub.empty() || sub == "list") {
                 std::string out = "banned strings (" + std::to_string(b.strings.size()) + "):";
                 for (size_t i = 0; i < b.strings.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". \"" + b.strings[i] + "\"";
+                out += "\nbanned patterns (" + std::to_string(b.patterns.size()) + ", POSIX extended regex, window " + std::to_string(b.window) + "):";
+                for (size_t i = 0; i < b.patterns.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". /" + b.patterns[i] + "/";
                 out += "\nbanned tokens (" + std::to_string(b.tokens.size()) + "):";
                 for (size_t i = 0; i < b.tokens.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". " + b.tokens[i].dump();
                 out += "\nretries " + std::to_string(b.retries) + ", then replaced by \"" + b.replacement + "\"" + (b.ignore_case ? ", case-insensitive" : "") +
-                       "\n:ban add TEXT · :ban token ID|TEXT · :ban remove N · :ban tokens remove N · :ban clear · :ban retries N · :ban case on|off";
+                       "\n:ban add TEXT · :ban pattern REGEX · :ban token ID|TEXT · :ban remove N · :ban patterns remove N · :ban tokens remove N · :ban clear · :ban retries N · :ban case on|off · :ban window N";
                 post(Kind::Notice, out);
+            } else if (sub == "pattern" && !rest.empty()) {
+                regex_t re;
+                int rc = regcomp(&re, rest.c_str(), REG_EXTENDED | (b.ignore_case ? REG_ICASE : 0));
+                if (rc != 0) {
+                    char err[200];
+                    regerror(rc, &re, err, sizeof(err));
+                    post(Kind::Error, std::string("not a valid POSIX extended regex: ") + err);
+                } else {
+                    regfree(&re);
+                    b.patterns.push_back(rest);
+                    post(Kind::Notice, "banned /" + rest + "/ (from the next model call)");
+                }
+            } else if (sub == "patterns" && rest.rfind("remove ", 0) == 0) {
+                size_t n = static_cast<size_t>(std::atoi(rest.c_str() + 7));
+                if (n >= 1 && n <= b.patterns.size()) b.patterns.erase(b.patterns.begin() + static_cast<long>(n - 1)), post(Kind::Notice, "removed");
+                else post(Kind::Error, "no banned pattern " + rest.substr(7));
+            } else if (sub == "window" && !rest.empty()) {
+                b.window = std::max(8, std::atoi(rest.c_str()));
+                post(Kind::Notice, "regex hold-back window: " + std::to_string(b.window) + " characters");
             } else if (sub == "add" && !rest.empty()) {
                 b.strings.push_back(rest);
                 post(Kind::Notice, "banned \"" + rest + "\" (from the next model call)");
@@ -1449,6 +1479,7 @@ void App::run_command(const std::string& line) {
                 else post(Kind::Error, "no banned token " + rest.substr(7));
             } else if (sub == "clear") {
                 b.strings.clear();
+                b.patterns.clear();
                 b.tokens.clear();
                 post(Kind::Notice, "bans cleared");
             } else if (sub == "retries" && !rest.empty()) {
@@ -1458,7 +1489,51 @@ void App::run_command(const std::string& line) {
                 b.ignore_case = rest == "off" || rest == "ignore";
                 post(Kind::Notice, b.ignore_case ? "bans ignore case" : "bans match case");
             } else {
-                post(Kind::Error, ":ban [list] · add TEXT · token ID|TEXT · remove N · tokens remove N · clear · retries N · case on|off");
+                post(Kind::Error, ":ban [list] · add TEXT · pattern REGEX · token ID|TEXT · remove N · patterns remove N · tokens remove N · clear · retries N · case on|off · window N");
+            }
+        } else if (cmd == "sampling" || cmd == "sampler") {
+            std::istringstream a(arg);
+            std::string key, v1, v2;
+            a >> key >> v1 >> v2;
+            auto [provider, mname] = resolve_model(agent_.providers, agent_.model);
+            auto number = [](const std::string& s) {
+                nlohmann::json j = nlohmann::json::parse(s, nullptr, false);
+                return j.is_number() ? j : nlohmann::json(s);
+            };
+            if (key.empty()) {
+                std::string out = "sampling for " + agent_.model + " (" + provider.kind + "):";
+                if (agent_.sampling.empty()) out += " defaults";
+                for (const auto& [k, v] : agent_.sampling.items()) out += "\n  " + k + " = " + v.dump();
+                out += "\n:sampling KEY VALUE · :sampling xtc P [T] · :sampling unset KEY · :sampling reset";
+                if (provider.kind == "anthropic") out += "\nAnthropic's current models reject sampling parameters; nothing is sent there.";
+                else if (provider.kind == "ollama") out += "\nOllama takes temperature, top_k, top_p, min_p, seed, repeat_penalty, num_predict; it has no XTC.";
+                post(Kind::Notice, out);
+            } else if (key == "xtc") {
+                if (v1.empty()) post(Kind::Error, ":sampling xtc PROBABILITY [THRESHOLD]  (0.5 0.1 is a common start)");
+                else {
+                    live_sampling_["xtc_probability"] = number(v1);
+                    live_sampling_["xtc_threshold"] = v2.empty() ? nlohmann::json(0.1) : number(v2);
+                    apply_sampling();
+                    post(Kind::Notice, "XTC: probability " + live_sampling_["xtc_probability"].dump() + ", threshold " + live_sampling_["xtc_threshold"].dump() +
+                                           (provider.kind == "openai" ? " (sent as xtc_probability / xtc_threshold; llama.cpp server, koboldcpp and the like honour it)"
+                                                                      : " (this provider has no XTC; the keys are kept for when you switch to a llama.cpp-style server)"));
+                }
+            } else if (key == "unset" && !v1.empty()) {
+                live_sampling_.erase(v1);
+                live_sampling_[v1] = nullptr;  // masks a settings value
+                apply_sampling();
+                agent_.sampling.erase(v1);
+                post(Kind::Notice, "unset " + v1);
+            } else if (key == "reset") {
+                live_sampling_ = nlohmann::json::object();
+                apply_sampling();
+                post(Kind::Notice, "sampling back to the settings");
+            } else if (!v1.empty()) {
+                live_sampling_[key] = number(v1);
+                apply_sampling();
+                post(Kind::Notice, key + " = " + live_sampling_[key].dump() + (provider.kind == "anthropic" ? " (not sent to Anthropic)" : ""));
+            } else {
+                post(Kind::Error, ":sampling [KEY VALUE | xtc P [T] | unset KEY | reset]");
             }
         } else if (cmd == "system") {
             if (!arg.empty() && idle()) {
@@ -1552,6 +1627,7 @@ int run_tui(const TuiOptions& options) {
     if (options.system) settings.system_prompt = *options.system;
     if (options.load_instructions) settings.load_instructions = *options.load_instructions;
     settings.bans.strings.insert(settings.bans.strings.end(), options.bans.begin(), options.bans.end());
+    settings.bans.patterns.insert(settings.bans.patterns.end(), options.ban_patterns.begin(), options.ban_patterns.end());
     if (options.harness) settings.harness = *options.harness;
     if (options.accept_dumb_auto) settings.dumb_auto_ok = true;
     if (settings.harness != "smart" && settings.harness != "dumb") {

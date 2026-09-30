@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <regex.h>
+
 #include <string>
 #include <string_view>
 #include <vector>
@@ -17,14 +19,19 @@ namespace maic {
 // probability becomes minus infinity) on providers that take it: OpenAI-compatible servers such as llama.cpp,
 // vLLM and LM Studio. Ollama's own API and Anthropic have no logit bias; there a token ban given as text is
 // treated as a string ban and one given as a number is reported as unsupported.
+// Regex bans (`patterns`, POSIX extended) are matched over the same stream. A regex cannot say how much more
+// text might complete a match, so the filter keeps the last `window` characters back until more arrives or
+// the reply ends; a pattern longer than the window can slip partly onto the screen before it is cut.
 struct Bans {
     std::vector<std::string> strings;
+    std::vector<std::string> patterns;
     std::vector<nlohmann::json> tokens;  // integers (token ids) or strings (for servers that accept them)
     int retries = 3;
     std::string replacement = "[banned]";
     bool ignore_case = false;
+    int window = 64;
 
-    bool empty() const { return strings.empty() && tokens.empty(); }
+    bool empty() const { return strings.empty() && patterns.empty() && tokens.empty(); }
     nlohmann::json to_json() const;
     static Bans from_json(const nlohmann::json& j);
 };
@@ -36,6 +43,12 @@ struct Bans {
 class BanFilter {
 public:
     explicit BanFilter(const Bans& bans, bool replace_mode = false);
+    ~BanFilter();
+    BanFilter(const BanFilter&) = delete;
+    BanFilter& operator=(const BanFilter&) = delete;
+
+    // Patterns that did not compile, with the error; the rest are in force.
+    const std::vector<std::string>& bad_patterns() const { return bad_; }
 
     std::string feed(std::string_view delta);
     std::string flush();  // the held-back tail at the end of a reply (nothing when a ban triggered)
@@ -47,6 +60,7 @@ public:
 private:
     bool matches(const std::string& text, size_t at, const std::string& ban) const;
     std::string release(size_t n);
+    std::string through_patterns(std::string text, bool final);
 
     Bans bans_;
     bool replace_;
@@ -54,6 +68,10 @@ private:
     std::string clean_;
     std::string hit_;
     size_t longest_ = 0;
+    std::vector<regex_t> res_;
+    std::vector<std::string> bad_;
+    std::string rtext_;    // text past the literal stage, not yet released by the regex stage
+    size_t rscan_ = 0;     // rtext_ before this is known clean
 };
 
 }  // namespace maic

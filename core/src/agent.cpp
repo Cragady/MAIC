@@ -433,6 +433,10 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
             });
             // String bans: the reply streams through a filter that cuts before a banned string shows.
             BanFilter filter(bans, ban_attempts >= bans.retries);
+            if (!filter.bad_patterns().empty() && !warned_bad_patterns_) {
+                warned_bad_patterns_ = true;
+                for (const auto& b : filter.bad_patterns()) events.on_notice("ban pattern not in force: " + b);
+            }
             std::string thinking_seen;
             auto sink = [&](std::string_view d, bool t) {
                 if (t) {
@@ -456,6 +460,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
                                     "without that phrase or any of these: " + [&] {
                                         std::string all;
                                         for (const auto& s : bans.strings) all += (all.empty() ? "" : ", ") + ("\"" + s + "\"");
+                                        for (const auto& p : bans.patterns) all += (all.empty() ? "" : ", ") + ("anything matching /" + p + "/");
                                         return all;
                                     }() + "."});
                     events.on_notice("cut: banned phrase \"" + filter.hit() + "\"; asking again (" + std::to_string(ban_attempts) + "/" + std::to_string(bans.retries) + ")");

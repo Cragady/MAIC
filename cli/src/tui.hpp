@@ -19,6 +19,7 @@ struct TuiOptions {
     std::optional<std::string> system;        // --system TEXT|@FILE, overrides settings.system_prompt
     std::optional<bool> load_instructions;    // --no-instructions
     std::vector<std::string> bans;            // --ban STRING, repeatable
+    std::vector<std::string> ban_patterns;    // --ban-pattern REGEX, repeatable
     std::optional<std::string> harness;       // --harness smart|dumb
     bool accept_dumb_auto = false;            // --accept-dumb-auto                  // sent as the first turn (maic -p "..." --interactive); "-" reads stdin
 };

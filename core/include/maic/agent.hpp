@@ -222,6 +222,7 @@ private:
 
     std::vector<UndoPoint> undo_;
     bool warned_token_bans_ = false;
+    bool warned_bad_patterns_ = false;
     std::vector<TodoItem> todo_;
     std::vector<LuaTool> tools_;
     std::vector<std::string> tool_notices_;

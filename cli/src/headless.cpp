@@ -179,8 +179,13 @@ int run_headless(const HeadlessOptions& options) {
     agent.bans = settings.bans;
     {
         auto [provider, name] = resolve_model(agent.providers, agent.model);
-        agent.sampling = provider.options.value("sampling", nlohmann::json());
+        nlohmann::json s = settings.sampling.is_object() ? settings.sampling : nlohmann::json::object();
+        nlohmann::json per_provider = provider.options.value("sampling", nlohmann::json::object());
+        for (const auto& [k, v] : per_provider.items()) s[k] = v;
+        agent.sampling = s;
     }
+    settings.bans.patterns.insert(settings.bans.patterns.end(), options.ban_patterns.begin(), options.ban_patterns.end());
+    agent.bans = settings.bans;
     agent.set_log(log.get());
     if (options.resume) {
         LoadedSession old = load_session(*options.resume, options.fork_at.value_or(~size_t(0)));

@@ -81,7 +81,8 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:stash` / `:pop` | park the input draft and bring it back (survives restarts). `:q` with an unsent draft stashes it for you |
 | `:wq` | send, then quit when the reply is in (Ctrl-C while waiting stays) |
 | `:rename TITLE` | title the session (`maic sessions` shows it); `title_model` in settings auto-titles after the first turn |
-| `:ban add TEXT` / `:ban token ID` / `:ban list` | phrases the model must not say (cut before they show, re-asked, then replaced) and token bans (`logit_bias` on OpenAI-compatible providers). `--ban TEXT` on the command line, `bans` in settings. See `:h ban` |
+| `:ban add TEXT` / `:ban pattern REGEX` / `:ban token ID` / `:ban list` | phrases and regexes the model must not say (cut before they show, re-asked, then replaced) and token bans (`logit_bias` on OpenAI-compatible providers). `--ban`, `--ban-pattern`, `bans` in settings. See docs/bans.md |
+| `:sampling [KEY VALUE\|xtc P T]` | temperature, top_k, min_p, seed, ... for this session; `xtc` (exclude top choices) on llama.cpp-style servers. See `:h sampling` |
 | `:harness [smart\|dumb]` | the model reviewer on (default) or off. Auto under a dumb harness warns once and asks; see `:h harness` |
 | `:budget [N\|off]` | tokens used; a per-session budget that stops the agent when reached |
 | `:set timestamps on` | a time beside each message (also `timestamps` in settings) |

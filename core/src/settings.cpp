@@ -169,6 +169,9 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.load_instructions = j.value("load_instructions", s.load_instructions);
         s.system_prompt = j.value("system_prompt", s.system_prompt);
         s.harness = j.value("harness", s.harness);
+        if (j.contains("sampling") && j["sampling"].is_object()) {
+            for (const auto& [k, v] : j["sampling"].items()) s.sampling[k] = v;
+        }
         if (s.harness != "smart" && s.harness != "dumb") throw std::runtime_error(path.string() + ": harness must be \"smart\" or \"dumb\", not \"" + s.harness + "\"");
         s.reviewer_model = j.value("reviewer_model", s.reviewer_model);
         s.dumb_auto_ok = j.value("dumb_auto_ok", s.dumb_auto_ok);
@@ -177,6 +180,8 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             // Layers add strings and tokens; the scalar knobs take the nearest value.
             s.bans.strings.insert(s.bans.strings.end(), b.strings.begin(), b.strings.end());
             s.bans.tokens.insert(s.bans.tokens.end(), b.tokens.begin(), b.tokens.end());
+            s.bans.patterns.insert(s.bans.patterns.end(), b.patterns.begin(), b.patterns.end());
+            if (j["bans"].contains("window")) s.bans.window = b.window;
             if (j["bans"].contains("retries")) s.bans.retries = b.retries;
             if (j["bans"].contains("replacement")) s.bans.replacement = b.replacement;
             if (j["bans"].contains("ignore_case")) s.bans.ignore_case = b.ignore_case;
@@ -338,8 +343,10 @@ void write_default_settings(bool as_json) {
         {"//harness", "smart: a model reads the conversation and reviews every command or write the rules would allow without asking (auto, edit); dumb: the rule list alone"},
         {"reviewer_model", d.reviewer_model},
         {"dumb_auto_ok", d.dumb_auto_ok},
-        {"bans", {{"strings", nlohmann::json::array()}, {"tokens", nlohmann::json::array()}, {"retries", 3}, {"replacement", "[banned]"}, {"ignore_case", false}}},
-        {"//bans", "strings the model must not say (cut and re-asked, then replaced); tokens (ids, or text) become logit_bias on OpenAI-compatible providers"},
+        {"bans", {{"strings", nlohmann::json::array()}, {"patterns", nlohmann::json::array()}, {"tokens", nlohmann::json::array()}, {"retries", 3}, {"replacement", "[banned]"}, {"ignore_case", false}, {"window", 64}}},
+        {"//bans", "strings and POSIX regex patterns the model must not say (cut and re-asked, then replaced); tokens (ids, or text) become logit_bias on OpenAI-compatible providers. docs/bans.md"},
+        {"sampling", nlohmann::json::object()},
+        {"//sampling", "sampler keys sent with every request: temperature, top_k, top_p, min_p, seed, repeat_penalty; xtc_probability / xtc_threshold on llama.cpp-style servers only. :sampling changes them live"},
         {"//system_prompt", "text placed first in every system prompt, or \"@~/path/to/file.md\"; independent of instruction files"},
         {"//server", "maic server: listen ADDR:PORT (TLS is required off loopback), workspaces remote sessions may open, cert/key (empty: self-signed)."},
         {"server", {{"listen", d.server.listen}, {"workspaces", json::array()}, {"cert", ""}, {"key", ""}}},
