@@ -1430,6 +1430,7 @@ void App::run_command(const std::string& line) {
                 found = true;
                 if (cmd == "up") {
                     require_armed("start services");
+                    if (std::string freed = free_gpu_for(s, services()); !freed.empty()) post(Kind::Notice, freed);
                     post(Kind::Notice, "starting " + s.name + "…");
                     post(Kind::Notice, start_service(s) ? s.name + " is ready" : s.name + " is still starting");
                 } else {

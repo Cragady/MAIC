@@ -1,5 +1,9 @@
 #include "maic/status.hpp"
 
+#include "maic/http.hpp"
+
+#include <nlohmann/json.hpp>
+
 #include "maic/tripwire.hpp"
 #include "maic/vendor.hpp"
 
@@ -67,6 +71,45 @@ std::string missing_requirement(const ServiceDef& def) {
             return def.name + " needs a models directory: put a GGUF under " + path.string() + " or run maic vendor model llamacpp URL SHA256 (models_dir in settings moves it)";
         }
         return def.name + " needs " + path.string() + " (is the drive mounted?)";
+    }
+    return "";
+}
+
+std::vector<std::string> resident_models(const std::string& base_url) {
+    httplib::Client c(base_url);
+    c.set_connection_timeout(2);
+    c.set_read_timeout(5);
+    auto r = c.Get("/v1/models");
+    std::vector<std::string> out;
+    if (!r || r->status != 200) return out;
+    auto j = nlohmann::json::parse(r->body, nullptr, false);
+    for (const auto& m : j.value("data", nlohmann::json::array())) {
+        if (m.value("status", nlohmann::json::object()).value("value", "") == "loaded" && m.contains("id")) out.push_back(m["id"].get<std::string>());
+    }
+    return out;
+}
+
+std::vector<std::string> unload_resident(const std::string& base_url) {
+    std::vector<std::string> done;
+    httplib::Client c(base_url);
+    c.set_connection_timeout(2);
+    c.set_read_timeout(30);
+    for (const auto& id : resident_models(base_url)) {
+        auto r = c.Post("/models/unload", nlohmann::json{{"model", id}}.dump(), "application/json");
+        if (r && r->status == 200) done.push_back(id);
+    }
+    return done;
+}
+
+std::string free_gpu_for(const ServiceDef& def, const std::vector<ServiceDef>& services) {
+    if (!def.needs_gpu || def.name == "llamacpp") return "";
+    for (const auto& other : services) {
+        if (other.name != "llamacpp" || service_status(other).state != ServiceState::Running) continue;
+        auto freed = unload_resident("http://127.0.0.1:" + std::to_string(other.port));
+        if (freed.empty()) return "";
+        std::string names;
+        for (const auto& f : freed) names += (names.empty() ? "" : ", ") + f;
+        return "unloaded " + names + " from llamacpp to free the GPU for " + def.name + " (it reloads on the next request)";
     }
     return "";
 }

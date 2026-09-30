@@ -151,10 +151,12 @@ std::vector<size_t> menu_pick(const std::string& what, const std::vector<std::st
 
 int cmd_up(const std::vector<maic::ServiceDef>& services) {
     maic::require_armed("start services");
+    auto all = maic::load_services(maic::root_dir() / "services");
     int rc = 0;
     for (const auto& def : services) {
         try {
             if (std::string missing = maic::missing_requirement(def); !missing.empty()) throw std::runtime_error(missing);
+            if (std::string freed = maic::free_gpu_for(def, all); !freed.empty()) std::cout << freed << "\n";
             std::cout << def.name << ": starting..." << std::flush;
             bool ready = maic::start_service(def);
             std::cout << (ready ? " ready on port " + std::to_string(def.port) : " still starting, check `maic status`") << "\n";

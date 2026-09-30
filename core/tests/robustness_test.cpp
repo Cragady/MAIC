@@ -948,6 +948,42 @@ int main() {
         fs::remove(ws / "proj" / ".maic" / "settings.lua");
     }
 
+    section("freeing the GPU for a service");
+    {
+        httplib::Server srv;
+        std::vector<std::string> unloaded;
+        srv.Get("/v1/models", [](const httplib::Request&, httplib::Response& res) {
+            res.set_content(R"({"data":[{"id":"Big","status":{"value":"loaded"}},{"id":"Small","status":{"value":"unloaded"}}]})", "application/json");
+        });
+        srv.Post("/models/unload", [&](const httplib::Request& req, httplib::Response& res) {
+            unloaded.push_back(json::parse(req.body)["model"]);
+            res.set_content(R"({"success":true})", "application/json");
+        });
+        int port = srv.bind_to_any_port("127.0.0.1");
+        std::thread th([&] { srv.listen_after_bind(); });
+        srv.wait_until_ready();
+        std::string url = "http://127.0.0.1:" + std::to_string(port);
+        expect(resident_models(url) == std::vector<std::string>{"Big"}, "resident_models lists only what is loaded");
+        expect(unload_resident(url) == std::vector<std::string>{"Big"} && unloaded == std::vector<std::string>{"Big"}, "unload_resident asks the router to unload each resident model");
+        expect(resident_models("http://127.0.0.1:" + std::to_string(closed_port())).empty(), "a server that is not there has nothing resident");
+        srv.stop();
+        th.join();
+        ServiceDef comfy;
+        comfy.name = "comfyui";
+        comfy.needs_gpu = true;
+        ServiceDef lc;
+        lc.name = "llamacpp";
+        lc.port = closed_port();
+        expect(free_gpu_for(comfy, {lc}).empty(), "nothing to free when llamacpp is not running");
+        ServiceDef plain;
+        plain.name = "ollama";
+        expect(free_gpu_for(plain, {lc}).empty(), "a service that does not need the GPU frees nothing");
+        auto defs = load_services(root_dir() / "services");
+        bool marked = false;
+        for (const auto& d : defs) marked = marked || (d.name == "comfyui" && d.needs_gpu);
+        expect(marked, "services/comfyui.json is marked needs_gpu");
+    }
+
     section("tripwire scope");
     {
         fs::path session_lock = ws / "t.jsonl.tripped";

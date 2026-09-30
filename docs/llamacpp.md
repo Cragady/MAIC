@@ -12,6 +12,10 @@ A bare model name (`--model qwen3.5:9b`) never reaches Ollama by accident: it go
 
 One number, `context` (default 16384), drives both the server's `--ctx-size` (through `${MAIC_CONTEXT}` in `services/llamacpp.json`) and MAIC's usage readout and auto-compaction. Set it with `--ctx 32768` on any `maic` run (the running server is restarted to match), `maic up llamacpp --ctx 32768`, `:ctx 32768` in a session, or `context = 32768` in settings. The 4B at Q4_K_M fits 32k on an 8 GB card; the 9B is tighter. A request that still exceeds the window is compacted and retried by MAIC (see `:h compact`).
 
+## Sharing an 8 GB card with ComfyUI
+
+They take turns. `maic up comfyui` (the service is marked `needs_gpu`) first asks llama-server to unload whatever model it holds and says so; the server stays up and reloads the model on the next request, once ComfyUI has let go of its weights. A load that fails with a CUDA out-of-memory means the other side still holds the card. Two models resident at once is roadmap item 1.
+
 ## Getting a model
 
 `maic vendor model llamacpp URL SHA256` downloads a GGUF with curl into `<models_dir>/llamacpp/` (or `--into DIR`), refuses to keep it unless the SHA-256 matches, and links it as the current model. Hugging Face shows the hash under a file's LFS details; its API gives it as `?blobs=true` on the tree listing. The Ollama blobs on this machine do not work here: Ollama's Qwen3.5 files carry its own engine's metadata (three rope sections where llama.cpp expects four, and the vision tower packed into the same file), so a proper upstream GGUF is needed, for example `unsloth/Qwen3.5-4B-GGUF`'s `Qwen3.5-4B-Q4_K_M.gguf`, with `mmproj-F16.gguf` beside it for images.

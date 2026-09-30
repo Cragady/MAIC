@@ -48,5 +48,6 @@
       "description": "previews and intermediates (also cleared by ComfyUI on start)",
       "path": "${MAIC_VENDOR}/ComfyUI/temp"
     }
-  ]
+  ],
+  "needs_gpu": true
 }

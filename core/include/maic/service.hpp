@@ -29,6 +29,7 @@ struct ServiceDef {
     std::chrono::seconds ready_timeout{30};
     std::vector<ArtifactDef> artifacts;
     std::string runtime = "host";  // "host": a process MAIC starts. "docker" is reserved for a container runtime.
+    bool needs_gpu = false;        // starting it first frees the GPU: llama-server's resident model is unloaded
 };
 
 std::vector<ServiceDef> load_services(const std::filesystem::path& dir);

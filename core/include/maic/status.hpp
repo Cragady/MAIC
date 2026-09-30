@@ -40,4 +40,14 @@ std::string missing_requirement(const ServiceDef& def);
 // (the one MAIC runs for it). Empty when no service listens there: a remote provider, or one MAIC does not run.
 std::string unreachable_hint(const Provider& provider, const std::vector<ServiceDef>& services);
 
+// The models llama-server (router mode, at `base_url` such as http://127.0.0.1:8081) has resident, by id.
+// Empty when it is not running or serves a single model. `unload_resident` asks it to unload each of them
+// and returns what it unloaded; the server stays up and reloads on the next request.
+std::vector<std::string> resident_models(const std::string& base_url);
+std::vector<std::string> unload_resident(const std::string& base_url);
+
+// Before starting `def`: when it needs the GPU and llama-server holds a model, unload it. Returns a notice
+// ("" when nothing had to happen).
+std::string free_gpu_for(const ServiceDef& def, const std::vector<ServiceDef>& services);
+
 }  // namespace maic

@@ -182,6 +182,7 @@ std::vector<ServiceDef> load_services(const fs::path& dir) {
             }
             def.ready_timeout = std::chrono::seconds(j.value("ready_timeout", 30));
             def.runtime = j.value("runtime", "host");
+            def.needs_gpu = j.value("needs_gpu", false);
             if (def.runtime != "host") {
                 throw std::runtime_error("runtime '" + def.runtime + "' is not implemented yet (only \"host\")");
             }

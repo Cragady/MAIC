@@ -8,7 +8,7 @@ Status of the built parts in detail: [README.md](../README.md), [cli/README.md](
 
 ### 1. Two models at once: the second llama-server port
 
-The Story chat deep pass wants the 9B while the 4B handles the quick pass. On an 8 GB card the router keeps one model resident (`--models-max 1`), so today the deep pass runs on whatever is loaded. Plan: a second `llamacpp-2` service on port 8082 with its own models root (or the same root and `--models-max 2` on a card that fits both), a `llamacpp-2` provider, and the ComfyUI node's second server node pointed at it; `maic doctor` says which layout the card can hold. Small, unblocks the workflow. Depends on nothing.
+The Story chat deep pass wants the 9B while the 4B handles the quick pass. On an 8 GB card the router keeps one model resident (`--models-max 1`), so today the deep pass runs on whatever is loaded. Plan: a second `llamacpp-2` service on port 8082 with its own models root (or the same root and `--models-max 2` on a card that fits both), a `llamacpp-2` provider, and the ComfyUI node's second server node pointed at it; `maic doctor` says which layout the card can hold. Small, unblocks the workflow. Depends on nothing. Until then the card is shared by turn-taking: a service marked `needs_gpu` (ComfyUI) unloads llama-server's resident model when it starts, and llama-server reloads on the next request.
 
 ### 2. Rendezvous relay for the phone
 
