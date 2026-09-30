@@ -108,7 +108,7 @@ int run_headless(const HeadlessOptions& options) {
     std::filesystem::path where = options.record ? resolve_sessions_home(settings, std::filesystem::current_path()) : runtime_sessions_dir();
     std::unique_ptr<SessionLog> log;
     if (options.append && options.resume) log = std::make_unique<SessionLog>(SessionLog::Reopen{}, *options.resume);
-    else if (options.resume) log = std::make_unique<SessionLog>(SessionLog::Fork{}, *options.resume, count_records(*options.resume), "headless", where);
+    else if (options.resume) log = std::make_unique<SessionLog>(SessionLog::Fork{}, *options.resume, options.fork_at.value_or(count_records(*options.resume)), "headless", where);
     else log = std::make_unique<SessionLog>("headless", where);
     Agent agent(std::filesystem::current_path(), settings.model);
     agent.providers = settings.providers;
@@ -120,9 +120,10 @@ int run_headless(const HeadlessOptions& options) {
     agent.set_instruction_names(settings.instruction_files);
     agent.set_log(log.get());
     if (options.resume) {
-        LoadedSession old = load_session(*options.resume);
+        LoadedSession old = load_session(*options.resume, options.fork_at.value_or(~size_t(0)));
         agent.restore(old.messages);
-        fprintf(stderr, "※ resumed %s (%zu messages)%s\n", options.resume->stem().string().c_str(), old.messages.size(),
+        std::string at = options.fork_at ? ", forked at record " + std::to_string(*options.fork_at) : "";
+        fprintf(stderr, "※ resumed %s (%zu messages%s)%s\n", options.resume->stem().string().c_str(), old.messages.size(), at.c_str(),
                 options.append ? ", appending to it" : options.record ? ", writing to a new file that points at it" : ", temporary transcript");
     }
     if (agent.remote()) fprintf(stderr, "※ REMOTE model %s: prompts and tool output leave this machine\n", agent.model.c_str());

@@ -7,6 +7,17 @@
 
 namespace maic::detail {
 
+namespace {
+
+// DeepSeek's thinking models need every earlier assistant turn's reasoning_content replayed while the
+// request carries tools, or they answer 400 (api-docs.deepseek.com/guides/thinking_mode). Other servers
+// ignore the field or reject it, so it is kept and sent only for them.
+bool replays_reasoning(const std::string& model) {
+    return model.find("deepseek") != std::string::npos;
+}
+
+}  // namespace
+
 Message chat_openai(const Provider& provider, const ChatOptions& options, const std::vector<Message>& messages,
                     const nlohmann::json& tools, const TextSink& on_text, const std::atomic<bool>& cancel) {
     nlohmann::json msgs = nlohmann::json::array();
@@ -16,6 +27,9 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
         if (m.role == "assistant") {
             if (m.content.empty() && m.tool_calls.empty()) continue;
             nlohmann::json j = {{"role", "assistant"}, {"content", m.content}};
+            if (replays_reasoning(options.model) && m.raw_kind == "openai" && m.raw.is_object() && m.raw.contains("reasoning_content")) {
+                j["reasoning_content"] = m.raw["reasoning_content"];
+            }
             if (!m.tool_calls.empty()) {
                 j["tool_calls"] = nlohmann::json::array();
                 for (const auto& call : m.tool_calls) {
@@ -51,7 +65,7 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
         std::string id, name, args;
     };
     std::map<int, PartialCall> calls;
-    std::string finish, error;
+    std::string finish, error, reasoning;
 
     LineSplitter lines;
     auto on_line = [&](const std::string& line) {
@@ -73,7 +87,10 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
             for (const auto& choice : j.value("choices", nlohmann::json::array())) {
                 const auto& d = choice.value("delta", nlohmann::json::object());
                 for (const char* key : {"reasoning_content", "reasoning"}) {
-                    if (d.contains(key) && d[key].is_string() && !d[key].get<std::string>().empty()) on_text(d[key].get<std::string>(), true);
+                    if (d.contains(key) && d[key].is_string() && !d[key].get<std::string>().empty()) {
+                        on_text(d[key].get<std::string>(), true);
+                        reasoning += d[key].get<std::string>();
+                    }
                 }
                 if (d.contains("content") && d["content"].is_string()) {
                     std::string c = d["content"];
@@ -99,6 +116,10 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
     if (!error.empty()) throw std::runtime_error(provider.name + ": " + error);
 
     reply.usage.context = provider.options.value("context_window", 0);
+    if (!reasoning.empty() && replays_reasoning(options.model)) {
+        reply.raw_kind = "openai";
+        reply.raw = {{"reasoning_content", reasoning}};
+    }
     if (finish == "length" && !calls.empty()) {
         reply.content += "\n[Output hit the length limit before the tool call was complete.]";
         return reply;

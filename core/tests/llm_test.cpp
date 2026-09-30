@@ -258,6 +258,32 @@ int main() {
                "missing ids from another provider are generated and matched");
         expect(f.last_headers.find("Authorization") == f.last_headers.end(), "no key configured -> no auth header (local servers)");
     }
+    {
+        // DeepSeek's thinking models reject a tool-carrying request whose earlier assistant turns lack their
+        // reasoning_content; other OpenAI-style servers get plain turns.
+        Fake f;
+        f.serve("/chat/completions", {
+            "data: " + json{{"choices", {{{"delta", {{"reasoning_content", "think "}}}}}}}.dump() + "\n\n",
+            "data: " + json{{"choices", {{{"delta", {{"reasoning_content", "hard"}}}}}}}.dump() + "\n\n",
+            "data: " + json{{"choices", {{{"delta", {{"content", "ok"}}}}}}}.dump() + "\n\ndata: [DONE]\n\n",
+        });
+        f.start();
+        Provider ds{"deepseek", "openai", f.url(), "", "", json::object()};
+        auto sink = [](std::string_view, bool) {};
+        Message m = chat(ds, {"deepseek-reasoner"}, hello, kTools, sink, no_cancel);
+        expect(m.raw_kind == "openai" && m.raw.value("reasoning_content", "") == "think hard", "a deepseek reply keeps its reasoning as raw provider content");
+        std::vector<Message> hist = hello;
+        hist.push_back(m);
+        hist.push_back({"user", "and then?"});
+        chat(ds, {"deepseek-reasoner"}, hist, kTools, sink, no_cancel);
+        auto b = json::parse(f.last_body);
+        expect(b["messages"][2]["reasoning_content"] == "think hard" && b["messages"][2]["content"] == "ok", "and replays it to deepseek models");
+        chat(ds, {"some-other-model"}, hist, kTools, sink, no_cancel);
+        b = json::parse(f.last_body);
+        expect(!b["messages"][2].contains("reasoning_content"), "but not to other models on the same kind of provider");
+        Message other = chat(ds, {"some-other-model"}, hello, kTools, sink, no_cancel);
+        expect(other.raw_kind.empty() && other.raw.is_null(), "other models' reasoning is streamed, not stored");
+    }
 
     section("retry with backoff");
     {

@@ -1,0 +1,26 @@
+#pragma once
+
+#include <filesystem>
+#include <map>
+#include <string>
+
+namespace maic {
+
+struct RedactReport {
+    std::map<std::string, size_t> counts;  // kind -> replacements
+    size_t records = 0;                    // lines written
+    size_t malformed = 0;                  // lines that were not JSON: redacted as text and copied
+    size_t total() const;
+};
+
+// Replaces credential material in `text` with [REDACTED:<kind>] and counts each kind: private key blocks,
+// passwords in URLs and on command lines, KEY=value and "key": "value" pairs whose name suggests a secret,
+// Bearer and Basic authorization, JWTs, API keys and tokens by their vendor prefix (sk-, ghp_, xox., AKIA,
+// AIza, ...), and the opaque shapes cai's redact removes (uppercase hex, long numbers, long base64 blobs).
+std::string redact_text(const std::string& text, std::map<std::string, size_t>& counts);
+
+// Reads a session file and writes a copy with every string value redacted (record-threading fields such as
+// tool call ids aside). `in` is never modified; `out` must not exist yet and is created 0600.
+RedactReport redact_session(const std::filesystem::path& in, const std::filesystem::path& out);
+
+}  // namespace maic

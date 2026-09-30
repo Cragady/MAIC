@@ -98,8 +98,9 @@ struct LoadedSession {
     size_t records = 0;  // lines in this file (what a fork of it would point at)
 };
 
-// Follows `resumed_from` pointers, so a forked session loads its parent's history first.
-LoadedSession load_session(const std::filesystem::path& path);
+// Follows `resumed_from` pointers, so a forked session loads its parent's history first. `records` stops
+// after that many lines of the file itself (what `--fork-at N` forks from).
+LoadedSession load_session(const std::filesystem::path& path, size_t records = ~size_t(0));
 
 // Number of records (lines) in a session file.
 size_t count_records(const std::filesystem::path& path);
