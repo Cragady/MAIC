@@ -1,6 +1,6 @@
 # Ollama Setup (local-only)
 
-Ollama runs quantized LLMs on the RTX 2080. It was the first LLM backend here and stays as the optional second one: MAIC's default is the vendored llama.cpp ([llamacpp.md](llamacpp.md)), which can serve the same GGUF blobs Ollama pulled. ComfyUI still talks to Ollama through the `comfyui-ollama` nodes. Measurements are in [local-llm-benchmarks.md](local-llm-benchmarks.md).
+Ollama runs quantized LLMs on the RTX 2080. It was the first LLM backend here and stays as the optional second one: MAIC's default is the vendored llama.cpp ([llamacpp.md](llamacpp.md)), which can serve the same GGUF blobs Ollama pulled. ComfyUI talks to llama-server through MAIC's own nodes ([comfyui-setup.md](comfyui-setup.md)), not to Ollama. Measurements are in [local-llm-benchmarks.md](local-llm-benchmarks.md).
 
 ## Layout
 
@@ -111,14 +111,4 @@ Read-only review of the source at commit `1abe35e6` (the audited files are ident
 
 ## ComfyUI integration
 
-`comfyui-ollama` (`~/dev2/tools-and-things/comfyui-ollama`, [stavsap/comfyui-ollama](https://github.com/stavsap/comfyui-ollama) at `6db7560`) lets ComfyUI workflows use Ollama's models, so ComfyUI keeps no LLM copies of its own.
-
-```sh
-cd ~/dev2/tools-and-things/ComfyUI
-ln -s ~/dev2/tools-and-things/comfyui-ollama custom_nodes/comfyui-ollama
-uv pip install --python .venv "ollama==0.6.0"
-```
-
-* Reviewed: it only talks to the server URL set on its Connectivity node (default `http://127.0.0.1:11434`). No telemetry. `dotenv` in its `requirements.txt` is unused, so only `ollama` is installed.
-* **Local patch (uncommitted in the clone):** `OllamaChat` never passed its `think` input to Ollama, so Qwen3.5 always reasoned, ran out of tokens, and returned an empty reply. Fix, `CompfyuiOllama.py`, in the `client.chat(...)` call: add `think=think,`. Re-apply after pulling upstream updates if it isn't fixed there.
-* Workflow: **Story chat (Ollama)** in ComfyUI's Workflows sidebar. 4B quick pass with conversation memory; a muted 9B deep pass (Ctrl+M to enable) shares the same history and reviews the whole conversation.
+None any more. ComfyUI's Story chat runs on MAIC's llama-server through `vendor/comfyui-maic-llamacpp` ([comfyui-setup.md](comfyui-setup.md)); the third-party `comfyui-ollama` node and its `think` patch were dropped with it. The node also answers against Ollama's OpenAI-compatible endpoint if its server widget is pointed at `http://127.0.0.1:11434/v1` with an Ollama tag as the model.

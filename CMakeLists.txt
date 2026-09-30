@@ -33,10 +33,10 @@ add_subdirectory(harness)
 # MAIC's ComfyUI chat node, tested against a fake llama-server without ComfyUI.
 add_test(NAME comfy_node COMMAND python3 -m unittest -v test_node
          WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/vendor/comfyui-maic-llamacpp)
+set_tests_properties(comfy_node PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
 
 install(TARGETS maic maic-server RUNTIME DESTINATION bin)
 install(DIRECTORY server/web/ DESTINATION share/maic/server/web)
 install(DIRECTORY services/ DESTINATION share/maic/services)
 # Fallback root for a copy installed without the repository: the vendor ledger and scripts, not the checkouts.
 install(FILES vendor/manifest.json vendor/comfyui.sh vendor/ollama.sh vendor/VENDORING DESTINATION share/maic/vendor)
-install(DIRECTORY vendor/patches/ DESTINATION share/maic/vendor/patches)

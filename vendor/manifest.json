@@ -6,16 +6,7 @@
     "url": "https://github.com/Comfy-Org/ComfyUI",
     "ref": "v0.38.0",
     "install": "vendor/comfyui.sh",
-    "description": "ComfyUI in its own Python (uv, 3.13, CUDA 13 torch), API nodes and auto-launch off, models on the external drive",
-    "needs": ["comfyui-ollama"]
-  },
-  "comfyui-ollama": {
-    "kind": "submodule",
-    "path": "vendor/comfyui-ollama",
-    "url": "https://github.com/stavsap/comfyui-ollama",
-    "ref": "6db7560576e5a59488708e6be13e07b5aba2432a",
-    "patches": ["vendor/patches/comfyui-ollama-think.patch"],
-    "description": "Ollama nodes for ComfyUI (custom node), with the think= fix so Qwen3.5 answers instead of reasoning forever"
+    "description": "ComfyUI in its own Python (uv, 3.13, CUDA 13 torch), API nodes and auto-launch off, models on the external drive, MAIC's llama.cpp chat nodes linked in"
   },
   "llamacpp": {
     "kind": "submodule",

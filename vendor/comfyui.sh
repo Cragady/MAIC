@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Installs the vendored ComfyUI the way MAIC wants it: its own Python via uv (system Python untouched),
-# CUDA 13 torch, the comfyui-ollama custom node with the think patch, models on the external drive,
-# workflows kept in MAIC's artifact tree. Idempotent: run again to update packages.
+# CUDA 13 torch, MAIC's own custom nodes (the llama.cpp chat nodes, the template shelf), models on the
+# external drive, workflows kept in MAIC's artifact tree. Idempotent: run again to update packages.
 #
 #   vendor/comfyui.sh install|update|wire|check   MAIC_VENDOR=<state>/vendor  MAIC_STATE=<state>  MAIC_MODELS_DIR=<models>
-#   install/update fetch packages (network); wire only links the custom node, model paths and workflows.
+#   install/update fetch packages (network); wire only links the custom nodes, model paths and workflows.
 #
 # The checkout is $MAIC_VENDOR/ComfyUI (a symlink to the submodule, or to an adopted install).
 set -euo pipefail
@@ -17,10 +17,10 @@ command -v uv >/dev/null || { echo "uv is required (https://docs.astral.sh/uv/)"
 cd "$root"
 
 wire() {
-    # The Ollama custom node, from the vendored checkout.
+    # MAIC's chat nodes: they talk to llama-server on 127.0.0.1:8081 (vendor/comfyui-maic-llamacpp/README.md).
     mkdir -p custom_nodes
-    if [ -d "$MAIC_VENDOR/comfyui-ollama" ] && [ ! -e custom_nodes/comfyui-ollama ]; then
-        ln -s "$MAIC_VENDOR/comfyui-ollama" custom_nodes/comfyui-ollama
+    if [ ! -e custom_nodes/comfyui-maic-llamacpp ]; then
+        ln -s "$MAIC_ROOT/vendor/comfyui-maic-llamacpp" custom_nodes/comfyui-maic-llamacpp
     fi
     # Models live on the external drive, one folder per type.
     if [ -n "${MAIC_MODELS_DIR:-}" ] && [ ! -f extra_model_paths.yaml ]; then

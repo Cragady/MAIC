@@ -8,12 +8,11 @@ published with it. vendor/manifest.json is the ledger `maic vendor` reads.
         built by vendor/comfyui.sh: its own Python via uv, CUDA 13 torch,
         API nodes and auto-launch off, models on the external drive.
 
-    vendor/comfyui-ollama
-        https://github.com/stavsap/comfyui-ollama
-        pinned at 6db7560576e5a59488708e6be13e07b5aba2432a  (no release tags upstream)
-        patched by vendor/patches/comfyui-ollama-think.patch: the node passes
-        `think` through to Ollama, so Qwen3.5 answers instead of reasoning until
-        the token limit. `maic vendor add` applies it; already-applied is detected.
+    vendor/comfyui-maic-llamacpp, vendor/comfyui-maic-templates
+        Not vendored: MAIC's own ComfyUI custom nodes, written here under MAIC's
+        license. comfyui.sh links them into ComfyUI's custom_nodes/. The
+        llamacpp one talks to llama-server on 127.0.0.1:8081; it replaced the
+        third-party comfyui-ollama submodule and its think patch.
 
     vendor/lua-pins
         https://github.com/Cragady/lua-collection-nvim-pins.git

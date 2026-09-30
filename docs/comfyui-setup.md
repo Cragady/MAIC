@@ -1,6 +1,6 @@
 # ComfyUI Setup
 
-Local image generation (full-color manga shorts). Runs in its own Python so system Python stays clean. LLM work goes through Ollama: see [ollama-setup.md](ollama-setup.md).
+Local image generation (full-color manga shorts). Runs in its own Python so system Python stays clean. LLM work goes through MAIC's llama-server with the `MAIC/llm` nodes: see [llamacpp.md](llamacpp.md) and `vendor/comfyui-maic-llamacpp/README.md`.
 
 ## Layout
 
@@ -55,6 +55,10 @@ git pull && uv pip install --python .venv -r requirements.txt
 
 Custom node requirements go into the same venv: `uv pip install --python .venv -r custom_nodes/<node>/requirements.txt`.
 
+### MAIC's chat nodes
+
+`custom_nodes/comfyui-maic-llamacpp` is a link to `vendor/comfyui-maic-llamacpp` in the MAIC repo (`maic vendor add comfyui` or `vendor/comfyui.sh wire` makes it). It adds **MAIC LLM Server (llama.cpp)** and **MAIC LLM Chat** under `MAIC/llm`: a chat turn against the `llama-server` MAIC runs on `127.0.0.1:8081`, with a per-request `think` switch, JSON mode, the sampling widgets, an `extra_json` field for every other llama-server option, images for a server started with `--mmproj`, and a conversation kept per `session_id` until ComfyUI restarts. Standard library only, so nothing to install. Its README has the widget-by-widget mapping from the old Ollama nodes.
+
 ### Uninstall / reset
 
 `rm -rf .venv` removes everything installed. Nothing outside the repo depends on it.
@@ -67,7 +71,7 @@ maic down comfyui
 maic logs comfyui
 ```
 
-MAIC starts it from `services/comfyui.json` with `--disable-api-nodes --listen 127.0.0.1 --port 8188`. The Story chat workflow also needs `maic up ollama`.
+MAIC starts it from `services/comfyui.json` with `--disable-api-nodes --listen 127.0.0.1 --port 8188`. The Story chat workflow also needs `maic up llamacpp` (with a GGUF linked by `maic vendor use llamacpp`).
 
 Useful flags (add them to the `command` in `services/comfyui.json`):
 
@@ -92,7 +96,7 @@ Useful flags (add them to the `command` in `services/comfyui.json`):
 | `qwen_image_edit_2509_fp8_e4m3fn.safetensors` | `diffusion_models/` | 20.4 GB | [Comfy-Org/Qwen-Image-Edit_ComfyUI](https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI) | Lettering speech bubbles (legible text) |
 | `qwen_2.5_vl_7b_fp8_scaled.safetensors` | `text_encoders/` | 9.4 GB | [Comfy-Org/Qwen-Image_ComfyUI](https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI) | Qwen-Image-Edit text encoder |
 | `Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors` | `loras/` | 0.8 GB | [lightx2v/Qwen-Image-Lightning](https://huggingface.co/lightx2v/Qwen-Image-Lightning) | 4-step speed LoRA for Qwen-Image-Edit |
-| `qwen3.5_4b_bf16.safetensors` | `text_encoders/` | 9.3 GB | Comfy-Org/Qwen3.5 | ComfyUI-native LLM. **Superseded by Ollama** (1.5 vs 80.7 tok/s); safe to delete |
+| `qwen3.5_4b_bf16.safetensors` | `text_encoders/` | 9.3 GB | Comfy-Org/Qwen3.5 | ComfyUI-native LLM. **Superseded by llama-server** through the MAIC nodes (1.5 vs 80.7 tok/s); safe to delete |
 
 Download pattern (resumable): `curl -fL -C - -o "<folder>/<file>" "<huggingface resolve URL>"`.
 
@@ -111,6 +115,6 @@ Negative: `nsfw, worst quality, old, early, low quality, lowres, signature, user
 | Manga 4-panel short (NoobAI) | 4 panels, shared character tags, fixed seeds, narration captions, stitched 2x2 page |
 | Manga 4-panel short (NoobAI) - BETA captions | Same, plus dialogue as caption strips until speech bubbles are ready |
 | Manga 4-panel short (Anima) [+ BETA] | Anima versions of the above |
-| Story chat (Ollama) | Story co-writer via Ollama: 4B quick pass with memory, optional 9B deep pass |
+| Story chat (llama.cpp) | Story co-writer on MAIC's llama-server: quick pass with memory, optional muted deep pass on the same conversation. Ships in `vendor/comfyui-maic-llamacpp/example_workflows/`, so the template browser lists it under comfyui-maic-llamacpp |
 
 Text in images: diffusion models garble lettering. Current approach: generate clean panels (negative prompt includes `text, speech bubble`), then add text with the **Draw Text Overlay** node (captions), Krita/GIMP (bubbles), or Qwen-Image-Edit (in progress).
