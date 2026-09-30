@@ -8,6 +8,15 @@ Status of the built parts: [README.md](../README.md), [cli/README.md](../cli/REA
 
 Micaiah's decision (2026-09-30): accounts belong to MAIC's own server, not to llama.cpp (which has API keys only, no identities). Planned: user accounts with email verification (a signup that sends a code to the address and activates on confirmation), per-user tokens replacing the per-device ones, per-user session ownership and audit lines, an admin list. The mail step is the one outbound request MAIC's server would make, on the user's explicit action, and it must be configurable to a local relay. Not started.
 
+Spec, from Micaiah (2026-09-30):
+
+* `maic join SERVER` tells a client which maic-server to use (the `remote` setting, with the login below); `maic open` and the apps then work against it.
+* Login: username and password, or OAuth (sign in with a provider instead of a password; the provider is configured per server, tokens never stored in plain text).
+* Two-factor authentication on login (TOTP first, passkeys when the client can), per account, with a server setting that enforces it for everyone or leaves it optional.
+* Email verification on signup (a code to the address, activation on confirmation).
+* Done the way current best practice says: argon2id password hashing, short-lived session tokens with refresh and revocation, rate limits on login and codes, no secrets in URLs, a recovery path that does not weaken 2FA, the audit log naming the user.
+* The web app and the phone apps present one clean interface that combines the MAIC server (sessions, approvals, harness, services) and the llama.cpp server (models, loading, sampling, a plain chat with the loaded model), so remote access gives both; llama.cpp stays behind MAIC's server, never exposed on its own.
+
 ## 1. Remote access
 
 The reason `server/` exists. Micaiah wants to chat with agents from her phone. Design and reference: [remote.md](remote.md).

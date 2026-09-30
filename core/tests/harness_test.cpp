@@ -137,6 +137,8 @@ int main() {
         expect(c.check(Action{Action::Kind::Read, ws / "x"}, Mode::Auto, Origin::Local).verdict == Verdict::Allow, "but reads inside are fine");
         expect(c.check(Action{Action::Kind::Shell, {}, "ls"}, Mode::Auto, Origin::Remote).verdict == Verdict::Deny, "and it takes no remote requests");
         expect(c.check(Action{Action::Kind::Shell, {}, "make", fs::temp_directory_path()}, Mode::Auto, Origin::Local).verdict == Verdict::Deny, "nor commands outside the workspace");
+    }
+
     std::cout << "read-only classifier: looking-only invocations a coding agent makes\n";
     for (const char* cmd : {"python3 --version", "node --version", "node -v", "cargo --version", "cmake --version", "go version", "java -version", "gcc --version",
                             "ctest -N", "git remote -v", "git branch", "git branch -a", "git stash list", "git stash show", "git show --stat HEAD", "git config --get user.name",
