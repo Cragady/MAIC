@@ -1,6 +1,8 @@
 #pragma once
 
 #include <filesystem>
+#include <nlohmann/json.hpp>
+
 #include <optional>
 #include <string>
 #include <vector>
@@ -19,6 +21,7 @@ struct HeadlessOptions {
     std::optional<bool> load_instructions;
     std::vector<std::string> bans;
     std::vector<std::string> ban_patterns;
+    nlohmann::json sampling = nlohmann::json::object();
     std::optional<std::string> harness;
     bool accept_dumb_auto = false;
     bool record = false;  // write a transcript at all (a one-shot -p leaves nothing behind by default)

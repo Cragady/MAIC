@@ -1628,6 +1628,7 @@ int run_tui(const TuiOptions& options) {
     if (options.load_instructions) settings.load_instructions = *options.load_instructions;
     settings.bans.strings.insert(settings.bans.strings.end(), options.bans.begin(), options.bans.end());
     settings.bans.patterns.insert(settings.bans.patterns.end(), options.ban_patterns.begin(), options.ban_patterns.end());
+    for (const auto& [k, v] : options.sampling.items()) settings.sampling[k] = v;
     if (options.harness) settings.harness = *options.harness;
     if (options.accept_dumb_auto) settings.dumb_auto_ok = true;
     if (settings.harness != "smart" && settings.harness != "dumb") {

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <filesystem>
+#include <nlohmann/json.hpp>
+
 #include <optional>
 #include <string>
 #include <vector>
@@ -20,6 +22,7 @@ struct TuiOptions {
     std::optional<bool> load_instructions;    // --no-instructions
     std::vector<std::string> bans;            // --ban STRING, repeatable
     std::vector<std::string> ban_patterns;    // --ban-pattern REGEX, repeatable
+    nlohmann::json sampling = nlohmann::json::object();  // --sampling KEY=VALUE and --xtc, over the settings
     std::optional<std::string> harness;       // --harness smart|dumb
     bool accept_dumb_auto = false;            // --accept-dumb-auto                  // sent as the first turn (maic -p "..." --interactive); "-" reads stdin
 };
