@@ -61,7 +61,7 @@ const std::vector<Topic>& topics() {
         {"sessions", {"session", "resume", "transcript", "transcripts"}, "transcripts, -c, -r, forking",
          "*sessions*\n"
          "Every session is a JSONL file under ~/.local/state/maic/sessions (0600), in a home: `general/` by default, `projects/<encoded workspace>/` when settings say `\"sessions_home\": \"project\"`, or any name. `:session` shows this one and its home; `maic sessions` lists them with where each was started and last opened; `maic sessions rehome ID project|general|NAME` moves one.\n\n"
-         "- `maic -c` continues the newest session from the current directory; `maic -r` picks from a list; `maic -r ID` (a unique prefix is enough).\n"
+         "- `maic -c` continues the newest session from the current directory; `maic -r` picks from a list; `maic -r ID` (a unique prefix is enough); `maic -r PATH` resumes any transcript file by path, including a temporary one under $XDG_RUNTIME_DIR from `--no-record` (those are never listed, so `-c` cannot find them).\n"
          "- Interactive resumes append to the same file. `--no-append` writes a new file that only points at the old one and the number of records loaded, which is also how a session forks. `--no-record` (or `\"record\": false` in settings, or `maic -p` without `--record`) keeps the transcript in the runtime directory instead, where it disappears at logout; it is never listed.\n"
          "- A session that ended mid tool call resumes from the last complete step. The model is told it resumed, with the current mode and instructions."},
         {"headless", {"-p", "print", "cli", "command-line", "context", "-C", "--context", "interactive", "-i"}, "maic -p, stdin, --context files, --interactive",
@@ -91,9 +91,9 @@ const std::vector<Topic>& topics() {
          "*keys*\n"
          "The input is a small vim and starts in normal mode.\n\n"
          "- **insert**: `i a I A o O` enter it; Enter = new line; Esc = normal; Ctrl-W / Ctrl-U delete word / line; Ctrl-Y pastes the register; ↑ ↓ or Ctrl-P / Ctrl-N prompt history.\n"
-         "- **normal**: `h j k l w b e 0 ^ $` move (Enter = down a line); `x X D C S`; `d c y` + motion, `dd cc yy`; `v V`; `p P`; `u` undo, Ctrl-R redo; counts (`3w`); `:` commands; `/` searches the conversation.\n"
+         "- **normal**: `h j k l w b e 0 ^ $` move (Enter = down a line); `f{c} F{c} t{c} T{c}` to a character on the line, `;` and `,` repeat, usable as targets (`dt)`, `cf,`); `x X D C S`; `d c y` + motion, `dd cc yy`; `v V`; `p P`; `u` undo, Ctrl-R redo; counts (`3w`, `2f.`); `:` commands; `/` searches the conversation.\n"
          "- **send**: Alt+Enter or `:w` from any mode. `:e` or Ctrl-X Ctrl-E edits the input in nvim.\n"
-         "- **conversation window**: Ctrl-W k enters it, Ctrl-W j (Esc, i, Enter) returns; motions, `v V`, `y` yanks to the clipboard, `yy`, `/ n N`.\n"
+         "- **conversation window**: Ctrl-W k enters it, Ctrl-W j (Esc, i, Enter) returns; motions including `f t ; ,`, `v V`, `y` yanks to the clipboard, `yy`, `/ n N`, `}` `{` between messages.\n"
          "- **anywhere**: Shift-Tab cycles modes; Ctrl-C interrupts, then clears, then quits; the scroll wheel scrolls.\n\n"
          "`:h KEY` works for single keys too: `:h u`, `:h Ctrl-W`, `:h Alt+Enter`."},
         {"conversation", {"window", "ctrl-w", "focus", "yank", "clipboard", "search", "/"}, "the conversation window as a vim buffer",

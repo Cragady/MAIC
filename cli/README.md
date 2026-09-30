@@ -8,7 +8,7 @@ maic up ollama                     # once per boot
 maic                               # the agent
 maic --model anthropic/claude-opus-5-5 --mode auto-read
 maic -c                            # continue the last session started in this directory
-maic -r                            # pick an earlier session from a list (maic -r ID for one you know)
+maic -r                            # pick an earlier session from a list (maic -r ID for one you know, maic -r PATH for any transcript file)
 maic -p "explain main.cpp"         # one turn, no UI, no transcript; --record keeps one; -c / -r load an old one; --json for events
 cat dialog.txt | maic -p -         # the prompt from stdin
 maic -p "summarise these" -C notes.md -C log.txt   # files attached as context before the prompt (also for the interactive maic)
@@ -42,10 +42,10 @@ The input starts in normal mode, like opening vim: `i` to type. Cursor: a bar in
 | Where | Keys |
 | :--- | :--- |
 | insert | type; **Enter** new line; **Esc** to normal; Ctrl-W / Ctrl-U delete word / line; Ctrl-Y pastes the register; ↑ ↓ or Ctrl-P / Ctrl-N prompt history |
-| normal (input) | `i a I A o O` insert; `h j k l w b e 0 ^ $` move (Enter = down a line); `x X D C S` edit; `d c y` + motion, `dd cc yy Y`; text objects after `d c y` or in visual mode: `iw aw iW aW i" a" i' i` i( a( ib i[ a[ i{ a{ iB i< a<` (so `ciw`, `di"`, `ya(`, `viw`); `v V` select; `p P` paste; `u` undo, **Ctrl-R** redo (multi-level; an insert session is one step); counts (`3w`); `:e` or **Ctrl-X Ctrl-E** opens the input in `$VISUAL` / `$EDITOR` / nvim as markdown and loads it back when you quit |
+| normal (input) | `i a I A o O` insert; `h j k l w b e 0 ^ $` move (Enter = down a line); `f{c} F{c} t{c} T{c}` to a character, `;` `,` repeat, also as operator targets (`dt)`, `cf,`); `x X D C S` edit; `d c y` + motion, `dd cc yy Y`; text objects after `d c y` or in visual mode: `iw aw iW aW i" a" i' i` i( a( ib i[ a[ i{ a{ iB i< a<` (so `ciw`, `di"`, `ya(`, `viw`); `v V` select; `p P` paste; `u` undo, **Ctrl-R** redo (multi-level; an insert session is one step); counts (`3w`); `:e` or **Ctrl-X Ctrl-E** opens the input in `$VISUAL` / `$EDITOR` / nvim as markdown and loads it back when you quit |
 | clipboard | `"+y` / `"*y` before any yank sends it to the system clipboard; `"+p` pastes from it; the **leader** (Space by default, `leader` in settings) then `y` yanks the line (normal) or the selection (visual) to the clipboard, leader then `p`/`P` pastes from it. In the conversation window every yank reaches the clipboard; `yiw`, `yw`, `y$`, `Y`, `yy` work there |
 | normal (input empty) | `j k` Ctrl-D/U Ctrl-F/B `G` scroll the conversation without leaving the input; `v` / `V` jump into the conversation window selecting |
-| conversation window | **Ctrl-W k** enters, **Ctrl-W j** (or Esc, `i`, Enter) returns; `j k h l w b e 0 $ gg G` Ctrl-D/U/F/B move; `}` / `{` next / previous message, `]]` / `[[` your messages only; `v` / `V` select; `y` yanks (to the register **and** the system clipboard); `yy` a line; `/pattern` then `n` / `N` search (smart case); `o` swaps selection ends |
+| conversation window | **Ctrl-W k** enters, **Ctrl-W j** (or Esc, `i`, Enter) returns; `j k h l w b e 0 $ gg G` Ctrl-D/U/F/B move; `f t F T ; ,` on the line; `}` / `{` next / previous message, `]]` / `[[` your messages only; `v` / `V` select; `y` yanks (to the register **and** the system clipboard); `yy` a line; `/pattern` then `n` / `N` search (smart case); `o` swaps selection ends |
 | anywhere | **Shift-Tab** cycles the mode; **Ctrl-C** interrupts the agent, else stops a `!command`, else clears the input, else (twice) quits; scroll wheel scrolls the conversation (in insert mode: prompt history) |
 | approval prompt | **y** yes · **n** no · **N** no, then type a sentence the model receives as the reason · **a** always allow this file / program for the session · **t** trip the harness. Edits show the lines that would change |
 
@@ -111,7 +111,7 @@ Whatever the mode: secrets are never read, system paths are never written, start
 
 ## Sessions
 
-Every session is a JSONL file under `~/.local/state/maic/sessions/`, readable only by you: each message as sent to the model, every tool call with the harness's decision, and the displayable transcript. `maic -c` resumes the newest session started or last opened in the current directory; `maic -r` lists them; `maic -r ID` (a unique prefix is enough) resumes one. The model is told it resumed and what the current mode and instructions are. A session that ended mid tool call resumes from the last complete step.
+Every session is a JSONL file under `~/.local/state/maic/sessions/`, readable only by you: each message as sent to the model, every tool call with the harness's decision, and the displayable transcript. `maic -c` resumes the newest session started or last opened in the current directory; `maic -r` lists them; `maic -r ID` (a unique prefix is enough) resumes one; `maic -r PATH` resumes any transcript file by path, which is how a temporary `--no-record` transcript (never listed) comes back. The model is told it resumed and what the current mode and instructions are. A session that ended mid tool call resumes from the last complete step.
 
 **Homes.** A project (a workspace with a `MAIC.md`, its own or inherited from a parent directory) keeps its transcripts under `sessions/projects/<encoded workspace path>/`, the Claude Code layout; everything else goes to `sessions/general/`. `sessions_home` in any settings layer overrides this (`general`, `project`, or a name for `sessions/<name>/`), so a project can opt back into `general`. `maic init` or `:init` turns a directory into a project. Every open (the first start and each resume) records the workspace, host and pid, so `maic sessions` shows where a transcript was started and, when different, where it was last opened and how many times. `maic sessions rehome ID [project|general|NAME]` moves a transcript to another home (default: its own project's directory); forks keep working because they find their parent by id. `maic sessions path ID` prints a path.
 

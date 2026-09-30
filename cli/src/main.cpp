@@ -31,7 +31,8 @@ namespace {
 void usage(std::ostream& out = std::cerr) {
     out << "usage: maic [--model M] [--mode MODE]      the agent, in this directory\n"
                  "       maic -c                            continue the last session started in this directory\n"
-                 "       maic -r [ID]                       resume a session by id (or pick from a list)\n"
+                 "       maic -r [ID|PATH]                  resume a session by id, or by the path of any transcript file (a temporary\n"
+                 "                                          one from --no-record too); no argument: pick from a list\n"
                  "       maic -p \"prompt\" [--json] [--think] one turn without the UI (prompt \"-\" reads stdin; -c/-r work here too)\n"
                  "       maic -p \"prompt\" --interactive     an interactive session that opens with that prompt sent (-i)\n"
                  "       --context FILE, -C FILE            attach a text file to the conversation before the prompt; repeatable;\n"
@@ -459,7 +460,7 @@ int main(int argc, char** argv) {
             }
             std::cout << maic::sessions_dir().string() << "\n";
             print_sessions(maic::list_sessions());
-            std::cout << "resume: maic -r ID (maic -c: newest from this directory) · move: maic sessions rehome ID [project|general|NAME]\n";
+            std::cout << "resume: maic -r ID or maic -r PATH (maic -c: newest from this directory) · move: maic sessions rehome ID [project|general|NAME]\n";
             return 0;
         }
         if (cmd == "artifacts") return cmd_artifacts(cargs);
