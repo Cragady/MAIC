@@ -1,5 +1,6 @@
 #pragma once
 
+#include "maic/bans.hpp"
 #include "maic/harness.hpp"
 #include "maic/instructions.hpp"
 #include "maic/llm.hpp"
@@ -140,6 +141,11 @@ public:
     // Names of instruction files (MAIC.md, AGENTS.md, ...) looked for beside files the model reads.
     void set_instruction_names(std::vector<std::string> names);
 
+    // Things the model must not say; see bans.hpp. Changes apply from the next model call.
+    Bans bans;
+    // Sampler settings merged into every request (temperature, top_k, ...), from the provider's settings.
+    nlohmann::json sampling;
+
     // Operator text placed at the very top of the system prompt, before MAIC's own briefing. Independent of
     // instruction files: use both, either, or neither.
     std::string system_prefix;
@@ -207,6 +213,7 @@ private:
     std::string nested_instructions(const std::filesystem::path& file);  // instruction files between the workspace and `file`, each once
 
     std::vector<UndoPoint> undo_;
+    bool warned_token_bans_ = false;
     std::vector<TodoItem> todo_;
     std::vector<LuaTool> tools_;
     std::vector<std::string> tool_notices_;

@@ -376,6 +376,23 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
 
     ChatOptions options{model_name, think};
     options.notice = [&](const std::string& t) { events.on_notice(t); };
+    options.sampling = sampling;
+    // Token bans: logit_bias where the provider takes it; elsewhere text tokens become string bans (the filter
+    // does that) and numeric ids are reported once.
+    if (!bans.tokens.empty()) {
+        if (provider.kind == "openai") {
+            options.logit_bias = nlohmann::json::object();
+            for (const auto& t : bans.tokens) options.logit_bias[t.is_string() ? t.get<std::string>() : std::to_string(t.get<long long>())] = -100;
+        } else {
+            int numeric = 0;
+            for (const auto& t : bans.tokens) numeric += t.is_number_integer();
+            if (numeric && !warned_token_bans_) {
+                warned_token_bans_ = true;
+                events.on_notice(std::to_string(numeric) + " token ban(s) by id need an OpenAI-compatible provider (logit_bias); " + provider.name + " ignores them. Text bans still apply.");
+            }
+        }
+    }
+    int ban_attempts = 0;
     denials_ = 0;
     for (int step = 0; step < kMaxSteps; ++step) {
         if (drain_mailbox()) events.on_notice("delivered your queued message");
@@ -414,15 +431,44 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
                     std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 }
             });
+            // String bans: the reply streams through a filter that cuts before a banned string shows.
+            BanFilter filter(bans, ban_attempts >= bans.retries);
+            std::string thinking_seen;
+            auto sink = [&](std::string_view d, bool t) {
+                if (t) {
+                    events.on_text(d, true);
+                    return;
+                }
+                std::string safe = filter.feed(d);
+                if (!safe.empty()) events.on_text(safe, false);
+                if (filter.triggered()) abort = true;
+            };
             try {
-                reply = chat(provider, options, messages_, schemas_, [&](std::string_view d, bool t) { events.on_text(d, t); }, abort);
+                reply = chat(provider, options, messages_, schemas_, sink, abort);
             } catch (...) {
                 abort = true;
                 watcher.join();
+                if (filter.triggered()) {
+                    // Keep the clean part, tell the model, and ask again.
+                    ++ban_attempts;
+                    if (!filter.clean().empty()) push({"assistant", filter.clean()});
+                    push({"system", "The reply was cut off because it started the banned phrase \"" + filter.hit() + "\". Continue from exactly where it stopped, "
+                                    "without that phrase or any of these: " + [&] {
+                                        std::string all;
+                                        for (const auto& s : bans.strings) all += (all.empty() ? "" : ", ") + ("\"" + s + "\"");
+                                        return all;
+                                    }() + "."});
+                    events.on_notice("cut: banned phrase \"" + filter.hit() + "\"; asking again (" + std::to_string(ban_attempts) + "/" + std::to_string(bans.retries) + ")");
+                    --step;  // this attempt does not count toward the step limit
+                    continue;
+                }
                 throw;
             }
             abort = true;
             watcher.join();
+            std::string tail = filter.flush();
+            if (!tail.empty()) events.on_text(tail, false);
+            reply.content = filter.clean();
         } catch (const Cancelled&) {
             if (!cancel.load() && deliver_now_.exchange(false)) {
                 events.on_notice("delivering your message now");
@@ -432,6 +478,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
             events.on_notice("interrupted");
             return;
         }
+        ban_attempts = 0;
         deliver_now_ = false;
         if (log_ && !reply.content.empty()) log_->write("assistant", {{"text", reply.content}});
         if (reply.usage.input || reply.usage.output) {

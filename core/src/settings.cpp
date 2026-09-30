@@ -168,6 +168,15 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         if (j.contains("instruction_files")) s.instruction_files = j["instruction_files"].get<std::vector<std::string>>();
         s.load_instructions = j.value("load_instructions", s.load_instructions);
         s.system_prompt = j.value("system_prompt", s.system_prompt);
+        if (j.contains("bans")) {
+            Bans b = Bans::from_json(j["bans"]);
+            // Layers add strings and tokens; the scalar knobs take the nearest value.
+            s.bans.strings.insert(s.bans.strings.end(), b.strings.begin(), b.strings.end());
+            s.bans.tokens.insert(s.bans.tokens.end(), b.tokens.begin(), b.tokens.end());
+            if (j["bans"].contains("retries")) s.bans.retries = b.retries;
+            if (j["bans"].contains("replacement")) s.bans.replacement = b.replacement;
+            if (j["bans"].contains("ignore_case")) s.bans.ignore_case = b.ignore_case;
+        }
         json server = j.value("server", json::object());
         s.server.listen = server.value("listen", s.server.listen);
         if (server.contains("workspaces")) {
@@ -321,6 +330,8 @@ void write_default_settings(bool as_json) {
         {"instruction_files", d.instruction_files},
         {"load_instructions", d.load_instructions},
         {"system_prompt", d.system_prompt},
+        {"bans", {{"strings", nlohmann::json::array()}, {"tokens", nlohmann::json::array()}, {"retries", 3}, {"replacement", "[banned]"}, {"ignore_case", false}}},
+        {"//bans", "strings the model must not say (cut and re-asked, then replaced); tokens (ids, or text) become logit_bias on OpenAI-compatible providers"},
         {"//system_prompt", "text placed first in every system prompt, or \"@~/path/to/file.md\"; independent of instruction files"},
         {"//server", "maic server: listen ADDR:PORT (TLS is required off loopback), workspaces remote sessions may open, cert/key (empty: self-signed)."},
         {"server", {{"listen", d.server.listen}, {"workspaces", json::array()}, {"cert", ""}, {"key", ""}}},

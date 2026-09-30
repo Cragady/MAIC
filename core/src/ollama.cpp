@@ -28,6 +28,10 @@ Message chat_ollama(const Provider& provider, const ChatOptions& options, const 
         {"options", {{"num_ctx", options.num_ctx}}},
         {"messages", nlohmann::json::array()},
     };
+    if (options.sampling.is_object()) {
+        for (const auto& [k, v] : options.sampling.items()) body["options"][k] = v;
+    }
+    if (!options.stop.empty()) body["options"]["stop"] = options.stop;
     for (const auto& m : messages) {
         if (m.role == "assistant" && m.content.empty() && m.tool_calls.empty()) continue;
         body["messages"].push_back(to_json(m));

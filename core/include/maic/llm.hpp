@@ -73,6 +73,11 @@ struct ChatOptions {
     int retries = 3;
     int retry_base_ms = 2000;
     std::function<void(const std::string&)> notice;
+    // Generation controls. `stop` and `sampling` go to every provider that has them; `logit_bias` only to
+    // OpenAI-compatible ones ({"<token id or text>": -100}).
+    std::vector<std::string> stop;
+    nlohmann::json logit_bias;  // null when none
+    nlohmann::json sampling;    // temperature, top_k, top_p, min_p, seed, ... merged into the provider's options
 };
 
 struct Cancelled : std::runtime_error {

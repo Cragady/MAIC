@@ -98,6 +98,7 @@ Message chat_anthropic(const Provider& provider, const ChatOptions& options, con
             {"messages", c.messages},
         };
         if (!c.system.empty()) body["system"] = c.system;
+        if (!options.stop.empty()) body["stop_sequences"] = options.stop;
         if (!tools.empty()) body["tools"] = convert_tools(tools);
         // Thinking is adaptive by default on current models; depth is set with effort.
         std::string effort_key = options.think ? "think_effort" : "effort";

@@ -10,6 +10,7 @@
 #include "maic/settings.hpp"
 #include "maic/tools.hpp"
 #include "maic/vendor.hpp"
+#include "maic/bans.hpp"
 #include "maic/lua.hpp"
 #include "maic/paths.hpp"
 
@@ -419,6 +420,54 @@ int main() {
         expect(expand_vars("${MAIC_VENDOR}/x") == (state / "maic" / "vendor" / "x").string() && expand_vars("${MAIC_STATE}") == (state / "maic").string(),
                "service files can use ${MAIC_VENDOR} and ${MAIC_STATE}");
         unsetenv("XDG_STATE_HOME");
+    }
+
+    section("ban filter");
+    {
+        Bans b;
+        b.strings = {"as an AI", "Certainly!"};
+        BanFilter f(b);
+        std::string shown = f.feed("Sure, ");
+        expect(shown == "Sure, ", "text that cannot start a ban is released at once");
+        shown += f.feed("here it is. as ");
+        expect(shown == "Sure, here it is. ", "a possible ban start is held back, not shown: [" + shown + "]");
+        shown += f.feed("an A");
+        expect(shown == "Sure, here it is. ", "still held while it could complete");
+        shown += f.feed("I model, I");
+        expect(f.triggered() && f.hit() == "as an AI" && shown == "Sure, here it is. ", "the ban completes across three chunks and nothing of it was shown");
+        BanFilter cs(b);
+        cs.feed("As an AI model");
+        expect(!cs.triggered(), "matching is case-sensitive by default");
+        BanFilter g(b);
+        std::string out = g.feed("Yes. as an");
+        out += g.feed(" AI, I");
+        expect(g.triggered() && g.hit() == "as an AI" && out == "Yes. " && g.clean() == "Yes. ", "a ban split across chunks is caught and only the text before it is released");
+        expect(g.feed("more").empty() && g.flush().empty(), "nothing more comes through after a cut");
+        BanFilter h(b);
+        std::string o2 = h.feed("no bans here");
+        o2 += h.flush();
+        expect(o2 == "no bans here" && h.clean() == o2, "flush releases the held tail at the end");
+        Bans ci = b;
+        ci.ignore_case = true;
+        BanFilter k(ci);
+        k.feed("AS AN ai model");
+        expect(k.triggered(), "ignore_case matches any case");
+        BanFilter r(b, true);
+        std::string o3 = r.feed("Well, Certainly! I can. Certainly!");
+        o3 += r.flush();
+        expect(o3 == "Well, [banned] I can. [banned]" && !r.triggered(), "replace mode swaps every occurrence and never cuts: " + o3);
+        Bans tok;
+        tok.tokens = {nlohmann::json("▲")};
+        BanFilter t(tok);
+        t.feed("up ▲ down");
+        expect(t.triggered() && t.hit() == "▲", "a text token ban is a string ban in the filter");
+        auto j = b.to_json();
+        Bans back = Bans::from_json(j);
+        expect(back.strings == b.strings && back.retries == 3 && back.replacement == "[banned]", "bans round-trip through JSON");
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { bans = { strings = {'lol'}, tokens = {42, 'x'}, retries = 1 } }");
+        Settings s3 = load_settings(ws / "proj");
+        expect(s3.bans.strings == std::vector<std::string>{"lol"} && s3.bans.tokens.size() == 2 && s3.bans.retries == 1, "bans load from settings");
+        fs::remove(ws / "proj" / ".maic" / "settings.lua");
     }
 
     section("system prompt setting");

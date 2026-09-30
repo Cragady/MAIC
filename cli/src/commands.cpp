@@ -186,6 +186,11 @@ const std::vector<CommandInfo>& commands() {
          "*:init*\nCreates `.maic/settings.lua` and a `MAIC.md` placeholder in the workspace, then asks the agent to look over the project and write the MAIC.md (it will ask before writing in manual mode). A project with a MAIC.md keeps its transcripts under sessions/projects/. `maic init` does the scaffolding only."},
         {"settings", {}, "", "which settings files are in effect",
          "*:settings*\nLists the settings files that were read, nearest last: the global file, then `.maic/settings.lua` and `.maic/settings.local.lua` (or their .json fallbacks) from just under $HOME down to the workspace. Shows where this session's transcript home resolved to. See `:h settings`."},
+        {"ban", {"bans", "banned", "logit_bias", "logit-bias", "sampling"}, "[add TEXT|token ID|remove N|clear]", "strings and tokens the model must not produce",
+         "*:ban* *--ban* *bans* *sampling*\n"
+         "**String bans** work with every provider: the reply streams through a filter that holds back a short tail and cuts the call the moment a banned phrase would appear, before it reaches the screen; the clean part is kept, the model is told which phrase was banned and asked to continue; after `retries` attempts (3) the phrase is replaced by `replacement` (\"[banned]\") instead. `:ban add TEXT`, `--ban TEXT` (repeatable), or `bans = { strings = { ... } }` in settings; layers add up. `:ban case off` matches regardless of case.\n\n"
+         "**Token bans** map to `logit_bias` (the token's probability goes to minus infinity, so the model takes another path) on OpenAI-compatible providers: llama.cpp server, vLLM, LM Studio and the like. `:ban token 1234` bans an id; `:ban token TEXT` bans text, which llama.cpp-style servers accept in logit_bias and which is a string ban everywhere else. Ollama's own API and Anthropic have no logit bias, so ids are ignored there with one notice.\n\n"
+         "**Samplers**: `providers.<name>.options.sampling = { temperature = 0.7, top_k = 40, top_p = 0.9, min_p = 0.05, seed = 7, repeat_penalty = 1.1 }` in settings is merged into every request to that provider (Ollama options, or the request body for OpenAI-compatible servers, which also accept their own keys such as xtc_probability on llama.cpp). Anthropic's current models take no sampling parameters."},
         {"system", {"system-prompt", "operator"}, "[TEXT|@FILE]", "operator instructions placed first in the system prompt",
          "*:system* *--system* *system_prompt*\n"
          "Text that leads every system prompt, before MAIC's own briefing and before any instruction file, marked as operator instructions that take precedence: the way to front-load behaviour. Set it with `--system TEXT` or `--system @~/prompts/reviewer.md` on the command line, `system_prompt = \"...\"` or `\"@path\"` in settings, or `:system TEXT` / `:system @file` in a session (idle only; it applies from the next turn and is appended to a resumed conversation). `:system` alone shows it. Independent of instruction files: combine with `--no-instructions` to run on the operator text alone."},
@@ -251,6 +256,7 @@ std::vector<std::string> complete_argument(const std::string& command, const std
     else if (cmd == "set") candidates = {"markdown", "mouse", "tooldetails", "timestamps"};
     else if (cmd == "budget") candidates = {"off"};
     else if (cmd == "instructions") candidates = {"on", "off"};
+    else if (cmd == "ban") candidates = {"add", "token", "remove", "tokens", "clear", "retries", "case", "list"};
     else if (cmd == "compact") candidates = {"prune", "head", "all"};
     else if (cmd == "think") candidates = {"on", "off"};
     else if (cmd == "w" || cmd == "write" || cmd == "send") candidates = {"now"};

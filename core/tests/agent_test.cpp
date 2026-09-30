@@ -495,6 +495,39 @@ int main() {
         fs::remove(ws / "MAIC.md");
     }
 
+    section("string and token bans");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.bans.strings = {"pelican"};
+        agent.bans.retries = 2;
+        Recorder r;
+        agent.submit("the pelican flies", Origin::Local, r, no_cancel);  // the fake echoes it back
+        expect(r.text.find("pelican") == std::string::npos, "the banned phrase never reaches the screen: [" + r.text + "]");
+        expect(fake.requests.size() == 3, "cut, re-asked twice, then the replacement pass (3 requests)");
+        bool nudged = false;
+        for (const auto& m : fake.requests[1]["messages"]) {
+            if (m["role"] == "system" && m["content"].get<std::string>().find("banned phrase \"pelican\"") != std::string::npos) nudged = true;
+        }
+        expect(nudged, "the model is told which phrase was banned");
+        expect(r.text.find("[banned]") != std::string::npos, "after the retries the phrase is replaced");
+        bool notice = false;
+        for (const auto& n : r.notices) notice = notice || n.find("cut: banned phrase") == 0;
+        expect(notice, "the user sees why the reply was cut");
+        expect(agent.messages().back().content.find("pelican") == std::string::npos, "the stored reply has no banned phrase either");
+
+        Agent b(ws, "test");
+        b.providers = {fake.provider()};
+        b.bans.tokens = {nlohmann::json(1234)};
+        Recorder rb;
+        b.submit("hi", Origin::Local, rb, no_cancel);
+        bool warned = false;
+        for (const auto& n : rb.notices) warned = warned || n.find("token ban") != std::string::npos;
+        expect(warned && !fake.requests.back().contains("logit_bias"), "numeric token bans on Ollama are reported, not sent");
+    }
+
     section("context files");
     {
         FakeOllama fake;

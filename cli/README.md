@@ -81,6 +81,7 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:stash` / `:pop` | park the input draft and bring it back (survives restarts). `:q` with an unsent draft stashes it for you |
 | `:wq` | send, then quit when the reply is in (Ctrl-C while waiting stays) |
 | `:rename TITLE` | title the session (`maic sessions` shows it); `title_model` in settings auto-titles after the first turn |
+| `:ban add TEXT` / `:ban token ID` / `:ban list` | phrases the model must not say (cut before they show, re-asked, then replaced) and token bans (`logit_bias` on OpenAI-compatible providers). `--ban TEXT` on the command line, `bans` in settings. See `:h ban` |
 | `:budget [N\|off]` | tokens used; a per-session budget that stops the agent when reached |
 | `:set timestamps on` | a time beside each message (also `timestamps` in settings) |
 | `:lua [CODE]` / `:luafile PATH` / `:chat` | run Lua (vendored LuaJIT) in the workspace; an expression shows its value. `:lua` alone enters **Lua mode**: the input becomes a REPL (`lua❯`) until `:chat`. Globals persist; output goes to the conversation and to the model as context. Outside a session `maic lua` is a REPL, `maic lua FILE [args]` runs a file. See `:h lua` |

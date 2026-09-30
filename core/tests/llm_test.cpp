@@ -368,6 +368,33 @@ int main() {
         expect(notices.size() == 2 && msg.find("can't reach") != std::string::npos, "connection failures are retried too, then reported as TransportError");
     }
 
+    section("generation controls");
+    {
+        Fake f;
+        f.serve("/v1/chat/completions", {"data: " + json{{"choices", {{{"delta", {{"content", "ok"}}}}}}}.dump() + "\n\ndata: [DONE]\n\n"});
+        f.start();
+        Provider p{"lab", "openai", f.url() + "/v1", "", "", json::object()};
+        ChatOptions opt{"test-model"};
+        opt.stop = {"STOP"};
+        opt.logit_bias = {{"1234", -100}, {"▲", -100}};
+        opt.sampling = {{"temperature", 0.2}, {"xtc_probability", 0.5}};
+        chat(p, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+        auto body = json::parse(f.last_body);
+        expect(body["stop"][0] == "STOP" && body["logit_bias"]["1234"] == -100 && body["logit_bias"]["▲"] == -100 && body["temperature"] == 0.2 && body["xtc_probability"] == 0.5,
+               "OpenAI-compatible requests carry stop, logit_bias and sampler keys");
+        Fake g;
+        g.serve("/api/chat", {R"({"message":{"content":"ok"},"done":true})" "\n"});
+        g.start();
+        ChatOptions o2{"test-model"};
+        o2.stop = {"STOP"};
+        o2.sampling = {{"temperature", 0.1}, {"top_k", 20}};
+        o2.logit_bias = {{"1", -100}};
+        chat({"ollama", "ollama", g.url()}, o2, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+        auto b2 = json::parse(g.last_body);
+        expect(b2["options"]["stop"][0] == "STOP" && b2["options"]["temperature"] == 0.1 && b2["options"]["top_k"] == 20 && !b2.contains("logit_bias") && !b2["options"].contains("logit_bias"),
+               "Ollama requests carry stop and sampler options in `options`, never logit_bias");
+    }
+
     section("cancel");
     {
         Fake f;

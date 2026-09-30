@@ -211,6 +211,8 @@ public:
         agent_.load_instruction_files = settings_.load_instructions;
         agent_.system_prefix = resolve_system_prompt(settings_.system_prompt);
         agent_.reload_instructions();
+        agent_.bans = settings_.bans;
+        apply_sampling();
         view_.set_timestamps(settings_.timestamps);
         if (resume) {
             LoadedSession old = load_session(*resume, fork_at.value_or(~size_t(0)));
@@ -234,6 +236,11 @@ public:
     ~App() override { shutdown(); }
 
     void welcome();
+    // The current provider's `sampling` settings table, merged into every request.
+    void apply_sampling() {
+        auto [provider, name] = resolve_model(agent_.providers, agent_.model);
+        agent_.sampling = provider.options.value("sampling", nlohmann::json());
+    }
     std::string transcript_path() const { return log_->path().string(); }
     std::string exit_note() const { return exit_note_; }
     void send(const std::string& text) { submit(text, false); }
@@ -1085,6 +1092,7 @@ void App::run_lua(const std::string& code, bool from_file) {
 void App::set_model(const std::string& model) {
     auto [provider, name] = resolve_model(agent_.providers, model);
     agent_.model = model;
+    apply_sampling();
     std::string note = "model: " + model + " (" + provider.name + ", " + provider.kind + ")";
     if (provider.remote()) {
         post(Kind::Error, note + "\nREMOTE: prompts, files the agent reads and command output will be sent to " + provider.base_url);
@@ -1304,6 +1312,49 @@ void App::run_command(const std::string& line) {
                        "what the project is, how it is built and tested, the conventions to follow, and anything an agent should know before editing. "
                        "Keep it under 60 lines. Use write_file for MAIC.md only.", false);
             }
+        } else if (cmd == "ban") {
+            std::istringstream a(arg);
+            std::string sub;
+            a >> sub;
+            std::string rest;
+            std::getline(a >> std::ws, rest);
+            auto& b = agent_.bans;
+            if (sub.empty() || sub == "list") {
+                std::string out = "banned strings (" + std::to_string(b.strings.size()) + "):";
+                for (size_t i = 0; i < b.strings.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". \"" + b.strings[i] + "\"";
+                out += "\nbanned tokens (" + std::to_string(b.tokens.size()) + "):";
+                for (size_t i = 0; i < b.tokens.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". " + b.tokens[i].dump();
+                out += "\nretries " + std::to_string(b.retries) + ", then replaced by \"" + b.replacement + "\"" + (b.ignore_case ? ", case-insensitive" : "") +
+                       "\n:ban add TEXT · :ban token ID|TEXT · :ban remove N · :ban tokens remove N · :ban clear · :ban retries N · :ban case on|off";
+                post(Kind::Notice, out);
+            } else if (sub == "add" && !rest.empty()) {
+                b.strings.push_back(rest);
+                post(Kind::Notice, "banned \"" + rest + "\" (from the next model call)");
+            } else if (sub == "token" && !rest.empty()) {
+                bool numeric = !rest.empty() && std::all_of(rest.begin(), rest.end(), [](unsigned char c) { return std::isdigit(c); });
+                b.tokens.push_back(numeric ? nlohmann::json(std::stoll(rest)) : nlohmann::json(rest));
+                post(Kind::Notice, "banned token " + (numeric ? rest : "\"" + rest + "\"") + (numeric ? " (logit_bias on OpenAI-compatible providers only)" : ""));
+            } else if (sub == "remove" && !rest.empty()) {
+                size_t n = static_cast<size_t>(std::atoi(rest.c_str()));
+                if (n >= 1 && n <= b.strings.size()) b.strings.erase(b.strings.begin() + static_cast<long>(n - 1)), post(Kind::Notice, "removed");
+                else post(Kind::Error, "no banned string " + rest);
+            } else if (sub == "tokens" && rest.rfind("remove ", 0) == 0) {
+                size_t n = static_cast<size_t>(std::atoi(rest.c_str() + 7));
+                if (n >= 1 && n <= b.tokens.size()) b.tokens.erase(b.tokens.begin() + static_cast<long>(n - 1)), post(Kind::Notice, "removed");
+                else post(Kind::Error, "no banned token " + rest.substr(7));
+            } else if (sub == "clear") {
+                b.strings.clear();
+                b.tokens.clear();
+                post(Kind::Notice, "bans cleared");
+            } else if (sub == "retries" && !rest.empty()) {
+                b.retries = std::max(0, std::atoi(rest.c_str()));
+                post(Kind::Notice, "ban retries: " + std::to_string(b.retries));
+            } else if (sub == "case") {
+                b.ignore_case = rest == "off" || rest == "ignore";
+                post(Kind::Notice, b.ignore_case ? "bans ignore case" : "bans match case");
+            } else {
+                post(Kind::Error, ":ban [list] · add TEXT · token ID|TEXT · remove N · tokens remove N · clear · retries N · case on|off");
+            }
         } else if (cmd == "system") {
             if (!arg.empty() && idle()) {
                 agent_.system_prefix = resolve_system_prompt(arg);
@@ -1395,6 +1446,7 @@ int run_tui(const TuiOptions& options) {
     if (options.record) settings.record = *options.record;
     if (options.system) settings.system_prompt = *options.system;
     if (options.load_instructions) settings.load_instructions = *options.load_instructions;
+    settings.bans.strings.insert(settings.bans.strings.end(), options.bans.begin(), options.bans.end());
     if (!parse_mode(settings.mode)) {
         fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
         return 2;

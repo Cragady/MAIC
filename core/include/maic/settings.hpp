@@ -1,5 +1,6 @@
 #pragma once
 
+#include "maic/bans.hpp"
 #include "maic/llm.hpp"
 
 #include <nlohmann/json.hpp>
@@ -53,16 +54,17 @@ struct Settings {
     std::string models_dir;
     std::string title_model;   // names a session after its first turn ("" = off; e.g. "qwen3.5:4b")
     long budget_tokens = 0;    // per-session token budget, 0 = unlimited
-    bool timestamps = false;   // a time beside each conversation entry  // where model files live (ComfyUI folders, Ollama store); empty = service defaults
+    bool timestamps = false;   // a time beside each conversation entry
     bool record = true;
     double compact_at = 0.75;      // auto-compact at this share of the context window; 0 turns it off
-    int compact_keep_results = 4;  // tool results that never get pruned (the most recent)  // keep transcripts of interactive sessions (maic --no-record for one session)  // the vim leader key in normal and visual modes (Space, as in her nvim)
+    int compact_keep_results = 4;  // tool results that never get pruned (the most recent)
     std::vector<std::filesystem::path> sources;  // the files that were read, in order
     std::vector<Provider> providers = default_providers();
     std::map<std::string, Style> styles;  // by role, see docs/settings.md; defaults are filled in
     std::vector<std::string> instruction_files = {"MAIC.md", "AGENTS.md"};
     bool load_instructions = true;  // false: no MAIC.md / AGENTS.md anywhere
     std::string system_prompt;      // text placed first in the system prompt; "@path" reads a file (~ expands)
+    Bans bans;                      // strings and tokens the model must not produce (see docs/settings.md)
     ServerSettings server;
 
     const Style& style(const std::string& name) const;

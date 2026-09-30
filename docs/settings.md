@@ -55,6 +55,7 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 | `models_dir` | Where model files live: ComfyUI's `checkpoints/ diffusion_models/ loras/ text_encoders/ vae/` and Ollama's `ollama/` store. Used when MAIC installs ComfyUI (see [vendor.md](vendor.md)). |
 | `system_prompt` | Operator text placed first in every system prompt, before MAIC's briefing and any instruction file; `"@~/path"` reads a file. `--system` and `:system` override. Front-loads behaviour. |
 | `load_instructions` | `false` loads no `MAIC.md` / `AGENTS.md` anywhere (default `true`); `--no-instructions` and `:instructions off` do it per session. Independent of `system_prompt`; combine them to run on your own text alone. |
+| `bans` | `{ strings = {...}, tokens = {...}, retries = 3, replacement = "[banned]", ignore_case = false }`. Strings are enforced by MAIC on every provider (cut before they show, re-asked, then replaced); tokens (ids or text) become `logit_bias` on OpenAI-compatible providers. Layers add strings and tokens. `--ban` and `:ban` at run time. See `:h ban`. |
 | `budget_tokens` | Stop the agent once input plus output tokens over the session reach this (default `0`, unlimited); `:budget` changes it live. |
 | `title_model` | A model that names the session after its first turn, for `maic sessions` (default off). A remote model is never used for a local session. |
 | `timestamps` | Show a time beside each conversation entry (default `false`; `:set timestamps on`). |
@@ -82,6 +83,7 @@ Where models come from. MAIC ships with `ollama` (local), `anthropic`, `deepseek
 | `base_url` | Where it listens. A path prefix is fine (`https://openrouter.ai/api/v1`). |
 | `api_key_env` | Environment variable holding the key. |
 | `api_key_command` | A command that prints the key (a password manager). Keys themselves never go in this file; MAIC refuses an `api_key` field. |
+| `options.sampling` | Any kind: a table merged into every request to that provider (`temperature`, `top_k`, `top_p`, `min_p`, `seed`, `repeat_penalty`, and for llama.cpp-style servers their own keys such as `xtc_probability`). Anthropic's current models reject sampling parameters, so leave it unset there. |
 | `options` | Kind-specific. Anthropic: `max_tokens` (64000), `effort` (`high`), `think_effort` (`xhigh`, used when `:think on`), `fallbacks` (`"default"` turns on server-side refusal fallbacks), `auth: "bearer"` for an OAuth token. OpenAI kinds: `extra_body`, merged into every request. |
 
 Use a provider with `:model anthropic/claude-opus-5-5`, `:model deepseek/deepseek-chat`, `:model lmstudio/whatever-it-serves`, or `maic --model openrouter/some/model`. A bare name with no known prefix goes to Ollama (its names can contain `/`).

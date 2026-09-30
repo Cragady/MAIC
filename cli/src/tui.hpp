@@ -17,7 +17,8 @@ struct TuiOptions {
     std::string initial_prompt;
     std::optional<bool> record;  // overrides settings.record
     std::optional<std::string> system;        // --system TEXT|@FILE, overrides settings.system_prompt
-    std::optional<bool> load_instructions;    // --no-instructions                  // sent as the first turn (maic -p "..." --interactive); "-" reads stdin
+    std::optional<bool> load_instructions;    // --no-instructions
+    std::vector<std::string> bans;            // --ban STRING, repeatable                  // sent as the first turn (maic -p "..." --interactive); "-" reads stdin
 };
 
 // The interactive agent: full-screen, vim-style input and navigation.

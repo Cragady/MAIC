@@ -51,6 +51,11 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
     }
 
     nlohmann::json body = {{"model", options.model}, {"stream", true}, {"messages", msgs}, {"stream_options", {{"include_usage", true}}}};
+    if (options.sampling.is_object()) {
+        for (const auto& [k, v] : options.sampling.items()) body[k] = v;
+    }
+    if (!options.stop.empty()) body["stop"] = options.stop;
+    if (options.logit_bias.is_object() && !options.logit_bias.empty()) body["logit_bias"] = options.logit_bias;
     if (!tools.empty()) body["tools"] = tools;
     nlohmann::json extra = provider.options.value("extra_body", nlohmann::json::object());
     for (const auto& [k, v] : extra.items()) body[k] = v;
