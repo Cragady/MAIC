@@ -1,5 +1,7 @@
 #include "maic/lua.hpp"
 
+#include "lua_json.hpp"
+
 extern "C" {
 #include <lauxlib.h>
 #include <lua.h>
@@ -230,6 +232,40 @@ nlohmann::json to_json(lua_State* L, int idx, int depth) {
 
 }  // namespace
 
+nlohmann::json lua_to_json(lua_State* L, int idx) {
+    return to_json(L, idx, 0);
+}
+
+void json_to_lua(lua_State* L, const nlohmann::json& j) {
+    switch (j.type()) {
+        case nlohmann::json::value_t::null: lua_pushnil(L); break;
+        case nlohmann::json::value_t::boolean: lua_pushboolean(L, j.get<bool>()); break;
+        case nlohmann::json::value_t::number_integer:
+        case nlohmann::json::value_t::number_unsigned:
+        case nlohmann::json::value_t::number_float: lua_pushnumber(L, j.get<double>()); break;
+        case nlohmann::json::value_t::string: {
+            const std::string& s = j.get_ref<const std::string&>();
+            lua_pushlstring(L, s.data(), s.size());
+            break;
+        }
+        case nlohmann::json::value_t::array:
+            lua_createtable(L, static_cast<int>(j.size()), 0);
+            for (size_t i = 0; i < j.size(); ++i) {
+                json_to_lua(L, j[i]);
+                lua_rawseti(L, -2, static_cast<int>(i + 1));
+            }
+            break;
+        case nlohmann::json::value_t::object:
+            lua_createtable(L, 0, static_cast<int>(j.size()));
+            for (const auto& [k, v] : j.items()) {
+                json_to_lua(L, v);
+                lua_setfield(L, -2, k.c_str());
+            }
+            break;
+        default: lua_pushnil(L); break;
+    }
+}
+
 nlohmann::json Lua::eval_table(const std::string& code, const std::string& chunk_name) {
     lua_State* L = st_->L;
     int rc = luaL_loadbuffer(L, code.data(), code.size(), chunk_name.c_str());
@@ -243,7 +279,7 @@ nlohmann::json Lua::eval_table(const std::string& code, const std::string& chunk
         lua_pop(L, 1);
         throw std::runtime_error(chunk_name + ": must return a table");
     }
-    nlohmann::json out = to_json(L, -1, 0);
+    nlohmann::json out = lua_to_json(L, -1);
     lua_pop(L, 1);
     return out;
 }

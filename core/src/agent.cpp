@@ -5,6 +5,7 @@
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -41,6 +42,13 @@ const char* approval_name(Approval a) {
 
 Agent::Agent(std::filesystem::path workspace, std::string model) : model(std::move(model)), harness_(std::move(workspace)) {
     reload_instructions();
+    LuaToolSet set = load_lua_tools(harness_.workspace());
+    tools_ = std::move(set.tools);
+    tool_notices_ = std::move(set.notices);
+    schemas_ = tool_schemas();
+    for (const auto& t : tools_) {
+        schemas_.push_back({{"type", "function"}, {"function", {{"name", t.name}, {"description", t.description}, {"parameters", t.parameters}}}});
+    }
 }
 
 std::string mode_rule(Mode mode) {
@@ -64,6 +72,13 @@ std::string mode_rule(Mode mode) {
             break;
     }
     return mode_rule;
+}
+
+std::string Agent::user_tools_text() const {
+    if (tools_.empty()) return "";
+    std::string out = "The user added tools of their own, described in the tool list like the others: ";
+    for (size_t i = 0; i < tools_.size(); ++i) out += (i ? ", " : "") + tools_[i].name;
+    return out + ". Call them like any other tool.\n";
 }
 
 std::string Agent::instructions_text() const {
@@ -91,10 +106,16 @@ std::string Agent::system_prompt() const {
         "(manual, auto-read, edit, auto, plan); you will be told when that happens.\n"
         "\n"
         "# Tools\n"
-        "read_file, list_dir, search_files (grep -E syntax), write_file, edit_file (one exact replacement), run_shell.\n"
+        "read_file, list_dir, glob (find files by name pattern), search_files (grep -E syntax), write_file, edit_file (one "
+        "exact replacement), run_shell.\n"
         "run_shell is bash inside a sandbox: only the workspace is writable, there is no network, no sudo, and a "
         "timeout (default 120 s). In auto-read and plan modes only read-only commands run, with the workspace "
         "read-only too. Tool output is capped; read files in ranges when they are long.\n"
+        "question asks the user one thing and waits for the answer; offer options when the choice is fixed. Use it "
+        "for decisions that are theirs, not for things the other tools can tell you.\n"
+        "todo is your plan for work with several steps: the user sees it. Send the whole list each time, mark items "
+        "done as you finish them, and keep it current until the work is done.\n" +
+        user_tools_text() +
         "\n"
         "# The harness\n"
         "Every tool call is checked before it runs. Results starting with DENIED or BLOCKED are final for that "
@@ -168,6 +189,7 @@ void Agent::restore(std::vector<Message> messages) {
 void Agent::clear() {
     messages_.clear();
     always_allowed_.clear();
+    todo_.clear();
     if (log_) log_->write("clear", {});
 }
 
@@ -388,7 +410,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
                 }
             });
             try {
-                reply = chat(provider, options, messages_, tool_schemas(), [&](std::string_view d, bool t) { events.on_text(d, t); }, abort);
+                reply = chat(provider, options, messages_, schemas_, [&](std::string_view d, bool t) { events.on_text(d, t); }, abort);
             } catch (...) {
                 abort = true;
                 watcher.join();
@@ -458,14 +480,21 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
     }
 
     std::string name = canonical_tool_name(call.name);
+    const LuaTool* lua = name.empty() ? find_tool(call.name) : nullptr;
+    if (lua) name = lua->name;
     if (name.empty()) {
-        return result("unknown tool '" + call.name + "'. The tools are: " + tool_names() + ". Call one of those.", false);
+        std::string names = tool_names();
+        for (const auto& t : tools_) names += ", " + t.name;
+        return result("unknown tool '" + call.name + "'. The tools are: " + names + ". Call one of those.", false);
     }
+    bool harness_action = !lua && name != "question" && name != "todo";
     Action action;
-    try {
-        action = tool_action(harness_, name, call.arguments);
-    } catch (const std::exception& e) {
-        return result(std::string("error: ") + e.what(), false);
+    if (harness_action) {
+        try {
+            action = tool_action(harness_, name, call.arguments);
+        } catch (const std::exception& e) {
+            return result(std::string("error: ") + e.what(), false);
+        }
     }
 
     // The same call over and over means the model is stuck, not working.
@@ -487,6 +516,62 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         return result("REFUSED: this exact call has been made " + std::to_string(repeats_) + " times in a row. Do something different, or tell the user what is blocking you.", false);
     }
 
+    if (name == "question") {
+        // Changes nothing on the machine, so no policy; the user answers or not.
+        if (!call.arguments.contains("question") || !call.arguments["question"].is_string()) return result("error: missing string argument 'question'", false);
+        std::vector<std::string> options;
+        if (call.arguments.contains("options") && call.arguments["options"].is_array()) {
+            for (const auto& o : call.arguments["options"]) {
+                if (o.is_string()) options.push_back(o.get<std::string>());
+            }
+        }
+        std::string answer = events.question(call.arguments["question"].get<std::string>(), options);
+        record["answer"] = answer;
+        return result(answer.empty() ? "(the user gave no answer)" : answer, true);
+    }
+    if (name == "todo") {
+        if (!call.arguments.contains("items") || !call.arguments["items"].is_array()) return result("error: missing array argument 'items'", false);
+        todo_.clear();
+        for (const auto& it : call.arguments["items"]) {
+            if (it.is_string()) todo_.push_back({it.get<std::string>(), false});
+            else if (it.is_object() && it.contains("text") && it["text"].is_string()) {
+                todo_.push_back({it["text"].get<std::string>(), it.contains("done") && it["done"].is_boolean() && it["done"].get<bool>()});
+            }
+        }
+        events.on_todo(todo_);
+        size_t done = std::count_if(todo_.begin(), todo_.end(), [](const TodoItem& t) { return t.done; });
+        std::string text = "todo: " + std::to_string(done) + "/" + std::to_string(todo_.size()) + " done";
+        for (const auto& t : todo_) text += std::string("\n") + (t.done ? "[x] " : "[ ] ") + t.text;
+        return result(text, true);
+    }
+    if (lua) {
+        // Every maic.* call inside the tool is one action, authorised exactly like a built-in and logged with it.
+        record["file"] = lua->file.string();
+        record["actions"] = nlohmann::json::array();
+        Authorise gate = [&](const Action& a, const std::string& s, const std::string& preview) {
+            nlohmann::json sub = {{"action", s}};
+            Decision d = authorise(a, name, s, preview, origin, events, sub);
+            if (d.verdict == Verdict::Allow && a.kind == Action::Kind::Write) save_undo_point(a.path, s + " (" + name + ")");
+            record["actions"].push_back(sub);
+            return d;
+        };
+        ToolResult r = run_lua_tool(*lua, call.arguments, harness_, gate, cancel);
+        return result(r.text, r.ok);
+    }
+
+    Decision d = authorise(action, name, summary, tool_preview(harness_, name, call.arguments), origin, events, record);
+    if (d.verdict != Verdict::Allow) return result(d.reason, false);
+    if (action.kind == Action::Kind::Write) save_undo_point(action.path, summary);
+    ToolResult r = run_tool(harness_, name, call.arguments, d.read_only_sandbox, cancel);
+    if (r.ok && name == "read_file") {
+        std::string extra = nested_instructions(action.path);
+        if (!extra.empty()) r.text += "\n" + extra;
+    }
+    return result(r.text, r.ok);
+}
+
+Decision Agent::authorise(const Action& action, const std::string& tool, const std::string& summary, const std::string& preview,
+                          Origin origin, AgentEvents& events, nlohmann::json& record) {
     Decision d = harness_.check(action, mode, origin);
     record["decision"] = verdict_name(d.verdict);
     record["reason"] = d.reason;
@@ -496,7 +581,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
     if (d.verdict == Verdict::Ask) {
         std::string key = Harness::approval_key(action);
         std::string covers = key.rfind("shell:", 0) == 0 ? "the program `" + key.substr(6) + "`" : key.rfind("write:", 0) == 0 ? "writes to this file" : "reads of this file";
-        ApprovalAnswer answer = events.ask({name, summary, d.reason, origin, covers, tool_preview(harness_, name, call.arguments)});
+        ApprovalAnswer answer = events.ask({tool, summary, d.reason, origin, covers, preview});
         record["approval"] = approval_name(answer.choice);
         if (!answer.feedback.empty()) record["feedback"] = answer.feedback;
         switch (answer.choice) {
@@ -504,13 +589,13 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
                 d.verdict = Verdict::Allow;
                 break;
             case Approval::Always:
-                always_allowed_.insert(Harness::approval_key(action));
+                always_allowed_.insert(key);
                 d.verdict = Verdict::Allow;
                 break;
             case Approval::No:
                 ++denials_;
-                if (!answer.feedback.empty()) return result("DENIED by the user, who says: " + answer.feedback, false);
-                return result("DENIED by the user. Ask what they want instead of retrying.", false);
+                if (!answer.feedback.empty()) return {Verdict::Deny, "DENIED by the user, who says: " + answer.feedback};
+                return {Verdict::Deny, "DENIED by the user. Ask what they want instead of retrying."};
             case Approval::Trip:
                 d = {Verdict::Trip, "the user tripped the harness at the approval prompt"};
                 break;
@@ -523,35 +608,30 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         } catch (const std::exception& e) {
             events.on_notice(std::string("tripwire could not be set: ") + e.what());
         }
-        return result("BLOCKED and the harness was tripped (" + d.reason + "). Stop and explain to the user.", false);
+        return {Verdict::Trip, "BLOCKED and the harness was tripped (" + d.reason + "). Stop and explain to the user."};
     }
-    if (d.verdict == Verdict::Deny) {
-        return result("DENIED: " + d.reason, false);
-    }
+    if (d.verdict == Verdict::Deny) return {Verdict::Deny, "DENIED: " + d.reason};
+    return d;
+}
 
-    if (name == "write_file" || name == "edit_file") save_undo_point(name, call.arguments);
-    ToolResult r = run_tool(harness_, name, call.arguments, d.read_only_sandbox, cancel);
-    if (r.ok && name == "read_file") {
-        std::string extra = nested_instructions(action.path);
-        if (!extra.empty()) r.text += "\n" + extra;
+const LuaTool* Agent::find_tool(const std::string& name) const {
+    std::string snake = snake_tool_name(name);
+    for (const auto& t : tools_) {
+        if (t.name == name || t.name == snake) return &t;
     }
-    return result(r.text, r.ok);
+    return nullptr;
 }
 
 void Agent::set_instruction_names(std::vector<std::string> names) {
     instruction_names_ = std::move(names);
 }
 
-void Agent::save_undo_point(const std::string& name, const nlohmann::json& args) {
-    try {
-        std::filesystem::path p = harness_.resolve(args.value("path", ""));
-        UndoPoint u{p, std::nullopt, tool_summary(name, args)};
-        std::ifstream in(p, std::ios::binary);
-        if (in) u.before = std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        undo_.push_back(std::move(u));
-        if (undo_.size() > 200) undo_.erase(undo_.begin());
-    } catch (const std::exception&) {
-    }
+void Agent::save_undo_point(const std::filesystem::path& path, const std::string& summary) {
+    UndoPoint u{path, std::nullopt, summary};
+    std::ifstream in(path, std::ios::binary);
+    if (in) u.before = std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    undo_.push_back(std::move(u));
+    if (undo_.size() > 200) undo_.erase(undo_.begin());
 }
 
 std::string Agent::undo(size_t count) {

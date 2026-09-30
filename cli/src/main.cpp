@@ -11,6 +11,7 @@
 #include "maic/status.hpp"
 #include "maic/tripwire.hpp"
 #include "maic/lua.hpp"
+#include "maic/lua_tools.hpp"
 #include "maic/vendor.hpp"
 #include "server.hpp"
 #include "tui.hpp"
@@ -53,6 +54,7 @@ void usage(std::ostream& out = std::cerr) {
                  "  vendor adopt NAME PATH     use an install you already have instead of fetching\n"
                  "  vendor unlink NAME         stop using it (nothing is deleted)\n"
                  "  lua [FILE [args...] | -e CODE]   Lua (vendored LuaJIT) here, with the maic table; no arguments: a REPL (maic help lua)\n"
+                 "  tools                      the user-defined Lua tools this directory's sessions get (maic help tools)\n"
                  "  doctor                     what this machine has, what MAIC needs, a recommended setup\n"
                  "  status                     harness, services, where they run, quick actions\n"
                  "  up <service...|all>        start services\n"
@@ -477,6 +479,15 @@ int main(int argc, char** argv) {
             if (r.ok) std::cout << r.output;
             else std::cerr << "maic lua: " << r.output << (r.output.empty() || r.output.back() != '\n' ? "\n" : "");
             return r.ok ? 0 : 1;
+        }
+        if (cmd == "tools") {
+            auto set = maic::load_lua_tools(std::filesystem::current_path());
+            if (set.tools.empty()) {
+                std::cout << "no user-defined tools. Put a <name>.lua in .maic/tools/ here or in " << maic::global_tools_dir().string() << " (maic help tools)\n";
+            }
+            for (const auto& t : set.tools) std::cout << t.name << "  " << t.file.string() << "\n    " << t.description << "\n";
+            for (const auto& n : set.notices) std::cout << n << "\n";
+            return 0;
         }
         if (cmd == "vendor") {
             auto entries = maic::load_vendor_manifest();

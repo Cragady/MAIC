@@ -21,8 +21,9 @@ std::string tool_summary(const std::string& name, const nlohmann::json& args);
 // For the approval prompt: what edit_file / write_file would change, as - / + lines (capped). "" otherwise.
 std::string tool_preview(const Harness& harness, const std::string& name, const nlohmann::json& args);
 
-// "Read_File", "readFile" or "read-file" -> "read_file"; "" when nothing matches.
+// "Read_File", "readFile" or "read-file" -> "read_file"; "" when it is not a built-in.
 std::string canonical_tool_name(const std::string& name);
+std::string snake_tool_name(const std::string& name);  // the same spelling fix, for any name
 std::string tool_names();  // "read_file, list_dir, ..." for error messages
 
 struct ToolResult {

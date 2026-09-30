@@ -49,7 +49,7 @@ sudo rm -rf /var/lib/maic
 
 ## Layers
 
-Every agent tool call goes through `Agent::run_tool_call` (`core/src/agent.cpp`), in this order: tripwire check, harness policy, approval, then execution. No tool path skips it.
+Every agent tool call goes through `Agent::run_tool_call` (`core/src/agent.cpp`), in this order: tripwire check, harness policy, approval, then execution. No tool path skips it. Policy, the session's "always" answers and the approval prompt are one step, `Agent::authorise`; a user-defined Lua tool ([tools.md](tools.md)) hands every `maic.read` / `write` / `list` / `search` / `shell` call it makes to that same step, so a tool of yours can do exactly what a built-in could and nothing more.
 
 **Built:**
 
@@ -87,6 +87,7 @@ Every agent tool call goes through `Agent::run_tool_call` (`core/src/agent.cpp`)
 15. **Undo points.** Every file a tool changes is saved first; `:undo` restores, the model is told, the transcript records it.
 16. **A budget.** `budget_tokens` (or `:budget N`) stops the agent when the session's tokens reach it.
 17. **`workdir` for commands** is resolved by the harness; outside the workspace it is asked about like a write there.
+18. **User-defined tools stay inside.** A Lua tool runs in a state with no `io`, `os`, `require` or `load`; its only way to the machine is the `maic` table, whose calls are authorised one by one like built-in calls, logged with the tool call, and refused with a Lua error the model reads. A tool is stopped after 60 s or on Ctrl-C.
 
 **Planned:**
 

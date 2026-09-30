@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <chrono>
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -167,6 +168,14 @@ struct PendingApproval {
     std::string feedback;
 };
 
+// The question tool: shown like an approval; a number picks an option, typed text is a free answer.
+struct PendingQuestion {
+    std::string text;
+    std::vector<std::string> options;
+    std::promise<std::string> answer;
+    std::string typed;
+};
+
 enum class Focus { Input, Conversation };
 
 class App : public AgentEvents {
@@ -258,6 +267,23 @@ public:
         screen_.PostEvent(Event::Custom);
         return answer.get();
     }
+    std::string question(const std::string& text, const std::vector<std::string>& options) override {
+        std::future<std::string> answer;
+        {
+            std::lock_guard lock(mu_);
+            question_.emplace(PendingQuestion{text, options, {}, ""});
+            answer = question_->answer.get_future();
+        }
+        screen_.PostEvent(Event::Custom);
+        return answer.get();
+    }
+    void on_todo(const std::vector<TodoItem>& items) override {
+        {
+            std::lock_guard lock(mu_);
+            todo_ = items;
+        }
+        screen_.PostEvent(Event::Custom);
+    }
 
 private:
     void post(Kind k, std::string text) {
@@ -266,7 +292,18 @@ private:
     }
     bool asking() {
         std::lock_guard lock(mu_);
-        return approval_.has_value();
+        return approval_.has_value() || question_.has_value();
+    }
+    std::string todo_text() {
+        std::lock_guard lock(mu_);
+        if (todo_.empty()) return "";
+        size_t done = 0;
+        std::string out;
+        for (const auto& t : todo_) {
+            done += t.done;
+            out += std::string("\n") + (t.done ? "[x] " : "[ ] ") + t.text;
+        }
+        return "todo: " + std::to_string(done) + "/" + std::to_string(todo_.size()) + " done" + out;
     }
 
     Element render_input(size_t width, int& rows);
@@ -279,9 +316,12 @@ private:
     Element render_top_status();
     Element render_bottom_status();
     Element render_approval();
+    Element render_question();
 
     bool handle_approval(const Event& e);
+    bool handle_question(const Event& e);
     void answer(Approval a, std::string feedback = "");
+    void answer_question(std::string text);
     void submit(std::string text, bool now);
     void start_turn(const std::string& text);
     void run_command(const std::string& line);
@@ -302,8 +342,10 @@ private:
     View view_;
     Focus focus_ = Focus::Input;
 
-    std::mutex mu_;  // guards approval_
+    std::mutex mu_;  // guards approval_, question_ and todo_
     std::optional<PendingApproval> approval_;
+    std::optional<PendingQuestion> question_;
+    std::vector<TodoItem> todo_;
 
     std::atomic<bool> busy_{false};
     std::atomic<bool> cancel_{false};
@@ -338,6 +380,12 @@ void App::welcome() {
     std::string files;
     for (const auto& f : agent_.instructions()) files += (files.empty() ? "" : ", ") + f.path.string();
     view_.append(Kind::Notice, "session transcript: " + log_path() + (files.empty() ? "" : "\ninstructions: " + files));
+    if (!agent_.tools().empty()) {
+        std::string names;
+        for (const auto& t : agent_.tools()) names += (names.empty() ? "" : ", ") + t.name;
+        view_.append(Kind::Notice, "tools: " + names + "  (:tools lists them)");
+    }
+    for (const auto& n : agent_.tool_notices()) view_.append(Kind::Error, n);
     view_.append(Kind::Notice, "Press i to type, Alt+Enter (or :w) to send, Enter for a new line. Esc = normal mode: j/k scroll, u/Ctrl-R undo/redo, :e opens nvim, Ctrl-W k = conversation window, :help for everything.");
     if (agent_.remote()) view_.append(Kind::Error, "This model runs off this machine: prompts, files the agent reads and command output are sent to it.");
     try {
@@ -507,6 +555,13 @@ Element App::render_top_status() {
     right.push_back(text(" · ") | decorate(settings_.style("status_dim")));
     if (tripwire_state()) right.push_back(text("HARNESS TRIPPED") | decorate(settings_.style("harness_tripped")));
     else right.push_back(text("harness armed") | decorate(settings_.style("harness_armed")));
+    {
+        std::lock_guard lock(mu_);
+        if (!todo_.empty()) {
+            size_t done = std::count_if(todo_.begin(), todo_.end(), [](const TodoItem& t) { return t.done; });
+            right.push_back(text(" · todo " + std::to_string(done) + "/" + std::to_string(todo_.size()) + " done") | decorate(settings_.style("notice")));
+        }
+    }
     if (size_t q = agent_.queued()) right.push_back(text(" · " + std::to_string(q) + " queued (:w now)") | decorate(settings_.style("notice")));
     if (busy_) right.push_back(text(" · working… ctrl-c interrupts") | decorate(settings_.style("notice")));
     if (shell_busy_) right.push_back(text(" · shell running") | decorate(settings_.style("shell")));
@@ -587,6 +642,18 @@ Element App::render_approval() {
     return window(text(" approve? ") | bold, vbox(rows)) | decorate(settings_.style("approval"));
 }
 
+Element App::render_question() {
+    std::lock_guard lock(mu_);
+    if (!question_) return emptyElement();
+    Elements rows = {text(question_->text) | bold};
+    for (size_t i = 0; i < question_->options.size(); ++i) {
+        rows.push_back(hbox({text("[" + std::to_string(i + 1) + "]") | bold, text(" " + question_->options[i])}));
+    }
+    std::string hint = question_->options.empty() ? "  (Enter sends, Esc = no answer)" : "  (a number picks, or type an answer and Enter; Esc = no answer)";
+    rows.push_back(hbox({text("answer: ") | bold, text(question_->typed), text(" ") | inverted, text(hint) | dim}));
+    return window(text(" the agent asks ") | bold, vbox(rows)) | decorate(settings_.style("approval"));
+}
+
 Element App::render() {
     // FTXUI leaves ISIG on, so Ctrl-C would be a SIGINT that tears the UI down. Make it a key instead.
     // This runs on the first frame, after FTXUI has set up the terminal; it restores the saved settings on exit.
@@ -611,11 +678,12 @@ Element App::render() {
         std::lock_guard lock(mu_);
         approval_rows = 5;
         if (approval_) approval_rows += std::min(14, static_cast<int>(std::count(approval_->request.preview.begin(), approval_->request.preview.end(), '\n')));
+        if (question_) approval_rows = 4 + static_cast<int>(question_->options.size());
     }
     view_height_ = std::max(1, size.dimy - input_rows - palette_rows - 3 - approval_rows - (focused ? 2 : 0));
     Element conversation = view_.render(settings_, focused ? width - 2 : width, view_height_);
     if (focused) conversation = conversation | borderLight | decorate(settings_.style("focus"));
-    return vbox({conversation, render_approval(), render_top_status(), separator() | decorate(settings_.style("separator")), input, palette,
+    return vbox({conversation, render_approval(), render_question(), render_top_status(), separator() | decorate(settings_.style("separator")), input, palette,
                  render_bottom_status()});
 }
 
@@ -648,6 +716,10 @@ bool App::handle(Event e) {
     }
     if (raw != "\x03") quit_armed_ = false;
     status_msg_.clear();
+    if (asking()) {
+        std::lock_guard lock(mu_);
+        if (question_) return handle_question(e);
+    }
     if (asking()) return handle_approval(e);
 
     if (raw == "\x03") {  // Ctrl-C: interrupt, then clear input, then quit
@@ -784,6 +856,30 @@ void App::answer(Approval a, std::string feedback) {
     if (approval_) {
         approval_->answer.set_value({a, std::move(feedback)});
         approval_.reset();
+    }
+}
+
+// Called with mu_ held.
+bool App::handle_question(const Event& e) {
+    const std::string& k = e.input();
+    if (e == Event::Escape) answer_question("");
+    else if (e == Event::Return) answer_question(question_->typed);
+    else if (k == "\x03") answer_question(""), cancel_ = true;
+    else if (e == Event::Backspace) {
+        if (!question_->typed.empty()) question_->typed.erase(utf8_prev(question_->typed, question_->typed.size()));
+    } else if (e.is_character()) {
+        size_t n = question_->typed.empty() && k.size() == 1 && std::isdigit(static_cast<unsigned char>(k[0])) ? static_cast<size_t>(k[0] - '0') : 0;
+        if (n >= 1 && n <= question_->options.size()) answer_question(question_->options[n - 1]);
+        else question_->typed += k;
+    }
+    return true;
+}
+
+void App::answer_question(std::string text) {
+    if (question_) {
+        view_.append(Kind::User, text.empty() ? "(no answer)" : text);
+        question_->answer.set_value(std::move(text));
+        question_.reset();
     }
 }
 
@@ -1159,6 +1255,20 @@ void App::run_command(const std::string& line) {
             out += "session: " + log_path() + "\n";
             out += "mode: " + std::string(mode_name(agent_.mode.load())) + (busy_ ? "  (working)" : "  (idle)");
             if (size_t q = agent_.queued()) out += "  " + std::to_string(q) + " queued  -> :w now";
+            if (!agent_.tools().empty()) {
+                out += "\ntools:";
+                for (const auto& t : agent_.tools()) out += " " + t.name;
+            }
+            if (std::string todo = todo_text(); !todo.empty()) out += "\n" + todo;
+            post(Kind::Notice, out);
+        } else if (cmd == "todo") {
+            std::string todo = todo_text();
+            post(Kind::Notice, todo.empty() ? "no plan yet: the agent keeps one with the todo tool during multi-step work" : todo);
+        } else if (cmd == "tools") {
+            std::string out = "tools the model can call: read_file, list_dir, glob, search_files, write_file, edit_file, run_shell, question, todo";
+            if (agent_.tools().empty()) out += "\nno user-defined tools. Put a <name>.lua in .maic/tools/ or " + global_tools_dir().string() + " (see :h tools)";
+            for (const auto& t : agent_.tools()) out += "\n  " + t.name + "  " + t.file.string() + "\n    " + t.description;
+            for (const auto& n : agent_.tool_notices()) out += "\n  " + n;
             post(Kind::Notice, out);
         } else if (cmd == "up" || cmd == "down") {
             bool found = false;
@@ -1243,6 +1353,10 @@ void App::shutdown() {
     cancel_ = true;
     shell_cancel_ = true;
     answer(Approval::No);
+    {
+        std::lock_guard lock(mu_);
+        answer_question("");
+    }
     if (worker_.joinable()) worker_.join();
     if (shell_thread_.joinable()) shell_thread_.join();
 }
