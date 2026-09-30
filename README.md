@@ -92,8 +92,8 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.
 * [opencode-quick-wins.md](docs/opencode-quick-wins.md) — 23 small, ranked improvements to take from opencode, with file pointers.
 * [cleanroom.md](docs/cleanroom.md) — what may go into MAIC, where the design came from, third-party licenses.
-* [remote.md](docs/remote.md) — remote access: `maic-server`, the phone web client, tokens and TLS, the API, the relay design, why the tripwire cannot be reset remotely.
-* [roadmap.md](docs/roadmap.md) — everything MAIC should still become: the relay and a native phone client, the harness layers, cai-tools, tools, editor, services.
+* [remote.md](docs/remote.md): remote access: `maic-server`, the phone web client, tokens and TLS, the API, the relay design, why the tripwire cannot be reset remotely.
+* [roadmap.md](docs/roadmap.md): everything MAIC should still become: the relay and a native phone client, the harness layers, cai-tools, tools, editor, services.
 * [comfyui-setup.md](docs/comfyui-setup.md) — ComfyUI in its own venv, models on the external drive.
 * [local-llm-benchmarks.md](docs/local-llm-benchmarks.md) — measured tok/s per model and runtime.
 
