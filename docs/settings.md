@@ -69,7 +69,15 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 
 ## Providers
 
-Where models come from. MAIC ships with `ollama` (local), `anthropic`, `deepseek` and `openrouter`; a `providers` entry adds a new one or changes a shipped one by name.
+Where models come from. MAIC ships with `ollama` and `llamacpp` (local), `anthropic`, `deepseek` and `openrouter`; a `providers` entry adds a new one or changes a shipped one by name.
+
+| Shipped | Kind | `base_url` | Key |
+| :--- | :--- | :--- | :--- |
+| `ollama` | `ollama` | `http://127.0.0.1:11434` | none |
+| `llamacpp` | `openai` | `http://127.0.0.1:8081/v1` (the vendored llama-server, [llamacpp.md](llamacpp.md); every `sampling` key reaches it, including `xtc_probability`, `dry_multiplier`, `grammar`, `json_schema`, and `logit_bias` from token bans) | none |
+| `anthropic` | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
+| `deepseek` | `openai` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` |
+| `openrouter` | `openai` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
 
 ```json
 "providers": {

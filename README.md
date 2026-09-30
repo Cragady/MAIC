@@ -90,7 +90,8 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [tools.md](docs/tools.md): the model's tools, and writing your own in Lua behind the harness.
 * [settings.md](docs/settings.md) — the settings file: model providers (local and remote), styles, instruction files.
 * [sessions.md](docs/sessions.md): the session file format, every record type, homes, forks and `--fork-at`, `maic sessions import` (claude.ai exports, Claude Code transcripts), `redact`, `export`.
-* [vendor.md](docs/vendor.md) — the services MAIC installs for itself (ComfyUI, Ollama) at pinned versions, and the artifact tree.
+* [vendor.md](docs/vendor.md) — the services MAIC installs for itself (ComfyUI, Ollama, llama.cpp) at pinned versions, and the artifact tree.
+* [llamacpp.md](docs/llamacpp.md): llama.cpp as a second local server: every sampler (XTC, DRY, top-n-sigma), logit bias, grammars, one GGUF at a time, and reusing the model Ollama already has.
 * [bans.md](docs/bans.md) — string, regex and token bans, XTC, and why MAIC bans after the fact rather than by constrained decoding.
 * [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.
 * [opencode-quick-wins.md](docs/opencode-quick-wins.md) — 23 small, ranked improvements to take from opencode, with file pointers.
@@ -108,14 +109,14 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 ```sh
 # just what the build needs (the pinned LuaJIT source); ComfyUI and Ollama come later, through maic itself
 git clone --recurse-submodules=vendor/lua-pins https://github.com/Cragady/MAIC
-# everything, including the ComfyUI checkout (about 100 MB), fetched in parallel
+# everything, including the ComfyUI (about 100 MB) and llama.cpp (about 180 MB) checkouts, fetched in parallel
 git clone --recurse-submodules -j4 https://github.com/Cragady/MAIC
 # an existing clone
 git submodule update --init -j4              # all of them
 git submodule update --init vendor/lua-pins  # the required one only
 ```
 
-`maic` pulls and builds the non-required vendors itself: `maic vendor add comfyui` fetches the pinned ComfyUI submodule, applies MAIC's patches, sets up its Python with uv and links it in; `maic vendor add ollama` downloads and checksum-verifies the pinned release. `maic vendor adopt NAME PATH` uses an install you already have instead. See [docs/vendor.md](docs/vendor.md).
+`maic` pulls and builds the non-required vendors itself: `maic vendor add comfyui` fetches the pinned ComfyUI submodule, applies MAIC's patches, sets up its Python with uv and links it in; `maic vendor add ollama` downloads and checksum-verifies the pinned release; `maic vendor add llamacpp` builds the pinned llama.cpp out of tree ([docs/llamacpp.md](docs/llamacpp.md)). `maic vendor adopt NAME PATH` uses an install you already have instead. See [docs/vendor.md](docs/vendor.md).
 
 ## Structure and Build
 
@@ -123,12 +124,12 @@ MAIC is the control plane for the local AI stack and, eventually, a C++ agentic 
 
 ```
 MAIC/
-├── core/       C++ library: agent loop, model providers (Ollama, Anthropic, OpenAI-compatible), tools, harness
+├── core/       C++ library: agent loop, model providers (Ollama, llama.cpp, Anthropic, OpenAI-compatible), tools, harness
 │               policy, sandbox, sessions, settings, service manager, tripwire
 ├── cli/        `maic`: the agent UI (vim keys, modes, sessions) and service/harness commands. See cli/README.md
 ├── harness/    maic-lock (root-owned tripwire helper) + its installer
-├── services/   one JSON file per service MAIC runs (ollama, comfyui)
-├── vendor/     pinned submodules (ComfyUI, comfyui-ollama), patches, install scripts, manifest.json. See docs/vendor.md
+├── services/   one JSON file per service MAIC runs (ollama, comfyui, llamacpp)
+├── vendor/     pinned submodules (ComfyUI, comfyui-ollama, llama.cpp), patches, install scripts, manifest.json. See docs/vendor.md
 ├── tools/      examples of user-defined Lua tools (docs/tools.md); the polyglot runtimes are planned
 ├── server/     maic-server: sessions over HTTP with server-sent events, the phone web client. See docs/remote.md
 └── docs/
@@ -153,7 +154,7 @@ maic                         # the agent, in the current directory (see cli/READ
 maic -c                      # continue the last session here; maic -r picks one
 maic -p "prompt"             # one turn, no UI
 maic status                  # harness state + every service
-maic up ollama comfyui       # or: maic up all
+maic up ollama comfyui       # or: maic up all; llamacpp once a GGUF is linked (docs/llamacpp.md)
 maic down all
 maic logs ollama
 maic trip "reason"           # panic button, no password
