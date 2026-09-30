@@ -210,6 +210,7 @@ public:
     ~App() override { shutdown(); }
 
     void welcome();
+    std::string transcript_path() const { return log_->path().string(); }
     void send(const std::string& text) { submit(text, false); }
     void attach_context(const std::vector<std::filesystem::path>& files) {
         for (const auto& f : files) {
@@ -1228,6 +1229,10 @@ int run_tui(const TuiOptions& options) {
     if (!first.empty()) app.send(first);
     auto component = CatchEvent(Renderer([&] { return app.render(); }), [&](Event e) { return app.handle(e); });
     screen.Loop(component);
+    // The way back, printed after the screen is restored: a temporary transcript lives in the runtime
+    // directory and is never listed, so this is the only place its path is easy to find.
+    std::cout << "transcript" << (settings.record ? "" : " (temporary; gone at logout)") << ": " << app.transcript_path() << "\n"
+              << "resume it with: maic -r " << app.transcript_path() << "\n";
     return 0;
 }
 
