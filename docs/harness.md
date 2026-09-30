@@ -94,6 +94,8 @@ Every agent tool call goes through `Agent::run_tool_call` (`core/src/agent.cpp`)
 
 21. **An allow list.** `allow` in settings (and `:allow` in a session) holds command patterns the user pre-approved; they run in every mode but plan without an approval prompt and without the second reader. MAIC's own helpers are on it by default. Trip patterns are checked first and still win; the sandbox still applies.
 
+22. **Forbidden terms.** `forbid` in settings (and `:forbid` in a session) lists terms no tool call may contain, in any letter case. The check runs first, on the call's name and its whole argument object, and again inside `Harness::check` on commands and paths so a Lua tool's inner actions are covered. A hit is a denial the model reads and a notice the user sees; nothing runs. Being a rule, it does not depend on the reviewer and holds under the dumb harness.
+
 **Repeats, refined.** The doom-loop rule now tells harm from confusion: a repeated write or a repeated command that could change something trips the lock at five, as before; a repeated read, read-only command or allow-listed command is refused at three and ends the turn at five, with a note to the user, because a small model re-running `maic-storyboard` is stuck, not dangerous, and a root-owned lock is the wrong answer to stuck.
 
 21. **The harness protects itself.** Writing MAIC's settings, its lock files, the server's tokens, or running the lock helper is refused as the agent's business: under the smart harness it trips the machine lock, since a request from another agent that tries it is exactly what the global lock exists for; the dumb harness asks. The machine lock outranks every session: locked, unlocked or session-scoped, a session sees it, unless it is isolated (below).

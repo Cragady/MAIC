@@ -1,5 +1,6 @@
 #include "maic/harness.hpp"
 
+#include <cctype>
 #include <fnmatch.h>
 
 #include "maic/paths.hpp"
@@ -247,6 +248,10 @@ std::string Harness::approval_key(const Action& action) {
 }
 
 Decision Harness::check(const Action& action, Mode mode, Origin origin) const {
+    // Forbidden terms come first: before the tripwire's patterns, the mode, the allow list and the reviewer.
+    if (auto term = forbidden(action.kind == Action::Kind::Shell ? action.command + " " + action.workdir.string() : action.path.string())) {
+        return {Verdict::Deny, "contains the forbidden term \"" + *term + "\""};
+    }
     Decision d{Verdict::Deny, "unknown action"};
     switch (action.kind) {
         case Action::Kind::Shell:
@@ -281,6 +286,18 @@ bool helper_read_only(const std::string& command) {
 }
 
 }  // namespace
+
+std::optional<std::string> Harness::forbidden(const std::string& text) const {
+    if (forbid_.empty()) return std::nullopt;
+    std::string low = text;
+    for (auto& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (const auto& term : forbid_) {
+        std::string t = term;
+        for (auto& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (!t.empty() && low.find(t) != std::string::npos) return term;
+    }
+    return std::nullopt;
+}
 
 bool Harness::allowed_by_list(const std::string& command) const {
     for (const auto& p : allow_) {

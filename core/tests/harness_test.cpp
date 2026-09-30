@@ -130,6 +130,18 @@ int main() {
 
     shell(h, Mode::Auto, "echo " + std::string(20000, 'a'), Verdict::Deny);
 
+    std::cout << "forbidden terms\n";
+    {
+        Harness f(ws);
+        f.set_forbid({"threesome"});
+        expect(f.forbidden("grep -ri threesOmes .").has_value() && f.forbidden("ThReEsOmE").has_value() && !f.forbidden("three some").has_value(), "a term is found in any letter case, plural included, and not across a space");
+        expect(f.check(Action{Action::Kind::Shell, {}, "grep -r threesome ."}, Mode::Auto, Origin::Local).verdict == Verdict::Deny, "a command containing it is denied even in auto mode");
+        expect(f.check(Action{Action::Kind::Read, ws / "notes" / "Threesomes.txt"}, Mode::Auto, Origin::Local).verdict == Verdict::Deny, "a path containing it is denied");
+        expect(f.check(Action{Action::Kind::Shell, {}, "ls"}, Mode::Auto, Origin::Local).verdict == Verdict::Allow, "other calls are untouched");
+        f.set_allow({"grep *"});
+        expect(f.check(Action{Action::Kind::Shell, {}, "grep threesome x"}, Mode::Auto, Origin::Local).verdict == Verdict::Deny, "the allow list does not override it");
+    }
+
     std::cout << "isolated (confined) sessions\n";
     {
         Harness c(ws);

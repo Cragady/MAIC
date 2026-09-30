@@ -147,6 +147,7 @@ public:
     // Commands the user pre-approved (see Harness::set_allow); from settings `allow`.
     void set_allow(std::vector<std::string> patterns) { harness_.set_allow(std::move(patterns)); }
     void set_confined(bool on) { harness_.set_confined(on); }
+    void set_forbid(std::vector<std::string> terms) { harness_.set_forbid(std::move(terms)); }
 
     // Names of instruction files (MAIC.md, AGENTS.md, ...) looked for beside files the model reads.
     void set_instruction_names(std::vector<std::string> names);

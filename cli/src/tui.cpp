@@ -236,6 +236,7 @@ public:
         agent_.prefill = resolve_system_prompt(settings_.prefill);
         agent_.rules = settings_.rules;
         agent_.set_allow(settings_.allow);
+        agent_.set_forbid(settings_.forbid);
         set_tripwire_scope(settings_.tripwire, log_->path().string() + ".tripped");
         if (settings_.tripwire == "isolated") agent_.set_confined(true);
         agent_.reload_instructions();
@@ -1601,6 +1602,27 @@ void App::run_command(const std::string& line) {
                 post(Kind::Notice, key + " = " + live_sampling_[key].dump() + (provider.kind == "anthropic" ? " (not sent to Anthropic)" : ""));
             } else {
                 post(Kind::Error, ":sampling [KEY VALUE | xtc P [T] | unset KEY | reset]");
+            }
+        } else if (cmd == "forbid") {
+            std::istringstream a(arg);
+            std::string sub;
+            a >> sub;
+            std::string rest;
+            std::getline(a >> std::ws, rest);
+            auto fb = agent_.harness().forbid();
+            if (arg.empty() || arg == "list") {
+                std::string out = "forbidden terms (" + std::to_string(fb.size()) + "; any tool call containing one is halted, in every mode, under every harness):";
+                for (size_t i = 0; i < fb.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". " + fb[i];
+                out += "\n:forbid TERM adds one · :forbid remove N   (forbid = { ... } in settings keeps them)";
+                post(Kind::Notice, out);
+            } else if (sub == "remove" && !rest.empty()) {
+                size_t n = static_cast<size_t>(std::atoi(rest.c_str()));
+                if (n >= 1 && n <= fb.size()) fb.erase(fb.begin() + static_cast<long>(n - 1)), agent_.set_forbid(fb), post(Kind::Notice, "removed");
+                else post(Kind::Error, "no term " + rest);
+            } else {
+                fb.push_back(arg);
+                agent_.set_forbid(fb);
+                post(Kind::Notice, "forbidden: " + arg);
             }
         } else if (cmd == "allow") {
             std::istringstream a(arg);

@@ -653,6 +653,14 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         for (const auto& t : tools_) names += ", " + t.name;
         return result("unknown tool '" + call.name + "'. The tools are: " + names + ". Call one of those.", false);
     }
+    // Forbidden terms: the whole call, name and arguments, before anything else looks at it. This is a rule,
+    // so the dumb harness enforces it exactly as the smart one does.
+    if (auto term = harness_.forbidden(name + " " + call.arguments.dump())) {
+        record["decision"] = "deny";
+        record["reason"] = "forbidden term";
+        events.on_notice("HALTED: the call contains the forbidden term \"" + *term + "\"; nothing ran");
+        return result("DENIED: the call contains the forbidden term \"" + *term + "\". Do not search for, run, or write anything involving it; tell the user it is forbidden if they asked for it.", false);
+    }
     bool harness_action = !lua && name != "question" && name != "todo";
     std::vector<Action> actions;
     if (harness_action) {

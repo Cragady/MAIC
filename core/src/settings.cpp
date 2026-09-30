@@ -170,6 +170,9 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.load_instructions = j.value("load_instructions", s.load_instructions);
         s.system_prompt = j.value("system_prompt", s.system_prompt);
         s.prefill = j.value("prefill", s.prefill);
+        if (j.contains("forbid") && j["forbid"].is_array()) {
+            for (const auto& r : j["forbid"]) if (r.is_string() && !r.get<std::string>().empty()) s.forbid.push_back(r.get<std::string>());
+        }
         if (j.contains("allow") && j["allow"].is_array()) {
             for (const auto& r : j["allow"]) if (r.is_string() && !r.get<std::string>().empty()) s.allow.push_back(r.get<std::string>());
         }
@@ -358,6 +361,8 @@ void write_default_settings(bool as_json) {
         {"prefill", d.prefill},
         {"rules", nlohmann::json::array()},
         {"allow", nlohmann::json::array()},
+        {"forbid", nlohmann::json::array()},
+        {"//forbid", "terms no tool call may contain, in any letter case: a search, a command, a path or any argument with one is halted before it runs, under the dumb harness too. Added to the built-in list. :forbid in a session"},
         {"//allow", "command patterns (glob over the whole command line) allowed in every mode but plan, without asking or review; MAIC's own helpers (maic-storyboard*, maic-workflow-edit*, maic path* ...) are always on it. Trip patterns still win. Layers add up. :allow in a session"},
         {"//rules", "standing one-line instructions (\"always answer in French\"); they ride with system_prompt at both ends of the system prompt and in the per-turn note. :rule in a session, --rule on the command line"},
         {"//prefill", "text every reply starts with, sent as the opening of the assistant turn; a guarantee where a system prompt is a request"},

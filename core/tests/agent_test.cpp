@@ -4,6 +4,7 @@
 #include "check.hpp"
 
 #include "maic/agent.hpp"
+#include "maic/settings.hpp"
 #include "maic/tripwire.hpp"
 #include "maic/session.hpp"
 
@@ -605,6 +606,36 @@ int main() {
         auto r3 = attempt(true, "notes.txt");
         expect(!fs::exists(lock) && fs::exists(ws / "notes.txt"), "an ordinary write is untouched by the guard");
         fs::remove(ws / "notes.txt");
+    }
+
+    section("forbidden terms halt a call under any harness");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        auto attempt = [&](bool smart, const json& call) {
+            fake.tool_call = call;
+            fake.calls_left = 1;
+            Agent agent(ws, "test");
+            agent.providers = {fake.provider()};
+            agent.mode = Mode::Auto;
+            agent.review_with_model = smart;
+            agent.set_forbid(Settings{}.forbid);
+            Recorder r;
+            r.reply = {Approval::Yes, ""};
+            agent.submit("look", Origin::Local, r, no_cancel);
+            return r;
+        };
+        auto r1 = attempt(false, json{{"name", "search_files"}, {"arguments", {{"pattern", "threesOme"}, {"path", "."}}}});
+        expect(!r1.results.empty() && r1.results[0].rfind("DENIED: the call contains the forbidden term", 0) == 0 && r1.asked.empty(), "a search for the term is halted under the dumb harness without asking");
+        bool noticed = false;
+        for (const auto& n : r1.notices) noticed = noticed || n.rfind("HALTED", 0) == 0;
+        expect(noticed, "and the user sees it");
+        auto r2 = attempt(true, json{{"name", "run_shell"}, {"arguments", {{"command", "grep -ri threesomes docs/"}}}});
+        expect(!r2.results.empty() && r2.results[0].rfind("DENIED: the call contains the forbidden term", 0) == 0, "a command with the plural is halted under the smart harness before the reviewer");
+        auto r3 = attempt(false, json{{"name", "glob"}, {"arguments", {{"pattern", "**/*THREESOME*"}}}});
+        expect(!r3.results.empty() && r3.results[0].rfind("DENIED", 0) == 0, "a glob pattern with it is halted");
+        auto r4 = attempt(false, json{{"name", "search_files"}, {"arguments", {{"pattern", "pelican"}, {"path", "."}}}});
+        expect(!r4.results.empty() && r4.results[0].rfind("DENIED", 0) != 0, "an ordinary search runs");
     }
 
     section("prefill");

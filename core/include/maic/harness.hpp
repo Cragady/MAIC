@@ -73,6 +73,11 @@ public:
     bool allowed_by_list(const std::string& command) const;
     // A repeat of this action is harmless (a read, a read-only or allow-listed command): refuse, never trip.
     bool harmless(const Action& action) const;
+    // Forbidden terms: a tool call whose name, arguments, command or path contains one (any letter case) is
+    // halted before anything runs, in every mode and under every harness. From `forbid` in settings.
+    void set_forbid(std::vector<std::string> terms) { forbid_ = std::move(terms); }
+    const std::vector<std::string>& forbid() const { return forbid_; }
+    std::optional<std::string> forbidden(const std::string& text) const;  // the term found, if any
     // An isolated session (tripwire = "isolated"): reads stay inside the workspace, commands run only there,
     // and requests from a remote origin are refused.
     void set_confined(bool on) { confined_ = on; }
@@ -87,6 +92,7 @@ private:
 
     std::filesystem::path workspace_;
     std::vector<std::string> allow_;
+    std::vector<std::string> forbid_;
     bool confined_ = false;
     std::vector<std::filesystem::path> secret_paths_;     // never read, never written
     std::vector<std::filesystem::path> system_paths_;     // never written
