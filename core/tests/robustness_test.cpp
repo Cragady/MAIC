@@ -172,6 +172,37 @@ int main() {
     write_file(ws / "ünïcödé 名前.txt", "chat log");
     expect(tool(h, "search_files", {{"pattern", "chat"}}).text.find("名前") != std::string::npos, "unicode file names come through");
 
+    section("glob");
+    for (const char* f : {"src/a.cpp", "src/a.h", "src/deep/b.cpp", "src/deep/er/c.cpp", "build/x.cpp", ".git/config", "node_modules/m.cpp", "README.md"}) {
+        write_file(ws / "g" / f, "x");
+    }
+    auto g = tool(h, "glob", {{"pattern", "*.cpp"}, {"path", "g"}});
+    expect(g.ok && g.text == "src/a.cpp\nsrc/deep/b.cpp\nsrc/deep/er/c.cpp\n(3 files)", "a pattern without / matches at any depth, sorted, skipping build and node_modules:\n" + g.text);
+    g = tool(h, "glob", {{"pattern", "src/*.cpp"}, {"path", "g"}});
+    expect(g.ok && g.text == "src/a.cpp\n(1 file)", "* stays inside one segment: " + g.text);
+    g = tool(h, "glob", {{"pattern", "src/**/*.cpp"}, {"path", "g"}});
+    expect(g.ok && g.text.find("src/a.cpp") != std::string::npos && g.text.find("src/deep/er/c.cpp") != std::string::npos && g.text.find("(3 files)") != std::string::npos,
+           "** spans zero or more directories: " + g.text);
+    g = tool(h, "glob", {{"pattern", "src/?.h"}, {"path", "g"}});
+    expect(g.ok && g.text == "src/a.h\n(1 file)", "? matches one character: " + g.text);
+    g = tool(h, "glob", {{"pattern", "**/config"}, {"path", "g"}});
+    expect(g.ok && g.text.find("no files match") == 0, ".git is skipped: " + g.text);
+    g = tool(h, "glob", {{"pattern", "*.[ch]pp"}, {"path", "g/src"}});
+    expect(g.ok && g.text.find("a.cpp") != std::string::npos && g.text.find("a.h") == std::string::npos, "character classes work: " + g.text);
+    expect(!tool(h, "glob", {{"pattern", "*"}, {"path", "g/nowhere"}}).ok, "a missing directory -> error");
+    expect(!tool(h, "glob", {{"pattern", ""}, {"path", "g"}}).ok, "an empty pattern -> error");
+    g = tool(h, "glob", {{"pattern", "R(EAD)ME.md"}, {"path", "g"}});
+    expect(g.ok && g.text.find("no files match") == 0, "regex characters in a pattern are literal");
+    if (fs::is_directory(home / ".ssh")) {
+        g = tool(h, "glob", {{"pattern", "*"}, {"path", (home / ".ssh").string()}});
+        expect(g.ok && g.text.find("no files match") == 0, "secret directories yield nothing, not even names");
+    }
+    for (int i = 0; i < 510; ++i) write_file(ws / "g" / "many" / ("f" + std::to_string(i) + ".txt"), "");
+    g = tool(h, "glob", {{"pattern", "many/*.txt"}, {"path", "g"}});
+    expect(g.ok && std::count(g.text.begin(), g.text.end(), '\n') == 501 && g.text.find("stopped at 500") != std::string::npos, "results are capped at 500 with a note");
+    expect(tool_action(h, "glob", {{"pattern", "*.cpp"}}).kind == Action::Kind::Read && tool_action(h, "glob", {{"pattern", "*.cpp"}}).path == h.resolve("."),
+           "the harness sees glob as a read of the directory");
+
     section("sandbox under stress");
     auto t0 = std::chrono::steady_clock::now();
     auto r = run_sandboxed("yes | head -c 50000000", ws, false, std::chrono::seconds(30), no_cancel);

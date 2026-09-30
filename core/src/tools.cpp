@@ -19,12 +19,13 @@ constexpr size_t kMaxReadLines = 2000;
 constexpr size_t kMaxReadBytes = 50 * 1024;  // one file with long lines must not eat the context
 constexpr size_t kMaxLineChars = 2000;
 constexpr size_t kMaxListEntries = 500;
+constexpr size_t kMaxGlobHits = 500;
 constexpr size_t kMaxSearchHits = 200;
 constexpr size_t kMaxSearchLine = 64 * 1024;  // longer lines are minified/generated; skip them
 constexpr int kDefaultShellTimeout = 120;
 constexpr int kMaxShellTimeout = 600;
 
-const char* const kToolNames[] = {"read_file", "list_dir", "search_files", "write_file", "edit_file", "run_shell"};
+const char* const kToolNames[] = {"read_file", "list_dir", "glob", "search_files", "write_file", "edit_file", "run_shell", "question", "todo"};
 
 nlohmann::json fn(const char* name, const char* description, nlohmann::json properties, std::vector<std::string> required) {
     return {{"type", "function"},
@@ -163,6 +164,82 @@ ToolResult list_dir(const fs::path& p) {
     for (size_t i = 0; i < entries.size() && i < kMaxListEntries; ++i) out << entries[i] << "\n";
     if (entries.size() > kMaxListEntries) out << "... " << entries.size() - kMaxListEntries << " more\n";
     out << "(" << entries.size() << (entries.size() == 1 ? " entry)" : " entries)");
+    return {true, out.str()};
+}
+
+// A glob over relative paths as an anchored POSIX regex: `*` and `?` stay inside one path segment, `**`
+// spans segments, `[...]` classes pass through. A pattern with no `/` matches at any depth.
+std::string glob_to_regex(const std::string& pattern) {
+    std::string glob = pattern;
+    while (glob.rfind("./", 0) == 0) glob.erase(0, 2);
+    if (glob.find('/') == std::string::npos) glob = "**/" + glob;
+    std::string re = "^";
+    for (size_t i = 0; i < glob.size();) {
+        char c = glob[i];
+        if (c == '*' && i + 1 < glob.size() && glob[i + 1] == '*') {
+            if (i + 2 < glob.size() && glob[i + 2] == '/') {
+                re += "([^/]*/)*";
+                i += 3;
+            } else {
+                re += ".*";
+                i += 2;
+            }
+            continue;
+        }
+        if (c == '*') re += "[^/]*";
+        else if (c == '?') re += "[^/]";
+        else if (c == '[') {
+            size_t close = glob.find(']', i + 1);
+            if (close == std::string::npos) re += "\\[";
+            else {
+                re += glob.substr(i, close - i + 1);
+                i = close;
+            }
+        } else if (std::isalnum(static_cast<unsigned char>(c)) || c == '/' || c == '_' || c == '-') re += c;
+        else re += std::string("\\") + c;
+        ++i;
+    }
+    return re + "$";
+}
+
+ToolResult glob_files(const Harness& harness, const fs::path& root, const std::string& pattern) {
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return {false, "no such directory: " + root.string() + did_you_mean(root)};
+    if (pattern.empty()) return {false, "pattern is empty"};
+    std::string rx = glob_to_regex(pattern);
+    regex_t re;
+    if (int rc = regcomp(&re, rx.c_str(), REG_EXTENDED | REG_NOSUB); rc != 0) {
+        char msg[256];
+        regerror(rc, &re, msg, sizeof(msg));
+        return {false, std::string("bad pattern: ") + msg};
+    }
+    struct Free {
+        regex_t* r;
+        ~Free() { regfree(r); }
+    } free_re{&re};
+    std::vector<std::string> hits;
+    bool capped = false;
+    auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
+    for (; it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (it->is_directory(ec) && (skip_dir(it->path()) || harness.is_secret(it->path()))) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        if (!it->is_regular_file(ec) || harness.is_secret(it->path())) continue;
+        std::string rel = it->path().lexically_relative(root).generic_string();
+        if (regexec(&re, rel.c_str(), 0, nullptr, 0) != 0) continue;
+        if (hits.size() == kMaxGlobHits) {
+            capped = true;
+            break;
+        }
+        hits.push_back(rel);
+    }
+    if (hits.empty()) return {true, "no files match " + pattern + " under " + root.string()};
+    std::sort(hits.begin(), hits.end());
+    std::ostringstream out;
+    for (const auto& h : hits) out << h << "\n";
+    if (capped) out << "... stopped at " << kMaxGlobHits << " matches; narrow the pattern or the path\n";
+    else out << "(" << hits.size() << (hits.size() == 1 ? " file)" : " files)");
     return {true, out.str()};
 }
 
@@ -368,6 +445,12 @@ const nlohmann::json& tool_schemas() {
            {"path"}),
         fn("list_dir", "List a directory. Directories end with /. Ends with the entry count. Use this instead of `ls` in run_shell.",
            {{"path", {{"type", "string"}, {"description", "Directory path; '.' for the workspace"}}}}, {"path"}),
+        fn("glob",
+           "Find files by name pattern, one relative path per line, sorted. `*` and `?` match within one path segment, "
+           "`**` spans directories: `*.cpp` finds them at any depth, `src/*.cpp` only directly in src, `src/**/*.cpp` "
+           "under src at any depth. Skips .git, build and similar. Use this instead of `find` in run_shell.",
+           {{"pattern", {{"type", "string"}}}, {"path", {{"type", "string"}, {"description", "Directory to search; default '.'"}}}},
+           {"pattern"}),
         fn("search_files",
            "Search file contents with an extended regular expression (grep -E syntax). Results are `path:line: text`. "
            "Skips .git, build and similar. Use this instead of grep in run_shell.",
@@ -387,13 +470,28 @@ const nlohmann::json& tool_schemas() {
            {"path", "old_string", "new_string"}),
         fn("run_shell",
            "Run a bash command in a sandbox: only the workspace is writable, no network, no sudo, a timeout (default "
-           "120 s, max 600). For builds, tests, git and package tools. NOT for reading, listing, searching or editing "
-           "files: use read_file, list_dir, search_files, edit_file and write_file for those. Do not use echo or "
-           "printf to talk to the user; write your answer as text.",
+           "120 s, max 600). For builds, tests, git and package tools. NOT for reading, listing, finding, searching or "
+           "editing files: use read_file, list_dir, glob (instead of find), search_files (instead of grep), edit_file "
+           "and write_file for those. Do not use echo or printf to talk to the user; write your answer as text.",
            {{"command", {{"type", "string"}}},
             {"timeout_seconds", {{"type", "integer"}, {"description", "Default 120, max 600"}}},
             {"workdir", {{"type", "string"}, {"description", "Directory to run in, instead of `cd dir && ...`"}}}},
            {"command"}),
+        fn("question",
+           "Ask the user one question and wait for the answer. Give options when there is a fixed choice (the user "
+           "picks by number or types something else). Use it when a decision is theirs to make; do not use it for "
+           "things you can find out with the other tools. The result is their answer, or a note that they gave none.",
+           {{"question", {{"type", "string"}}},
+            {"options", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Choices to offer, in order"}}}},
+           {"question"}),
+        fn("todo",
+           "Your plan for work with several steps, shown to the user. Send the whole list every time: it replaces "
+           "the previous one. Mark items done as you finish them and add items as you learn what is needed.",
+           {{"items", {{"type", "array"},
+                       {"items", {{"type", "object"},
+                                  {"properties", {{"text", {{"type", "string"}}}, {"done", {{"type", "boolean"}}}}},
+                                  {"required", {"text"}}}}}}},
+           {"items"}),
     });
     return schemas;
 }
@@ -402,7 +500,7 @@ Action tool_action(const Harness& harness, const std::string& name, const nlohma
     using K = Action::Kind;
     if (name == "read_file") return {K::Read, harness.resolve(arg(args, "path")), ""};
     if (name == "list_dir") return {K::Read, harness.resolve(arg(args, "path")), ""};
-    if (name == "search_files") return {K::Read, harness.resolve(args.value("path", ".")), ""};
+    if (name == "glob" || name == "search_files") return {K::Read, harness.resolve(args.value("path", ".")), ""};
     if (name == "write_file" || name == "edit_file") return {K::Write, harness.resolve(arg(args, "path")), ""};
     if (name == "run_shell") {
         Action a{K::Shell, {}, arg(args, "command")};
@@ -461,6 +559,9 @@ std::string tool_preview(const Harness& harness, const std::string& name, const 
 std::string tool_summary(const std::string& name, const nlohmann::json& args) {
     if (name == "run_shell") return "$ " + args.value("command", "");
     if (name == "search_files") return "search /" + args.value("pattern", "") + "/ in " + args.value("path", ".");
+    if (name == "glob") return "glob " + args.value("pattern", "") + " in " + args.value("path", ".");
+    if (name == "question") return "question: " + args.value("question", "");
+    if (name == "todo") return "todo (" + std::to_string(args.contains("items") && args["items"].is_array() ? args["items"].size() : 0) + " items)";
     return name + " " + args.value("path", "");
 }
 
@@ -469,6 +570,7 @@ ToolResult run_tool(const Harness& harness, const std::string& name, const nlohm
     try {
         if (name == "read_file") return read_file(harness.resolve(arg(args, "path")), args);
         if (name == "list_dir") return list_dir(harness.resolve(arg(args, "path")));
+        if (name == "glob") return glob_files(harness, harness.resolve(args.value("path", ".")), arg(args, "pattern"));
         if (name == "search_files") return search_files(harness, harness.resolve(args.value("path", ".")), arg(args, "pattern"));
         if (name == "write_file") {
             fs::path p = harness.resolve(arg(args, "path"));
