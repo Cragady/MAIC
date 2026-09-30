@@ -108,7 +108,7 @@ void View::layout(size_t width) {
         const auto& entry = snapshot[e];
         if (e > 0 && !attached(entry.kind)) lines_.push_back({{}, Kind::Assistant, e, 0, 0, false});
         size_t pre = utf8_len(prefix(entry.kind));
-        bool use_md = markdown_ && (entry.kind == Kind::Assistant || entry.kind == Kind::User);
+        bool use_md = markdown_ && (entry.kind == Kind::Assistant || entry.kind == Kind::User || entry.kind == Kind::Notice);
         // Tool output and shell output keep tabs; the renderer drops them, so expand.
         auto source = use_md ? markdown_lines(entry.text) : plain_lines(entry.text);
         size_t offset = 0;

@@ -29,6 +29,8 @@ public:
     const std::string& text() const { return text_; }
     size_t cursor() const { return cursor_; }
     const std::string& cmdline() const { return cmdline_; }
+    char cmd_prefix() const { return cmd_prefix_; }  // ':' or '/' while in command mode
+    void set_cmdline(std::string line) { cmdline_ = std::move(line); }
     bool empty() const { return text_.empty(); }
     // Selection as [begin, end) byte offsets, valid in the visual modes.
     std::pair<size_t, size_t> selection() const;

@@ -1,6 +1,9 @@
 // The vim input editor and the markdown renderer.
 #include "check.hpp"
 
+#include "commands.hpp"
+
+#include <algorithm>
 #include "editor.hpp"
 #include "maic/markdown.hpp"
 
@@ -195,6 +198,33 @@ int main() {
         expect(plain.size() == 1 && plain[0][0].flags == MdNone, "plain_lines interprets nothing");
         auto snake = markdown_lines("snake_case_name stays");
         expect(snake[0].size() == 1 && snake[0][0].flags == MdNone, "underscores inside words are not italics");
+    }
+
+    section("commands and help");
+    {
+        auto m = match_commands("w");
+        expect(!m.empty() && m.front()->name == "w", "an exact command name matches first");
+        m = match_commands("mo");
+        expect(m.size() == 3 && m[0]->name == "mode" && m[1]->name == "model" && m[2]->name == "models", "a prefix lists mode, model and models");
+        m = match_commands("quit");
+        expect(m.size() == 1 && m.front()->name == "q", "aliases match");
+        expect(match_commands("zzz").empty(), "nothing matches nonsense");
+        CompletionContext ctx{{"ollama", "comfyui"}, {"ollama", "anthropic"}};
+        auto a = complete_argument("mode", "au", ctx);
+        expect(a.size() == 2 && a[0] == "auto" && a[1] == "auto-read", "mode arguments complete");
+        expect(complete_argument("up", "c", ctx) == std::vector<std::string>{"comfyui"}, "service names complete");
+        expect(complete_argument("model", "an", ctx) == std::vector<std::string>{"anthropic/"}, "provider prefixes complete");
+        auto h = complete_argument("h", "sess", ctx);
+        expect(std::find(h.begin(), h.end(), "sessions") != h.end() && std::find(h.begin(), h.end(), "session") != h.end(), "help topics and commands complete");
+        expect(help_text("").find(":w") != std::string::npos && help_text("").find("modes") != std::string::npos, ":h alone is an index");
+        expect(help_text("w").find("*:w*") == 0, ":h w is the :w page");
+        expect(help_text(":w") == help_text("w") && help_text("write") == help_text("w"), "a colon or an alias also finds it");
+        expect(help_text("Ctrl-W").find("*conversation*") == 0 && help_text("<C-w>") == help_text("ctrl-w"), "key names normalise");
+        expect(help_text("Alt+Enter").find("Sends") != std::string::npos && help_text("M-CR") == help_text("alt-enter"), "Alt+Enter in several spellings");
+        expect(help_text("mod").find("several") != std::string::npos, "an ambiguous prefix lists the candidates");
+        expect(help_text("harn").find("*harness*") == 0, "a unique prefix resolves");
+        expect(help_text("sess").find("several") != std::string::npos, "sess matches :session and sessions, so it lists both");
+        expect(help_text("nope").find("no help") == 0, "an unknown topic says so");
     }
 
     section("wrapping");

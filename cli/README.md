@@ -46,7 +46,7 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 
 ## Commands
 
-`:` in normal mode, or from the conversation window. Every command also works typed as a message beginning with `/`.
+`:` in normal mode, or from the conversation window. Every command also works typed as a message beginning with `/`. As you type after `:`, a palette lists the matching commands with a one-line description (arguments too, for `:mode`, `:set`, `:h`, `:model`, `:up`); **Tab** completes to the highlighted one and cycles on repeat, Shift-Tab goes back. A unique prefix runs the command (`:inst` is `:instructions`), as in vim.
 
 | Command | Does |
 | :--- | :--- |
@@ -65,7 +65,8 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:reg` | the yank register |
 | `:clear` | start a new conversation (the session file keeps both) |
 | `:trip REASON` / `:unlock` | trip the harness now; reset it without leaving the session (asks for your sudo password) |
-| `:help`, `:q` | |
+| `:h [TOPIC]` | vim-style help. `:h` alone is an index; `:h w`, `:h u`, `:h Ctrl-W`, `:h Alt+Enter`, `:h modes`, `:h harness`, `:h sessions`; a unique prefix is enough and an ambiguous one lists the candidates |
+| `:q` | quit |
 
 ### Messages while the agent works
 
@@ -87,7 +88,14 @@ Whatever the mode: secrets are never read, system paths are never written, start
 
 ## Sessions
 
-Every session is a JSONL file in `~/.local/state/maic/sessions/`, readable only by you: each message as sent to the model, every tool call with the harness's decision, and the displayable transcript. `maic -c` resumes the newest session from the current directory; `maic -r` lists them; `maic -r ID` (a unique prefix is enough) resumes one. A resumed session keeps appending to the same file; the model is told it resumed and what the current mode and instructions are. A session that ended mid tool call resumes from the last complete step.
+Every session is a JSONL file in `~/.local/state/maic/sessions/`, readable only by you: each message as sent to the model, every tool call with the harness's decision, and the displayable transcript. `maic -c` resumes the newest session from the current directory; `maic -r` lists them; `maic -r ID` (a unique prefix is enough) resumes one. The model is told it resumed and what the current mode and instructions are. A session that ended mid tool call resumes from the last complete step.
+
+Where the continuation is written depends on `--append` / `--no-append`:
+
+* **append** (the interactive default): the old file keeps growing; one conversation, one file.
+* **no-append** (the default for `maic -p`): a new file whose first record points at the old one and says how many records were loaded; the old messages are not copied. Loading follows that pointer, so the new file resumes and lists normally (`maic sessions` shows "resumed from"). This is also how a session forks: two continuations of the same past never touch each other or the original.
+
+So `cat big-context.md | maic -p - -r ID` puts a large context in front of an old conversation without bloating the old transcript, and `maic -c -p "..." --append` extends the old one in place.
 
 ## Tools the model gets
 

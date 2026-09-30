@@ -25,12 +25,21 @@ public:
     // Continues an earlier session in place: new records append to its file.
     static SessionLog reopen(const std::filesystem::path& path) { return SessionLog(Reopen{}, path); }
 
+    // A new session whose history starts as the first `records` lines of `parent`. The new file holds only a
+    // pointer to the parent (path and record count), not a copy; load_session follows it.
+    static SessionLog fork(const std::filesystem::path& parent, size_t records, const std::string& kind) {
+        return SessionLog(Fork{}, parent, records, kind);
+    }
+
     const std::filesystem::path& path() const { return path_; }
     void write(const std::string& type, nlohmann::json data);
 
 private:
     struct Reopen {};
+    struct Fork {};
     SessionLog(Reopen, const std::filesystem::path& path);
+    SessionLog(Fork, const std::filesystem::path& parent, size_t records, const std::string& kind);
+    void create(const std::string& kind);
     std::filesystem::path path_;
     std::mutex mu_;
     std::ofstream out_;
@@ -45,6 +54,8 @@ struct SessionInfo {
     std::string kind;
     std::string first_prompt;
     size_t turns = 0;
+    std::string parent;  // id of the session this one was resumed from, if any
+    size_t parent_records = 0;
 };
 
 // Newest first. With `workspace`, only sessions started in that directory.
@@ -65,8 +76,13 @@ struct LoadedSession {
     std::vector<TranscriptEntry> transcript;
     std::string model;
     std::string mode;
+    size_t records = 0;  // lines in this file (what a fork of it would point at)
 };
 
+// Follows `resumed_from` pointers, so a forked session loads its parent's history first.
 LoadedSession load_session(const std::filesystem::path& path);
+
+// Number of records (lines) in a session file.
+size_t count_records(const std::filesystem::path& path);
 
 }  // namespace maic

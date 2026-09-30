@@ -1,5 +1,6 @@
 #include "tui.hpp"
 
+#include "commands.hpp"
 #include "editor.hpp"
 #include "maic/agent.hpp"
 #include "maic/artifacts.hpp"
@@ -156,8 +157,9 @@ enum class Focus { Input, Conversation };
 
 class App : public AgentEvents {
 public:
-    App(ScreenInteractive& screen, Settings settings, const std::optional<std::filesystem::path>& resume)
-        : screen_(screen), settings_(std::move(settings)), log_(resume ? SessionLog::reopen(*resume) : SessionLog("tui")),
+    App(ScreenInteractive& screen, Settings settings, const std::optional<std::filesystem::path>& resume, bool append)
+        : screen_(screen), settings_(std::move(settings)),
+          log_(!resume ? SessionLog("tui") : append ? SessionLog::reopen(*resume) : SessionLog::fork(*resume, count_records(*resume), "tui")),
           agent_(std::filesystem::current_path(), settings_.model), editor_(&register_), view_(&register_) {
         agent_.providers = settings_.providers;
         agent_.think = settings_.think;
@@ -174,7 +176,8 @@ public:
             }
             agent_.set_log(&log_);
             agent_.restore(std::move(old.messages));
-            view_.append(Kind::Notice, "resumed session " + resume->stem().string() + " (" + std::to_string(old.transcript.size()) + " records)");
+            view_.append(Kind::Notice, "resumed session " + resume->stem().string() + " (" + std::to_string(old.transcript.size()) + " entries)" +
+                                           (append ? ", continuing in the same file" : ", continuing in a new file that points at it"));
         } else {
             agent_.set_log(&log_);
         }
@@ -216,6 +219,9 @@ private:
     }
 
     Element render_input(size_t width, int& rows);
+    Element render_palette(int& rows);
+    std::vector<std::string> palette_entries();  // what the palette lists for the current command line
+    void complete_command();
     Element render_top_status();
     Element render_bottom_status();
     Element render_approval();
@@ -255,6 +261,8 @@ private:
     std::string status_msg_;
     bool ctrl_w_pending_ = false;
     bool ctrl_x_pending_ = false;
+    size_t palette_sel_ = 0;
+    std::string palette_for_;  // the command line the selection belongs to
     bool quit_armed_ = false;
     bool ctrl_c_is_key_ = false;
     int view_height_ = 10;
@@ -321,6 +329,87 @@ Element App::render_input(size_t width, int& rows) {
         out.push_back(hbox({lead, body}));
     }
     return vbox(out);
+}
+
+// The palette: commands (or arguments) matching what is typed after ':'.
+std::vector<std::string> App::palette_entries() {
+    std::vector<std::string> out;
+    if (editor_.mode() != Editor::Mode::Command || editor_.cmd_prefix() != ':') return out;
+    const std::string& line = editor_.cmdline();
+    size_t space = line.find(' ');
+    if (space == std::string::npos) {
+        for (const auto* c : match_commands(line)) out.push_back(c->name);
+        return out;
+    }
+    CompletionContext ctx;
+    try {
+        for (const auto& s : load_services(root_dir() / "services")) ctx.services.push_back(s.name);
+    } catch (const std::exception&) {
+    }
+    for (const auto& p : agent_.providers) ctx.providers.push_back(p.name);
+    std::string cmd = line.substr(0, space), partial = line.substr(space + 1);
+    auto matches = match_commands(cmd);
+    return complete_argument(matches.empty() ? cmd : matches.front()->name, partial, ctx);
+}
+
+Element App::render_palette(int& rows) {
+    rows = 0;
+    auto entries = palette_entries();
+    if (entries.empty()) return emptyElement();
+    if (palette_for_ != editor_.cmdline()) {
+        palette_for_ = editor_.cmdline();
+        palette_sel_ = 0;
+    }
+    if (palette_sel_ >= entries.size()) palette_sel_ = 0;
+    bool listing_commands = editor_.cmdline().find(' ') == std::string::npos;
+    Elements lines;
+    size_t shown = std::min<size_t>(entries.size(), 8);
+    for (size_t i = 0; i < shown; ++i) {
+        std::string label = entries[i], summary;
+        if (listing_commands) {
+            for (const auto* c : match_commands(entries[i])) {
+                if (c->name == entries[i]) {
+                    label = ":" + c->name + (c->args.empty() ? "" : " " + c->args);
+                    summary = c->summary;
+                    break;
+                }
+            }
+        }
+        Element row = hbox({text("  " + label) | size(WIDTH, GREATER_THAN, 24), text("  " + summary) | decorate(settings_.style("status_dim"))});
+        if (i == palette_sel_) row = row | decorate(settings_.style("visual"));
+        lines.push_back(row);
+    }
+    if (entries.size() > shown) lines.push_back(text("  … " + std::to_string(entries.size() - shown) + " more") | decorate(settings_.style("status_dim")));
+    rows = static_cast<int>(lines.size());
+    return vbox(lines);
+}
+
+// Tab in the command line: complete to the selected palette entry; Tab again cycles.
+void App::complete_command() {
+    auto entries = palette_entries();
+    if (entries.empty()) return;
+    std::string line = editor_.cmdline();
+    size_t space = line.find(' ');
+    std::string head = space == std::string::npos ? "" : line.substr(0, space + 1);
+    std::string word = space == std::string::npos ? line : line.substr(space + 1);
+    std::string pick = entries[palette_sel_ % entries.size()];
+    if (word == pick) {
+        palette_sel_ = (palette_sel_ + 1) % entries.size();
+        pick = entries[palette_sel_];
+    }
+    std::string completed = head + pick;
+    if (space == std::string::npos) {
+        for (const auto* c : match_commands(pick)) {
+            if (c->name == pick && !c->args.empty()) completed += " ";
+        }
+    }
+    editor_.set_cmdline(completed);
+    palette_for_ = completed;
+    // Keep the highlight on what was just completed rather than jumping back to the first entry.
+    auto after = palette_entries();
+    for (size_t i = 0; i < after.size(); ++i) {
+        if (after[i] == pick) palette_sel_ = i;
+    }
 }
 
 Element App::render_top_status() {
@@ -402,12 +491,14 @@ Element App::render() {
     size_t width = static_cast<size_t>(std::max(size.dimx, 20));
     int input_rows = 1;
     Element input = render_input(width, input_rows);
+    int palette_rows = 0;
+    Element palette = render_palette(palette_rows);
     bool is_asking = asking();
     bool focused = focus_ == Focus::Conversation;
-    view_height_ = std::max(1, size.dimy - input_rows - 3 - (is_asking ? 5 : 0) - (focused ? 2 : 0));
+    view_height_ = std::max(1, size.dimy - input_rows - palette_rows - 3 - (is_asking ? 5 : 0) - (focused ? 2 : 0));
     Element conversation = view_.render(settings_, focused ? width - 2 : width, view_height_);
     if (focused) conversation = conversation | borderLight | decorate(settings_.style("focus"));
-    return vbox({conversation, render_approval(), render_top_status(), separator() | decorate(settings_.style("separator")), input,
+    return vbox({conversation, render_approval(), render_top_status(), separator() | decorate(settings_.style("separator")), input, palette,
                  render_bottom_status()});
 }
 
@@ -453,7 +544,7 @@ bool App::handle(Event e) {
         }
         return true;
     }
-    if (e == Event::TabReverse) {
+    if (e == Event::TabReverse && editor_.mode() != Editor::Mode::Command) {
         agent_.mode = next_mode(agent_.mode.load());
         return true;
     }
@@ -481,6 +572,12 @@ bool App::handle(Event e) {
     }
 
     if (editor_.mode() == Editor::Mode::Command) {
+        if (e == Event::Tab || raw == "\x0e") return complete_command(), true;  // Tab / Ctrl-N
+        if (e == Event::TabReverse || raw == "\x10") {                            // Shift-Tab / Ctrl-P
+            auto entries = palette_entries();
+            if (!entries.empty()) palette_sel_ = (palette_sel_ + entries.size() - 1) % entries.size();
+            return true;
+        }
         auto r = editor_.handle(e);
         if (r.action == Editor::Action::Command) run_command(r.text);
         if (r.action == Editor::Action::Search) {
@@ -706,17 +803,7 @@ void App::run_command(const std::string& line) {
         } else if (cmd == "e" || cmd == "edit" || cmd == "nvim") {
             edit_externally();
         } else if (cmd == "h" || cmd == "help") {
-            post(Kind::Notice,
-                 "INPUT (a small vim, starts in normal mode): Alt+Enter or :w sends · Enter = new line · :e or Ctrl-X Ctrl-E edits in nvim\n"
-                 "  i a I A o O · h j k l w b e 0 $ · x X D C S · d/c/y + motion · dd cc yy · v V · p P · u undo · Ctrl-R redo\n"
-                 "  insert mode: Ctrl-W/U delete word/line · Ctrl-Y paste register · Ctrl-P/N or ↑↓ prompt history\n"
-                 "CONVERSATION WINDOW: Ctrl-W k enters it, Ctrl-W j (or Esc, i, Enter) returns · j k h l w b e 0 $ gg G Ctrl-D/U/F/B\n"
-                 "  v/V select · y yank (also to the clipboard) · yy line · /pattern n N search · :cmd works there too\n"
-                 "FROM INPUT NORMAL MODE: j/k Ctrl-D/U/F/B G scroll the conversation · scroll wheel too (insert mode: prompt history)\n"
-                 "Shift-Tab cycles modes: manual → auto-read → edit → auto → plan · Ctrl-C interrupts, then clears, then quits\n"
-                 "COMMANDS: :w [now] · :mode NAME · :model NAME (provider/model) · :models · :think on|off · :set markdown|mouse on|off\n"
-                 "  :clear · :status · :up/:down SERVICE · :trip REASON · :unlock · :instructions · :artifacts · :session · :reg\n"
-                 "  :!cmd or !cmd runs a command in YOUR shell (unsandboxed) and shows the model its output · /cmd also works as a message");
+            post(Kind::Notice, help_text(arg));
         } else if (cmd == "mode") {
             if (auto m = parse_mode(arg)) agent_.mode = *m;
             else post(Kind::Error, "modes: manual, auto-read, edit, auto, plan");
@@ -804,7 +891,17 @@ void App::run_command(const std::string& line) {
         } else if (cmd == "reg" || cmd == "register") {
             post(Kind::Notice, register_.empty() ? "register is empty" : "register:\n" + register_);
         } else if (!cmd.empty()) {
-            post(Kind::Error, "unknown command :" + cmd + " (try :help)");
+            // A unique prefix runs the command, like vim's :abbreviations.
+            auto matches = match_commands(cmd);
+            if (matches.size() == 1 && matches.front()->name != cmd) {
+                run_command(matches.front()->name + (arg.empty() ? "" : " " + arg));
+            } else if (matches.size() > 1) {
+                std::string list;
+                for (const auto* m : matches) list += (list.empty() ? "" : ", ") + (":" + m->name);
+                post(Kind::Error, ":" + cmd + " is ambiguous: " + list);
+            } else {
+                post(Kind::Error, "unknown command :" + cmd + " (try :help)");
+            }
         }
     } catch (const std::exception& ex) {
         post(Kind::Error, ex.what());
@@ -836,7 +933,7 @@ int run_tui(const TuiOptions& options) {
     }
     auto screen = ScreenInteractive::Fullscreen();
     screen.TrackMouse(settings.mouse);
-    App app(screen, settings, options.resume);
+    App app(screen, settings, options.resume, options.append);
     app.welcome();
     auto component = CatchEvent(Renderer([&] { return app.render(); }), [&](Event e) { return app.handle(e); });
     screen.Loop(component);

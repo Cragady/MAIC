@@ -13,6 +13,7 @@ struct HeadlessOptions {
     bool json = false;   // JSONL events on stdout instead of text
     bool think = false;
     std::optional<std::filesystem::path> resume;
+    bool append = false;  // headless default: a new file that points at the old one and holds only the new turn
 };
 
 // `maic -p "..."`: one turn, no UI. The reply streams to stdout, tool activity goes to stderr.

@@ -23,6 +23,8 @@ void usage() {
                  "       maic -c                            continue the last session started in this directory\n"
                  "       maic -r [ID]                       resume a session by id (or pick from a list)\n"
                  "       maic -p \"prompt\" [--json] [--think] one turn without the UI (prompt \"-\" reads stdin; -c/-r work here too)\n"
+                 "       --append / --no-append             with -c/-r: write into the old session file, or into a new one that\n"
+                 "                                          points at it (default: interactive appends, -p does not)\n"
                  "\n"
                  "  status                     harness, services, where they run, quick actions\n"
                  "  up <service...|all>        start services\n"
@@ -158,6 +160,7 @@ void print_sessions(const std::vector<maic::SessionInfo>& sessions) {
         const auto& s = sessions[i];
         std::cout << "  " << i + 1 << ". " << s.id << "  " << s.turns << " turn" << (s.turns == 1 ? "" : "s") << "  " << s.workspace << "\n"
                   << "     " << (s.first_prompt.empty() ? "(no prompt yet)" : s.first_prompt) << "\n";
+        if (!s.parent.empty()) std::cout << "     resumed from " << s.parent << " (first " << s.parent_records << " records)\n";
     }
 }
 
@@ -205,6 +208,7 @@ int main(int argc, char** argv) {
         maic::TuiOptions tui;
         maic::HeadlessOptions headless;
         bool print = false;
+        std::optional<bool> append;
         bool continue_last = false;
         std::optional<std::string> resume_id;
         bool resume = false;
@@ -224,7 +228,9 @@ int main(int argc, char** argv) {
             else if (a == "-r" || a == "--resume") {
                 resume = true;
                 if (i + 1 < args.size() && args[i + 1][0] != '-') resume_id = args[++i];
-            } else if (a == "--json") headless.json = true;
+            } else if (a == "--append") append = true;
+            else if (a == "--no-append") append = false;
+            else if (a == "--json") headless.json = true;
             else if (a == "--think") headless.think = true;
             else if (a == "-h" || a == "--help" || a == "help") {
                 usage();
@@ -232,6 +238,7 @@ int main(int argc, char** argv) {
             } else rest.push_back(a);
         }
         if (continue_last || resume) tui.resume = headless.resume = pick_session(continue_last, resume_id);
+        if (append) tui.append = headless.append = *append;
         if (print) return maic::run_headless(headless);
         if (rest.empty()) return maic::run_tui(tui);
 

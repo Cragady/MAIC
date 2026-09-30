@@ -90,13 +90,20 @@ int run_headless(const HeadlessOptions& options) {
         return 2;
     }
 
-    SessionLog log = options.resume ? SessionLog::reopen(*options.resume) : SessionLog("headless");
+    SessionLog log = !options.resume        ? SessionLog("headless")
+                     : options.append         ? SessionLog::reopen(*options.resume)
+                                              : SessionLog::fork(*options.resume, count_records(*options.resume), "headless");
     Agent agent(std::filesystem::current_path(), settings.model);
     agent.providers = settings.providers;
     agent.mode = *mode;
     agent.think = options.think || settings.think;
     agent.set_log(&log);
-    if (options.resume) agent.restore(load_session(*options.resume).messages);
+    if (options.resume) {
+        LoadedSession old = load_session(*options.resume);
+        agent.restore(old.messages);
+        fprintf(stderr, "※ resumed %s (%zu messages)%s\n", options.resume->stem().string().c_str(), old.messages.size(),
+                options.append ? ", appending to it" : ", writing to a new file that points at it");
+    }
     if (agent.remote()) fprintf(stderr, "※ REMOTE model %s: prompts and tool output leave this machine\n", agent.model.c_str());
 
     std::signal(SIGINT, on_sigint);

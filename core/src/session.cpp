@@ -28,7 +28,7 @@ fs::path sessions_dir() {
     return state_dir() / "sessions";
 }
 
-SessionLog::SessionLog(const std::string& kind) {
+void SessionLog::create(const std::string& kind) {
     fs::create_directories(sessions_dir());
     fs::permissions(sessions_dir(), fs::perms::owner_all, fs::perm_options::replace);
     path_ = sessions_dir() / (now("%Y%m%d-%H%M%S") + "-" + kind + "-" + std::to_string(getpid()) + ".jsonl");
@@ -38,6 +38,16 @@ SessionLog::SessionLog(const std::string& kind) {
     }
     close(fd);
     out_.open(path_, std::ios::app);
+}
+
+SessionLog::SessionLog(const std::string& kind) {
+    create(kind);
+}
+
+SessionLog::SessionLog(Fork, const fs::path& parent, size_t records, const std::string& kind) {
+    if (!fs::is_regular_file(parent)) throw std::runtime_error("no session at " + parent.string());
+    create(kind);
+    write("resumed_from", {{"path", fs::weakly_canonical(parent).string()}, {"records", records}});
 }
 
 SessionLog::SessionLog(Reopen, const fs::path& path) : path_(path) {
@@ -76,7 +86,21 @@ std::vector<SessionInfo> list_sessions(const std::optional<fs::path>& workspace)
             if (!j.is_object()) continue;
             std::string type = j.value("type", "");
             if (type == "start") info.workspace = j.value("workspace", "");
-            else if (type == "user") {
+            else if (type == "resumed_from") {
+                info.parent = fs::path(j.value("path", "")).stem().string();
+                info.parent_records = j.value("records", 0);
+                if (info.workspace.empty()) {
+                    // A fork inherits the parent's workspace until it records its own.
+                    std::ifstream pin(j.value("path", ""));
+                    for (std::string pl; std::getline(pin, pl);) {
+                        auto pj = nlohmann::json::parse(pl, nullptr, false);
+                        if (pj.is_object() && pj.value("type", "") == "start") {
+                            info.workspace = pj.value("workspace", "");
+                            break;
+                        }
+                    }
+                }
+            } else if (type == "user") {
                 if (info.first_prompt.empty()) info.first_prompt = preview(j.value("text", ""));
                 ++info.turns;
             }
@@ -106,15 +130,27 @@ std::optional<SessionInfo> find_session(const std::string& id_or_path) {
     return found;
 }
 
-LoadedSession load_session(const fs::path& path) {
-    LoadedSession out;
+size_t count_records(const fs::path& path) {
+    std::ifstream in(path);
+    size_t n = 0;
+    for (std::string line; std::getline(in, line);) ++n;
+    return n;
+}
+
+namespace {
+
+void load_into(LoadedSession& out, const fs::path& path, size_t limit, int depth) {
+    if (depth > 32) throw std::runtime_error("session fork chain too deep at " + path.string());
     std::ifstream in(path);
     if (!in) throw std::runtime_error("can't read " + path.string());
-    for (std::string line; std::getline(in, line);) {
+    size_t n = 0;
+    for (std::string line; std::getline(in, line) && n < limit; ++n) {
         auto j = nlohmann::json::parse(line, nullptr, false);
         if (!j.is_object()) continue;
         std::string type = j.value("type", "");
-        if (type == "start") {
+        if (type == "resumed_from") {
+            load_into(out, j.value("path", ""), j.value("records", size_t(0)), depth + 1);
+        } else if (type == "start") {
             out.model = j.value("model", out.model);
             out.mode = j.value("mode", out.mode);
         } else if (type == "msg") {
@@ -138,6 +174,14 @@ LoadedSession load_session(const fs::path& path) {
             out.transcript.push_back({"notice", j.value("text", "")});
         }
     }
+    if (depth == 0) out.records = n;
+}
+
+}  // namespace
+
+LoadedSession load_session(const fs::path& path) {
+    LoadedSession out;
+    load_into(out, path, ~size_t(0), 0);
     return out;
 }
 
