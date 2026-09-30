@@ -25,7 +25,9 @@ add_library(maic_core
 target_include_directories(maic_core PUBLIC include)
 target_link_libraries(maic_core PUBLIC nlohmann_json::nlohmann_json PRIVATE httplib::httplib luajit)
 target_compile_options(maic_core PRIVATE -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
-target_compile_definitions(maic_core PRIVATE MAIC_VERSION="${MAIC_GIT_VERSION}" MAIC_ROOT="${PROJECT_SOURCE_DIR}")
+# Where services/ and vendor/ live at run time: the source tree, or a checkout a release build names.
+set(MAIC_SOURCE_ROOT "${PROJECT_SOURCE_DIR}" CACHE PATH "MAIC repository the built binary uses as its root")
+target_compile_definitions(maic_core PRIVATE MAIC_VERSION="${MAIC_GIT_VERSION}" MAIC_ROOT="${MAIC_SOURCE_ROOT}")
 
 foreach(t harness robustness llm agent)
     add_executable(${t}_test tests/${t}_test.cpp)

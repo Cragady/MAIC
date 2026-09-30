@@ -24,10 +24,14 @@ prefix="$HOME/program-files/maic/$tag"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 git archive "$tag" | tar -x -C "$work"
-# The release build uses the same vcpkg toolchain as the dev preset.
+# git archive leaves submodules out; the build needs the pinned LuaJIT source (the others are runtime only).
+mkdir -p "$work/vendor/lua-pins"
+git -C vendor/lua-pins archive HEAD | tar -x -C "$work/vendor/lua-pins"
+# The installed binary keeps using this repository as its root (services/, vendor/ scripts and submodules),
+# so `maic vendor add` and `maic up` work from the release the same as from the dev build.
 cmake -S "$work" -B "$work/build" -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DMAIC_GIT_VERSION="$tag" \
-      -DCMAKE_INSTALL_PREFIX="$prefix" >/dev/null
+      -DMAIC_SOURCE_ROOT="$(pwd)" -DCMAKE_INSTALL_PREFIX="$prefix" >/dev/null
 cmake --build "$work/build" -j --target maic >/dev/null
 cmake --install "$work/build" >/dev/null
 ln -sfn "$prefix/bin/maic" "$HOME/bin/maic"

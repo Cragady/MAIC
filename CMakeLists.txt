@@ -31,3 +31,6 @@ add_subdirectory(harness)
 
 install(TARGETS maic RUNTIME DESTINATION bin)
 install(DIRECTORY services/ DESTINATION share/maic/services)
+# Fallback root for a copy installed without the repository: the vendor ledger and scripts, not the checkouts.
+install(FILES vendor/manifest.json vendor/comfyui.sh vendor/ollama.sh vendor/VENDORING DESTINATION share/maic/vendor)
+install(DIRECTORY vendor/patches/ DESTINATION share/maic/vendor/patches)
