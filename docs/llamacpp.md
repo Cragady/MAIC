@@ -1,6 +1,6 @@
-# llama.cpp: the second local server
+# llama.cpp: the local model server
 
-MAIC vendors [llama.cpp](https://github.com/ggml-org/llama.cpp) next to Ollama and runs its `llama-server` on `127.0.0.1:8081`. Same GGUF files, same machine, one more provider: `maic --model llamacpp/<name>`.
+MAIC vendors [llama.cpp](https://github.com/ggml-org/llama.cpp) and runs its `llama-server` on `127.0.0.1:8081` as the default provider (`llamacpp/current`). Ollama stays installed as the optional second backend; the GGUF files are the same, and the ones Ollama pulled can be served here directly.
 
 ## Why, when Ollama is already there
 

@@ -83,9 +83,9 @@ const std::vector<Topic>& topics() {
         {"queue", {"queued", "mid-turn", "interrupt"}, "sending while the agent works",
          "*queue*\n"
          "Sending while the agent is busy queues the message; it reaches the model at its next step in the current turn. `:w now` delivers it immediately: the current output is abandoned and the model is asked again with your message included. Messages still queued when a turn ends start the next turn. Ctrl-C interrupts the turn instead."},
-        {"providers", {"provider", "models", "remote", "ollama", "anthropic", "deepseek", "openrouter"}, "local and remote models",
+        {"providers", {"provider", "models", "remote", "llamacpp", "ollama", "anthropic", "deepseek", "openrouter"}, "local and remote models",
          "*providers*\n"
-         "Models are `provider/model`: `qwen3.5:9b` (Ollama, local), `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, `openrouter/...`, or any OpenAI-compatible server added in settings. `:model` alone lists providers; `:models` lists what Ollama has.\n\n"
+         "Models are `provider/model`: `llamacpp/current` (the vendored llama.cpp serving the linked GGUF; local, the default; docs/llamacpp.md), `ollama/qwen3.5:9b` or a bare `qwen3.5:9b` (Ollama, local, the optional second backend), `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, `openrouter/...`, or any OpenAI-compatible server added in settings. `:model` alone lists providers; `:models` lists what Ollama has (llama.cpp serves the one GGUF `maic vendor` shows).\n\n"
          "A remote provider receives your prompts, every file the agent reads and every command's output; MAIC says so when you switch and shows REMOTE in the status strip. Keys come from an environment variable or a command, never from the settings file. See docs/settings.md."},
         {"server", {"remote", "phone", "token", "tls", "maic-server"}, "remote access from a phone: the server, tokens, TLS",
          "*server* *maic-server*\n"
@@ -177,8 +177,8 @@ const std::vector<CommandInfo>& commands() {
         {"mode", {}, "NAME", "set the agent mode",
          "*:mode*\n`:mode manual|auto-read|edit|auto|plan`. Shift-Tab cycles them. See `:h modes`."},
         {"model", {}, "[NAME]", "switch model, or list providers",
-         "*:model*\n`:model NAME` switches (when the agent is idle): `qwen3.5:9b`, `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists the providers. Switching to a remote provider prints what will leave this machine. See `:h providers`."},
-        {"models", {}, "", "models the Ollama server has", "*:models*\nLists the models on the current Ollama provider (`ollama list`)."},
+         "*:model*\n`:model NAME` switches (when the agent is idle): `llamacpp/current`, `ollama/qwen3.5:9b`, `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists the providers. Switching to a remote provider prints what will leave this machine. See `:h providers`."},
+        {"models", {}, "", "models the Ollama server has", "*:models*\nLists the models on the current Ollama provider (`ollama list`). llama.cpp serves one GGUF at a time, the one `maic vendor` shows; `maic vendor use llamacpp PATH` changes it."},
         {"think", {}, "on|off", "let the model reason first", "*:think*\n`:think on` asks the model to reason before answering: slower, better on hard problems. Anthropic models then use the provider's `think_effort`."},
         {"set", {}, "markdown|mouse on|off", "rendering and mouse toggles",
          "*:set*\n`:set markdown off` shows the conversation as raw text; `on` renders it. `:set mouse off` stops the scroll wheel and gives the terminal its normal mouse selection back. `:set tooldetails on` shows tool output in full instead of an 8-line preview (in the conversation window `za` folds or unfolds one result, `zR` unfolds all, `zM` folds all). markdown and mouse persist through settings.lua."},
@@ -188,8 +188,8 @@ const std::vector<CommandInfo>& commands() {
          "*:todo*\nShows the list the model keeps with its `todo` tool during multi-step work: `[x]` done, `[ ]` not yet. The status strip shows `todo n/m done` while there is one; `:clear` drops it. See `:h tools`."},
         {"tools", {}, "", "the model's tools, built in and yours",
          "*:tools* *maic tools*\nLists the built-in tools and every user-defined Lua tool with its file and description, plus files that were skipped and why. Outside a session `maic tools` does the same. Writing one: `:h tools` (the topic) and docs/tools.md."},
-        {"up", {}, "SERVICE", "start a service", "*:up*\n`:up ollama` starts a service MAIC manages (ollama, comfyui). Refused while the harness is tripped."},
-        {"down", {}, "SERVICE", "stop a service MAIC started", "*:down*\n`:down ollama` stops it. MAIC only stops what it started."},
+        {"up", {}, "SERVICE", "start a service", "*:up*\n`:up llamacpp` starts a service MAIC manages (llamacpp, ollama, comfyui). Refused while the harness is tripped."},
+        {"down", {}, "SERVICE", "stop a service MAIC started", "*:down*\n`:down llamacpp` stops it. MAIC only stops what it started."},
         {"init", {}, "", "scaffold MAIC.md and .maic/settings.lua, then draft the MAIC.md",
          "*:init*\nCreates `.maic/settings.lua` and a `MAIC.md` placeholder in the workspace, then asks the agent to look over the project and write the MAIC.md (it will ask before writing in manual mode). A project with a MAIC.md keeps its transcripts under sessions/projects/. `maic init` does the scaffolding only."},
         {"settings", {}, "", "which settings files are in effect",

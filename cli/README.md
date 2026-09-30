@@ -3,9 +3,11 @@
 The `maic` command. With no arguments it starts the agent in the current directory, which becomes the workspace. `maic help` lists the rest.
 
 ```sh
+maic vendor add llamacpp           # once: build llama.cpp (docs/llamacpp.md)
+maic vendor use llamacpp /path/to/model.gguf   # once per model: the GGUF it serves
 cd ~/some/project
-maic up ollama                     # once per boot
-maic                               # the agent
+maic up llamacpp                   # once per boot (maic up ollama for the optional Ollama backend)
+maic                               # the agent, on llamacpp/current
 maic --model anthropic/claude-opus-5-5 --mode auto-read
 maic -c                            # continue the last session started in this directory
 maic -r                            # pick an earlier session from a list (maic -r ID for one you know, maic -r PATH for any transcript file)
@@ -66,7 +68,7 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:e` | edit the input in nvim (`$VISUAL`, then `$EDITOR`, then `nvim`); a non-zero exit leaves the input unchanged |
 | `:mode manual\|auto-read\|edit\|auto\|plan` | set the agent mode |
 | `:model NAME` | switch model (when idle): `llamacpp/current`, `qwen3.5:9b` (Ollama), `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists providers |
-| `:models` | models the Ollama server has |
+| `:models` | models the Ollama server has (the optional backend; llama.cpp serves the one GGUF `maic vendor` shows) |
 | `:think on\|off` | let the model reason before answering |
 | `:set markdown\|mouse on\|off` | rendering and scroll-wheel toggles |
 | `:!cmd` or `!cmd` | run a command in **your** shell, unsandboxed, in the workspace; output shows in the conversation and is passed to the model as context (Ctrl-C stops it) |

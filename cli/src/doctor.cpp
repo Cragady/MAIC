@@ -155,29 +155,31 @@ int run_doctor() {
     };
     line("bubblewrap (the command sandbox)", has_program("bwrap"), has_program("bwrap") ? "" : "install bubblewrap; run_shell cannot work without it");
     line("tripwire installed", fs::exists("/usr/local/sbin/maic-lock"), fs::exists("/usr/local/sbin/maic-lock") ? "" : "sudo ./harness/install-tripwire.sh");
-    bool ollama_bin = has_program("ollama");
-    line("ollama", ollama_bin, ollama_bin ? run("ollama --version 2>/dev/null | tail -1") : "see docs/ollama-setup.md");
-    bool ollama_up = false;
-    try {
-        for (const auto& s : load_services(root_dir() / "services")) {
-            if (s.name == "ollama") ollama_up = service_status(s).state != ServiceState::Stopped;
-        }
-    } catch (const std::exception&) {
-    }
-    line("ollama running", ollama_up, ollama_up ? "" : "maic up ollama");
-    bool clip = has_program("wl-copy") || has_program("xclip") || has_program("xsel");
-    line("clipboard tool (wl-copy / xclip / xsel)", clip, clip ? "" : "yanks still reach the terminal through OSC 52");
-    line("nvim (for :e)", has_program("nvim"), "");
     for (const auto& e : load_vendor_manifest()) {
         auto st = vendor_status(e);
         line("vendored " + e.name + " (" + (e.kind == "submodule" ? e.ref : e.version) + ")", st.installed, st.installed ? st.target : st.note);
         if (e.name == "llamacpp" && st.installed) line("llama.cpp model", !st.model.empty(), st.model.empty() ? "maic vendor use llamacpp PATH" : st.model);
     }
+    bool llamacpp_up = false, ollama_up = false;
+    try {
+        for (const auto& s : load_services(root_dir() / "services")) {
+            if (s.name == "llamacpp") llamacpp_up = service_status(s).state != ServiceState::Stopped;
+            if (s.name == "ollama") ollama_up = service_status(s).state != ServiceState::Stopped;
+        }
+    } catch (const std::exception&) {
+    }
+    line("llamacpp running", llamacpp_up, llamacpp_up ? "" : "maic up llamacpp");
+    bool ollama_bin = has_program("ollama");
+    line("ollama (optional second backend)", ollama_bin, ollama_bin ? run("ollama --version 2>/dev/null | tail -1") : "see docs/ollama-setup.md");
+    line("ollama running", ollama_up, ollama_up ? "" : "maic up ollama, if you want it");
+    bool clip = has_program("wl-copy") || has_program("xclip") || has_program("xsel");
+    line("clipboard tool (wl-copy / xclip / xsel)", clip, clip ? "" : "yanks still reach the terminal through OSC 52");
+    line("nvim (for :e)", has_program("nvim"), "");
     std::cout << "\n";
 
     // ---- models and the recommendation
     std::vector<std::string> models = ollama_bin ? ollama_models() : std::vector<std::string>{};
-    std::cout << "models on ollama: ";
+    std::cout << "models on ollama (optional; their blobs are GGUFs llama.cpp can serve): ";
     if (models.empty()) std::cout << "none\n";
     else {
         for (size_t i = 0; i < models.size(); ++i) std::cout << (i ? ", " : "") << models[i];

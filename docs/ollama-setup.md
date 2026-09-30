@@ -1,6 +1,6 @@
 # Ollama Setup (local-only)
 
-Ollama runs quantized LLMs on the RTX 2080. It is the LLM backend for everything else here, including ComfyUI (through the `comfyui-ollama` nodes). Measurements are in [local-llm-benchmarks.md](local-llm-benchmarks.md).
+Ollama runs quantized LLMs on the RTX 2080. It was the first LLM backend here and stays as the optional second one: MAIC's default is the vendored llama.cpp ([llamacpp.md](llamacpp.md)), which can serve the same GGUF blobs Ollama pulled. ComfyUI still talks to Ollama through the `comfyui-ollama` nodes. Measurements are in [local-llm-benchmarks.md](local-llm-benchmarks.md).
 
 ## Layout
 

@@ -1,6 +1,6 @@
 # Vendored services
 
-MAIC can install the services it drives, so nothing has to live in `~/program-files` or a random clone. Everything sits in one tree:
+MAIC can install the services it drives (llama.cpp, the default model server; ComfyUI; Ollama, the optional second backend), so nothing has to live in `~/program-files` or a random clone. Everything sits in one tree:
 
 ```
 ~/.local/state/maic/
