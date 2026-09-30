@@ -2,7 +2,9 @@
 #include "doctor.hpp"
 #include "headless.hpp"
 #include "maic/artifacts.hpp"
+#include "maic/import.hpp"
 #include "maic/paths.hpp"
+#include "maic/redact.hpp"
 #include "maic/service.hpp"
 #include "maic/session.hpp"
 #include "maic/settings.hpp"
@@ -42,6 +44,8 @@ void usage(std::ostream& out = std::cerr) {
                  "       --append / --no-append             with -c/-r: write into the old session file, or into a new one that\n"
                  "                                          points at it (default: interactive appends; -p records nothing\n"
                  "                                          unless --record, which forks, or --append)\n"
+                 "       --fork-at N                        with -c/-r: continue from the old session's first N records only, in a\n"
+                 "                                          new file that points at them (the old file is never changed)\n"
                  "\n"
                  "  vendor                     the services MAIC can install for itself (ComfyUI, Ollama), pinned versions\n"
                  "  vendor add NAME            fetch, verify, build and link one (network; asks nothing else)\n"
@@ -59,6 +63,10 @@ void usage(std::ostream& out = std::cerr) {
                  "  sessions rehome ID [project|general|NAME]   move a transcript to another home (default: project)\n"
                  "  sessions path ID           print a transcript's path\n"
                  "  sessions export ID [FILE]  the transcript as markdown (stdout without FILE)\n"
+                 "  sessions import FILE [--as claude-ai|claude-code|auto] [--home general|project|NAME] [--conversation UUID]\n"
+                 "                             a claude.ai export or a Claude Code transcript as a new session (prints its id)\n"
+                 "  sessions redact ID|FILE [--in-place | -o FILE]   a copy with credential material replaced by [REDACTED:kind]\n"
+                 "                             (default: ./<id>.redacted.jsonl, outside the sessions tree)\n"
                  "  settings init [--json]|path  write the global settings file (Lua; --json for JSON), or show where it goes\n"
                  "  init                       scaffold this project: MAIC.md and .maic/settings.lua (transcripts then\n"
                  "                             go under sessions/projects/); :init in a session also drafts the MAIC.md\n"
@@ -236,6 +244,64 @@ std::filesystem::path pick_session(bool continue_last, const std::optional<std::
     return all[n - 1].path;
 }
 
+// maic sessions import FILE [--as FORMAT] [--home general|project|NAME] [--conversation UUID]
+int cmd_sessions_import(const std::vector<std::string>& args) {
+    std::string file, format = "auto", home = "general", conversation;
+    for (size_t i = 1; i < args.size(); ++i) {
+        auto value = [&] {
+            if (i + 1 >= args.size()) throw std::runtime_error(args[i] + " needs a value");
+            return args[++i];
+        };
+        if (args[i] == "--as") format = value();
+        else if (args[i] == "--home") home = value();
+        else if (args[i] == "--conversation") conversation = value();
+        else if (file.empty() && args[i][0] != '-') file = args[i];
+        else throw std::runtime_error("maic sessions import FILE [--as claude-ai|claude-code|auto] [--home general|project|NAME] [--conversation UUID]");
+    }
+    if (file.empty()) throw std::runtime_error("maic sessions import FILE [--as claude-ai|claude-code|auto] [--home general|project|NAME]");
+    maic::ImportedSession s = maic::read_import(file, format, conversation);
+    std::filesystem::path dir = home == "project" ? maic::sessions_home("project:" + s.workspace) : maic::sessions_home(home);
+    std::filesystem::path path = maic::write_import(s, file, dir);
+    std::cerr << "imported " << s.messages << " messages from " << file << " (" << s.format << ")";
+    if (s.skipped) std::cerr << ", " << s.skipped << " records or blocks skipped";
+    if (s.malformed) std::cerr << ", " << s.malformed << " malformed lines";
+    std::cerr << "\n" << path.string() << "\n";
+    std::cout << path.stem().string() << "\n";
+    return 0;
+}
+
+// maic sessions redact ID|FILE [--in-place | -o FILE]
+int cmd_sessions_redact(const std::vector<std::string>& args) {
+    std::string target, out;
+    bool in_place = false;
+    for (size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "--in-place") in_place = true;
+        else if ((args[i] == "-o" || args[i] == "--output") && i + 1 < args.size()) out = args[++i];
+        else if (target.empty() && args[i][0] != '-') target = args[i];
+        else throw std::runtime_error("maic sessions redact ID|FILE [--in-place | -o FILE]");
+    }
+    if (target.empty() || (in_place && !out.empty())) throw std::runtime_error("maic sessions redact ID|FILE [--in-place | -o FILE]");
+    auto s = maic::find_session(target);
+    if (!s) throw std::runtime_error("no session matching '" + target + "' (maic sessions)");
+    // The copy lands in the current directory by default, so it is never listed as a session itself.
+    std::filesystem::path dest = in_place ? std::filesystem::path(s->path.string() + ".redacting")
+                                 : out.empty() ? std::filesystem::current_path() / (s->id + ".redacted.jsonl")
+                                               : std::filesystem::path(out);
+    maic::RedactReport report = maic::redact_session(s->path, dest);
+    if (in_place) {
+        std::filesystem::rename(dest, s->path);
+        dest = s->path;
+    }
+    if (report.total() == 0) std::cout << "nothing to redact in " << report.records << " records";
+    else {
+        std::cout << "redacted " << report.total() << " value" << (report.total() == 1 ? "" : "s") << " in " << report.records << " records:";
+        for (const auto& [kind, n] : report.counts) std::cout << " " << kind << " " << n;
+    }
+    if (report.malformed) std::cout << " (" << report.malformed << " malformed lines redacted as text)";
+    std::cout << "\nwrote " << dest.string() << "\n";
+    return 0;
+}
+
 int cmd_settings(const std::vector<std::string>& args) {
     if (!args.empty() && args[0] == "init") {
         bool as_json = args.size() > 1 && args[1] == "--json";
@@ -300,6 +366,7 @@ int main(int argc, char** argv) {
             else if (a == "--no-record") headless.record = false, tui.record = false;
             else if (a == "--append") append = true;
             else if (a == "--no-append") append = false;
+            else if (a == "--fork-at") tui.fork_at = headless.fork_at = std::stoul(value("--fork-at"));
             else if (a == "--interactive" || a == "-i") interactive = true;
             else if (a == "--context" || a == "-C") {
                 std::string f = value("--context");
@@ -326,6 +393,13 @@ int main(int argc, char** argv) {
         }
         if (continue_last || resume) tui.resume = headless.resume = pick_session(continue_last, resume_id);
         if (append) tui.append = headless.append = *append;
+        if (tui.fork_at) {
+            if (!tui.resume) throw std::runtime_error("--fork-at needs -c or -r");
+            size_t have = maic::count_records(*tui.resume);
+            if (*tui.fork_at < 1 || *tui.fork_at > have) throw std::runtime_error("--fork-at: that session has " + std::to_string(have) + " records");
+            if (append && *append) throw std::runtime_error("--fork-at writes a new file; it can't --append");
+            tui.append = headless.append = false;
+        }
         if (headless.append) headless.record = true;
         if (print && interactive) {
             // An interactive session that starts with the prompt: interactive transcript rules apply, whatever
@@ -435,6 +509,8 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (cmd == "sessions") {
+            if (!cargs.empty() && cargs[0] == "import") return cmd_sessions_import(cargs);
+            if (!cargs.empty() && cargs[0] == "redact") return cmd_sessions_redact(cargs);
             if (cargs.size() >= 2 && (cargs[0] == "rehome" || cargs[0] == "path" || cargs[0] == "export")) {
                 auto s = maic::find_session(cargs[1]);
                 if (!s) throw std::runtime_error("no session matching '" + cargs[1] + "' (maic sessions)");

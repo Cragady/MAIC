@@ -1,0 +1,18 @@
+{"type":"summary","summary":"Summary title from an older client","leafUuid":"u4"}
+{"type":"mode","mode":"normal","sessionId":"s1"}
+{"type":"file-history-snapshot","messageId":"u1","snapshot":{"messageId":"u1","trackedFileBackups":{},"timestamp":"2026-09-01T10:00:00.000Z"},"isSnapshotUpdate":false}
+{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"Count the lines in notes.md"},"uuid":"u1","timestamp":"2026-09-01T10:00:00.000Z","cwd":"/home/mica/dev/fennec","sessionId":"s1","version":"2.1.236","gitBranch":"main"}
+{"parentUuid":"u1","isSidechain":false,"type":"assistant","message":{"model":"claude-opus-5","id":"msg_1","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"private","signature":"sig"}]},"uuid":"a1","timestamp":"2026-09-01T10:00:01.000Z","cwd":"/home/mica/dev/fennec","sessionId":"s1"}
+{"parentUuid":"a1","isSidechain":false,"type":"assistant","message":{"model":"claude-opus-5","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"I'll count them."}]},"uuid":"a2","timestamp":"2026-09-01T10:00:02.000Z","cwd":"/home/mica/dev/fennec","sessionId":"s1"}
+{"parentUuid":"a2","isSidechain":false,"type":"assistant","message":{"model":"claude-opus-5","id":"msg_1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"wc -l notes.md"}}]},"uuid":"a3","timestamp":"2026-09-01T10:00:03.000Z","cwd":"/home/mica/dev/fennec","sessionId":"s1"}
+{"parentUuid":"a3","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"12 notes.md","is_error":false}]},"toolUseResult":{"stdout":"12 notes.md","stderr":""},"uuid":"u2","timestamp":"2026-09-01T10:00:04.000Z","cwd":"/home/mica/dev/fennec","sessionId":"s1"}
+{"parentUuid":"u2","isSidechain":false,"type":"assistant","message":{"model":"claude-opus-5","id":"msg_2","type":"message","role":"assistant","content":[{"type":"text","text":"notes.md has 12 lines."}]},"uuid":"a4","timestamp":"2026-09-01T10:00:05.000Z","cwd":"/home/mica/dev/fennec","sessionId":"s1"}
+this line is not json at all
+200
+{"parentUuid":"a4","isSidechain":false,"isMeta":true,"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>"},"uuid":"u3","timestamp":"2026-09-01T10:01:00.000Z","cwd":"/home/mica/dev/fennec","sessionId":"s1"}
+{"parentUuid":"a4","isSidechain":true,"type":"user","message":{"role":"user","content":"a subagent prompt"},"uuid":"side1","timestamp":"2026-09-01T10:01:01.000Z","cwd":"/home/mica/dev/fennec","sessionId":"s1"}
+{"type":"system","subtype":"turn_duration","durationMs":5000,"isMeta":true,"sessionId":"s1"}
+{"parentUuid":"a4","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"text","text":"Thanks, that is all."}]},"uuid":"u4","timestamp":"2026-09-01T10:02:00.000Z","cwd":"/home/mica/dev/fennec","sessionId":"s1"}
+{"parentUuid":"u4","isSidechain":false,"type":"assistant","message":{"model":"claude-opus-5","id":"msg_3","type":"message","role":"assistant","content":[{"type":"text","text":"Any time."}]},"uuid":"a5","timestamp":"2026-09-01T10:02:01.000Z","cwd":"/home/mica/dev/fennec","sessionId":"s1"}
+{"type":"ai-title","aiTitle":"Counting lines in notes.md","sessionId":"s1"}
+{"type":"custom-title","customTitle":"Notes line count","sessionId":"s1"}

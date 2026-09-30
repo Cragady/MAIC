@@ -171,11 +171,11 @@ enum class Focus { Input, Conversation };
 
 class App : public AgentEvents {
 public:
-    App(ScreenInteractive& screen, Settings settings, const std::optional<std::filesystem::path>& resume, bool append)
+    App(ScreenInteractive& screen, Settings settings, const std::optional<std::filesystem::path>& resume, bool append, std::optional<size_t> fork_at)
         : screen_(screen), settings_(std::move(settings)),
           log_(!resume ? std::make_unique<SessionLog>("tui", settings_.record ? session_home_dir(settings_) : runtime_sessions_dir())
                : append && settings_.record ? std::make_unique<SessionLog>(SessionLog::Reopen{}, *resume)
-                                            : std::make_unique<SessionLog>(SessionLog::Fork{}, *resume, count_records(*resume), "tui",
+                                            : std::make_unique<SessionLog>(SessionLog::Fork{}, *resume, fork_at.value_or(count_records(*resume)), "tui",
                                                                            settings_.record ? session_home_dir(settings_) : runtime_sessions_dir())),
           agent_(std::filesystem::current_path(), settings_.model), editor_(&register_), view_(&register_) {
         agent_.providers = settings_.providers;
@@ -201,7 +201,7 @@ public:
         agent_.set_instruction_names(settings_.instruction_files);
         view_.set_timestamps(settings_.timestamps);
         if (resume) {
-            LoadedSession old = load_session(*resume);
+            LoadedSession old = load_session(*resume, fork_at.value_or(~size_t(0)));
             for (const auto& t : old.transcript) {
                 if (t.type == "user") view_.append(Kind::User, t.text);
                 else if (t.type == "assistant") view_.append(Kind::Assistant, t.text);
@@ -211,7 +211,8 @@ public:
             }
             agent_.set_log(log_.get());
             agent_.restore(std::move(old.messages));
-            view_.append(Kind::Notice, "resumed session " + resume->stem().string() + " (" + std::to_string(old.transcript.size()) + " entries)" +
+            view_.append(Kind::Notice, "resumed session " + resume->stem().string() + " (" + std::to_string(old.transcript.size()) + " entries" +
+                                           (fork_at ? ", forked at record " + std::to_string(*fork_at) : "") + ")" +
                                            (append ? ", continuing in the same file" : ", continuing in a new file that points at it"));
         } else {
             agent_.set_log(log_.get());
@@ -1261,7 +1262,7 @@ int run_tui(const TuiOptions& options) {
     screen.TrackMouse(settings.mouse);
     std::string first = options.initial_prompt;
     if (first == "-") first.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
-    App app(screen, settings, options.resume, options.append);
+    App app(screen, settings, options.resume, options.append, options.fork_at);
     app.welcome();
     app.attach_context(options.context);
     if (!first.empty()) app.send(first);

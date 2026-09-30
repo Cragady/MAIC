@@ -12,6 +12,7 @@ struct TuiOptions {
     std::optional<std::string> mode;
     std::optional<std::filesystem::path> resume;  // an earlier session file to continue
     bool append = true;  // continue in the same file (false: a new file that points at the old one)
+    std::optional<size_t> fork_at;  // with resume: fork from its first N records (append is then false)
     std::vector<std::filesystem::path> context;  // files attached to the conversation before the first turn
     std::string initial_prompt;
     std::optional<bool> record;  // overrides settings.record                  // sent as the first turn (maic -p "..." --interactive); "-" reads stdin

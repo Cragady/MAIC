@@ -259,9 +259,9 @@ void load_into(LoadedSession& out, const fs::path& path, size_t limit, int depth
 
 }  // namespace
 
-LoadedSession load_session(const fs::path& path) {
+LoadedSession load_session(const fs::path& path, size_t records) {
     LoadedSession out;
-    load_into(out, path, ~size_t(0), 0);
+    load_into(out, path, records, 0);
     return out;
 }
 
