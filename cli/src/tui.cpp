@@ -36,6 +36,7 @@
 #include <future>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -165,9 +166,10 @@ class App : public AgentEvents {
 public:
     App(ScreenInteractive& screen, Settings settings, const std::optional<std::filesystem::path>& resume, bool append)
         : screen_(screen), settings_(std::move(settings)),
-          log_(!resume ? SessionLog("tui", session_home_dir(settings_))
-               : append ? SessionLog::reopen(*resume)
-                        : SessionLog::fork(*resume, count_records(*resume), "tui", session_home_dir(settings_))),
+          log_(!resume ? std::make_unique<SessionLog>("tui", settings_.record ? session_home_dir(settings_) : runtime_sessions_dir())
+               : append && settings_.record ? std::make_unique<SessionLog>(SessionLog::Reopen{}, *resume)
+                                            : std::make_unique<SessionLog>(SessionLog::Fork{}, *resume, count_records(*resume), "tui",
+                                                                           settings_.record ? session_home_dir(settings_) : runtime_sessions_dir())),
           agent_(std::filesystem::current_path(), settings_.model), editor_(&register_), view_(&register_) {
         agent_.providers = settings_.providers;
         agent_.think = settings_.think;
@@ -184,12 +186,12 @@ public:
                 else if (t.type == "tool_result") view_.append(t.ok ? Kind::ToolOk : Kind::ToolErr, t.text);
                 else view_.append(Kind::Notice, t.text);
             }
-            agent_.set_log(&log_);
+            agent_.set_log(log_.get());
             agent_.restore(std::move(old.messages));
             view_.append(Kind::Notice, "resumed session " + resume->stem().string() + " (" + std::to_string(old.transcript.size()) + " entries)" +
                                            (append ? ", continuing in the same file" : ", continuing in a new file that points at it"));
         } else {
-            agent_.set_log(&log_);
+            agent_.set_log(log_.get());
         }
     }
 
@@ -260,7 +262,8 @@ private:
 
     ScreenInteractive& screen_;
     Settings settings_;
-    SessionLog log_;
+    std::unique_ptr<SessionLog> log_;
+    std::string log_path() const { return log_->path().string() + (settings_.record ? "" : "  (temporary: --no-record)"); }
     Agent agent_;
     std::string register_;
     Editor editor_;
@@ -293,7 +296,7 @@ void App::welcome() {
     view_.append(Kind::Notice, "MAIC  ·  workspace " + agent_.harness().workspace().string() + "  ·  model " + agent_.model + remote);
     std::string files;
     for (const auto& f : agent_.instructions()) files += (files.empty() ? "" : ", ") + f.path.string();
-    view_.append(Kind::Notice, "session transcript: " + log_.path().string() + (files.empty() ? "" : "\ninstructions: " + files));
+    view_.append(Kind::Notice, "session transcript: " + log_path() + (files.empty() ? "" : "\ninstructions: " + files));
     view_.append(Kind::Notice, "Press i to type, Alt+Enter (or :w) to send, Enter for a new line. Esc = normal mode: j/k scroll, u/Ctrl-R undo/redo, :e opens nvim, Ctrl-W k = conversation window, :help for everything.");
     if (agent_.remote()) view_.append(Kind::Error, "This model runs off this machine: prompts, files the agent reads and command output are sent to it.");
     try {
@@ -502,13 +505,13 @@ Element App::render_approval() {
     std::lock_guard lock(mu_);
     if (!approval_) return emptyElement();
     const auto& r = approval_->request;
-    std::string key = r.tool == "run_shell" ? "this program" : "this file";
+    std::string key = r.always_covers.empty() ? (r.tool == "run_shell" ? "this program" : "this file") : r.always_covers;
     return window(text(" approve? ") | bold,
                   vbox({
                       text(r.summary) | bold,
                       text("why asking: " + r.reason + (r.origin == Origin::Remote ? "  [REMOTE REQUEST]" : "")) | dim,
                       hbox({text("[y]") | bold | color(Color::Green), text(" yes   "), text("[n]") | bold | color(Color::Red), text(" no   "),
-                            text("[a]") | bold, text(" always allow " + key + " this session   "), text("[t]") | bold | color(Color::RedLight),
+                            text("[a]") | bold, text(" always: " + key + " (this session)   "), text("[t]") | bold | color(Color::RedLight),
                             text(" trip the harness")}),
                   })) |
            decorate(settings_.style("approval"));
@@ -897,7 +900,7 @@ void App::run_command(const std::string& line) {
             auto [provider, name] = resolve_model(agent_.providers, agent_.model);
             std::string out = format_status(status_report(services()));
             out += "model: " + name + " via " + provider.name + " at " + provider.base_url + (provider.remote() ? "  [REMOTE: data leaves this machine]" : "  [local]") + "\n";
-            out += "session: " + log_.path().string() + "\n";
+            out += "session: " + log_path() + "\n";
             out += "mode: " + std::string(mode_name(agent_.mode.load())) + (busy_ ? "  (working)" : "  (idle)");
             if (size_t q = agent_.queued()) out += "  " + std::to_string(q) + " queued  -> :w now";
             post(Kind::Notice, out);
@@ -938,8 +941,8 @@ void App::run_command(const std::string& line) {
             if (agent_.instructions().empty()) out += "\n  none. Create " + global_instructions_path().string() + " or a MAIC.md / AGENTS.md in the workspace.";
             post(Kind::Notice, out);
         } else if (cmd == "session") {
-            post(Kind::Notice, "this session: " + log_.path().string() + "\nhome: " + log_.path().parent_path().lexically_relative(sessions_dir()).string() +
-                                   "  (maic sessions rehome " + log_.path().stem().string() + " project|general|NAME moves it)\n"
+            post(Kind::Notice, "this session: " + log_path() + (settings_.record ? "\nhome: " + log_->path().parent_path().lexically_relative(sessions_dir()).string() +
+                                   "  (maic sessions rehome " + log_->path().stem().string() + " project|general|NAME moves it)" : "\nnot kept: it lives in the runtime directory and is gone at logout") + "\n"
                                    "all sessions: " + sessions_dir().string() + "\n`maic sessions` lists them, `maic artifacts` cleans");
         } else if (cmd == "artifacts") {
             std::string out = "where MAIC and its services keep things:";
@@ -988,6 +991,7 @@ int run_tui(const TuiOptions& options) {
     Settings settings = load_settings();
     if (options.model) settings.model = *options.model;
     if (options.mode) settings.mode = *options.mode;
+    if (options.record) settings.record = *options.record;
     if (!parse_mode(settings.mode)) {
         fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
         return 2;

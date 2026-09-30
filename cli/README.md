@@ -110,7 +110,7 @@ Where the continuation is written depends on `--append` / `--no-append`:
 
 **Interactive from a prompt.** `maic -p "…" --interactive` (`-i`) opens the normal session with the prompt already sent, context files attached and `-c`/`-r` honoured. Because it is an interactive session, interactive transcript rules apply no matter where the flags appear: a transcript is always kept and resumes append unless `--no-append`. `--record` is redundant there and `--json` is ignored with a note.
 
-`maic -p` writes no transcript at all unless asked: `--record` (or `--transcript`) keeps one, which with `-c` / `-r` is the pointer-style new file; `--append` writes into the old file and implies recording. So `cat big-context.md | maic -p - -r ID` runs a large context against an old conversation and leaves nothing behind, `... --record` keeps that as a fork, and `maic -c -p "..." --append` extends the old one in place.
+**Unrecorded sessions** still get a transcript, but in the runtime directory: `$XDG_RUNTIME_DIR/maic/sessions/` (a tmpfs the system clears at logout), or `/tmp/maic-<uid>/sessions/` without one; on Windows this will be `%TEMP%\maic\sessions`. Nothing there is listed by `maic sessions` or found by `-c`. `maic --no-record` does this for one interactive session, `"record": false` in settings makes it the default, and `--record` turns it back on. `maic -p` is unrecorded unless `--record` (or `--transcript`); with `-c` / `-r` that keeps a pointer-style fork, and `--append` writes into the old file instead. So `cat big-context.md | maic -p - -r ID` runs a large context against an old conversation and leaves nothing behind, `... --record` keeps that as a fork, and `maic -c -p "..." --append` extends the old one in place.
 
 ## Tools the model gets
 

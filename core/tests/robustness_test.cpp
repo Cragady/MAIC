@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <thread>
 
 namespace fs = std::filesystem;
@@ -33,6 +34,11 @@ ToolResult tool(const Harness& h, const std::string& name, const json& args) {
 void write_file(const fs::path& p, const std::string& content) {
     fs::create_directories(p.parent_path());
     std::ofstream(p, std::ios::binary) << content;
+}
+
+std::string read_whole_text(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
 }  // namespace
@@ -62,7 +68,8 @@ int main() {
     section("files that are not what the tool expects");
     static const char kBinary[] = "\x00\x01\xff\xfe binary \x80\x81";
     write_file(ws / "binary.bin", std::string(kBinary, sizeof(kBinary) - 1));
-    expect(tool(h, "read_file", {{"path", "binary.bin"}}).ok, "read_file on a binary file returns something");
+    expect(!tool(h, "read_file", {{"path", "binary.bin"}}).ok && tool(h, "read_file", {{"path", "binary.bin"}}).text.find("binary") != std::string::npos,
+           "read_file refuses a binary file");
     expect(!tool(h, "read_file", {{"path", "missing.txt"}}).ok, "read_file on a missing file -> error");
     fs::create_directories(ws / "adir");
     expect(!tool(h, "list_dir", {{"path", "binary.bin"}}).ok, "list_dir on a file -> error");
@@ -71,6 +78,59 @@ int main() {
     expect(tool(h, "read_file", {{"path", "small.txt"}, {"offset", 1000000}}).ok, "read_file far past the end is fine");
     expect(!tool(h, "edit_file", {{"path", "small.txt"}, {"old_string", ""}, {"new_string", "x"}}).ok, "edit_file with an empty old_string -> error");
     expect(tool(h, "write_file", {{"path", "deep/er/still/new.txt"}, {"content", "x"}}).ok, "write_file creates missing parent directories");
+
+    section("tool results for small models");
+    {
+        std::string big;
+        for (int i = 1; i <= 2500; ++i) big += "line " + std::to_string(i) + "\n";
+        write_file(ws / "big.txt", big);
+        auto r = tool(h, "read_file", {{"path", "big.txt"}});
+        expect(r.ok && r.text.find("Showing lines 1-2000 of 2500. Use offset=2001") != std::string::npos, "a capped read says where it stopped and how to continue");
+        r = tool(h, "read_file", {{"path", "big.txt"}, {"offset", 2400}});
+        expect(r.ok && r.text.find("(End of file - total 2500 lines)") != std::string::npos, "a complete read says it reached the end");
+        std::string wide;
+        for (int i = 0; i < 100; ++i) wide += std::string(1000, 'w') + "\n";
+        write_file(ws / "wide.txt", wide);
+        r = tool(h, "read_file", {{"path", "wide.txt"}});
+        expect(r.ok && r.text.find("Showing lines 1-") != std::string::npos && r.text.find("of 100. Use offset=") != std::string::npos, "a 50 KB byte cap applies even with few lines");
+        write_file(ws / "oneline.txt", std::string(80 * 1024, 'x'));
+        r = tool(h, "read_file", {{"path", "oneline.txt"}});
+        expect(r.ok && r.text.find("End of file") != std::string::npos && r.text.size() < 3000, "one huge line is truncated, not skipped");
+        r = tool(h, "read_file", {{"path", "big.txt"}, {"offset", 9000}});
+        expect(r.ok && r.text.find("past the end") != std::string::npos, "an offset past the end says how long the file is");
+        write_file(ws / "README.md", "x");
+        r = tool(h, "read_file", {{"path", "readme.txt"}});
+        expect(!r.ok && r.text.find("Did you mean") != std::string::npos && r.text.find("README.md") != std::string::npos, "a missing file suggests a sibling");
+        expect(tool(h, "list_dir", {{"path", "."}}).text.find("entries)") != std::string::npos, "list_dir ends with a count");
+        expect(!tool(h, "read_file", {{"path", "adir"}}).ok, "read_file on a directory says to use list_dir");
+        write_file(ws / "e.txt", "alpha\n    beta\ngamma\n");
+        r = tool(h, "edit_file", {{"path", "e.txt"}, {"old_string", "beta"}, {"new_string", "beta"}});
+        expect(!r.ok && r.text.find("identical") != std::string::npos, "identical strings are rejected");
+        r = tool(h, "edit_file", {{"path", "e.txt"}, {"old_string", ""}, {"new_string", "x"}});
+        expect(!r.ok && r.text.find("write_file") != std::string::npos, "an empty old_string points at write_file");
+        r = tool(h, "edit_file", {{"path", "e.txt"}, {"old_string", "beta"}, {"new_string", "delta\nepsilon"}});
+        expect(r.ok && r.text.find("(+2 -1)") != std::string::npos, "an edit reports added and removed lines");
+        r = tool(h, "edit_file", {{"path", "e.txt"}, {"old_string", "delta\nepsilon"}, {"new_string", "beta"}});
+        expect(r.ok, "and back again");
+        r = tool(h, "edit_file", {{"path", "e.txt"}, {"old_string", "beta"}, {"new_string", "BETA"}});
+        expect(r.ok && read_whole_text(ws / "e.txt") == "alpha\n    BETA\ngamma\n", "an indentation-mismatched old_string matches by trimmed lines and the replacement is re-indented");
+        write_file(ws / "r.txt", "a b a b\n");
+        r = tool(h, "edit_file", {{"path", "r.txt"}, {"old_string", "a"}, {"new_string", "z"}});
+        expect(!r.ok && r.text.find("replace_all") != std::string::npos, "an ambiguous old_string mentions replace_all");
+        r = tool(h, "edit_file", {{"path", "r.txt"}, {"old_string", "a"}, {"new_string", "z"}, {"replace_all", true}});
+        expect(r.ok && read_whole_text(ws / "r.txt") == "z b z b\n" && r.text.find("2 occurrences") != std::string::npos, "replace_all replaces every occurrence");
+        write_file(ws / "crlf.txt", "one\r\ntwo\r\n");
+        r = tool(h, "edit_file", {{"path", "crlf.txt"}, {"old_string", "two"}, {"new_string", "TWO"}});
+        expect(r.ok && read_whole_text(ws / "crlf.txt") == "one\r\nTWO\r\n", "CRLF files keep their line endings");
+        r = tool(h, "write_file", {{"path", "e.txt"}, {"content", "just one line\n"}});
+        expect(r.ok && r.text.find("overwrote") != std::string::npos && r.text.find("(+1 -3)") != std::string::npos, "write_file reports the line delta");
+        r = tool(h, "run_shell", {{"command", "true"}});
+        expect(r.ok && r.text.find("(no output)") != std::string::npos, "a silent command says so");
+        r = tool(h, "run_shell", {{"command", "sleep 5"}, {"timeout_seconds", 1}});
+        expect(!r.ok && r.text.find("retry with a larger timeout_seconds") != std::string::npos, "a timeout suggests a larger timeout");
+        expect(canonical_tool_name("Read_File") == "read_file" && canonical_tool_name("readFile") == "read_file" && canonical_tool_name("list-dir") == "list_dir" &&
+               canonical_tool_name("nope").empty(), "tool names are repaired from common misspellings");
+    }
 
     section("search_files");
     write_file(ws / "minified.js", std::string(3 * 1024 * 1024, 'x') + "chat log\n");  // crashed MAIC via std::regex

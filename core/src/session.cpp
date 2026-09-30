@@ -41,6 +41,11 @@ std::string project_home_name(const fs::path& workspace) {
     return s.empty() ? "-" : s;
 }
 
+fs::path runtime_sessions_dir() {
+    if (const char* rt = std::getenv("XDG_RUNTIME_DIR"); rt && *rt) return fs::path(rt) / "maic" / "sessions";
+    return fs::path("/tmp") / ("maic-" + std::to_string(getuid())) / "sessions";
+}
+
 fs::path sessions_home(const std::string& home) {
     if (home.rfind("project:", 0) == 0) return sessions_dir() / "projects" / project_home_name(home.substr(8));
     if (home.empty() || home == "general") return sessions_dir() / "general";
@@ -50,8 +55,9 @@ fs::path sessions_home(const std::string& home) {
 
 void SessionLog::create(const std::string& kind, const fs::path& home) {
     fs::create_directories(home);
-    fs::permissions(sessions_dir(), fs::perms::owner_all, fs::perm_options::replace);
-    fs::permissions(home, fs::perms::owner_all, fs::perm_options::replace);
+    std::error_code ec;
+    fs::permissions(home.parent_path(), fs::perms::owner_all, fs::perm_options::replace, ec);
+    fs::permissions(home, fs::perms::owner_all, fs::perm_options::replace, ec);
     // time-kind-pid; a second session from the same process in the same second gets a sequence suffix.
     std::string base = now("%Y%m%d-%H%M%S") + "-" + kind + "-" + std::to_string(getpid());
     int fd = -1;

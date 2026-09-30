@@ -17,6 +17,10 @@ namespace maic {
 // workspace path>/ (like Claude Code's layout), or any other named directory. One JSONL file per session.
 std::filesystem::path sessions_dir();
 std::filesystem::path sessions_home(const std::string& home);  // "general", "project:<workspace>", or a name
+
+// Where unrecorded sessions go: $XDG_RUNTIME_DIR/maic/sessions (tmpfs, cleared at logout), else
+// /tmp/maic-<uid>/sessions. They are never listed by `maic sessions`. (Windows: %TEMP%\maic\sessions.)
+std::filesystem::path runtime_sessions_dir();
 std::string project_home_name(const std::filesystem::path& workspace);  // "/home/x/dev/app" -> "-home-x-dev-app"
 
 // Append-only transcript of one agent session: what was said, every tool call, and the harness's decision on it.

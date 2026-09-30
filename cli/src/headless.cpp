@@ -51,7 +51,8 @@ public:
             else fprintf(stderr, "✗ denied (no terminal to ask on): %s\n", r.summary.c_str());
             return Approval::No;
         }
-        fprintf(stderr, "\napprove? %s\n  why asking: %s\n  [y] yes  [n] no  [a] always this session  [t] trip the harness: ", r.summary.c_str(), r.reason.c_str());
+        fprintf(stderr, "\napprove? %s\n  why asking: %s\n  [y] yes  [n] no  [a] always: %s (this session)  [t] trip the harness: ", r.summary.c_str(), r.reason.c_str(),
+                r.always_covers.c_str());
         fflush(stderr);
         std::string line;
         if (!std::getline(std::cin, line) || line.empty()) return Approval::No;
@@ -97,22 +98,22 @@ int run_headless(const HeadlessOptions& options) {
         return 2;
     }
 
+    // Unrecorded runs still get a transcript, in the runtime directory (gone at logout).
+    std::filesystem::path where = options.record ? resolve_sessions_home(settings, std::filesystem::current_path()) : runtime_sessions_dir();
     std::unique_ptr<SessionLog> log;
     if (options.append && options.resume) log = std::make_unique<SessionLog>(SessionLog::Reopen{}, *options.resume);
-    std::filesystem::path home = resolve_sessions_home(settings, std::filesystem::current_path());
-    if (options.append && options.resume) {}
-    else if (options.record && options.resume) log = std::make_unique<SessionLog>(SessionLog::Fork{}, *options.resume, count_records(*options.resume), "headless", home);
-    else if (options.record) log = std::make_unique<SessionLog>("headless", home);
+    else if (options.resume) log = std::make_unique<SessionLog>(SessionLog::Fork{}, *options.resume, count_records(*options.resume), "headless", where);
+    else log = std::make_unique<SessionLog>("headless", where);
     Agent agent(std::filesystem::current_path(), settings.model);
     agent.providers = settings.providers;
     agent.mode = *mode;
     agent.think = options.think || settings.think;
-    if (log) agent.set_log(log.get());
+    agent.set_log(log.get());
     if (options.resume) {
         LoadedSession old = load_session(*options.resume);
         agent.restore(old.messages);
         fprintf(stderr, "※ resumed %s (%zu messages)%s\n", options.resume->stem().string().c_str(), old.messages.size(),
-                !log ? ", not recorded" : options.append ? ", appending to it" : ", writing to a new file that points at it");
+                options.append ? ", appending to it" : options.record ? ", writing to a new file that points at it" : ", temporary transcript");
     }
     if (agent.remote()) fprintf(stderr, "※ REMOTE model %s: prompts and tool output leave this machine\n", agent.model.c_str());
     for (const auto& c : options.context) {
@@ -140,8 +141,7 @@ int run_headless(const HeadlessOptions& options) {
         else fprintf(stderr, "※ tokens: %ld in, %ld out over %d call%s%s\n", u.total_input, u.total_output, u.calls, u.calls == 1 ? "" : "s",
                      u.last.context ? (" (context " + std::to_string(u.last.input) + "/" + std::to_string(u.last.context) + ")").c_str() : "");
     }
-    if (log) fprintf(stderr, "※ transcript: %s\n", log->path().string().c_str());
-    else fprintf(stderr, "※ not recorded (--record keeps a transcript)\n");
+    fprintf(stderr, "※ transcript%s: %s\n", options.record ? "" : " (temporary; --record keeps one)", log->path().string().c_str());
     return g_cancel ? 130 : 0;
 }
 

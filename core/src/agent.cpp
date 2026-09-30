@@ -327,9 +327,13 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         return result("INVALID_JSON: the tool input was not valid JSON, so nothing ran. Send the call again with valid arguments.", false);
     }
 
+    std::string name = canonical_tool_name(call.name);
+    if (name.empty()) {
+        return result("unknown tool '" + call.name + "'. The tools are: " + tool_names() + ". Call one of those.", false);
+    }
     Action action;
     try {
-        action = tool_action(harness_, call.name, call.arguments);
+        action = tool_action(harness_, name, call.arguments);
     } catch (const std::exception& e) {
         return result(std::string("error: ") + e.what(), false);
     }
@@ -341,7 +345,9 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         d = {Verdict::Allow, "allowed earlier this session"};
     }
     if (d.verdict == Verdict::Ask) {
-        Approval answer = events.ask({call.name, summary, d.reason, origin});
+        std::string key = Harness::approval_key(action);
+        std::string covers = key.rfind("shell:", 0) == 0 ? "the program `" + key.substr(6) + "`" : key.rfind("write:", 0) == 0 ? "writes to this file" : "reads of this file";
+        Approval answer = events.ask({name, summary, d.reason, origin, covers});
         record["approval"] = approval_name(answer);
         switch (answer) {
             case Approval::Yes:
@@ -371,7 +377,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         return result("DENIED: " + d.reason, false);
     }
 
-    ToolResult r = run_tool(harness_, call.name, call.arguments, d.read_only_sandbox, cancel);
+    ToolResult r = run_tool(harness_, name, call.arguments, d.read_only_sandbox, cancel);
     return result(r.text, r.ok);
 }
 

@@ -29,7 +29,8 @@ void usage() {
                  "       maic -p \"prompt\" --interactive     an interactive session that opens with that prompt sent (-i)\n"
                  "       --context FILE, -C FILE            attach a text file to the conversation before the prompt; repeatable;\n"
                  "                                          FILE \"-\" reads stdin (then the prompt can't also be stdin)\n"
-                 "       --record                           with -p: keep a transcript (a one-shot -p writes none by default)\n"
+                 "       --record / --no-record             keep a transcript or not (interactive: yes by default, or \"record\" in\n"
+                 "                                          settings; -p: none by default)\n"
                  "       --append / --no-append             with -c/-r: write into the old session file, or into a new one that\n"
                  "                                          points at it (default: interactive appends; -p records nothing\n"
                  "                                          unless --record, which forks, or --append)\n"
@@ -263,7 +264,8 @@ int main(int argc, char** argv) {
             else if (a == "-r" || a == "--resume") {
                 resume = true;
                 if (i + 1 < args.size() && args[i + 1][0] != '-') resume_id = args[++i];
-            } else if (a == "--record" || a == "--transcript") headless.record = true;
+            } else if (a == "--record" || a == "--transcript") headless.record = true, tui.record = true;
+            else if (a == "--no-record") headless.record = false, tui.record = false;
             else if (a == "--append") append = true;
             else if (a == "--no-append") append = false;
             else if (a == "--interactive" || a == "-i") interactive = true;

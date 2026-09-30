@@ -23,6 +23,7 @@ struct ApprovalRequest {
     std::string summary;
     std::string reason;
     Origin origin;
+    std::string always_covers;  // what "always allow" would cover: "git", "this file", ...
 };
 
 // What a front end (the CLI now, the server later) implements to follow and steer a turn.
