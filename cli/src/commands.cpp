@@ -58,7 +58,7 @@ const std::vector<Topic>& topics() {
          "Details and the planned layers: docs/harness.md."},
         {"sessions", {"session", "resume", "transcript", "transcripts"}, "transcripts, -c, -r, forking",
          "*sessions*\n"
-         "Every session is a JSONL file in ~/.local/state/maic/sessions (0600). `:session` shows this one; `maic sessions` lists them.\n\n"
+         "Every session is a JSONL file under ~/.local/state/maic/sessions (0600), in a home: `general/` by default, `projects/<encoded workspace>/` when settings say `\"sessions_home\": \"project\"`, or any name. `:session` shows this one and its home; `maic sessions` lists them with where each was started and last opened; `maic sessions rehome ID project|general|NAME` moves one.\n\n"
          "- `maic -c` continues the newest session from the current directory; `maic -r` picks from a list; `maic -r ID` (a unique prefix is enough).\n"
          "- Interactive resumes append to the same file. `--no-append` writes a new file that only points at the old one and the number of records loaded, which is also how a session forks. `maic -p` records nothing unless `--record` (a fork when resuming) or `--append`.\n"
          "- A session that ended mid tool call resumes from the last complete step. The model is told it resumed, with the current mode and instructions."},
@@ -109,6 +109,8 @@ const std::vector<CommandInfo>& commands() {
     static const std::vector<CommandInfo> c = {
         {"w", {"write", "send"}, "[now]", "send the input (also Alt+Enter)",
          "*:w* *:write* *:send*\n`:w` sends the input, the same as Alt+Enter. `:w now` sends even while the agent is working: the current output is abandoned and the model is asked again with your message included. Without `now`, a message sent while the agent is busy waits for its next step. See `:h queue`."},
+        {"ww", {}, "", "send now, even mid-turn (= :w now)",
+         "*:ww*\nThe same as `:w now`: sends immediately even while the agent is working. See `:h w`."},
         {"e", {"edit", "nvim"}, "", "edit the input in nvim",
          "*:e* *:edit* *:nvim*\nOpens the input in $VISUAL, $EDITOR or nvim as a markdown file; when you quit, the file becomes the input (one undo step). A non-zero exit leaves the input unchanged. Also Ctrl-X Ctrl-E."},
         {"h", {"help"}, "[topic]", "this help, or :h TOPIC",

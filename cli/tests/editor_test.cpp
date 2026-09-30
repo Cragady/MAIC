@@ -206,6 +206,8 @@ int main() {
         expect(!m.empty() && m.front()->name == "w", "an exact command name matches first");
         m = match_commands("mo");
         expect(m.size() == 3 && m[0]->name == "mode" && m[1]->name == "model" && m[2]->name == "models", "a prefix lists mode, model and models");
+        m = match_commands("ww");
+        expect(m.size() == 1 && m.front()->name == "ww", ":ww is its own command");
         m = match_commands("quit");
         expect(m.size() == 1 && m.front()->name == "q", "aliases match");
         expect(match_commands("zzz").empty(), "nothing matches nonsense");

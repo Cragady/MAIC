@@ -129,6 +129,7 @@ Settings load_settings() {
         s.markdown = j.value("markdown", s.markdown);
         s.mouse = j.value("mouse", s.mouse);
         s.sound = j.value("sound", s.sound);
+        s.sessions_home = j.value("sessions_home", s.sessions_home);
         if (j.contains("instruction_files")) s.instruction_files = j["instruction_files"].get<std::vector<std::string>>();
         json providers = j.value("providers", json::object());
         for (const auto& [name, pj] : providers.items()) {
@@ -181,6 +182,7 @@ void write_default_settings() {
         {"think", d.think},
         {"markdown", d.markdown},
         {"mouse", d.mouse},
+        {"sessions_home", d.sessions_home},
         {"instruction_files", d.instruction_files},
         {"providers", providers},
         {"style", styles},

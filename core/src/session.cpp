@@ -5,6 +5,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <climits>
+
 #include <algorithm>
 #include <ctime>
 #include <stdexcept>
@@ -28,10 +30,27 @@ fs::path sessions_dir() {
     return state_dir() / "sessions";
 }
 
-void SessionLog::create(const std::string& kind) {
-    fs::create_directories(sessions_dir());
+std::string project_home_name(const fs::path& workspace) {
+    std::error_code ec;
+    std::string s = fs::weakly_canonical(workspace, ec).string();
+    for (char& c : s) {
+        if (c == '/' || c == ' ') c = '-';
+    }
+    return s.empty() ? "-" : s;
+}
+
+fs::path sessions_home(const std::string& home) {
+    if (home.rfind("project:", 0) == 0) return sessions_dir() / "projects" / project_home_name(home.substr(8));
+    if (home.empty() || home == "general") return sessions_dir() / "general";
+    if (home.find("..") != std::string::npos || home[0] == '/') throw std::runtime_error("a session home is a name under " + sessions_dir().string());
+    return sessions_dir() / home;
+}
+
+void SessionLog::create(const std::string& kind, const fs::path& home) {
+    fs::create_directories(home);
     fs::permissions(sessions_dir(), fs::perms::owner_all, fs::perm_options::replace);
-    path_ = sessions_dir() / (now("%Y%m%d-%H%M%S") + "-" + kind + "-" + std::to_string(getpid()) + ".jsonl");
+    fs::permissions(home, fs::perms::owner_all, fs::perm_options::replace);
+    path_ = home / (now("%Y%m%d-%H%M%S") + "-" + kind + "-" + std::to_string(getpid()) + ".jsonl");
     int fd = open(path_.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     if (fd < 0) {
         throw std::runtime_error("can't create session log " + path_.string());
@@ -40,14 +59,14 @@ void SessionLog::create(const std::string& kind) {
     out_.open(path_, std::ios::app);
 }
 
-SessionLog::SessionLog(const std::string& kind) {
-    create(kind);
+SessionLog::SessionLog(const std::string& kind, const fs::path& home) {
+    create(kind, home);
 }
 
-SessionLog::SessionLog(Fork, const fs::path& parent, size_t records, const std::string& kind) {
+SessionLog::SessionLog(Fork, const fs::path& parent, size_t records, const std::string& kind, const fs::path& home) {
     if (!fs::is_regular_file(parent)) throw std::runtime_error("no session at " + parent.string());
-    create(kind);
-    write("resumed_from", {{"path", fs::weakly_canonical(parent).string()}, {"records", records}});
+    create(kind, home);
+    write("resumed_from", {{"id", parent.stem().string()}, {"path", fs::weakly_canonical(parent).string()}, {"records", records}});
 }
 
 SessionLog::SessionLog(Reopen, const fs::path& path) : path_(path) {
@@ -70,11 +89,19 @@ std::vector<SessionInfo> list_sessions(const std::optional<fs::path>& workspace)
     std::vector<SessionInfo> out;
     std::error_code ec;
     std::string want = workspace ? fs::weakly_canonical(*workspace, ec).string() : "";
+    // Files from before homes existed sit directly in sessions/; they belong in general/.
     for (const auto& e : fs::directory_iterator(sessions_dir(), ec)) {
+        if (e.path().extension() == ".jsonl") {
+            fs::create_directories(sessions_home("general"));
+            fs::rename(e.path(), sessions_home("general") / e.path().filename(), ec);
+        }
+    }
+    for (const auto& e : fs::recursive_directory_iterator(sessions_dir(), ec)) {
         if (e.path().extension() != ".jsonl") continue;
         SessionInfo info;
         info.path = e.path();
         info.id = e.path().stem().string();
+        info.home = e.path().parent_path().lexically_relative(sessions_dir()).string();
         // 20260930-003735-tui-3234642
         size_t second_dash = info.id.find('-', info.id.find('-') + 1);
         info.started = info.id.substr(0, second_dash);
@@ -85,8 +112,12 @@ std::vector<SessionInfo> list_sessions(const std::optional<fs::path>& workspace)
             auto j = nlohmann::json::parse(line, nullptr, false);
             if (!j.is_object()) continue;
             std::string type = j.value("type", "");
-            if (type == "start") info.workspace = j.value("workspace", "");
-            else if (type == "resumed_from") {
+            if (type == "start") {
+                if (info.workspace.empty()) info.workspace = j.value("workspace", "");
+                info.opened_in = j.value("workspace", "");
+                info.host = j.value("host", "");
+                ++info.opens;
+            } else if (type == "resumed_from") {
                 info.parent = fs::path(j.value("path", "")).stem().string();
                 info.parent_records = j.value("records", 0);
                 if (info.workspace.empty()) {
@@ -105,11 +136,22 @@ std::vector<SessionInfo> list_sessions(const std::optional<fs::path>& workspace)
                 ++info.turns;
             }
         }
-        if (!want.empty() && info.workspace != want) continue;
+        if (info.opened_in.empty()) info.opened_in = info.workspace;
+        if (!want.empty() && info.workspace != want && info.opened_in != want) continue;
         out.push_back(info);
     }
     std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.id > b.id; });
     return out;
+}
+
+fs::path rehome_session(const SessionInfo& session, const std::string& home) {
+    fs::path dir = home == "project" ? sessions_home("project:" + session.workspace) : sessions_home(home);
+    fs::create_directories(dir);
+    fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace);
+    fs::path target = dir / session.path.filename();
+    if (fs::exists(target) && !fs::equivalent(target, session.path)) throw std::runtime_error(target.string() + " already exists");
+    fs::rename(session.path, target);
+    return target;
 }
 
 std::optional<SessionInfo> find_session(const std::string& id_or_path) {
@@ -149,7 +191,15 @@ void load_into(LoadedSession& out, const fs::path& path, size_t limit, int depth
         if (!j.is_object()) continue;
         std::string type = j.value("type", "");
         if (type == "resumed_from") {
-            load_into(out, j.value("path", ""), j.value("records", size_t(0)), depth + 1);
+            // The parent may have been rehomed since: fall back to finding it by id.
+            fs::path parent = j.value("path", "");
+            std::error_code ec;
+            if (!fs::is_regular_file(parent, ec)) {
+                auto found = find_session(j.value("id", parent.stem().string()));
+                if (!found) throw std::runtime_error("the session this one was resumed from is gone: " + parent.string());
+                parent = found->path;
+            }
+            load_into(out, parent, j.value("records", size_t(0)), depth + 1);
         } else if (type == "start") {
             out.model = j.value("model", out.model);
             out.mode = j.value("mode", out.mode);

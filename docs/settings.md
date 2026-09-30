@@ -9,6 +9,7 @@
   "think": false,
   "markdown": true,
   "mouse": true,
+  "sessions_home": "general",
   "instruction_files": ["MAIC.md", "AGENTS.md"],
   "providers": { ... },
   "style": { ... }
@@ -23,6 +24,7 @@
 | `markdown` | Render markdown in the conversation window (`:set markdown off` for raw text). The input box always highlights markdown. |
 | `mouse` | Scroll wheel support. With it on, the terminal's own text selection needs Shift+drag; `:set mouse off` turns it off for a session. |
 | `instruction_files` | File names looked for from `$HOME` down to the workspace, like CLAUDE.md. See [Instructions](#instructions). |
+| `sessions_home` | Where new transcripts go: `general` (default, `sessions/general/`), `project` (`sessions/projects/<encoded workspace>/`), or any name (`sessions/<name>/`). `maic sessions rehome` moves existing ones. |
 
 ## Providers
 

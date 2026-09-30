@@ -33,6 +33,7 @@ struct Settings {
     bool markdown = true;   // render markdown in the conversation window
     bool mouse = true;      // scroll wheel (terminal text selection then needs Shift+drag)
     bool sound = false;
+    std::string sessions_home = "general";  // where new transcripts go: "general", "project", or a name under sessions/
     std::vector<Provider> providers = default_providers();
     std::map<std::string, Style> styles;  // by role, see docs/settings.md; defaults are filled in
     std::vector<std::string> instruction_files = {"MAIC.md", "AGENTS.md"};

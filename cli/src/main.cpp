@@ -34,7 +34,9 @@ void usage() {
                  "  logs <service> [lines]     the end of a service's log (default 40 lines)\n"
                  "  artifacts                  where MAIC and its services keep transcripts, logs and outputs\n"
                  "  artifacts clean OWNER/NAME [--older-than DAYS] [--yes]\n"
-                 "  sessions                   list session transcripts\n"
+                 "  sessions                   list session transcripts (where started, where last opened)\n"
+                 "  sessions rehome ID [project|general|NAME]   move a transcript to another home (default: project)\n"
+                 "  sessions path ID           print a transcript's path\n"
                  "  settings init|path         write a documented settings file, or show where it goes\n"
                  "  trip [reason]              trip the harness lock now (blocks all actions until unlocked)\n"
                  "  unlock                     reset the harness lock (asks for your sudo password)\n"
@@ -160,8 +162,13 @@ int cmd_artifacts(const std::vector<std::string>& args) {
 void print_sessions(const std::vector<maic::SessionInfo>& sessions) {
     for (size_t i = 0; i < sessions.size(); ++i) {
         const auto& s = sessions[i];
-        std::cout << "  " << i + 1 << ". " << s.id << "  " << s.turns << " turn" << (s.turns == 1 ? "" : "s") << "  " << s.workspace << "\n"
-                  << "     " << (s.first_prompt.empty() ? "(no prompt yet)" : s.first_prompt) << "\n";
+        std::cout << "  " << i + 1 << ". " << s.id << "  [" << s.home << "]  " << s.turns << " turn" << (s.turns == 1 ? "" : "s") << "\n"
+                  << "     " << (s.first_prompt.empty() ? "(no prompt yet)" : s.first_prompt) << "\n"
+                  << "     started in " << s.workspace;
+        if (s.opened_in != s.workspace) std::cout << ", last opened in " << s.opened_in;
+        if (s.opens > 1) std::cout << " (" << s.opens << " opens)";
+        if (!s.host.empty()) std::cout << " on " << s.host;
+        std::cout << "\n";
         if (!s.parent.empty()) std::cout << "     resumed from " << s.parent << " (first " << s.parent_records << " records)\n";
     }
 }
@@ -267,9 +274,21 @@ int main(int argc, char** argv) {
         }
         if (cmd == "settings") return cmd_settings(cargs);
         if (cmd == "sessions") {
+            if (cargs.size() >= 2 && (cargs[0] == "rehome" || cargs[0] == "path")) {
+                auto s = maic::find_session(cargs[1]);
+                if (!s) throw std::runtime_error("no session matching '" + cargs[1] + "' (maic sessions)");
+                if (cargs[0] == "path") {
+                    std::cout << s->path.string() << "\n";
+                    return 0;
+                }
+                std::string home = cargs.size() >= 3 ? cargs[2] : "project";
+                auto target = maic::rehome_session(*s, home);
+                std::cout << "moved to " << target.string() << "\n";
+                return 0;
+            }
             std::cout << maic::sessions_dir().string() << "\n";
             print_sessions(maic::list_sessions());
-            std::cout << "resume one with: maic -r ID   (or maic -c for the newest from the current directory)\n";
+            std::cout << "resume: maic -r ID (maic -c: newest from this directory) · move: maic sessions rehome ID [project|general|NAME]\n";
             return 0;
         }
         if (cmd == "artifacts") return cmd_artifacts(cargs);

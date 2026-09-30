@@ -148,6 +148,12 @@ int run_user_shell(const std::string& command, const std::filesystem::path& cwd,
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }
 
+// settings.sessions_home: "general", "project" (this workspace's project directory) or a name.
+std::filesystem::path session_home_dir(const Settings& settings) {
+    if (settings.sessions_home == "project") return sessions_home("project:" + std::filesystem::current_path().string());
+    return sessions_home(settings.sessions_home);
+}
+
 struct PendingApproval {
     ApprovalRequest request;
     std::promise<Approval> answer;
@@ -159,7 +165,9 @@ class App : public AgentEvents {
 public:
     App(ScreenInteractive& screen, Settings settings, const std::optional<std::filesystem::path>& resume, bool append)
         : screen_(screen), settings_(std::move(settings)),
-          log_(!resume ? SessionLog("tui") : append ? SessionLog::reopen(*resume) : SessionLog::fork(*resume, count_records(*resume), "tui")),
+          log_(!resume ? SessionLog("tui", session_home_dir(settings_))
+               : append ? SessionLog::reopen(*resume)
+                        : SessionLog::fork(*resume, count_records(*resume), "tui", session_home_dir(settings_))),
           agent_(std::filesystem::current_path(), settings_.model), editor_(&register_), view_(&register_) {
         agent_.providers = settings_.providers;
         agent_.think = settings_.think;
@@ -800,6 +808,8 @@ void App::run_command(const std::string& line) {
             quit();
         } else if (cmd == "w" || cmd == "write" || cmd == "send") {
             submit(editor_.text(), arg == "now" || arg == "!");
+        } else if (cmd == "ww") {
+            submit(editor_.text(), true);
         } else if (cmd == "e" || cmd == "edit" || cmd == "nvim") {
             edit_externally();
         } else if (cmd == "h" || cmd == "help") {
@@ -879,7 +889,9 @@ void App::run_command(const std::string& line) {
             if (agent_.instructions().empty()) out += "\n  none. Create " + global_instructions_path().string() + " or a MAIC.md / AGENTS.md in the workspace.";
             post(Kind::Notice, out);
         } else if (cmd == "session") {
-            post(Kind::Notice, "this session: " + log_.path().string() + "\nall sessions: " + sessions_dir().string() + "\n`maic artifacts` lists and cleans them");
+            post(Kind::Notice, "this session: " + log_.path().string() + "\nhome: " + log_.path().parent_path().lexically_relative(sessions_dir()).string() +
+                                   "  (maic sessions rehome " + log_.path().stem().string() + " project|general|NAME moves it)\n"
+                                   "all sessions: " + sessions_dir().string() + "\n`maic sessions` lists them, `maic artifacts` cleans");
         } else if (cmd == "artifacts") {
             std::string out = "where MAIC and its services keep things:";
             for (const auto& a : list_artifacts(services())) {

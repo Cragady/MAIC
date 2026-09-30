@@ -3,6 +3,8 @@
 #include "maic/tools.hpp"
 #include "maic/tripwire.hpp"
 
+#include <unistd.h>
+
 #include <thread>
 
 namespace maic {
@@ -128,7 +130,12 @@ void Agent::start_or_update_conversation() {
 
 void Agent::set_log(SessionLog* log) {
     log_ = log;
-    if (log_) log_->write("start", {{"workspace", harness_.workspace().string()}, {"model", model}, {"mode", mode_name(mode)}});
+    if (log_) {
+        char host[256] = "";
+        gethostname(host, sizeof(host) - 1);
+        log_->write("start", {{"workspace", harness_.workspace().string()}, {"model", model}, {"mode", mode_name(mode)},
+                              {"host", host}, {"pid", getpid()}});
+    }
 }
 
 void Agent::push(Message m) {

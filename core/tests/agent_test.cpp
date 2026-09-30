@@ -71,6 +71,11 @@ struct Recorder : AgentEvents {
     Approval ask(const ApprovalRequest&) override { return Approval::No; }
 };
 
+std::error_code& ec_ignore() {
+    static std::error_code ec;
+    return ec;
+}
+
 bool has_notice(const Recorder& r, const std::string& what) {
     for (const auto& n : r.notices) {
         if (n.find(what) != std::string::npos) return true;
@@ -207,6 +212,9 @@ int main() {
         auto infos = list_sessions(ws);
         expect(!infos.empty() && infos.front().path == path && infos.front().first_prompt == "remember the word pelican" && infos.front().turns == 1,
                "list_sessions finds it by workspace with a preview");
+        expect(infos.front().home == "general" && path.parent_path() == sessions_home("general"), "a new session lands in general/");
+        expect(infos.front().opens == 1 && !infos.front().host.empty() && infos.front().opened_in == infos.front().workspace,
+               "the start record says where and on which host it was opened");
         expect(find_session(infos.front().id.substr(0, 16)).has_value(), "find_session accepts a unique id prefix");
 
         // Resume: history continues, a system note marks the resume, and the log keeps appending to the same file.
@@ -225,6 +233,30 @@ int main() {
         }
         expect(has_old && has_note && msgs[0]["content"] == loaded.messages[0].content, "the resumed turn replays the old history and the original system prompt");
         expect(load_session(path).messages.size() > loaded.messages.size(), "new messages append to the same session file");
+        auto again = list_sessions(ws);
+        expect(!again.empty() && again.front().opens == 2, "a resume counts as another open");
+
+        // A fork points at its parent; rehoming the parent must not break it.
+        {
+            SessionLog child = SessionLog::fork(path, count_records(path), "agent-test");
+            Agent a3(ws, "test");
+            a3.providers = {fake.provider()};
+            a3.set_log(&child);
+            a3.restore(load_session(path).messages);
+            a3.submit("fork turn", Origin::Local, r, no_cancel);
+            auto parent_info = find_session(path.stem().string());
+            fs::path moved = rehome_session(*parent_info, "project");
+            expect(moved.parent_path().parent_path().filename() == "projects" && !fs::exists(path), "rehome moves the parent into projects/<encoded workspace>/");
+            LoadedSession forked = load_session(child.path());
+            bool has_pelican = false;
+            for (const auto& m : forked.messages) has_pelican = has_pelican || m.content == "remember the word pelican";
+            expect(has_pelican, "the fork still loads its parent's history after the move (found by id)");
+            auto moved_info = find_session(moved.stem().string());
+            expect(moved_info && moved_info->home.rfind("projects/", 0) == 0, "the moved session lists under its new home");
+            fs::remove(child.path());
+            fs::remove(moved);
+            fs::remove(moved.parent_path(), ec_ignore());
+        }
 
         // A session that ended mid tool call must not resume with a dangling call.
         std::vector<Message> broken = loaded.messages;
@@ -238,7 +270,6 @@ int main() {
             if (m.contains("tool_calls")) dangling = true;
         }
         expect(!dangling, "a dangling tool call from the old session is dropped on resume");
-        fs::remove(path);
     }
 
     fs::remove_all(ws);

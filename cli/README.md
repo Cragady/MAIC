@@ -50,7 +50,7 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 
 | Command | Does |
 | :--- | :--- |
-| `:w` | send the input (same as Alt+Enter). `:w now` sends immediately even while the agent is working (see below) |
+| `:w` | send the input (same as Alt+Enter). `:w now` or `:ww` sends immediately even while the agent is working (see below) |
 | `:e` | edit the input in nvim (`$VISUAL`, then `$EDITOR`, then `nvim`); a non-zero exit leaves the input unchanged |
 | `:mode manual\|auto-read\|edit\|auto\|plan` | set the agent mode |
 | `:model NAME` | switch model (when idle): `qwen3.5:9b`, `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists providers |
@@ -88,7 +88,9 @@ Whatever the mode: secrets are never read, system paths are never written, start
 
 ## Sessions
 
-Every session is a JSONL file in `~/.local/state/maic/sessions/`, readable only by you: each message as sent to the model, every tool call with the harness's decision, and the displayable transcript. `maic -c` resumes the newest session from the current directory; `maic -r` lists them; `maic -r ID` (a unique prefix is enough) resumes one. The model is told it resumed and what the current mode and instructions are. A session that ended mid tool call resumes from the last complete step.
+Every session is a JSONL file under `~/.local/state/maic/sessions/`, readable only by you: each message as sent to the model, every tool call with the harness's decision, and the displayable transcript. `maic -c` resumes the newest session started or last opened in the current directory; `maic -r` lists them; `maic -r ID` (a unique prefix is enough) resumes one. The model is told it resumed and what the current mode and instructions are. A session that ended mid tool call resumes from the last complete step.
+
+**Homes.** Transcripts go to `sessions/general/` unless settings say otherwise (`"sessions_home": "project"` puts new ones under `sessions/projects/<encoded workspace path>/`, the Claude Code layout; any other name makes `sessions/<name>/`). Every open (the first start and each resume) records the workspace, host and pid, so `maic sessions` shows where a transcript was started and, when different, where it was last opened and how many times. `maic sessions rehome ID [project|general|NAME]` moves a transcript to another home (default: its own project's directory); forks keep working because they find their parent by id. `maic sessions path ID` prints a path.
 
 Where the continuation is written depends on `--append` / `--no-append`:
 

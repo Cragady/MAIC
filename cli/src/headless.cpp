@@ -93,8 +93,11 @@ int run_headless(const HeadlessOptions& options) {
 
     std::unique_ptr<SessionLog> log;
     if (options.append && options.resume) log = std::make_unique<SessionLog>(SessionLog::Reopen{}, *options.resume);
-    else if (options.record && options.resume) log = std::make_unique<SessionLog>(SessionLog::Fork{}, *options.resume, count_records(*options.resume), "headless");
-    else if (options.record) log = std::make_unique<SessionLog>("headless");
+    std::filesystem::path home = settings.sessions_home == "project" ? sessions_home("project:" + std::filesystem::current_path().string())
+                                                                     : sessions_home(settings.sessions_home);
+    if (options.append && options.resume) {}
+    else if (options.record && options.resume) log = std::make_unique<SessionLog>(SessionLog::Fork{}, *options.resume, count_records(*options.resume), "headless", home);
+    else if (options.record) log = std::make_unique<SessionLog>("headless", home);
     Agent agent(std::filesystem::current_path(), settings.model);
     agent.providers = settings.providers;
     agent.mode = *mode;
