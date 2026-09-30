@@ -60,6 +60,9 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 | `system_prompt` | Operator text placed first in every system prompt, before MAIC's briefing and any instruction file; `"@~/path"` reads a file. `--system` and `:system` override. Front-loads behaviour. |
 | `load_instructions` | `false` loads no `MAIC.md` / `AGENTS.md` anywhere (default `true`); `--no-instructions` and `:instructions off` do it per session. Independent of `system_prompt`; combine them to run on your own text alone. |
 | `tripwire` | `"machine"` (default): a trip sets the root-owned lock every MAIC process respects; `maic unlock` asks for sudo. `"session"`: a trip locks that session only, in a file beside its transcript, and `:unlock` removes it without sudo. Nearer settings files win, so a project can choose per project. |
+| `allow_isolated` | `true` permits `tripwire = "isolated"`, a session that opts out of the machine lock (default `false`). Such a session is confined: no reads outside its directory, no remote requests, no server work. |
+| `browser` | What `maic open SERVICE` / `:open` uses: `default` (the system's browser), `firefox`, `chrome`. |
+| `remote` | A maic-server you subscribe to (`https://host:7373`). When it answers, `maic open SERVICE` opens the remote's copy of the service and `maic open server` its web client. |
 | `harness` | `"smart"` (default): a model reviews every command or write the rules would allow without asking, see `:h harness`. `"dumb"`: the rule list alone. |
 | `reviewer_model` | The model that reviews under the smart harness (default: the session's model). Same `provider/model` form as `model`. |
 | `dumb_auto_ok` | `true` skips the once-per-session warning when entering auto mode under a dumb harness (default `false`). |

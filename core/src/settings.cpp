@@ -178,7 +178,11 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         }
         s.harness = j.value("harness", s.harness);
         s.tripwire = j.value("tripwire", s.tripwire);
-        if (s.tripwire != "machine" && s.tripwire != "session") throw std::runtime_error(path.string() + ": tripwire must be \"machine\" or \"session\", not \"" + s.tripwire + "\"");
+        if (s.tripwire != "machine" && s.tripwire != "session" && s.tripwire != "isolated") throw std::runtime_error(path.string() + ": tripwire must be \"machine\", \"session\" or \"isolated\", not \"" + s.tripwire + "\"");
+        s.allow_isolated = j.value("allow_isolated", s.allow_isolated);
+        s.browser = j.value("browser", s.browser);
+        if (s.browser != "default" && s.browser != "firefox" && s.browser != "chrome") throw std::runtime_error(path.string() + ": browser must be default, firefox or chrome");
+        s.remote = j.value("remote", s.remote);
         if (j.contains("sampling") && j["sampling"].is_object()) {
             for (const auto& [k, v] : j["sampling"].items()) s.sampling[k] = v;
         }
@@ -359,6 +363,12 @@ void write_default_settings(bool as_json) {
         {"//prefill", "text every reply starts with, sent as the opening of the assistant turn; a guarantee where a system prompt is a request"},
         {"harness", d.harness},
         {"tripwire", d.tripwire},
+        {"allow_isolated", d.allow_isolated},
+        {"//allow_isolated", "true lets a session set tripwire = \"isolated\" (ignore the machine lock); such a session is confined: no reads outside its directory, no remote requests, no server work"},
+        {"browser", d.browser},
+        {"//browser", "what maic open SERVICE uses: default (the system's), firefox, chrome"},
+        {"remote", d.remote},
+        {"//remote", "a maic-server you subscribe to, e.g. https://workstation:7373; maic open prefers the remote's services when it answers"},
         {"//tripwire", "machine: a trip sets the root-owned lock every MAIC process respects, unlock asks for sudo; session: a trip locks this session only (a file beside its transcript), :unlock removes it without sudo. A project's .maic/settings.lua can choose per project"},
         {"//harness", "smart: a model reads the conversation and reviews every command or write the rules would allow without asking (auto, edit); dumb: the rule list alone"},
         {"reviewer_model", d.reviewer_model},

@@ -217,6 +217,7 @@ struct Server::Impl {
 
     std::shared_ptr<Session> make_session(const fs::path& ws, const std::string& model, Mode mode) {
         const Settings& st = options.settings;
+        if (st.tripwire == "isolated") throw HttpError{403, "this MAIC runs isolated sessions (tripwire = isolated): it takes no remote work"};
         auto s = std::make_shared<Session>(ws, model);
         s->agent.providers = st.providers;
         s->agent.mode = mode;

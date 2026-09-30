@@ -144,6 +144,7 @@ public:
 
     // Commands the user pre-approved (see Harness::set_allow); from settings `allow`.
     void set_allow(std::vector<std::string> patterns) { harness_.set_allow(std::move(patterns)); }
+    void set_confined(bool on) { harness_.set_confined(on); }
 
     // Names of instruction files (MAIC.md, AGENTS.md, ...) looked for beside files the model reads.
     void set_instruction_names(std::vector<std::string> names);
@@ -240,6 +241,7 @@ private:
     size_t history_bytes() const;
     std::string summarise(size_t from, size_t to, const std::atomic<bool>& cancel);  // messages [from, to) -> summary text
     void save_undo_point(const std::filesystem::path& path, const std::string& summary);
+    bool touches_harness(const Action& action) const;
     Decision review(const Action& action, const std::string& summary, const std::string& preview);
     std::string with_operator_note(const std::string& text) const;
     std::string nested_instructions(const std::filesystem::path& file);  // instruction files between the workspace and `file`, each once

@@ -70,6 +70,8 @@ struct SessionInfo {
     std::string first_prompt;
     std::string title;  // from a `title` record (:rename or an auto-title); "" when none
     size_t turns = 0;
+    std::string model;   // from the start record
+    long pid = 0;        // the process that last opened it
     std::string parent;  // id of the session this one was resumed from, if any
     size_t parent_records = 0;
 };
@@ -101,6 +103,11 @@ struct LoadedSession {
 // Follows `resumed_from` pointers, so a forked session loads its parent's history first. `records` stops
 // after that many lines of the file itself (what `--fork-at N` forks from).
 LoadedSession load_session(const std::filesystem::path& path, size_t records = ~size_t(0));
+
+// True when the session's last process is still alive on this host (a maic process with that pid).
+bool session_running(const SessionInfo& info);
+// The session's own lock file (tripwire = "session"), if set: <transcript>.tripped
+std::optional<std::string> session_lock_reason(const SessionInfo& info);
 
 // Number of records (lines) in a session file.
 size_t count_records(const std::filesystem::path& path);

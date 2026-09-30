@@ -129,6 +129,16 @@ int main() {
 
     shell(h, Mode::Auto, "echo " + std::string(20000, 'a'), Verdict::Deny);
 
+    std::cout << "isolated (confined) sessions\n";
+    {
+        Harness c(ws);
+        c.set_confined(true);
+        expect(c.check(Action{Action::Kind::Read, fs::temp_directory_path() / "x"}, Mode::Auto, Origin::Local).verdict == Verdict::Deny, "a confined session cannot read outside its workspace");
+        expect(c.check(Action{Action::Kind::Read, ws / "x"}, Mode::Auto, Origin::Local).verdict == Verdict::Allow, "but reads inside are fine");
+        expect(c.check(Action{Action::Kind::Shell, {}, "ls"}, Mode::Auto, Origin::Remote).verdict == Verdict::Deny, "and it takes no remote requests");
+        expect(c.check(Action{Action::Kind::Shell, {}, "make", fs::temp_directory_path()}, Mode::Auto, Origin::Local).verdict == Verdict::Deny, "nor commands outside the workspace");
+    }
+
     std::cout << "allow list\n";
     {
         Harness a(ws);

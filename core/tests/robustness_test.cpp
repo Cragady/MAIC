@@ -783,7 +783,31 @@ int main() {
         write_file(std::getenv("MAIC_TRIPWIRE_FILE"), "reason: machine\n");
         expect(tripwire_state() && tripwire_state()->find("machine") != std::string::npos && !unlock_session(), "the machine lock still counts, and unlock_session cannot clear it");
         fs::remove(std::getenv("MAIC_TRIPWIRE_FILE"));
+        // isolated: the machine lock is ignored, the session lock still counts.
+        set_tripwire_scope("isolated", session_lock);
+        write_file(std::getenv("MAIC_TRIPWIRE_FILE"), "reason: machine\n");
+        expect(!tripwire_state(), "an isolated session ignores the machine lock");
+        trip_tripwire("own trip");
+        expect(tripwire_state() && session_tripped(), "but its own lock still stops it");
+        unlock_session();
+        fs::remove(std::getenv("MAIC_TRIPWIRE_FILE"));
         set_tripwire_scope("machine", {});
+        expect(browser_command("default", "http://x").rfind("xdg-open", 0) == 0 && browser_command("firefox", "http://x").rfind("firefox", 0) == 0 && browser_command("chrome", "http://x").find("chromium") != std::string::npos,
+               "browser_command builds the right opener for default, firefox and chrome");
+        SessionInfo dead;
+        dead.pid = 0;
+        expect(!session_running(dead), "a session with no pid is not running");
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { tripwire = 'isolated', allow_isolated = true, browser = 'firefox', remote = 'https://box:7373' }");
+        Settings si = load_settings(ws / "proj");
+        expect(si.tripwire == "isolated" && si.allow_isolated && si.browser == "firefox" && si.remote == "https://box:7373", "isolated, allow_isolated, browser and remote load from settings");
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { browser = 'lynx' }");
+        bool bad_browser = false;
+        try {
+            load_settings(ws / "proj");
+        } catch (const std::exception&) {
+            bad_browser = true;
+        }
+        expect(bad_browser, "an unknown browser is an error");
         write_file(ws / "proj" / ".maic" / "settings.lua", "return { tripwire = 'session' }");
         expect(load_settings(ws / "proj").tripwire == "session", "the scope loads from settings");
         write_file(ws / "proj" / ".maic" / "settings.lua", "return { tripwire = 'sometimes' }");

@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <sstream>
 #include <cctype>
 #include <cstdlib>
 #include <ctime>
@@ -81,7 +82,9 @@ void usage(std::ostream& out = std::cerr) {
                  "  logs <service> [lines]     the end of a service's log (default 40 lines)\n"
                  "  path [NAME] [--copy]       every place maic knows (workspace, sessions, models, workflows, ...) or one path;\n"
                  "                             --copy puts it on the clipboard; a unique prefix is enough\n"
-                 "  open NAME                  open a place in your file manager (xdg-open)\n"
+                 "  open [NAME|SERVICE] [--browser default|firefox|chrome]\n"
+                 "                             a service (comfyui, llamacpp, server) in the browser, a place in the file manager; no\n"
+                 "                             name: a menu. With `remote` in settings and that maic-server up, its copy of the service\n"
                  "  shell-init [zsh|bash|fish] shell functions: mcd NAME (cd there), mpath NAME, mcp NAME; eval \"$(maic shell-init)\"\n"
                  "  artifacts                  where MAIC and its services keep transcripts, logs and outputs\n"
                  "  artifacts clean OWNER/NAME [--older-than DAYS] [--yes]\n"
@@ -100,7 +103,9 @@ void usage(std::ostream& out = std::cerr) {
                  "  server token new|list|revoke [NAME]   per-device bearer tokens for it\n"
                  "  server status              its configuration, and whether it is up (maic help server)\n"
                  "  trip [reason]              trip the harness lock now (blocks all actions until unlocked)\n"
-                 "  unlock                     reset the harness lock (asks for your sudo password)\n"
+                 "  unlock [machine|session ID|all-sessions|all]\n"
+                 "                             what is locked, with a menu: the machine lock (sudo) and each session's own lock\n"
+                 "                             (removed without sudo; the session shown with its task, dir, model, running or not)\n"
                  "\n"
                  "  help [TOPIC]               this text, or one page: maic help help lists the topics; help headless,\n"
                  "                             sessions, modes, keys, vendor, lua, settings, ... (the same pages as :h)\n"
@@ -115,6 +120,28 @@ std::vector<maic::ServiceDef> select(const std::vector<maic::ServiceDef>& all, c
         auto it = std::find_if(all.begin(), all.end(), [&](const auto& d) { return d.name == name; });
         if (it == all.end()) throw std::runtime_error("unknown service: " + name);
         out.push_back(*it);
+    }
+    return out;
+}
+
+// A numbered pick on a terminal: "1", "1 3", "1,3", "all"; empty cancels. Off a terminal: nothing chosen.
+std::vector<size_t> menu_pick(const std::string& what, const std::vector<std::string>& rows, bool multi) {
+    if (!isatty(STDIN_FILENO)) return {};
+    for (size_t i = 0; i < rows.size(); ++i) std::cout << "  " << i + 1 << ". " << rows[i] << "\n";
+    std::cout << what << (multi ? " (numbers, or all; Enter cancels): " : " (a number; Enter cancels): ") << std::flush;
+    std::string line;
+    if (!std::getline(std::cin, line) || line.empty()) return {};
+    std::vector<size_t> out;
+    if (line == "all" || line == "a") {
+        for (size_t i = 0; i < rows.size(); ++i) out.push_back(i);
+        return out;
+    }
+    for (auto& c : line) if (c == ',') c = ' ';
+    std::istringstream in(line);
+    for (std::string tok; in >> tok;) {
+        int n = std::atoi(tok.c_str());
+        if (n >= 1 && static_cast<size_t>(n) <= rows.size()) out.push_back(static_cast<size_t>(n - 1));
+        if (!multi) break;
     }
     return out;
 }
@@ -212,16 +239,35 @@ int cmd_path(const std::vector<std::string>& args) {
 }
 
 int cmd_open(const std::vector<std::string>& args) {
-    if (args.empty()) throw std::runtime_error("maic open NAME (maic path lists the names)");
+    std::string name, browser;
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--browser" && i + 1 < args.size()) browser = args[++i];
+        else if (name.empty()) name = args[i];
+    }
     maic::Settings settings = maic::load_settings();
     auto services = maic::load_services(maic::root_dir() / "services");
-    auto places = maic::known_places(settings, std::filesystem::current_path(), services);
-    const auto& p = maic::find_place(places, args[0]);
-    std::error_code ec;
-    if (!std::filesystem::exists(p.path, ec)) throw std::runtime_error(p.path.string() + " does not exist yet");
-    std::string cmd = "xdg-open " + std::string("'") + p.path.string() + "' >/dev/null 2>&1 &";
-    if (std::system(cmd.c_str()) != 0) throw std::runtime_error("xdg-open failed");
-    std::cout << "opened " << p.path.string() << "\n";
+    if (name.empty()) {
+        // A menu: services first (what runs, where), then the places.
+        std::vector<std::string> rows, names;
+        for (const auto& def : services) {
+            auto st = maic::service_status(def);
+            rows.push_back(def.name + "  " + (st.state == maic::ServiceState::Running ? "running" : "stopped") + "  http://127.0.0.1:" + std::to_string(def.port) + "  (browser)");
+            names.push_back(def.name);
+        }
+        rows.push_back("server  the maic web client  (browser)");
+        names.push_back("server");
+        for (const auto& p : maic::known_places(settings, std::filesystem::current_path(), services)) {
+            rows.push_back(p.name + "  " + p.path.string() + "  (file manager)");
+            names.push_back(p.name);
+        }
+        auto picks = menu_pick("open which", rows, false);
+        if (picks.empty()) throw std::runtime_error("maic open NAME [--browser default|firefox|chrome]; maic path lists the names");
+        name = names[picks.front()];
+    }
+    if (!browser.empty() && browser != "default" && browser != "firefox" && browser != "chrome") throw std::runtime_error("--browser takes default, firefox or chrome");
+    auto [cmd, what] = maic::open_command(name, settings, std::filesystem::current_path(), services, std::nullopt, browser);
+    if (std::system(cmd.c_str()) != 0) throw std::runtime_error("could not open " + what);
+    std::cout << "opened " << what << "\n";
     return 0;
 }
 
@@ -288,7 +334,8 @@ void print_sessions(const std::vector<maic::SessionInfo>& sessions) {
         }
         std::string where = std::filesystem::path(s.workspace).filename().string();
         std::cout << "  " << i + 1 << ". " << hm << "  " << (s.title.empty() ? (s.first_prompt.empty() ? "(no prompt yet)" : s.first_prompt) : s.title)
-                  << "  [" << where << "]  " << s.turns << " turn" << (s.turns == 1 ? "" : "s") << "\n"
+                  << "  [" << where << "]  " << s.turns << " turn" << (s.turns == 1 ? "" : "s") << (maic::session_running(s) ? "  RUNNING" : "")
+                  << (maic::session_lock_reason(s) ? "  LOCKED" : "") << "\n"
                   << "     " << s.id << "  [" << s.home << "]  started in " << s.workspace;
         if (s.opened_in != s.workspace) std::cout << ", last opened in " << s.opened_in;
         if (s.opens > 1) std::cout << " (" << s.opens << " opens)";
@@ -552,12 +599,62 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (cmd == "unlock") {
-            if (!maic::tripwire_state()) {
-                std::cout << "harness: not tripped (a session-scoped lock is removed inside its session with :unlock)\n";
+            // What is locked: the machine (global) lock, and every session's own lock.
+            auto machine = maic::tripwire_state();
+            struct Row { std::string text; std::filesystem::path lock; };
+            std::vector<Row> rows;
+            if (machine) rows.push_back({"MACHINE LOCK (global; outranks every session)\n     " + *machine, {}});
+            auto sessions = maic::list_sessions();
+            for (const auto& s : sessions) {
+                auto reason = maic::session_lock_reason(s);
+                if (!reason) continue;
+                std::string what = s.title.empty() ? s.first_prompt : s.title;
+                rows.push_back({"session " + s.id + " [" + s.kind + "]  " + (what.empty() ? "(no prompt yet)" : what.substr(0, 60)) + "\n     dir " + s.workspace +
+                                    "  model " + s.model + "  " + (maic::session_running(s) ? "RUNNING pid " + std::to_string(s.pid) : "not running") + "\n     " + *reason,
+                                s.path.string() + ".tripped"});
+            }
+            std::error_code ec;
+            for (const auto& e : std::filesystem::directory_iterator(maic::runtime_sessions_dir(), ec)) {
+                if (e.path().extension() != ".tripped") continue;
+                std::ifstream in(e.path());
+                std::string reason((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                rows.push_back({"temporary session " + e.path().stem().string() + "\n     " + reason, e.path()});
+            }
+            if (rows.empty()) {
+                std::cout << "nothing is locked\n";
                 return 0;
             }
-            // Drop any cached sudo login first so unlocking always needs the password.
-            return std::system("sudo -k && sudo /usr/local/sbin/maic-lock reset") == 0 ? 0 : 1;
+            std::vector<size_t> picks;
+            if (!cargs.empty()) {
+                for (size_t i = 0; i < rows.size(); ++i) {
+                    bool m = cargs[0] == "machine" || cargs[0] == "global" ? rows[i].lock.empty()
+                             : cargs[0] == "all-sessions" || cargs[0] == "sessions"  ? !rows[i].lock.empty()
+                             : cargs[0] == "all"                                    ? true
+                                                                                      : rows[i].text.find(cargs[0]) != std::string::npos;
+                    if (m) picks.push_back(i);
+                }
+                if (picks.empty()) throw std::runtime_error("nothing locked matches '" + cargs[0] + "' (maic unlock lists what is)");
+            } else {
+                std::vector<std::string> texts;
+                for (const auto& r : rows) texts.push_back(r.text);
+                picks = menu_pick("unlock which", texts, true);
+                if (picks.empty()) {
+                    std::cout << "nothing chosen (maic unlock machine | session ID | all-sessions | all)\n";
+                    return isatty(STDIN_FILENO) ? 0 : 2;
+                }
+            }
+            int rc = 0;
+            for (size_t i : picks) {
+                if (rows[i].lock.empty()) {
+                    // Drop any cached sudo login first so unlocking the machine always needs the password.
+                    std::cout << "machine lock: unlocking (sudo)\n";
+                    if (std::system("sudo -k && sudo /usr/local/sbin/maic-lock reset") != 0) rc = 1;
+                } else {
+                    std::filesystem::remove(rows[i].lock, ec);
+                    std::cout << "removed " << rows[i].lock.string() << "\n";
+                }
+            }
+            return rc;
         }
         if (cmd == "settings") return cmd_settings(cargs);
         if (cmd == "server") {
@@ -710,8 +807,34 @@ int main(int argc, char** argv) {
             std::cout << maic::format_status(maic::status_report(services));
             return 0;
         }
-        if ((cmd == "up" || cmd == "down") && !cargs.empty()) {
-            auto selected = select(services, cargs);
+        if (cmd == "up" || cmd == "down") {
+            if (!cargs.empty()) {
+                auto selected = select(services, cargs);
+                return cmd == "up" ? cmd_up(selected) : cmd_down(selected);
+            }
+            // No names: a menu of the services with their state.
+            std::vector<std::string> rows;
+            std::vector<maic::ServiceDef> candidates;
+            for (const auto& def : services) {
+                auto st = maic::service_status(def);
+                bool running = st.state == maic::ServiceState::Running;
+                if ((cmd == "up") == running) continue;  // up lists what is stopped, down what runs
+                std::string missing = cmd == "up" ? maic::missing_requirement(def) : "";
+                rows.push_back(def.name + "  " + (running ? "running, pid " + std::to_string(st.pid) : "stopped") + "  port " + std::to_string(def.port) +
+                               (missing.empty() ? "" : "  (" + missing + ")") + "\n     " + def.description);
+                candidates.push_back(def);
+            }
+            if (rows.empty()) {
+                std::cout << (cmd == "up" ? "every service is already running" : "no service MAIC started is running") << "\n";
+                return 0;
+            }
+            auto picks = menu_pick(cmd == "up" ? "start which" : "stop which", rows, true);
+            if (picks.empty()) {
+                std::cout << "nothing chosen (maic " << cmd << " NAME... or all)\n";
+                return isatty(STDIN_FILENO) ? 0 : 2;
+            }
+            std::vector<maic::ServiceDef> selected;
+            for (size_t i : picks) selected.push_back(candidates[i]);
             return cmd == "up" ? cmd_up(selected) : cmd_down(selected);
         }
         if (cmd == "logs" && (cargs.size() == 1 || cargs.size() == 2)) {

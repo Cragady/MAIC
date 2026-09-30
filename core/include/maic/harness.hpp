@@ -73,6 +73,10 @@ public:
     bool allowed_by_list(const std::string& command) const;
     // A repeat of this action is harmless (a read, a read-only or allow-listed command): refuse, never trip.
     bool harmless(const Action& action) const;
+    // An isolated session (tripwire = "isolated"): reads stay inside the workspace, commands run only there,
+    // and requests from a remote origin are refused.
+    void set_confined(bool on) { confined_ = on; }
+    bool confined() const { return confined_; }
 
 private:
     bool in_workspace(const std::filesystem::path& p) const;
@@ -83,6 +87,7 @@ private:
 
     std::filesystem::path workspace_;
     std::vector<std::string> allow_;
+    bool confined_ = false;
     std::vector<std::filesystem::path> secret_paths_;     // never read, never written
     std::vector<std::filesystem::path> system_paths_;     // never written
     std::vector<std::filesystem::path> sensitive_paths_;  // always asked before writing, whatever the mode

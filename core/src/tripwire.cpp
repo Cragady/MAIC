@@ -37,7 +37,7 @@ std::optional<std::string> read_lock(const std::string& path) {
 }  // namespace
 
 void set_tripwire_scope(const std::string& scope, const std::filesystem::path& session_lock) {
-    g_scope = scope == "session" ? "session" : "machine";
+    g_scope = scope == "session" ? "session" : scope == "isolated" ? "isolated" : "machine";
     g_session_lock = session_lock;
 }
 
@@ -53,7 +53,11 @@ bool unlock_session() {
 }
 
 std::optional<std::string> tripwire_state() {
-    if (auto machine = read_lock(lock_file())) return machine;
+    // The machine lock outranks everything, except for a session that opted out of it (isolated: it is
+    // confined to its directory and takes no remote work instead).
+    if (g_scope != "isolated") {
+        if (auto machine = read_lock(lock_file())) return machine;
+    }
     if (session_tripped()) return read_lock(g_session_lock.string());
     return std::nullopt;
 }
@@ -66,7 +70,7 @@ void require_armed(const std::string& action) {
 }
 
 void trip_tripwire(const std::string& reason) {
-    if (g_scope == "session" && !g_session_lock.empty()) {
+    if ((g_scope == "session" || g_scope == "isolated") && !g_session_lock.empty()) {
         std::ofstream(g_session_lock, std::ios::trunc) << "session lock (this session only; :unlock removes it)\nreason: " << reason << "\n";
         return;
     }

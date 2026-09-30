@@ -3,6 +3,8 @@
 #include "maic/agent.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
+#include <httplib.h>
+#include "maic/places.hpp"
 #include "maic/status.hpp"
 #include "maic/vendor.hpp"
 
@@ -61,7 +63,8 @@ const std::vector<Topic>& topics() {
          "Every tool call is checked before it runs: tripwire, then policy for the mode, then the reviewer, then approval, then the sandbox.\n\n"
          "- **reviewer** (the **smart** harness, the default): before any command or write that the rules would let through *without asking* (auto and edit modes), a model reads the last few things you said, the agent's last words and the action, and answers ALLOW, ASK or DENY. ASK becomes an approval prompt, DENY refuses with the reason, and a reviewer that cannot answer means ASK. Reads are never reviewed; what you approved yourself is not reviewed either. `reviewer_model` in settings picks the model (default: the session's).\n"
          "- **dumb harness**: `:harness dumb`, `--harness dumb`, or `harness = \"dumb\"` in settings turns the reviewer off; the rule list alone decides and nothing reads the conversation. Entering **auto** under it shows a warning once per session and asks you to confirm; `dumb_auto_ok = true` (or `--accept-dumb-auto`) skips that. Headless runs refuse dumb + auto without one of those. The status strip shows DUMB HARNESS.\n"
-         "- **tripwire**: a root-owned lock. `:trip REASON` (or the [t] answer at an approval, or a dangerous command) sets it instantly with no password. While tripped nothing runs, but the session survives. `:unlock` resets it and asks for your sudo password. `tripwire = \"session\"` in settings scopes a trip to the session instead: the lock is a file beside the transcript, respected by that session only, and `:unlock` removes it without sudo (the machine lock is still honoured when set). A project's `.maic/settings.lua` can pick the scope per project.\n"
+         "- **the harness protects itself**: writing MAIC's settings, its lock files, the server's tokens, or running the lock helper is not the agent's to do; under the smart harness that trips the machine lock (a request from another agent that tries it is what the global lock is for), the dumb harness asks.\n"
+         "- **tripwire**: a root-owned lock. `:trip REASON` (or the [t] answer at an approval, or a dangerous command) sets it instantly with no password. While tripped nothing runs, but the session survives. `:unlock` resets it and asks for your sudo password. `tripwire = \"session\"` in settings scopes a trip to the session instead: the lock is a file beside the transcript, respected by that session only, and `:unlock` removes it without sudo (the machine lock is still honoured when set). `tripwire = \"isolated\"` also ignores the machine lock, which needs `allow_isolated = true` and confines the session: no reads outside its directory, no remote requests, no work through the server; the status strip shows ISOLATED. A project's `.maic/settings.lua` can pick the scope per project. `maic unlock` with no argument lists the machine lock and every session's lock with its task, directory and model, and unlocks what you pick.\n"
          "- **sandbox**: every model-run command executes in bubblewrap: only the workspace writable, secrets hidden, no network, no sudo, a timeout.\n"
          "- **approval**: y / n / N (no, and type a sentence the model gets as the reason) / a (always this file or program, this session) / t (trip). Edits show the lines that would change.\n"
          "- **repeated calls**: the same call three times in a row is refused; five times trips the lock when it is a write or a command that could change something, and just ends the turn when it is harmless (a read, a read-only or allow-listed command). Three denials by you in one turn end the turn.\n"
@@ -234,7 +237,8 @@ const std::vector<CommandInfo>& commands() {
          "MAIC keeps a registry of every place it knows by a short name: `workspace`, `session` (this transcript), `sessions`, `state`, `config`, `settings`, `instructions`, `logs`, `root`, `tools`, `models`, `models/llamacpp`, `vendor`, `vendor/<service>`, `workflows`, `templates`, and every `maic artifacts` entry as `owner/name`. A unique prefix is enough (`:path work`, `:path sess`).\n\n"
          "In a session: `:path` lists them, `:path NAME` shows one, `:path NAME copy` puts it on the clipboard (and in the register, so `p` pastes it), `:open NAME` opens it in your file manager.\n"
          "In the shell: `maic path` lists, `maic path NAME` prints one (so `cd \"$(maic path workflows)\"` works), `maic path NAME --copy`, `maic open NAME`. Since a program cannot change its parent shell's directory, `eval \"$(maic shell-init)\"` in your rc file adds `mcd NAME` (cd there), `mpath NAME` and `mcp NAME` with tab completion of the names (zsh, bash, fish)."},
-        {"open", {"xdg-open"}, "NAME", "open a place in the file manager", "*:open*\n`:open workflows` opens that place with xdg-open. Names as for `:path`."},
+        {"open", {"xdg-open", "browser"}, "NAME|SERVICE [firefox|chrome]", "a service in the browser, a place in the file manager",
+         "*:open* *maic open* *browser* *remote*\n`:open comfyui` opens that service's URL in your browser; `:open server` the maic web client; `:open workflows` a place in the file manager. The browser is `browser` in settings (`default` = the system's, `firefox`, `chrome`) or given after the name. With `remote = \"https://host:7373\"` in settings and that maic-server answering, a service opens the remote's copy (the same port on the remote host; its service must be reachable from here, by listening beyond loopback there or through your tunnel). `maic open` with no name shows a menu."},
         {"artifacts", {}, "", "where everything is kept, with sizes", "*:artifacts*\nEvery place MAIC and its services leave things (transcripts, service logs, ComfyUI outputs, ...) with sizes. Clean with `maic artifacts clean OWNER/NAME [--older-than DAYS]`."},
         {"reg", {"register", "registers"}, "", "show the registers", "*:reg*\nShows the unnamed register and every named register `\"a`..`\"z` that holds something. See `:h p`."},
         {"undo", {}, "[N]", "restore the file(s) the agent changed last",
@@ -362,6 +366,54 @@ std::string help_text(const std::string& topic_in) {
     std::string out = "'" + topic_in + "' matches several topics:\n";
     for (const auto& [name, text] : prefix) out += "  " + name + "\n";
     return out;
+}
+
+namespace {
+
+// Does the remote maic-server answer? 401 counts: it is up, we just did not send a token.
+bool remote_up(const std::string& url) {
+    httplib::Client c(url);
+    c.set_connection_timeout(3);
+    c.set_read_timeout(3);
+    auto r = c.Get("/api/status");
+    return r && (r->status == 200 || r->status == 401);
+}
+
+std::string host_of(const std::string& url) {
+    size_t a = url.find("://");
+    std::string rest = a == std::string::npos ? url : url.substr(a + 3);
+    size_t b = rest.find_first_of(":/");
+    return b == std::string::npos ? rest : rest.substr(0, b);
+}
+
+}  // namespace
+
+std::pair<std::string, std::string> open_command(const std::string& name, const Settings& settings, const std::filesystem::path& workspace,
+                                                 const std::vector<ServiceDef>& services, const std::optional<std::filesystem::path>& session,
+                                                 const std::string& browser_override) {
+    std::string browser = browser_override.empty() ? settings.browser : browser_override;
+    if (name == "server" || name == "maic-server") {
+        std::string url = !settings.remote.empty() && remote_up(settings.remote) ? settings.remote : "http://" + settings.server.listen;
+        if (url.rfind("http", 0) != 0) url = "http://" + url;
+        return {browser_command(browser, url), "the maic web client at " + url};
+    }
+    for (const auto& def : services) {
+        if (def.name != name || def.port == 0) continue;
+        std::string url = "http://127.0.0.1:" + std::to_string(def.port);
+        std::string where = "local";
+        if (!settings.remote.empty() && remote_up(settings.remote)) {
+            // The remote's copy: the same port on the remote's host. Its service must listen beyond loopback
+            // there, or a tunnel must carry it; MAIC's own services bind to loopback unless told otherwise.
+            url = "http://" + host_of(settings.remote) + ":" + std::to_string(def.port);
+            where = "remote (" + settings.remote + ")";
+        }
+        return {browser_command(browser, url), def.name + " at " + url + " (" + where + ", " + browser + " browser)"};
+    }
+    auto places = known_places(settings, workspace, services, session);
+    const auto& p = find_place(places, name);
+    std::error_code ec;
+    if (!std::filesystem::exists(p.path, ec)) throw std::runtime_error(p.path.string() + " does not exist yet");
+    return {"xdg-open '" + p.path.string() + "' >/dev/null 2>&1 &", p.name + " (" + p.path.string() + ")"};
 }
 
 void set_context(std::vector<Provider>& providers, int tokens) {

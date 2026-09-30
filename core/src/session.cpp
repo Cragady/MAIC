@@ -1,3 +1,4 @@
+#include <signal.h>
 #include "maic/session.hpp"
 
 #include "maic/paths.hpp"
@@ -119,6 +120,8 @@ SessionInfo read_session_info(const fs::path& path) {
             if (info.workspace.empty()) info.workspace = j.value("workspace", "");
             info.opened_in = j.value("workspace", "");
             info.host = j.value("host", "");
+            info.model = j.value("model", info.model);
+            info.pid = j.value("pid", info.pid);
             ++info.opens;
         } else if (type == "resumed_from") {
             info.parent = fs::path(j.value("path", "")).stem().string();
@@ -263,6 +266,24 @@ LoadedSession load_session(const fs::path& path, size_t records) {
     LoadedSession out;
     load_into(out, path, records, 0);
     return out;
+}
+
+bool session_running(const SessionInfo& info) {
+    if (info.pid <= 0) return false;
+    char host[256] = "";
+    gethostname(host, sizeof(host) - 1);
+    if (!info.host.empty() && info.host != host) return false;
+    if (kill(static_cast<pid_t>(info.pid), 0) != 0) return false;
+    std::ifstream cmd("/proc/" + std::to_string(info.pid) + "/cmdline");
+    std::string line((std::istreambuf_iterator<char>(cmd)), std::istreambuf_iterator<char>());
+    return line.find("maic") != std::string::npos;
+}
+
+std::optional<std::string> session_lock_reason(const SessionInfo& info) {
+    std::ifstream in(info.path.string() + ".tripped");
+    if (!in) return std::nullopt;
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return text;
 }
 
 std::string export_markdown(const SessionInfo& info, const LoadedSession& session, bool tool_details) {

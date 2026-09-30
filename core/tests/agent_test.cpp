@@ -538,6 +538,35 @@ int main() {
                "changing the rules mid-conversation appends a system note with the current set");
     }
 
+    section("the harness protects itself");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        auto attempt = [&](bool smart, const std::string& path) {
+            fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", path}, {"content", "return { harness = 'dumb' }"}}}};
+            fake.calls_left = 1;
+            Agent agent(ws, "test");
+            agent.providers = {fake.provider()};
+            agent.mode = Mode::Auto;
+            agent.review_with_model = smart;
+            Recorder r;
+            r.reply = {Approval::Yes, ""};  // an ordinary ASK (the fake reviewer cannot say ALLOW) is approved; the guard never asks, it trips
+            agent.submit("change the settings", Origin::Local, r, no_cancel);
+            return r;
+        };
+        std::string lock = std::getenv("MAIC_TRIPWIRE_FILE");
+        auto r = attempt(true, ".maic/settings.lua");
+        bool tripped = false;
+        for (const auto& n : r.notices) tripped = tripped || n.rfind("HARNESS TRIPPED", 0) == 0;
+        expect(tripped && fs::exists(lock) && !fs::exists(ws / ".maic" / "settings.lua"), "under the smart harness, writing MAIC's own settings trips the lock and writes nothing");
+        fs::remove(lock);
+        auto r2 = attempt(false, ".maic/settings.lua");
+        expect(r2.asked.size() == 1 && r2.asked[0].reason.find("harness's own files") != std::string::npos && !fs::exists(lock), "the dumb harness asks instead");
+        auto r3 = attempt(true, "notes.txt");
+        expect(!fs::exists(lock) && fs::exists(ws / "notes.txt"), "an ordinary write is untouched by the guard");
+        fs::remove(ws / "notes.txt");
+    }
+
     section("prefill");
     {
         FakeOllama fake;

@@ -236,6 +236,7 @@ public:
         agent_.rules = settings_.rules;
         agent_.set_allow(settings_.allow);
         set_tripwire_scope(settings_.tripwire, log_->path().string() + ".tripped");
+        if (settings_.tripwire == "isolated") agent_.set_confined(true);
         agent_.reload_instructions();
         agent_.bans = settings_.bans;
         apply_sampling();
@@ -648,6 +649,7 @@ Element App::render_top_status() {
     if (shell_busy_) right.push_back(text(" · shell running") | decorate(settings_.style("shell")));
     if (lua_mode_) right.push_back(text(" · LUA MODE (:chat returns)") | decorate(settings_.style("shell")));
     if (!agent_.review_with_model) right.push_back(text(" · DUMB HARNESS") | color(Color::RedLight));
+    if (agent_.harness().confined()) right.push_back(text(" · ISOLATED") | color(Color::Yellow));
     right.push_back(text(" "));
     return hbox({hbox(left), filler(), hbox(right)}) | decorate(settings_.style("status"));
 }
@@ -1721,10 +1723,12 @@ void App::run_command(const std::string& line) {
             }
         } else if (cmd == "open") {
             try {
-                auto places = known_places(settings_, agent_.harness().workspace(), services(), log_->path());
-                const auto& p = find_place(places, arg);
-                std::string cmdline = "xdg-open '" + p.path.string() + "' >/dev/null 2>&1 &";
-                post(std::system(cmdline.c_str()) == 0 ? Kind::Notice : Kind::Error, "opened " + p.path.string());
+                std::istringstream a(arg);
+                std::string name, flag, browser;
+                a >> name >> flag >> browser;
+                if (flag != "--browser") browser = flag;  // `:open comfyui firefox`
+                auto [cmdline, what] = open_command(name, settings_, agent_.harness().workspace(), services(), log_->path(), browser);
+                post(std::system(cmdline.c_str()) == 0 ? Kind::Notice : Kind::Error, "opened " + what);
             } catch (const std::exception& e) {
                 post(Kind::Error, e.what());
             }
@@ -1801,6 +1805,10 @@ int run_tui(const TuiOptions& options) {
     if (options.accept_dumb_auto) settings.dumb_auto_ok = true;
     if (settings.harness != "smart" && settings.harness != "dumb") {
         std::cerr << "maic: --harness must be smart or dumb\n";
+        return 2;
+    }
+    if (settings.tripwire == "isolated" && !settings.allow_isolated) {
+        std::cerr << "maic: tripwire = \"isolated\" (opting out of the machine lock) is not allowed: set allow_isolated = true in settings to permit it\n";
         return 2;
     }
     if (!parse_mode(settings.mode)) {

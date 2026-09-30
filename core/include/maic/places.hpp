@@ -32,4 +32,8 @@ const Place& find_place(const std::vector<Place>& places, const std::string& que
 // with completion of the names for zsh and bash. `shell` is "zsh", "bash" or "fish".
 std::string shell_init(const std::string& shell);
 
+// The command that opens `url` in the chosen browser ("default" = xdg-open, "firefox", "chrome"; chrome tries
+// google-chrome, chromium and chrome). Detached, output discarded.
+std::string browser_command(const std::string& browser, const std::string& url);
+
 }  // namespace maic

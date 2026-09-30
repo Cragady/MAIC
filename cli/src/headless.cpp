@@ -190,7 +190,12 @@ int run_headless(const HeadlessOptions& options) {
     agent.prefill = resolve_system_prompt(settings.prefill);
     agent.rules = settings.rules;
     agent.set_allow(settings.allow);
+    if (settings.tripwire == "isolated" && !settings.allow_isolated) {
+        fprintf(stderr, "maic: tripwire = \"isolated\" is not allowed: set allow_isolated = true in settings to permit it\n");
+        return 2;
+    }
     set_tripwire_scope(settings.tripwire, log->path().string() + ".tripped");
+    if (settings.tripwire == "isolated") agent.set_confined(true);
     agent.reload_instructions();
     agent.bans = settings.bans;
     {

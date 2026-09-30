@@ -1,5 +1,7 @@
 #include "maic/agent.hpp"
 
+#include "maic/paths.hpp"
+#include "maic/settings.hpp"
 #include "maic/tools.hpp"
 #include "maic/tripwire.hpp"
 
@@ -734,7 +736,25 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
 
 Decision Agent::authorise(const Action& action, const std::string& tool, const std::string& summary, const std::string& preview,
                           Origin origin, AgentEvents& events, nlohmann::json& record) {
+    // The harness protects itself: its settings, its locks, its server tokens and its lock helper are not the
+    // agent's to change. Under the smart harness this trips the machine lock (a request from another agent
+    // that tries it is exactly what the global lock is for); the dumb harness asks.
+    if (action.kind != Action::Kind::Read && touches_harness(action)) {
+        if (review_with_model) {
+            Decision t{Verdict::Trip, std::string(origin == Origin::Remote ? "a remote request" : "the agent") + " tried to change the harness itself"};
+            record["decision"] = "trip";
+            record["reason"] = t.reason;
+            try {
+                trip_tripwire(summary + " -- " + t.reason);
+                events.on_notice("HARNESS TRIPPED: " + t.reason + ". Run `maic unlock` to continue.");
+            } catch (const std::exception& e) {
+                events.on_notice(std::string("tripwire could not be set: ") + e.what());
+            }
+            return {Verdict::Trip, "BLOCKED and the harness was tripped (" + t.reason + "). Stop and explain to the user."};
+        }
+    }
     Decision d = harness_.check(action, mode, origin);
+    if (action.kind != Action::Kind::Read && touches_harness(action) && d.verdict == Verdict::Allow) d = {Verdict::Ask, "changes the harness's own files"};
     record["decision"] = verdict_name(d.verdict);
     record["reason"] = d.reason;
     bool user_allowed = false;
@@ -793,6 +813,28 @@ const LuaTool* Agent::find_tool(const std::string& name) const {
         if (t.name == name || t.name == snake) return &t;
     }
     return nullptr;
+}
+
+bool Agent::touches_harness(const Action& action) const {
+    std::error_code ec;
+    auto under = [&](const std::filesystem::path& p, const std::filesystem::path& dir) {
+        if (dir.empty()) return false;
+        auto rel = std::filesystem::weakly_canonical(p, ec).lexically_relative(std::filesystem::weakly_canonical(dir, ec));
+        return !rel.empty() && *rel.begin() != "..";
+    };
+    if (action.kind == Action::Kind::Write) {
+        const auto& p = action.path;
+        std::string name = p.filename().string();
+        return under(p, settings_path().parent_path()) || under(p, harness_.workspace() / ".maic") || under(p, "/var/lib/maic") ||
+               under(p, state_dir() / "server") || under(p, state_dir() / "run") || (name.size() > 8 && name.compare(name.size() - 8, 8, ".tripped") == 0);
+    }
+    if (action.kind == Action::Kind::Shell) {
+        const std::string& c = action.command;
+        for (const char* needle : {"maic-lock", "maic unlock", "maic trip", "/var/lib/maic", ".maic/settings", "config/maic/", ".tripped", "maic/server/tokens", "maic server token"}) {
+            if (c.find(needle) != std::string::npos) return true;
+        }
+    }
+    return false;
 }
 
 void Agent::set_instruction_names(std::vector<std::string> names) {

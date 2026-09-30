@@ -1,7 +1,13 @@
 #pragma once
 
+#include "maic/service.hpp"
+#include "maic/settings.hpp"
+
 #include <exception>
+#include <filesystem>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace maic {
@@ -42,6 +48,13 @@ std::string failure_text(const Agent& agent, const std::exception& e);
 // The context window: sizes the llamacpp provider's readout and, when the local server is running with a
 // different --ctx-size, restarts it (a notice is returned; "" when nothing had to happen).
 void set_context(std::vector<Provider>& providers, int tokens);
+
+// What `maic open NAME` / `:open NAME` should run: a service opens its URL in the chosen browser (the remote
+// maic-server's copy when `remote` is set and answers), anything else opens the place's path with xdg-open.
+// Returns {command, description}. Throws when NAME is neither a service nor a place.
+std::pair<std::string, std::string> open_command(const std::string& name, const Settings& settings, const std::filesystem::path& workspace,
+                                                 const std::vector<ServiceDef>& services, const std::optional<std::filesystem::path>& session,
+                                                 const std::string& browser_override = "");
 std::string restart_llamacpp_if_changed();
 
 }  // namespace maic

@@ -70,7 +70,10 @@ struct Settings {
     std::vector<std::string> allow = {"maic-storyboard*", "maic-workflow-edit*", "maic path*", "maic status*", "maic artifacts*", "maic sessions*"};  // pre-approved command patterns; layers add up
     Bans bans;                      // strings, patterns and tokens the model must not produce (docs/bans.md)
     nlohmann::json sampling = nlohmann::json::object();  // sampler keys for every provider; a provider's options.sampling overrides
-    std::string tripwire = "machine";  // "machine": the root-owned lock (default); "session": a lock beside this transcript, no sudo
+    std::string tripwire = "machine";  // "machine": the root-owned lock (default); "session": a lock beside this transcript, no sudo; "isolated": session lock and the machine lock ignored (needs allow_isolated)
+    bool allow_isolated = false;       // may a session opt out of the machine lock (tripwire = "isolated")? Confined when it does
+    std::string browser = "default";   // default | firefox | chrome: what `maic open SERVICE` uses
+    std::string remote;                // a maic-server you subscribe to (https://host:7373); `maic open` prefers its services when it is up
     std::string harness = "smart";  // "smart": a model reviews commands and writes the rules would allow; "dumb": rules only
     std::string reviewer_model;     // the reviewer ("" = the session's model)
     bool dumb_auto_ok = false;      // true: no warning when entering auto mode under a dumb harness

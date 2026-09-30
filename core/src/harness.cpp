@@ -211,12 +211,14 @@ Decision Harness::check(const Action& action, Mode mode, Origin origin) const {
         case Action::Kind::Shell:
             d = check_shell(action.command, mode);
             if (d.verdict == Verdict::Allow && !action.workdir.empty() && !in_workspace(action.workdir)) {
-                d = {Verdict::Ask, "runs outside the workspace (" + action.workdir.string() + ")", d.read_only_sandbox};
+                d = confined_ ? Decision{Verdict::Deny, "isolated session: commands run only inside the workspace"}
+                              : Decision{Verdict::Ask, "runs outside the workspace (" + action.workdir.string() + ")", d.read_only_sandbox};
             }
             break;
         case Action::Kind::Write: d = check_write(action.path, mode); break;
         case Action::Kind::Read: d = check_read(action.path, mode); break;
     }
+    if (origin == Origin::Remote && confined_) return {Verdict::Deny, "isolated session: no remote requests"};
     if (d.verdict == Verdict::Allow && origin == Origin::Remote) {
         d = {Verdict::Ask, "request did not come from this terminal"};
     }
@@ -298,6 +300,7 @@ Decision Harness::check_write(const fs::path& p, Mode mode) const {
 }
 
 Decision Harness::check_read(const fs::path& p, Mode mode) const {
+    if (confined_ && !in_workspace(p)) return {Verdict::Deny, "isolated session: reads stay inside the workspace"};
     if (is_secret(p)) {
         return {Verdict::Deny, "credentials and keys are never read"};
     }

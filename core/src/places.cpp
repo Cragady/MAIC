@@ -74,6 +74,13 @@ const Place& find_place(const std::vector<Place>& places, const std::string& que
     throw std::runtime_error("'" + query + "' matches several places: " + names);
 }
 
+std::string browser_command(const std::string& browser, const std::string& url) {
+    std::string q = "'" + url + "'";
+    if (browser == "firefox") return "firefox " + q + " >/dev/null 2>&1 &";
+    if (browser == "chrome") return "(google-chrome " + q + " || chromium " + q + " || chrome " + q + ") >/dev/null 2>&1 &";
+    return "xdg-open " + q + " >/dev/null 2>&1 &";
+}
+
 std::string shell_init(const std::string& shell) {
     if (shell == "fish") {
         return "# maic shell integration (fish): eval (maic shell-init fish | psub)? Put this in ~/.config/fish/config.fish instead:\n"
