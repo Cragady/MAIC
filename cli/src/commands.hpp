@@ -1,9 +1,12 @@
 #pragma once
 
+#include <exception>
 #include <string>
 #include <vector>
 
 namespace maic {
+
+class Agent;
 
 // The `:` commands: one registry for running, completing and `:help`.
 struct CommandInfo {
@@ -30,5 +33,9 @@ std::vector<std::string> complete_argument(const std::string& command, const std
 // `:help`. An empty topic is the index. Topics are commands, keys ("u", "Ctrl-W", "Alt+Enter") and concepts
 // ("modes", "harness", "sessions"). Prefix matching like vim; several matches give a list.
 std::string help_text(const std::string& topic);
+
+// The error a failed turn shows. A transport failure to a local provider adds what to do about the service
+// behind it (start it, link a model), from the service state on that port.
+std::string failure_text(const Agent& agent, const std::exception& e);
 
 }  // namespace maic

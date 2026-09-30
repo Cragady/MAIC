@@ -9,6 +9,8 @@ Three tools, which combine. All of them are configured in `settings.lua` under `
 | Token bans (`bans.tokens`, `:ban token`) | OpenAI-compatible servers (llama.cpp, vLLM, LM Studio, ...) | `logit_bias` at minus infinity: the token can never be chosen, so the model takes another path |
 | XTC (`sampling.xtc_probability`, `:sampling xtc`) | llama.cpp-based servers | a sampler that throws away the top choices, so stock phrases lose their head start |
 
+The vendored llama.cpp (`maic vendor add llamacpp`, [llamacpp.md](llamacpp.md)) is the local server that takes all four; Ollama takes the first two.
+
 ## Files
 
 Wherever a ban is given, `@path` stands for a file: one entry per line, blank lines and lines starting with `#` skipped, `~` expanded. `--ban @~/bans/phrases.txt`, `--ban-pattern @~/bans/tics.re`, `:ban add @file`, `:ban pattern @file`, `:ban token @file` (numeric lines are ids), and in settings `strings = { "@~/bans/phrases.txt" }`, `patterns = { "@~/bans/tics.re" }`. A missing file is an error at the point it is named.

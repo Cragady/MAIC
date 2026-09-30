@@ -7,15 +7,21 @@
 #include "maic/instructions.hpp"
 #include "maic/sandbox.hpp"
 #include "maic/session.hpp"
+#include "maic/service.hpp"
 #include "maic/settings.hpp"
+#include "maic/status.hpp"
 #include "maic/tools.hpp"
 #include "maic/vendor.hpp"
 #include "maic/bans.hpp"
 #include "maic/lua.hpp"
 #include "maic/paths.hpp"
 
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -38,6 +44,19 @@ ToolResult tool(const Harness& h, const std::string& name, const json& args) {
 void write_file(const fs::path& p, const std::string& content) {
     fs::create_directories(p.parent_path());
     std::ofstream(p, std::ios::binary) << content;
+}
+
+// A loopback port nothing listens on.
+int closed_port() {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a);
+    socklen_t len = sizeof a;
+    getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len);
+    close(fd);
+    return ntohs(a.sin_port);
 }
 
 std::string read_whole_text(const fs::path& p) {
@@ -387,6 +406,17 @@ int main() {
         expect(comfy && comfy->kind == "submodule" && comfy->ref == "v0.38.0" && comfy->path == "vendor/ComfyUI", "comfyui is a submodule pinned to a release tag");
         auto oll = find_vendor("ollama");
         expect(oll && oll->kind == "release" && !oll->checksums.empty() && oll->url.find("${VERSION}") != std::string::npos, "ollama is a checksum-verified release");
+        auto lc = find_vendor("llamacpp");
+        auto release_tag = [](const std::string& ref) {  // b<number>, llama.cpp's release tags
+            return ref.size() > 1 && ref[0] == 'b' && ref.find_first_not_of("0123456789", 1) == std::string::npos;
+        };
+        expect(lc && lc->kind == "submodule" && lc->path == "vendor/llama.cpp" && release_tag(lc->ref) && lc->install == "vendor/llamacpp.sh",
+               "llamacpp is a submodule pinned to a release tag: " + (lc ? lc->ref : std::string("missing")));
+        bool loopback = false;
+        for (const auto& p : default_providers()) {
+            if (p.name == "llamacpp") loopback = p.kind == "openai" && !p.remote() && p.base_url.rfind("http://127.0.0.1:", 0) == 0;
+        }
+        expect(loopback, "default providers have llamacpp: OpenAI-compatible on loopback");
         // Adopt into a throwaway state directory, never the real one.
         fs::path state = ws / "xdg-state";
         setenv("XDG_STATE_HOME", state.c_str(), 1);
@@ -417,8 +447,89 @@ int main() {
         expect(threw, "adopting a non-ComfyUI directory as comfyui is refused");
         vendor_unlink(e);
         expect(!vendor_status(e).linked, "unlink removes the link");
+        VendorEntry l = *lc;
+        l.install.clear();
+        write_file(ws / "models" / "notes.txt", "not a model\n");
+        write_file(ws / "models" / "tiny.gguf", "fake\n");
+        write_file(ws / "models" / "sha256-blob", "GGUFxxxx");  // an Ollama blob: no suffix, the format's magic
+        threw = false;
+        try {
+            vendor_use(l, ws / "models" / "notes.txt");
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw && !fs::is_symlink(vendor_model_link(l)), "vendor use refuses a file that is not a GGUF");
+        threw = false;
+        try {
+            vendor_use(l, ws / "models" / "missing.gguf");
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw, "vendor use refuses a missing path");
+        vendor_use(l, ws / "models" / "tiny.gguf");
+        expect(vendor_model_link(l) == state / "maic" / "vendor" / "llamacpp" / "current-model.gguf" && fs::is_symlink(vendor_model_link(l)) &&
+                   fs::read_symlink(vendor_model_link(l)) == fs::weakly_canonical(ws / "models" / "tiny.gguf"),
+               "vendor use links current-model.gguf at the file");
+        vendor_use(l, ws / "models" / "sha256-blob");
+        expect(fs::read_symlink(vendor_model_link(l)).filename() == "sha256-blob", "a suffixless GGUF is accepted by its magic and replaces the link");
+        expect(vendor_status(l).model == fs::read_symlink(vendor_model_link(l)).string(), "vendor status shows the model");
+        threw = false;
+        try {
+            vendor_use(e, ws / "models" / "tiny.gguf");
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw, "vendor use is refused for a service that takes no model");
         expect(expand_vars("${MAIC_VENDOR}/x") == (state / "maic" / "vendor" / "x").string() && expand_vars("${MAIC_STATE}") == (state / "maic").string(),
                "service files can use ${MAIC_VENDOR} and ${MAIC_STATE}");
+        unsetenv("XDG_STATE_HOME");
+    }
+
+    section("llama.cpp is the default and a failed call says how to start it");
+    {
+        expect(Settings{}.model == "llamacpp/current", "the default model is llamacpp/current");
+        fs::path state = ws / "xdg-state-llamacpp";
+        setenv("XDG_STATE_HOME", state.c_str(), 1);
+        auto lc = find_vendor("llamacpp");
+        const ServiceDef* svc = nullptr;
+        auto services = load_services(root_dir() / "services");
+        for (const auto& s : services) {
+            if (s.name == "llamacpp") svc = &s;
+        }
+        auto arg = [&](const std::string& a) { return std::find(svc->command.begin(), svc->command.end(), a) != svc->command.end(); };
+        auto pair = [&](const std::string& a, const std::string& b) {
+            for (size_t i = 0; i + 1 < svc->command.size(); ++i) {
+                if (svc->command[i] == a && svc->command[i + 1] == b) return true;
+            }
+            return false;
+        };
+        expect(svc && svc->port == 8081 && pair("--host", "127.0.0.1") && pair("--port", "8081") && pair("--alias", "current") && arg("--jinja"),
+               "services/llamacpp.json: loopback, port 8081, served as `current`, jinja templates");
+        expect(svc && lc && svc->requires_paths.size() == 1 && svc->requires_paths[0] == vendor_model_link(*lc) && pair("--model", vendor_model_link(*lc).string()),
+               "the service loads and requires the current-model.gguf link");
+        // The same definition on a port nothing listens on, so this passes whatever is running on 8081 here.
+        ServiceDef def = *svc;
+        def.port = closed_port();
+        Provider p{"llamacpp", "openai", "http://127.0.0.1:" + std::to_string(def.port) + "/v1", "", "", json::object()};
+        std::string hint = unreachable_hint(p, {def});
+        expect(hint.find("maic up llamacpp") != std::string::npos && hint.find("maic vendor use llamacpp") != std::string::npos,
+               "no model linked: the hint says to start it and how to link a model: " + hint);
+        expect(missing_requirement(def).find("maic vendor use llamacpp") != std::string::npos, "maic up refuses with the same hint while no GGUF is linked");
+        write_file(ws / "models" / "m.gguf", "fake\n");
+        vendor_use(*lc, ws / "models" / "m.gguf");
+        hint = unreachable_hint(p, {def});
+        expect(missing_requirement(def).empty() && hint.find("maic up llamacpp") != std::string::npos && hint.find("vendor use") == std::string::npos,
+               "model linked: the hint is to start it: " + hint);
+        expect(unreachable_hint(Provider{"lab", "openai", "http://127.0.0.1:9/v1", "", "", json::object()}, {def}).empty(), "a provider no service backs gets no hint");
+        ChatOptions o;
+        o.retries = 0;
+        bool transport = false;
+        try {
+            chat(p, o, {{"user", "hi"}}, json::array(), [](std::string_view, bool) {}, no_cancel);
+        } catch (const TransportError&) {
+            transport = true;
+        }
+        expect(transport, "a call to the closed port is a TransportError, which the CLI follows with the hint");
         unsetenv("XDG_STATE_HOME");
     }
 

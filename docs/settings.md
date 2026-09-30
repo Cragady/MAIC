@@ -11,9 +11,9 @@ At each location a `settings.lua` is used when it exists, else a `settings.json`
 Because a settings file is code, it can decide things per machine:
 
 ```lua
-local deep = maic.hostname == "workstation" and "qwen3.5:9b" or "qwen3.5:4b"
+local model = maic.hostname == "laptop" and "ollama/qwen3.5:4b" or "llamacpp/current"
 return {
-  model = os.getenv("MAIC_MODEL") or deep,
+  model = os.getenv("MAIC_MODEL") or model,
   mode = "auto-read",
   models_dir = maic.home .. "/models",
   providers = {
@@ -28,7 +28,7 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 ```jsonc
 // the same keys, in JSON form
 {
-  "model": "qwen3.5:4b",
+  "model": "llamacpp/current",
   "mode": "manual",
   "think": false,
   "markdown": true,
@@ -43,7 +43,7 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 
 | Key | What |
 | :--- | :--- |
-| `model` | `provider/model`, or a bare Ollama model name. `--model` on the command line and `:model` in the session override it. |
+| `model` | `provider/model`, or a bare Ollama model name. Default `llamacpp/current`: the vendored llama-server ([llamacpp.md](llamacpp.md)), which serves whatever GGUF you linked under the name `current`. `--model` on the command line and `:model` in the session override it. |
 | `mode` | `manual`, `auto-read`, `edit`, `auto` or `plan` (see [cli/README.md](../cli/README.md#modes)). |
 | `think` | Ask the model to reason before answering. Slower; better on hard problems. |
 | `markdown` | Render markdown in the conversation window (`:set markdown off` for raw text). The input box always highlights markdown. |
@@ -69,7 +69,15 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 
 ## Providers
 
-Where models come from. MAIC ships with `ollama` (local), `anthropic`, `deepseek` and `openrouter`; a `providers` entry adds a new one or changes a shipped one by name.
+Where models come from. MAIC ships with `llamacpp` (local, the default) and `ollama` (local, the optional second backend), `anthropic`, `deepseek` and `openrouter`; a `providers` entry adds a new one or changes a shipped one by name.
+
+| Shipped | Kind | `base_url` | Key |
+| :--- | :--- | :--- | :--- |
+| `llamacpp` | `openai` | `http://127.0.0.1:8081/v1` (the vendored llama-server, [llamacpp.md](llamacpp.md); every `sampling` key reaches it, including `xtc_probability`, `dry_multiplier`, `grammar`, `json_schema`, and `logit_bias` from token bans) | none |
+| `ollama` | `ollama` | `http://127.0.0.1:11434` (optional; `maic up ollama`, `:models` lists what it has) | none |
+| `anthropic` | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
+| `deepseek` | `openai` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` |
+| `openrouter` | `openai` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
 
 ```json
 "providers": {

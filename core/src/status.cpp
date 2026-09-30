@@ -1,6 +1,9 @@
 #include "maic/status.hpp"
 
 #include "maic/tripwire.hpp"
+#include "maic/vendor.hpp"
+
+#include <filesystem>
 
 namespace maic {
 
@@ -54,6 +57,44 @@ std::string format_status(const StatusReport& rep) {
         for (const auto& a : s.actions) out += "  -> " + a + "\n";
     }
     return out;
+}
+
+std::string missing_requirement(const ServiceDef& def) {
+    std::error_code ec;
+    for (const auto& path : def.requires_paths) {
+        if (std::filesystem::exists(path, ec)) continue;
+        if (auto v = find_vendor(def.name); v && vendor_model_link(*v) == path) {
+            return def.name + " needs a model: maic vendor use " + def.name + " /path/model.gguf (maic vendor shows what is linked)";
+        }
+        return def.name + " needs " + path.string() + " (is the drive mounted?)";
+    }
+    return "";
+}
+
+std::string unreachable_hint(const Provider& provider, const std::vector<ServiceDef>& services) {
+    // The port in the base_url names the service: http://127.0.0.1:8081/v1 -> the one on 8081.
+    size_t host = provider.base_url.find("://");
+    if (host == std::string::npos) return "";
+    size_t colon = provider.base_url.find(':', host + 3);
+    if (colon == std::string::npos) return "";
+    int port = std::atoi(provider.base_url.c_str() + colon + 1);
+    for (const auto& def : services) {
+        if (!port || def.port != port) continue;
+        ServiceStatus st = service_status(def);
+        std::string p = std::to_string(port);
+        switch (st.state) {
+            case ServiceState::Running:
+                if (!st.port_open) return def.name + " is starting (pid " + std::to_string(st.pid) + ") and not answering on port " + p + " yet: maic logs " + def.name;
+                return def.name + " is running on port " + p + " but the request failed: maic logs " + def.name;
+            case ServiceState::Foreign:
+                return "port " + p + " is held by a process MAIC did not start: maic status";
+            case ServiceState::Stopped: {
+                std::string missing = missing_requirement(def);
+                return def.name + " is not running: maic up " + def.name + (missing.empty() ? "" : " (" + missing.substr(def.name.size() + 1) + ")");
+            }
+        }
+    }
+    return "";
 }
 
 }  // namespace maic

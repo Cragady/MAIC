@@ -7,3 +7,6 @@
 [submodule "vendor/lua-pins"]
 	path = vendor/lua-pins
 	url = https://github.com/Cragady/lua-collection-nvim-pins.git
+[submodule "vendor/llama.cpp"]
+	path = vendor/llama.cpp
+	url = https://github.com/ggml-org/llama.cpp

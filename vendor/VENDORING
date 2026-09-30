@@ -27,6 +27,18 @@ published with it. vendor/manifest.json is the ledger `maic vendor` reads.
         submodule is never written to. The URL is https here (the collection is
         public); ColdFireEmu uses ssh for the same pin by choice.
 
+    vendor/llama.cpp
+        https://github.com/ggml-org/llama.cpp
+        pinned at b11284  (25747b08e7a0f9a59a2089ce6b98d2229b76042a)
+        llama.cpp is MIT. Nothing from it is copied into MAIC; the submodule is
+        the only source. Built by vendor/llamacpp.sh OUT OF TREE into
+        <state>/vendor/llama.cpp-build (Release, GGML_CUDA when nvcc is found,
+        LLAMA_OPENSSL=OFF so the binaries cannot fetch models over https):
+        llama-server, llama-cli, llama-quantize, llama-gguf-split, linked in as
+        <state>/vendor/llamacpp/bin. The model llama-server loads is the link
+        <state>/vendor/llamacpp/current-model.gguf (`maic vendor use llamacpp PATH`).
+        Tags are b<build number>; bump to the newest one, never a branch head.
+
     ollama  (release, not a submodule)
         https://github.com/ollama/ollama/releases  v0.35.0
         vendor/ollama.sh downloads the linux amd64 archive, fetches the

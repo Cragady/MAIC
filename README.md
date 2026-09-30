@@ -85,12 +85,13 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 
 **Set up and measured on this machine** (not AI transcripts — these were installed and tested):
 
-* [ollama-setup.md](docs/ollama-setup.md) — local-only Ollama install, service settings, privacy audit.
 * [harness.md](docs/harness.md) — the safety harness: tripwire (built) and planned layers.
 * [tools.md](docs/tools.md): the model's tools, and writing your own in Lua behind the harness.
 * [settings.md](docs/settings.md) — the settings file: model providers (local and remote), styles, instruction files.
 * [sessions.md](docs/sessions.md): the session file format, every record type, homes, forks and `--fork-at`, `maic sessions import` (claude.ai exports, Claude Code transcripts), `redact`, `export`.
-* [vendor.md](docs/vendor.md) — the services MAIC installs for itself (ComfyUI, Ollama) at pinned versions, and the artifact tree.
+* [llamacpp.md](docs/llamacpp.md): llama.cpp, the default local server: every sampler (XTC, DRY, top-n-sigma), logit bias, grammars, one GGUF at a time, and reusing the model Ollama already pulled.
+* [vendor.md](docs/vendor.md) — the services MAIC installs for itself (llama.cpp, ComfyUI, Ollama) at pinned versions, and the artifact tree.
+* [ollama-setup.md](docs/ollama-setup.md) — the optional second backend: local-only Ollama install, service settings, privacy audit.
 * [bans.md](docs/bans.md) — string, regex and token bans, XTC, and why MAIC bans after the fact rather than by constrained decoding.
 * [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.
 * [opencode-quick-wins.md](docs/opencode-quick-wins.md) — 23 small, ranked improvements to take from opencode, with file pointers.
@@ -108,14 +109,14 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 ```sh
 # just what the build needs (the pinned LuaJIT source); ComfyUI and Ollama come later, through maic itself
 git clone --recurse-submodules=vendor/lua-pins https://github.com/Cragady/MAIC
-# everything, including the ComfyUI checkout (about 100 MB), fetched in parallel
+# everything, including the ComfyUI (about 100 MB) and llama.cpp (about 180 MB) checkouts, fetched in parallel
 git clone --recurse-submodules -j4 https://github.com/Cragady/MAIC
 # an existing clone
 git submodule update --init -j4              # all of them
 git submodule update --init vendor/lua-pins  # the required one only
 ```
 
-`maic` pulls and builds the non-required vendors itself: `maic vendor add comfyui` fetches the pinned ComfyUI submodule, applies MAIC's patches, sets up its Python with uv and links it in; `maic vendor add ollama` downloads and checksum-verifies the pinned release. `maic vendor adopt NAME PATH` uses an install you already have instead. See [docs/vendor.md](docs/vendor.md).
+`maic` pulls and builds the non-required vendors itself: `maic vendor add comfyui` fetches the pinned ComfyUI submodule, applies MAIC's patches, sets up its Python with uv and links it in; `maic vendor add ollama` downloads and checksum-verifies the pinned release; `maic vendor add llamacpp` builds the pinned llama.cpp out of tree ([docs/llamacpp.md](docs/llamacpp.md)). `maic vendor adopt NAME PATH` uses an install you already have instead. See [docs/vendor.md](docs/vendor.md).
 
 ## Structure and Build
 
@@ -123,12 +124,12 @@ MAIC is the control plane for the local AI stack and, eventually, a C++ agentic 
 
 ```
 MAIC/
-├── core/       C++ library: agent loop, model providers (Ollama, Anthropic, OpenAI-compatible), tools, harness
+├── core/       C++ library: agent loop, model providers (llama.cpp, Ollama, Anthropic, OpenAI-compatible), tools, harness
 │               policy, sandbox, sessions, settings, service manager, tripwire
 ├── cli/        `maic`: the agent UI (vim keys, modes, sessions) and service/harness commands. See cli/README.md
 ├── harness/    maic-lock (root-owned tripwire helper) + its installer
-├── services/   one JSON file per service MAIC runs (ollama, comfyui)
-├── vendor/     pinned submodules (ComfyUI, comfyui-ollama), patches, install scripts, manifest.json. See docs/vendor.md
+├── services/   one JSON file per service MAIC runs (llamacpp, comfyui, ollama)
+├── vendor/     pinned submodules (llama.cpp, ComfyUI, comfyui-ollama), patches, install scripts, manifest.json. See docs/vendor.md
 ├── tools/      examples of user-defined Lua tools (docs/tools.md); the polyglot runtimes are planned
 ├── server/     maic-server: sessions over HTTP with server-sent events, the phone web client. See docs/remote.md
 └── docs/
@@ -149,13 +150,16 @@ Use:
 
 ```sh
 maic doctor                  # what this machine has and a recommended setup
-maic                         # the agent, in the current directory (see cli/README.md)
+maic vendor add llamacpp     # first run: build llama.cpp (docs/llamacpp.md), ...
+maic vendor use llamacpp /path/to/model.gguf   # ... link a GGUF (an Ollama blob works), ...
+maic up llamacpp             # ... start llama-server on 127.0.0.1:8081, and
+maic                         # the agent, in the current directory, on llamacpp/current (see cli/README.md)
 maic -c                      # continue the last session here; maic -r picks one
 maic -p "prompt"             # one turn, no UI
 maic status                  # harness state + every service
-maic up ollama comfyui       # or: maic up all
+maic up llamacpp comfyui     # or: maic up all; ollama is the optional second backend
 maic down all
-maic logs ollama
+maic logs llamacpp
 maic trip "reason"           # panic button, no password
 maic unlock                  # needs your sudo password
 maic server token new phone  # a bearer token for one device, shown once
@@ -169,6 +173,8 @@ State lives in `~/.local/state/maic/`: `run/<service>.pid` (PID plus process sta
 Two ways to start this week without buying anything.
 
 ### Option A — Local only, $0, runs on the 2070 today
+
+> This was the first plan: the Claude CLI pointed at Ollama. MAIC's own first-run path is now llama.cpp (the `Use` block above and [docs/llamacpp.md](docs/llamacpp.md)); Ollama stays as the optional second backend.
 
 Good for inline completion, small refactors and offline work. An 8 GB card caps you around a 7B at
 Q4_K_M, so this will not carry whole-repo agentic runs — that's what Phase 2 is for.

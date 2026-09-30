@@ -17,6 +17,14 @@
     "patches": ["vendor/patches/comfyui-ollama-think.patch"],
     "description": "Ollama nodes for ComfyUI (custom node), with the think= fix so Qwen3.5 answers instead of reasoning forever"
   },
+  "llamacpp": {
+    "kind": "submodule",
+    "path": "vendor/llama.cpp",
+    "url": "https://github.com/ggml-org/llama.cpp",
+    "ref": "b11284",
+    "install": "vendor/llamacpp.sh",
+    "description": "llama.cpp built out of tree (CUDA when nvcc is present, no TLS so nothing can be downloaded), llama-server on 127.0.0.1:8081 serving the GGUF that `maic vendor use llamacpp PATH` picks"
+  },
   "ollama": {
     "kind": "release",
     "version": "v0.35.0",

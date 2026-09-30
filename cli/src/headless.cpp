@@ -1,3 +1,4 @@
+#include "commands.hpp"
 #include "headless.hpp"
 
 #include "maic/agent.hpp"
@@ -212,7 +213,7 @@ int run_headless(const HeadlessOptions& options) {
     try {
         agent.submit(prompt, Origin::Local, printer, g_cancel);
     } catch (const std::exception& e) {
-        fprintf(stderr, "maic: %s\n", e.what());
+        fprintf(stderr, "maic: %s\n", failure_text(agent, e).c_str());
         return 1;
     }
     if (!options.json) fprintf(stdout, "\n");

@@ -41,7 +41,7 @@ struct ServerSettings {
 };
 
 struct Settings {
-    std::string model = "qwen3.5:4b";
+    std::string model = "llamacpp/current";  // the vendored llama-server serves the linked GGUF as `current`
     std::string mode = "manual";
     bool think = false;
     bool markdown = true;   // render markdown in the conversation window

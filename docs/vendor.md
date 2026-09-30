@@ -1,12 +1,17 @@
 # Vendored services
 
-MAIC can install the services it drives, so nothing has to live in `~/program-files` or a random clone. Everything sits in one tree:
+MAIC can install the services it drives (llama.cpp, the default model server; ComfyUI; Ollama, the optional second backend), so nothing has to live in `~/program-files` or a random clone. Everything sits in one tree:
 
 ```
 ~/.local/state/maic/
 ├── vendor/
 │   ├── ComfyUI          -> the pinned submodule checkout (or an install you adopted)
 │   ├── comfyui-ollama   -> the pinned custom-node checkout
+│   ├── llama.cpp        -> the pinned submodule checkout (or an adopted one)
+│   ├── llama.cpp-build/ its out-of-tree CMake build (bin/llama-server, ...)
+│   ├── llamacpp/
+│   │   ├── bin                -> ../llama.cpp-build/bin
+│   │   └── current-model.gguf -> the GGUF llama-server loads (maic vendor use llamacpp PATH)
 │   └── ollama/
 │       ├── v0.35.0/     the verified release (bin/ollama + CUDA libs)
 │       ├── current      -> v0.35.0
@@ -33,9 +38,10 @@ ollama/cli-history    0 B        0      ~/.local/state/maic/vendor/ollama/cli-hi
 | :--- | :--- | :--- | :--- |
 | `comfyui` | submodule `vendor/ComfyUI` | `v0.38.0` | `vendor/comfyui.sh`: uv venv with Python 3.13 (system Python untouched), CUDA 13 torch, requirements, the custom node linked in, `extra_model_paths.yaml` from `models_dir`, workflows moved into the artifact tree |
 | `comfyui-ollama` | submodule `vendor/comfyui-ollama` | commit `6db7560` | patched with `vendor/patches/comfyui-ollama-think.patch` (passes `think` through, so Qwen3.5 answers instead of reasoning until the token limit) |
+| `llamacpp` | submodule `vendor/llama.cpp` | `b11284` | `vendor/llamacpp.sh`: CMake out of tree into `llama.cpp-build/`, Release, CUDA when `nvcc` is found, no TLS (the binaries cannot download models), targets `llama-server llama-cli llama-quantize llama-gguf-split`, `llamacpp/bin` link. See [llamacpp.md](llamacpp.md) |
 | `ollama` | release | `v0.35.0` | `vendor/ollama.sh`: download, sha256 against the release's `sha256sum.txt` (a mismatch aborts), unpack, `current` link |
 
-Privacy is the same as the hand-built setup: ComfyUI runs with `--disable-api-nodes --disable-auto-launch --listen 127.0.0.1`; Ollama runs with `OLLAMA_NO_CLOUD=1`, `OLLAMA_REMOTES=none.invalid`, loopback only, models on the external drive. Those are in `services/*.json`, not in the vendored code.
+Privacy is the same as the hand-built setup: ComfyUI runs with `--disable-api-nodes --disable-auto-launch --listen 127.0.0.1`; Ollama runs with `OLLAMA_NO_CLOUD=1`, `OLLAMA_REMOTES=none.invalid`, loopback only, models on the external drive; llama-server runs with `--host 127.0.0.1` from a build without TLS. Those are in `services/*.json`, not in the vendored code.
 
 ## Commands
 
@@ -45,6 +51,8 @@ maic vendor add comfyui          # fetch the submodule, apply patches, run the i
 maic vendor add ollama           # download the release, verify, unpack, link current
 maic vendor adopt comfyui ~/dev2/tools-and-things/ComfyUI     # use an install you already have
 maic vendor adopt ollama ~/program-files/ollama/v0.35.0        # the directory that holds bin/ollama
+maic vendor add llamacpp         # build the submodule out of tree (about ten minutes, no download)
+maic vendor use llamacpp /path/to/model.gguf   # the GGUF llama-server loads; an Ollama blob works too (llamacpp.md)
 maic vendor unlink ollama        # stop using it; nothing is deleted
 ```
 
@@ -52,7 +60,7 @@ maic vendor unlink ollama        # stop using it; nothing is deleted
 
 ## Updating a pinned version
 
-1. Change `ref` (or `version`) in `vendor/manifest.json`; for a submodule also `git -C vendor/ComfyUI checkout <tag>` and commit the submodule pointer.
+1. Change `ref` (or `version`) in `vendor/manifest.json`; for a submodule also `git -C vendor/ComfyUI checkout <tag>` (or `vendor/llama.cpp`, whose tags are `b<build>`) and commit the submodule pointer.
 2. `maic vendor add NAME` again: it checks out the new ref, re-applies patches (already-applied ones are skipped), and re-runs the install script, which updates packages in place.
 3. For Ollama the old version directory stays until you delete it; `current` moves.
 

@@ -5,6 +5,7 @@
 
 #include <httplib.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <thread>
@@ -71,7 +72,8 @@ int main() {
     expect(p1.name == "anthropic" && m1 == "claude-opus-5-5", "anthropic/claude-opus-5-5 -> anthropic, claude-opus-5-5");
     auto [p2, m2] = resolve_model(provs, "hf.co/org/some-model:Q4");
     expect(p2.name == "ollama" && m2 == "hf.co/org/some-model:Q4", "an unknown prefix stays a whole Ollama model name");
-    expect(!provs[0].remote() && provs[1].remote(), "ollama is local, anthropic is remote");
+    auto by_name = [&](const std::string& n) { return *std::find_if(provs.begin(), provs.end(), [&](const Provider& p) { return p.name == n; }); };
+    expect(!by_name("ollama").remote() && !by_name("llamacpp").remote() && by_name("anthropic").remote(), "ollama and llamacpp are local, anthropic is remote");
 
     section("ollama");
     {

@@ -155,28 +155,31 @@ int run_doctor() {
     };
     line("bubblewrap (the command sandbox)", has_program("bwrap"), has_program("bwrap") ? "" : "install bubblewrap; run_shell cannot work without it");
     line("tripwire installed", fs::exists("/usr/local/sbin/maic-lock"), fs::exists("/usr/local/sbin/maic-lock") ? "" : "sudo ./harness/install-tripwire.sh");
-    bool ollama_bin = has_program("ollama");
-    line("ollama", ollama_bin, ollama_bin ? run("ollama --version 2>/dev/null | tail -1") : "see docs/ollama-setup.md");
-    bool ollama_up = false;
+    for (const auto& e : load_vendor_manifest()) {
+        auto st = vendor_status(e);
+        line("vendored " + e.name + " (" + (e.kind == "submodule" ? e.ref : e.version) + ")", st.installed, st.installed ? st.target : st.note);
+        if (e.name == "llamacpp" && st.installed) line("llama.cpp model", !st.model.empty(), st.model.empty() ? "maic vendor use llamacpp PATH" : st.model);
+    }
+    bool llamacpp_up = false, ollama_up = false;
     try {
         for (const auto& s : load_services(root_dir() / "services")) {
+            if (s.name == "llamacpp") llamacpp_up = service_status(s).state != ServiceState::Stopped;
             if (s.name == "ollama") ollama_up = service_status(s).state != ServiceState::Stopped;
         }
     } catch (const std::exception&) {
     }
-    line("ollama running", ollama_up, ollama_up ? "" : "maic up ollama");
+    line("llamacpp running", llamacpp_up, llamacpp_up ? "" : "maic up llamacpp");
+    bool ollama_bin = has_program("ollama");
+    line("ollama (optional second backend)", ollama_bin, ollama_bin ? run("ollama --version 2>/dev/null | tail -1") : "see docs/ollama-setup.md");
+    line("ollama running", ollama_up, ollama_up ? "" : "maic up ollama, if you want it");
     bool clip = has_program("wl-copy") || has_program("xclip") || has_program("xsel");
     line("clipboard tool (wl-copy / xclip / xsel)", clip, clip ? "" : "yanks still reach the terminal through OSC 52");
     line("nvim (for :e)", has_program("nvim"), "");
-    for (const auto& e : load_vendor_manifest()) {
-        auto st = vendor_status(e);
-        line("vendored " + e.name + " (" + (e.kind == "submodule" ? e.ref : e.version) + ")", st.installed, st.installed ? st.target : st.note);
-    }
     std::cout << "\n";
 
     // ---- models and the recommendation
     std::vector<std::string> models = ollama_bin ? ollama_models() : std::vector<std::string>{};
-    std::cout << "models on ollama: ";
+    std::cout << "models on ollama (optional; their blobs are GGUFs llama.cpp can serve): ";
     if (models.empty()) std::cout << "none\n";
     else {
         for (size_t i = 0; i < models.size(); ++i) std::cout << (i ? ", " : "") << models[i];
@@ -193,11 +196,17 @@ int run_doctor() {
     else if (ram_gb >= 32) quick = "qwen3.5:4b", deep = "qwen3.5:9b", why = "no usable GPU found; a 4B on CPU is workable, a 9B is slow";
     else quick = "qwen3.5:2b", deep = "qwen3.5:4b", why = "no usable GPU and limited RAM";
     std::cout << "  " << why << "\n";
-    std::cout << "  quick model (default):  " << quick << (has_model(models, quick) ? "  (installed)" : "  ->  ollama pull " + quick) << "\n";
-    std::cout << "  deep model (:model):    " << deep << (has_model(models, deep) ? "  (installed)" : "  ->  ollama pull " + deep) << "\n";
-    if (settings.model != quick && settings.model.find('/') == std::string::npos) {
-        std::cout << "  your settings choose \"" << settings.model << "\"; set model = \"" << quick << "\" in settings.lua to use the recommendation\n";
-    }
+    // llama.cpp first: every sampler, logit bias and grammars reach it (docs/llamacpp.md). Ollama stays for pulling
+    // models, and its blobs are the GGUFs to link.
+    auto lc = find_vendor("llamacpp");
+    VendorStatus lcs = lc ? vendor_status(*lc) : VendorStatus{};
+    std::cout << "  llama.cpp (default, llamacpp/current):  ";
+    if (!lcs.installed) std::cout << "not built  ->  maic vendor add llamacpp\n";
+    else if (lcs.model.empty()) std::cout << "no GGUF linked yet  ->  maic vendor use llamacpp PATH (an Ollama blob works: ollama show --modelfile " << quick << ")\n";
+    else std::cout << lcs.model << "  ->  maic up llamacpp\n";
+    std::cout << "  ollama quick model (ollama/" << quick << "):  " << (has_model(models, quick) ? "installed" : "ollama pull " + quick) << "\n";
+    std::cout << "  ollama deep model (ollama/" << deep << "):   " << (has_model(models, deep) ? "installed" : "ollama pull " + deep) << "\n";
+    if (settings.model != "llamacpp/current") std::cout << "  your settings choose \"" << settings.model << "\"; the default is llamacpp/current\n";
     if (!fs::exists(settings_path())) std::cout << "  no settings file yet: maic settings init\n";
     if (!fs::exists(global_instructions_path())) std::cout << "  no global MAIC.md yet: " << global_instructions_path().string() << " (name, pronouns, standing rules)\n";
     if (avail_gb < 8) std::cout << "  only " << avail_gb << " GB of RAM is free right now; models load faster with more\n";

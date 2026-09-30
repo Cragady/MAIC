@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <string_view>
 
 namespace maic {
 
@@ -49,6 +50,13 @@ std::string install_env(const VendorEntry& e) {
         env += " OLLAMA_VERSION=" + sh(e.version) + " OLLAMA_URL=" + sh(expand(e.url)) + " OLLAMA_CHECKSUMS=" + sh(expand(e.checksums));
     }
     return env;
+}
+
+bool is_gguf(const fs::path& p) {
+    if (p.extension() == ".gguf") return true;
+    std::ifstream in(p, std::ios::binary);
+    char magic[4] = {};
+    return in.read(magic, sizeof magic) && std::string_view(magic, sizeof magic) == "GGUF";
 }
 
 void run_install(const VendorEntry& e, const char* verb) {
@@ -104,6 +112,7 @@ VendorStatus vendor_status(const VendorEntry& e) {
     VendorStatus s;
     fs::path link = vendor_link(e);
     std::error_code ec;
+    if (e.name == "llamacpp" && fs::is_symlink(vendor_model_link(e), ec)) s.model = fs::read_symlink(vendor_model_link(e), ec).string();
     if (fs::is_symlink(link, ec)) {
         s.linked = true;
         s.target = fs::read_symlink(link, ec).string();
@@ -137,6 +146,9 @@ void vendor_adopt(const VendorEntry& e, const fs::path& existing) {
     }
     if (e.kind == "submodule" && e.name == "comfyui" && !fs::exists(target / "main.py", ec)) {
         throw std::runtime_error(target.string() + " does not look like a ComfyUI checkout (no main.py)");
+    }
+    if (e.kind == "submodule" && e.name == "llamacpp" && !fs::exists(target / "ggml", ec)) {
+        throw std::runtime_error(target.string() + " does not look like a llama.cpp checkout (no ggml/)");
     }
     fs::path link = vendor_link(e);
     fs::create_directories(link.parent_path());
@@ -178,6 +190,24 @@ void vendor_unlink(const VendorEntry& e) {
     std::error_code ec;
     fs::path link = vendor_link(e);
     if (fs::is_symlink(link, ec)) fs::remove(link);
+}
+
+fs::path vendor_model_link(const VendorEntry& e) {
+    return vendor_dir() / e.name / "current-model.gguf";
+}
+
+void vendor_use(const VendorEntry& e, const fs::path& model) {
+    if (e.name != "llamacpp") throw std::runtime_error("maic vendor use picks the GGUF for llamacpp; " + e.name + " takes no model");
+    std::error_code ec;
+    fs::path target = fs::weakly_canonical(model, ec);
+    if (!fs::is_regular_file(target, ec)) throw std::runtime_error("not a file: " + model.string());
+    if (!is_gguf(target)) throw std::runtime_error(model.string() + " is not a GGUF (no .gguf suffix and no GGUF header)");
+    fs::path link = vendor_model_link(e);
+    fs::create_directories(link.parent_path());
+    if (fs::is_symlink(link, ec)) fs::remove(link);
+    else if (fs::exists(link, ec)) throw std::runtime_error(link.string() + " exists and is not a link; remove it first");
+    fs::create_symlink(target, link);
+    std::cout << link.string() << " -> " << target.string() << "\n";
 }
 
 }  // namespace maic

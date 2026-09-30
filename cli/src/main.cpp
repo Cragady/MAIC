@@ -60,9 +60,10 @@ void usage(std::ostream& out = std::cerr) {
                  "       --fork-at N                        with -c/-r: continue from the old session's first N records only, in a\n"
                  "                                          new file that points at them (the old file is never changed)\n"
                  "\n"
-                 "  vendor                     the services MAIC can install for itself (ComfyUI, Ollama), pinned versions\n"
+                 "  vendor                     the services MAIC can install for itself (ComfyUI, Ollama, llama.cpp), pinned versions\n"
                  "  vendor add NAME            fetch, verify, build and link one (network; asks nothing else)\n"
                  "  vendor adopt NAME PATH     use an install you already have instead of fetching\n"
+                 "  vendor use llamacpp PATH   the GGUF llama-server loads (a link; an Ollama blob works too)\n"
                  "  vendor unlink NAME         stop using it (nothing is deleted)\n"
                  "  lua [FILE [args...] | -e CODE]   Lua (vendored LuaJIT) here, with the maic table; no arguments: a REPL (maic help lua)\n"
                  "  tools                      the user-defined Lua tools this directory's sessions get (maic help tools)\n"
@@ -112,6 +113,7 @@ int cmd_up(const std::vector<maic::ServiceDef>& services) {
     int rc = 0;
     for (const auto& def : services) {
         try {
+            if (std::string missing = maic::missing_requirement(def); !missing.empty()) throw std::runtime_error(missing);
             std::cout << def.name << ": starting..." << std::flush;
             bool ready = maic::start_service(def);
             std::cout << (ready ? " ready on port " + std::to_string(def.port) : " still starting, check `maic status`") << "\n";
@@ -540,16 +542,18 @@ int main(int argc, char** argv) {
                     std::cout << "  " << e.name << "  " << (e.kind == "submodule" ? e.ref : e.version) << "  "
                               << (st.installed ? "installed" : st.linked ? "linked" : "not installed") << (st.target.empty() ? "" : "  -> " + st.target) << "\n"
                               << "    " << e.description << (st.note.empty() ? "" : "\n    " + st.note) << "\n";
+                    if (e.name == "llamacpp") std::cout << "    model: " << (st.model.empty() ? "none (maic vendor use llamacpp PATH)" : st.model) << "\n";
                 }
                 return 0;
             }
-            if (cargs.size() < 2) throw std::runtime_error("maic vendor add|adopt|unlink NAME [PATH]");
+            if (cargs.size() < 2) throw std::runtime_error("maic vendor add|adopt|use|unlink NAME [PATH]");
             auto e = maic::find_vendor(cargs[1]);
             if (!e) throw std::runtime_error("no vendored service named " + cargs[1] + " (maic vendor)");
             if (cargs[0] == "add") maic::vendor_add(*e);
             else if (cargs[0] == "adopt" && cargs.size() == 3) maic::vendor_adopt(*e, cargs[2]);
+            else if (cargs[0] == "use" && cargs.size() == 3) maic::vendor_use(*e, cargs[2]);
             else if (cargs[0] == "unlink") maic::vendor_unlink(*e);
-            else throw std::runtime_error("maic vendor add|adopt|unlink NAME [PATH]");
+            else throw std::runtime_error("maic vendor add|adopt|use|unlink NAME [PATH]");
             return 0;
         }
         if (cmd == "init") {

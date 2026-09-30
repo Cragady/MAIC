@@ -76,6 +76,9 @@ std::string Provider::api_key() const {
 std::vector<Provider> default_providers() {
     return {
         {"ollama", "ollama", "http://127.0.0.1:11434", "", "", nlohmann::json::object()},
+        // llama.cpp's OpenAI-compatible endpoint (services/llamacpp.json). Everything in `sampling` is merged into
+        // the request, so logit_bias, xtc_probability, xtc_threshold, dry_multiplier, grammar and json_schema all reach it.
+        {"llamacpp", "openai", "http://127.0.0.1:8081/v1", "", "", nlohmann::json::object()},
         {"anthropic", "anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "",
          {{"max_tokens", 64000}, {"effort", "high"}, {"think_effort", "xhigh"}, {"fallbacks", "default"}}},
         {"deepseek", "openai", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "", nlohmann::json::object()},
