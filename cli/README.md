@@ -83,7 +83,7 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:path [NAME] [copy]` / `:open NAME` | every place maic knows by a short name (`workspace`, `session`, `sessions`, `models`, `workflows`, `templates`, `vendor/llamacpp`, `comfyui/outputs`, ...); show one, copy it to the clipboard, or open it in the file manager. `maic path`, `maic open`, and `eval "$(maic shell-init)"` for `mcd NAME` in your shell. See `:h path` |
 | `:allow [PATTERN]` | commands pre-approved for every mode: no asking, no reviewer. MAIC's helpers are on it by default. See `:h allow` |
 | `:reg` | the yank register and the named registers `"a`..`"z` |
-| `:undo [N]` | restore the file(s) the agent changed last; every write saves the previous content first |
+| `:undo [N]` | restore the file(s) the agent changed last; every write saves the previous content first, a delete keeps the file, a move is moved back |
 | `:copy` / `:export [FILE]` | copy the last reply to the clipboard; write the transcript as markdown |
 | `:stash` / `:pop` | park the input draft and bring it back (survives restarts). `:q` with an unsent draft stashes it for you |
 | `:wq` | send, then quit when the reply is in (Ctrl-C while waiting stays) |
@@ -144,6 +144,6 @@ Where the continuation is written depends on `--append` / `--no-append`:
 
 ## Tools the model gets
 
-`read_file`, `list_dir`, `glob` (files by name pattern), `search_files` (grep -E syntax), `write_file`, `edit_file`, `run_shell`, `question` (asks you something, with options to pick by number) and `todo` (the model's plan; `:todo` shows it, the status strip counts it). Every call goes through the harness in `core/`. The model is briefed at the start of the conversation about MAIC, the tools, the modes, the harness and what a denial means (`core/src/agent.cpp`, `system_prompt`).
+`read_file` (`grep` returns only the matching lines of a big file), `list_dir` (`depth` for a tree), `glob` (files by name pattern), `search_files` (grep -E syntax), `write_file`, `edit_file`, `multi_edit` (several replacements in one file, all or none), `apply_patch` (a unified diff over one or more files, all or none), `move_file`, `copy_file`, `delete_file`, `make_dir`, `run_shell`, `question` (asks you something, with options to pick by number) and `todo` (the model's plan; `:todo` shows it, the status strip counts it). Every call goes through the harness in `core/`: the file tools are judged as writes to every path they touch, so a move or copy out of the workspace asks, a delete under `~/.ssh` trips, and a patch is refused whole if one of its files is. The model is briefed at the start of the conversation about MAIC, the tools, the modes, the harness and what a denial means (`core/src/agent.cpp`, `system_prompt`).
 
 Your own tools are Lua files in `.maic/tools/` or `~/.config/maic/tools/`, each call in its own sandboxed LuaJIT state whose `maic.read` / `write` / `list` / `search` / `shell` go through the same authorisation step as the built-ins. `:tools` and `maic tools` list them. Format and an example: [docs/tools.md](../docs/tools.md).

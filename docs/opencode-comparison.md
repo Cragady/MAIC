@@ -151,7 +151,7 @@ Honourable mentions, not in the ten: tool output spilled to a file the model can
 
 * **`--auto` / `--yolo` / `--dangerously-skip-permissions`** (`packages/opencode/src/cli/cmd/run.ts:244-274`). MAIC's `--mode auto` is already the bounded version: automatic inside the workspace, inside the sandbox, with trips still armed. A flag that approves everything not explicitly denied has no place next to a tripwire.
 
-* **Permission checks inside each tool.** opencode's `ctx.ask` per tool (`src/tool/tool.ts:45`) means MCP tools, plugin tools and any tool that forgets to ask are unchecked. MAIC's single gate in `Agent::run_tool_call` must stay the only path; new tools get a `tool_action` mapping, not their own approval code.
+* **Permission checks inside each tool.** opencode's `ctx.ask` per tool (`src/tool/tool.ts:45`) means MCP tools, plugin tools and any tool that forgets to ask are unchecked. MAIC's single gate in `Agent::run_tool_call` must stay the only path; new tools get a `tool_actions` mapping (one action per path they touch), not their own approval code.
 
 * **Unsandboxed bash with syntax-based path guessing.** `src/tool/shell.ts` skips dynamic arguments and runs with the user's full environment and network. MAIC should keep deciding as little as possible from command text and letting bwrap enforce it; the text checks stay as the trip layer.
 
