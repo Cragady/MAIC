@@ -50,6 +50,10 @@ ServiceStatus service_status(const ServiceDef& def);
 // Launches the service detached from the terminal and waits for its port.
 // Returns false if it is still starting when ready_timeout runs out.
 bool start_service(const ServiceDef& def);
+// The command a running service was started with (recorded at start), "" when unknown or not running.
+std::string recorded_command(const ServiceDef& def);
+// True when the service is running and `def` (as loaded now) would start it with a different command.
+bool command_changed(const ServiceDef& def);
 
 // Stops a service MAIC started: SIGTERM to its process group, SIGKILL after the timeout.
 // Never signals a process whose identity doesn't match the PID file.

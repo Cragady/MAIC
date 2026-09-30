@@ -197,6 +197,7 @@ public:
                                                                            settings_.record ? session_home_dir(settings_) : runtime_sessions_dir())),
           agent_(std::filesystem::current_path(), settings_.model), editor_(&register_), view_(&register_) {
         agent_.providers = settings_.providers;
+        set_context(agent_.providers, settings_.context);
         agent_.think = settings_.think;
         agent_.review_with_model = settings_.harness != "dumb";
         agent_.reviewer_model = settings_.reviewer_model;
@@ -258,6 +259,7 @@ public:
     ~App() override { shutdown(); }
 
     void welcome();
+    void startup_notice(const std::string& t) { view_.append(Kind::Notice, t); }
     // The current provider's `sampling` settings table, merged into every request.
     void apply_sampling() {
         auto [provider, name] = resolve_model(agent_.providers, agent_.model);
@@ -1605,6 +1607,28 @@ void App::run_command(const std::string& line) {
                 agent_.set_rules(rs);
                 post(Kind::Notice, "rule " + std::to_string(rs.size()) + " added; it is carried with the operator instructions from the next turn");
             }
+        } else if (cmd == "ctx" || cmd == "context-size") {
+            if (arg.empty()) {
+                post(Kind::Notice, "context window: " + std::to_string(settings_.context) + " tokens (:ctx N sets it and restarts the local server; --ctx N on the command line; context in settings)");
+            } else if (!idle()) {
+                post(Kind::Error, "wait for the turn to finish");
+            } else {
+                int n = std::atoi(arg.c_str());
+                if (n < 1024) {
+                    post(Kind::Error, ":ctx N takes tokens (16384, 32768, ...)");
+                } else {
+                    settings_.context = n;
+                    set_context(agent_.providers, n);
+                    std::string r;
+                    try {
+                        require_armed("restart services");
+                        r = restart_llamacpp_if_changed();
+                    } catch (const std::exception& e) {
+                        r = e.what();
+                    }
+                    post(Kind::Notice, "context window: " + std::to_string(n) + " tokens" + (r.empty() ? " (the local server was not running with another size)" : "; " + r));
+                }
+            }
         } else if (cmd == "prefill" || cmd == "prefix") {
             if (arg == "off" || arg == "none") agent_.prefill.clear(), post(Kind::Notice, "no prefill");
             else if (!arg.empty()) {
@@ -1708,6 +1732,7 @@ int run_tui(const TuiOptions& options) {
     if (options.record) settings.record = *options.record;
     if (options.system) settings.system_prompt = *options.system;
     if (options.prefill) settings.prefill = *options.prefill;
+    if (options.ctx) settings.context = *options.ctx;
     settings.rules.insert(settings.rules.end(), options.rules.begin(), options.rules.end());
     if (options.load_instructions) settings.load_instructions = *options.load_instructions;
     settings.bans.strings.insert(settings.bans.strings.end(), options.bans.begin(), options.bans.end());
@@ -1728,6 +1753,11 @@ int run_tui(const TuiOptions& options) {
     std::string first = options.initial_prompt;
     if (first == "-") first.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
     App app(screen, settings, options.resume, options.append, options.fork_at);
+    if (options.ctx) {
+        // --ctx: the local server is restarted to match before the first message.
+        std::string r = restart_llamacpp_if_changed();
+        if (!r.empty()) app.startup_notice(r);
+    }
     app.welcome();
     app.attach_context(options.context);
     if (!first.empty()) app.send(first);

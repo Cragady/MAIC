@@ -2,10 +2,12 @@
 
 #include "maic/agent.hpp"
 #include "maic/paths.hpp"
+#include "maic/service.hpp"
 #include "maic/status.hpp"
 #include "maic/vendor.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cctype>
 
 namespace maic {
@@ -211,6 +213,9 @@ const std::vector<CommandInfo>& commands() {
         {"rule", {"rules", "standing-rule"}, "[TEXT|remove N|clear]", "a standing instruction, reminded every turn",
          "*:rule* *--rule* *rules*\n"
          "A one-line instruction the model is asked to follow: `:rule Always answer in French`, `--rule TEXT` (repeatable), `rules = { ... }` in settings (layers add up). Rules travel with the operator text: they lead and close the system prompt and are appended to each of your messages as the model sees them, which is what a small model needs once tools are attached. `:rule` lists them, `:rule remove N`, `:rule clear`; a change mid-session is appended as a system note. A rule is a request the model can still drop; when the first words of every reply must be exact, use `:prefix` instead. `:system` is the same mechanism for a whole block of operator text."},
+        {"ctx", {"context-size", "context-window", "ctx-size"}, "[N]", "the context window in tokens; restarts the local server to match",
+         "*:ctx* *--ctx* *context*\n"
+         "One number drives both the local llama.cpp server (`--ctx-size`, via `${MAIC_CONTEXT}` in services/llamacpp.json) and MAIC's readout and auto-compaction. `:ctx` shows it; `:ctx 32768` sets it and, if the server is running with another size, restarts it (every model it serves gets the new size). `--ctx N` on the command line does the same at startup, including `maic up llamacpp --ctx N`; `context = N` in settings makes it the default. The 4B at Q4_K_M fits 32k on an 8 GB card; the 9B is tighter."},
         {"prefill", {"prefix", "assistant-prefill"}, "[TEXT|@FILE|off]", "every reply starts with these literal words (the model continues them)",
          "*:prefix* *:prefill* *--prefix* *--prefill* *prefill*\n"
          "Puts TEXT in the model's mouth: it is sent as the opening of the assistant turn, so the model continues from it instead of being asked to comply. Give the words themselves, not a rule about them: `:prefill Sure thing! ` makes every reply begin \"Sure thing!\"; `:prefill Always start with Sure thing!` makes every reply *be* that sentence, because the model completes an instruction-shaped opening with an end of turn. Rules go in `:system`. Where a system prompt is a request a small model may drop, this is a guarantee: the reply starts with TEXT every time. `--prefill TEXT` (or `@file`), `prefill = \"...\"` in settings, `:prefill TEXT` in a session, `:prefill off` clears, `:prefill` shows. The prefill is shown and stored as the start of the reply. Two things to know: a prefilled turn almost never calls a tool (the model is already answering), so use it for chat-style rules rather than agentic work; and with thinking on, the prefill skips the thinking, since the answer has begun. Works on llama.cpp, Anthropic and Ollama."},
@@ -345,6 +350,27 @@ std::string help_text(const std::string& topic_in) {
     std::string out = "'" + topic_in + "' matches several topics:\n";
     for (const auto& [name, text] : prefix) out += "  " + name + "\n";
     return out;
+}
+
+void set_context(std::vector<Provider>& providers, int tokens) {
+    setenv("MAIC_CONTEXT", std::to_string(tokens).c_str(), 1);
+    for (auto& p : providers) {
+        if (p.name == "llamacpp") p.options["context_window"] = tokens;
+    }
+}
+
+std::string restart_llamacpp_if_changed() {
+    for (const auto& def : load_services(root_dir() / "services")) {
+        if (def.name != "llamacpp") continue;
+        // Restart when the size differs, and also when the running server predates command recording: the
+        // user asked for this size, and an unknown one is not it.
+        if (service_status(def).state != ServiceState::Running) continue;
+        if (!recorded_command(def).empty() && !command_changed(def)) continue;
+        stop_service(def);
+        bool ready = start_service(def);
+        return "llamacpp restarted with the new context size" + std::string(ready ? "" : " (still starting)");
+    }
+    return "";
 }
 
 std::string failure_text(const Agent& agent, const std::exception& e) {

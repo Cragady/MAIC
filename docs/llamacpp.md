@@ -10,7 +10,7 @@ A bare model name (`--model qwen3.5:9b`) never reaches Ollama by accident: it go
 
 ## Context size
 
-`services/llamacpp.json` starts every model with `--ctx-size 16384`, and the `llamacpp` provider reports `context_window = 16384` for the usage readout and auto-compaction. To run larger contexts, raise both: `--ctx-size 32768` in the service file and `providers.llamacpp.options.context_window = 32768` in settings, then `maic down llamacpp` and `maic up llamacpp`. The 4B at Q4_K_M fits 32k on an 8 GB card; the 9B is tighter. A request that still exceeds the window is compacted and retried by MAIC (see `:h compact`).
+One number, `context` (default 16384), drives both the server's `--ctx-size` (through `${MAIC_CONTEXT}` in `services/llamacpp.json`) and MAIC's usage readout and auto-compaction. Set it with `--ctx 32768` on any `maic` run (the running server is restarted to match), `maic up llamacpp --ctx 32768`, `:ctx 32768` in a session, or `context = 32768` in settings. The 4B at Q4_K_M fits 32k on an 8 GB card; the 9B is tighter. A request that still exceeds the window is compacted and retried by MAIC (see `:h compact`).
 
 ## Getting a model
 

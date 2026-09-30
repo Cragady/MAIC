@@ -159,6 +159,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.leader = j.value("leader", s.leader);
         s.record = j.value("record", s.record);
         s.models_dir = j.value("models_dir", s.models_dir);
+        s.context = std::max(1024, j.value("context", s.context));
         s.title_model = j.value("title_model", s.title_model);
         s.budget_tokens = j.value("budget_tokens", s.budget_tokens);
         s.timestamps = j.value("timestamps", s.timestamps);
@@ -334,6 +335,8 @@ void write_default_settings(bool as_json) {
         {"leader", "space"},
         {"record", d.record},
         {"models_dir", d.models_dir},
+        {"context", d.context},
+        {"//context", "context window in tokens for the local llama.cpp server (${MAIC_CONTEXT} in service files) and the usage readout; --ctx N and :ctx N override"},
         {"title_model", d.title_model},
         {"budget_tokens", d.budget_tokens},
         {"timestamps", d.timestamps},

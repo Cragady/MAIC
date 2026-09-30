@@ -12,7 +12,7 @@
     "--models-max",
     "1",
     "--ctx-size",
-    "16384",
+    "${MAIC_CONTEXT}",
     "--jinja",
     "-ngl",
     "99"

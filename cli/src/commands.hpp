@@ -7,6 +7,7 @@
 namespace maic {
 
 class Agent;
+struct Provider;
 
 // The `:` commands: one registry for running, completing and `:help`.
 struct CommandInfo {
@@ -37,5 +38,10 @@ std::string help_text(const std::string& topic);
 // The error a failed turn shows. A transport failure to a local provider adds what to do about the service
 // behind it (start it, link a model), from the service state on that port.
 std::string failure_text(const Agent& agent, const std::exception& e);
+
+// The context window: sizes the llamacpp provider's readout and, when the local server is running with a
+// different --ctx-size, restarts it (a notice is returned; "" when nothing had to happen).
+void set_context(std::vector<Provider>& providers, int tokens);
+std::string restart_llamacpp_if_changed();
 
 }  // namespace maic

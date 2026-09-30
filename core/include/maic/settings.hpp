@@ -52,6 +52,7 @@ struct Settings {
     std::string sessions_home = "auto";
     std::string leader = " ";
     std::string models_dir;
+    int context = 16384;       // the local server's context window in tokens (--ctx-size for llama.cpp) and the readout
     std::string title_model;   // names a session after its first turn ("" = off; e.g. "qwen3.5:4b")
     long budget_tokens = 0;    // per-session token budget, 0 = unlimited
     bool timestamps = false;   // a time beside each conversation entry

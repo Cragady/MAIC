@@ -201,6 +201,20 @@ std::vector<ServiceDef> load_services(const fs::path& dir) {
     return out;
 }
 
+std::string recorded_command(const ServiceDef& def) {
+    if (service_status(def).state != ServiceState::Running) return "";
+    std::ifstream in(state_dir() / "run" / (def.name + ".cmd"));
+    std::string out((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return out;
+}
+
+bool command_changed(const ServiceDef& def) {
+    std::string now;
+    for (const auto& a : def.command) now += a + '\n';
+    std::string was = recorded_command(def);
+    return !was.empty() && was != now;
+}
+
 fs::path service_log_path(const ServiceDef& def) {
     return state_dir() / "logs" / (def.name + ".log");
 }
@@ -274,6 +288,10 @@ bool start_service(const ServiceDef& def) {
         throw std::runtime_error(def.name + " exited immediately; see " + log.string());
     }
     write_pid_file(def, {pid, stat->start_time});
+    {
+        std::ofstream cmd(state_dir() / "run" / (def.name + ".cmd"), std::ios::trunc);
+        for (const auto& a : def.command) cmd << a << '\n';
+    }
 
     auto deadline = std::chrono::steady_clock::now() + def.ready_timeout;
     while (std::chrono::steady_clock::now() < deadline) {

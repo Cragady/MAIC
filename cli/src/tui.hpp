@@ -20,6 +20,7 @@ struct TuiOptions {
     std::optional<bool> record;  // overrides settings.record
     std::optional<std::string> system;        // --system TEXT|@FILE, overrides settings.system_prompt
     std::optional<std::string> prefill;       // --prefill TEXT|@FILE
+    std::optional<int> ctx;                   // --ctx N
     std::vector<std::string> rules;           // --rule TEXT, repeatable
     std::optional<bool> load_instructions;    // --no-instructions
     std::vector<std::string> bans;            // --ban STRING, repeatable

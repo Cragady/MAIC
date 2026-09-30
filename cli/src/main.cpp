@@ -44,6 +44,8 @@ void usage(std::ostream& out = std::cerr) {
                  "                                          FILE \"-\" reads stdin (then the prompt can't also be stdin)\n"
                  "       --system TEXT|@FILE, -S            operator instructions placed first in the system prompt (front-loads behaviour)\n"
                  "       --no-instructions                  load no MAIC.md / AGENTS.md anywhere; combines with --system\n"
+                 "       --ctx N                            context window in tokens: starts (or restarts) the local llama.cpp server\n"
+                 "                                          with --ctx-size N and sizes the readout; also `maic up llamacpp --ctx N`\n"
                  "       --prefix TEXT|@FILE                every reply starts with these literal words (also --prefill)\n"
                  "       --rule TEXT                        a standing instruction the model is reminded of every turn (repeatable)\n"
                  "       --ban TEXT|@FILE                   a phrase the model must not say, or a file with one per line (repeatable; :ban)\n"
@@ -347,6 +349,7 @@ int main(int argc, char** argv) {
     try {
         maic::Settings early = maic::load_settings();
         if (!early.models_dir.empty()) setenv("MAIC_MODELS_DIR", early.models_dir.c_str(), 0);
+        setenv("MAIC_CONTEXT", std::to_string(early.context).c_str(), 1);
     } catch (const std::exception&) {
         // a broken settings file is reported by whichever command loads it properly
     }
@@ -434,7 +437,12 @@ int main(int argc, char** argv) {
                     headless.bans.push_back(b);
                 }
             }
-            else if (a == "--context" || a == "-C") {
+            else if (a == "--ctx") {
+                int n = std::atoi(value("--ctx").c_str());
+                if (n < 1024) throw std::runtime_error("--ctx takes the context window in tokens (16384, 32768, ...)");
+                tui.ctx = headless.ctx = n;
+                setenv("MAIC_CONTEXT", std::to_string(n).c_str(), 1);  // service files read it at load
+            } else if (a == "--context" || a == "-C") {
                 std::string f = value("--context");
                 tui.context.push_back(f);
                 headless.context.push_back(f);

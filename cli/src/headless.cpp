@@ -119,6 +119,7 @@ int run_headless(const HeadlessOptions& options) {
     if (options.mode) settings.mode = *options.mode;
     if (options.system) settings.system_prompt = *options.system;
     if (options.prefill) settings.prefill = *options.prefill;
+    if (options.ctx) settings.context = *options.ctx;
     settings.rules.insert(settings.rules.end(), options.rules.begin(), options.rules.end());
     if (options.load_instructions) settings.load_instructions = *options.load_instructions;
     settings.bans.strings.insert(settings.bans.strings.end(), options.bans.begin(), options.bans.end());
@@ -155,6 +156,11 @@ int run_headless(const HeadlessOptions& options) {
     else log = std::make_unique<SessionLog>("headless", where);
     Agent agent(std::filesystem::current_path(), settings.model);
     agent.providers = settings.providers;
+    set_context(agent.providers, settings.context);
+    if (options.ctx) {
+        std::string r = restart_llamacpp_if_changed();
+        if (!r.empty()) fprintf(stderr, "※ %s\n", r.c_str());
+    }
     agent.mode = *mode;
     agent.review_with_model = settings.harness != "dumb";
     agent.reviewer_model = settings.reviewer_model;

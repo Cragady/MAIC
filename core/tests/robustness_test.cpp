@@ -513,6 +513,7 @@ int main() {
         };
         setenv("XDG_CONFIG_HOME", (ws / "xdg-config-empty").c_str(), 1);
         fs::path root = state / "maic" / "models" / "llamacpp";
+        expect(pair("--ctx-size", std::getenv("MAIC_CONTEXT") ? std::getenv("MAIC_CONTEXT") : "16384"), "the service takes its context size from ${MAIC_CONTEXT}, 16384 by default");
         expect(svc && svc->port == 8081 && pair("--host", "127.0.0.1") && pair("--port", "8081") && pair("--models-dir", root.string()) && pair("--models-max", "1") && arg("--jinja"),
                "services/llamacpp.json: loopback, port 8081, router mode over the models root, one resident model, jinja templates");
         expect(svc && lc && svc->requires_paths.size() == 1 && svc->requires_paths[0] == root, "the service requires the models root");
@@ -637,6 +638,12 @@ int main() {
         write_file(ws / "proj" / ".maic" / "settings.lua", "return { bans = { patterns = {'x+'}, window = 32 }, sampling = { temperature = 0.3, xtc_probability = 0.5 } }");
         Settings sp = load_settings(ws / "proj");
         expect(sp.bans.patterns == std::vector<std::string>{"x+"} && sp.bans.window == 32 && sp.sampling["xtc_probability"] == 0.5, "patterns, window and global sampling load from settings");
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { context = 32768 }");
+        expect(load_settings(ws / "proj").context == 32768, "context loads from settings");
+        setenv("MAIC_CONTEXT", "4096", 1);
+        expect(expand_vars("${MAIC_CONTEXT}") == "4096", "${MAIC_CONTEXT} follows the environment main() sets");
+        unsetenv("MAIC_CONTEXT");
+        expect(expand_vars("${MAIC_CONTEXT}") == "16384", "and defaults to 16384");
         write_file(ws / "proj" / ".maic" / "settings.lua", "return { harness = 'dumb', reviewer_model = 'ollama/qwen3.5:4b', dumb_auto_ok = true }");
         Settings sh = load_settings(ws / "proj");
         expect(sh.harness == "dumb" && sh.reviewer_model == "ollama/qwen3.5:4b" && sh.dumb_auto_ok, "harness, reviewer_model and dumb_auto_ok load from settings");
