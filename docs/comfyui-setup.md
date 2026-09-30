@@ -63,6 +63,10 @@ Custom node requirements go into the same venv: `uv pip install --python .venv -
 
 `rm -rf .venv` removes everything installed. Nothing outside the repo depends on it.
 
+## Editing workflows without the UI
+
+`tools/comfyui/workflow_edit.py` changes prompts, seeds, steps, captions and file prefixes in a workflow JSON by exact path, interactively or from the command line, without touching the wiring; the agent can drive it through `run_shell`. See [tools/comfyui/README.md](../tools/comfyui/README.md).
+
 ## Run
 
 ```sh

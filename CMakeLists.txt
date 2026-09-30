@@ -32,6 +32,8 @@ add_subdirectory(harness)
 
 # MAIC's ComfyUI chat node, tested against a fake llama-server without ComfyUI.
 add_test(NAME comfy_node COMMAND python3 -m unittest -v test_node
+add_test(NAME workflow_edit COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q test_workflow_edit
+         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tools/comfyui")
          WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/vendor/comfyui-maic-llamacpp)
 set_tests_properties(comfy_node PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
 
