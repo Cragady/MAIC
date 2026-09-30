@@ -59,6 +59,7 @@ def dtext_to_markdown(body):
         line = re.sub(r"\[\[([^\]]+)\]\]", r"\1", line)                # [[page]]
         line = re.sub(r'"([^"]+)":#[\w-]+', r"\1", line)                  # "text":#anchor
         line = re.sub(r"\[/?(b|i|u|s|tn|quote|code|nodtext|spoiler)\]", "", line)
+        line = re.sub(r"!?post #\d+:?\s*", "", line)  # embedded example thumbnails
         line = re.sub(r"^(\*+)\s*", lambda mm: "  " * (len(mm.group(1)) - 1) + "- ", line)
         out.append(line.rstrip())
     text = "\n".join(out)
