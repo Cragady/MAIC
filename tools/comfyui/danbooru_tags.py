@@ -7,7 +7,7 @@ local file, on request only, politely (one request per second, a named User-Agen
 offline. The agent inside MAIC uses `check` and `search`; `fetch` is for a person (the sandbox has no network).
 
     maic-danbooru-tags fetch [--pages N] [--category general|character|copyright|artist|meta|all]
-        top tags by post count, N pages of 1000 (default 5 pages of general tags), plus active aliases,
+        top tags by post count, N pages of 1000 (default 20 pages of general tags; scene tags sit well below the top 5000), plus active aliases,
         into <state>/references/danbooru/tags.json (MAIC_DANBOORU_TAGS overrides the path)
     maic-danbooru-tags check TAG [TAG ...]      each tag: ok / alias -> canonical / unknown (with near matches)
     maic-danbooru-tags check --prompt "a, b, c" the same for a comma-separated prompt
@@ -150,7 +150,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("fetch", help="download the tag vocabulary (network; for a person)")
-    p.add_argument("--pages", type=int, default=5, help="pages of 1000 tags per category (default 5)")
+    p.add_argument("--pages", type=int, default=20, help="pages of 1000 tags per category (default 20: scene tags such as bus_stop sit well below the top 5000)")
     p.add_argument("--category", default="general", choices=list(CATEGORIES) + ["all"])
     p.add_argument("--delay", type=float, default=1.0, help="seconds between requests (default 1)")
     p.add_argument("--site", default=SITE, help=argparse.SUPPRESS)
