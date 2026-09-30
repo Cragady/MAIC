@@ -54,7 +54,9 @@ const std::vector<Topic>& topics() {
          "Every tool call is checked before it runs: tripwire, then policy for the mode, then approval, then the sandbox.\n\n"
          "- **tripwire**: a root-owned lock. `:trip REASON` (or the [t] answer at an approval, or a dangerous command) sets it instantly with no password. While tripped nothing runs, but the session survives. `:unlock` resets it and asks for your sudo password.\n"
          "- **sandbox**: every model-run command executes in bubblewrap: only the workspace writable, secrets hidden, no network, no sudo, a timeout.\n"
-         "- **approval**: y / n / a (always this file or program, this session) / t (trip).\n\n"
+         "- **approval**: y / n / N (no, and type a sentence the model gets as the reason) / a (always this file or program, this session) / t (trip). Edits show the lines that would change.\n"
+         "- **repeated calls**: the same call three times in a row is refused; five times trips the lock. Three denials by you in one turn end the turn.\n"
+         "- **undo points**: every file the agent changes is saved first; `:undo` restores. See `:h undo`.\n\n"
          "Details and the planned layers: docs/harness.md."},
         {"sessions", {"session", "resume", "transcript", "transcripts"}, "transcripts, -c, -r, forking",
          "*sessions*\n"
@@ -96,7 +98,7 @@ const std::vector<Topic>& topics() {
          "`:h KEY` works for single keys too: `:h u`, `:h Ctrl-W`, `:h Alt+Enter`."},
         {"conversation", {"window", "ctrl-w", "focus", "yank", "clipboard", "search", "/"}, "the conversation window as a vim buffer",
          "*conversation* *Ctrl-W*\n"
-         "Ctrl-W k moves the cursor into the conversation window; Ctrl-W j, Esc, `i` or Enter bring it back (Ctrl-W in insert mode deletes a word, so press Esc first unless the input is empty). Inside: `j k h l w b e 0 $ gg G`, Ctrl-D/U/F/B; `v` / `V` select, `o` swaps the ends; `y` yanks the selection to the register and the system clipboard (wl-copy, xclip, and the terminal through OSC 52); `yy` a line; `/pattern` then `n` / `N` search, smart case. Ctrl-Shift-C in your terminal still copies mouse selections; with the scroll wheel on, select with Shift+drag."},
+         "Ctrl-W k moves the cursor into the conversation window; Ctrl-W j, Esc, `i` or Enter bring it back (Ctrl-W in insert mode deletes a word, so press Esc first unless the input is empty). Inside: `j k h l w b e 0 $ gg G`, Ctrl-D/U/F/B; `}` / `{` next / previous message, `]]` / `[[` next / previous message of yours; `v` / `V` select, `o` swaps the ends; `y` yanks the selection to the register and the system clipboard (wl-copy, xclip, and the terminal through OSC 52); `yy` a line; `/pattern` then `n` / `N` search, smart case. Ctrl-Shift-C in your terminal still copies mouse selections; with the scroll wheel on, select with Shift+drag."},
         {"alt-enter", {"send"}, "sends the input", "*Alt+Enter*\nSends the input from any mode; the same as `:w`. Enter is a new line. nvim has no default Alt mappings, so nothing is lost."},
         {"enter", {}, "a new line", "*Enter*\nInsert mode: a new line. Normal mode: down a line. To send, use Alt+Enter or `:w`."},
         {"escape", {}, "back to normal mode", "*Esc*\nInsert or visual mode to normal mode; in the command line, cancels; in the conversation window, back to the input."},
@@ -148,6 +150,17 @@ const std::vector<CommandInfo>& commands() {
         {"session", {}, "", "where this transcript is", "*:session*\nThis session's file and the sessions directory. See `:h sessions`."},
         {"artifacts", {}, "", "where everything is kept, with sizes", "*:artifacts*\nEvery place MAIC and its services leave things (transcripts, service logs, ComfyUI outputs, ...) with sizes. Clean with `maic artifacts clean OWNER/NAME [--older-than DAYS]`."},
         {"reg", {"register"}, "", "show the yank register", "*:reg*\nShows the register. See `:h p`."},
+        {"undo", {}, "[N]", "restore the file(s) the agent changed last",
+         "*:undo*\nEvery write_file / edit_file saves the file's previous content first. `:undo` restores the newest one (`:undo 3` the newest three); a file that did not exist is removed. The model is told what was undone; the transcript records it. Points live for the session."},
+        {"copy", {}, "", "copy the last reply to the clipboard", "*:copy*\nCopies the newest assistant reply to the register and the system clipboard."},
+        {"export", {}, "[FILE]", "write the transcript as markdown",
+         "*:export* *maic sessions export*\n`:export` writes this session as markdown (## User / ## Assistant, tool calls in fenced blocks) to `<session id>.md` in the workspace, or to FILE. Outside a session: `maic sessions export ID [FILE]` (stdout without FILE)."},
+        {"stash", {"pop"}, "", "park the input draft; :pop brings it back",
+         "*:stash* *:pop*\n`:stash` saves the input draft to ~/.local/state/maic/prompt-stash.jsonl and clears the input, so you can ask something else first; `:pop` restores the newest one. Survives restarts."},
+        {"rename", {"title"}, "TITLE", "title this session",
+         "*:rename*\nSets the title `maic sessions` and `:export` show. With `title_model` in settings (for example `title_model = \"qwen3.5:4b\"`) a title is generated after the first turn; a remote title model is never used for a local session."},
+        {"budget", {}, "[N|off]", "token budget for this session",
+         "*:budget*\n`:budget` shows tokens used; `:budget 200000` stops the agent once input plus output over the session reaches that; `:budget off` removes it. `budget_tokens` in settings sets a default."},
         {"lua", {"luafile", "luajit", "repl", "chat"}, "[CODE]", "run Lua (LuaJIT) here, or enter Lua mode; :chat returns",
          "*:lua* *:luafile* *:chat* *maic lua*\n"
          "`:lua CODE` runs Lua in the workspace with LuaJIT (vendored, pinned to the revision Neovim uses); an expression shows its value, `=expr` forces that. `:luafile PATH` runs a file. `:lua` with nothing after it enters **Lua mode**: the input box becomes a REPL (prompt `lua❯`), every send runs in Lua, and `:chat` (or `:lua` again) returns to the model. Globals persist for the session. Output shows in the conversation and is handed to the model as context, like `!cmd`.\n\n"
@@ -188,7 +201,8 @@ std::vector<std::string> complete_argument(const std::string& command, const std
     std::vector<std::string> candidates;
     std::string cmd = lower(command);
     if (cmd == "mode") candidates = {"manual", "auto-read", "edit", "auto", "plan"};
-    else if (cmd == "set") candidates = {"markdown", "mouse", "tooldetails"};
+    else if (cmd == "set") candidates = {"markdown", "mouse", "tooldetails", "timestamps"};
+    else if (cmd == "budget") candidates = {"off"};
     else if (cmd == "compact") candidates = {"prune", "head", "all"};
     else if (cmd == "think") candidates = {"on", "off"};
     else if (cmd == "w" || cmd == "write" || cmd == "send") candidates = {"now"};

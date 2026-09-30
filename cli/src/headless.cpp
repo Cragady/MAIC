@@ -45,22 +45,28 @@ public:
         if (json_) emit({{"type", "notice"}, {"text", text}});
         else fprintf(stderr, "※ %s\n", text.c_str());
     }
-    Approval ask(const ApprovalRequest& r) override {
+    ApprovalAnswer ask(const ApprovalRequest& r) override {
         if (!isatty(STDIN_FILENO)) {
             if (json_) emit({{"type", "denied"}, {"summary", r.summary}, {"reason", "no terminal to ask on"}});
             else fprintf(stderr, "✗ denied (no terminal to ask on): %s\n", r.summary.c_str());
-            return Approval::No;
+            return {Approval::No, ""};
         }
-        fprintf(stderr, "\napprove? %s\n  why asking: %s\n  [y] yes  [n] no  [a] always: %s (this session)  [t] trip the harness: ", r.summary.c_str(), r.reason.c_str(),
-                r.always_covers.c_str());
+        if (!r.preview.empty()) fprintf(stderr, "\n%s", r.preview.c_str());
+        fprintf(stderr, "\napprove? %s\n  why asking: %s\n  [y] yes  [n] no  [n: reason] no, with a reason for the model  [a] always: %s (this session)  [t] trip the harness: ",
+                r.summary.c_str(), r.reason.c_str(), r.always_covers.c_str());
         fflush(stderr);
         std::string line;
-        if (!std::getline(std::cin, line) || line.empty()) return Approval::No;
+        if (!std::getline(std::cin, line) || line.empty()) return {Approval::No, ""};
         switch (line[0]) {
-            case 'y': case 'Y': return Approval::Yes;
-            case 'a': case 'A': return Approval::Always;
-            case 't': case 'T': return Approval::Trip;
-            default: return Approval::No;
+            case 'y': case 'Y': return {Approval::Yes, ""};
+            case 'a': case 'A': return {Approval::Always, ""};
+            case 't': case 'T': return {Approval::Trip, ""};
+            default: {
+                std::string why;
+                if (auto c = line.find(':'); c != std::string::npos) why = line.substr(c + 1);
+                while (!why.empty() && why.front() == ' ') why.erase(0, 1);
+                return {Approval::No, why};
+            }
         }
     }
 
@@ -110,6 +116,8 @@ int run_headless(const HeadlessOptions& options) {
     agent.think = options.think || settings.think;
     agent.compaction.at = settings.compact_at;
     agent.compaction.keep_results = settings.compact_keep_results;
+    agent.budget_tokens = settings.budget_tokens;
+    agent.set_instruction_names(settings.instruction_files);
     agent.set_log(log.get());
     if (options.resume) {
         LoadedSession old = load_session(*options.resume);

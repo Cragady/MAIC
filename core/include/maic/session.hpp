@@ -68,6 +68,7 @@ struct SessionInfo {
     std::string started;     // from the file name
     std::string kind;
     std::string first_prompt;
+    std::string title;  // from a `title` record (:rename or an auto-title); "" when none
     size_t turns = 0;
     std::string parent;  // id of the session this one was resumed from, if any
     size_t parent_records = 0;
@@ -102,5 +103,9 @@ LoadedSession load_session(const std::filesystem::path& path);
 
 // Number of records (lines) in a session file.
 size_t count_records(const std::filesystem::path& path);
+
+// The transcript as markdown: a title line, the session id, ## User / ## Assistant sections, tool calls and
+// results in fenced blocks when `tool_details`.
+std::string export_markdown(const SessionInfo& info, const LoadedSession& session, bool tool_details = true);
 
 }  // namespace maic

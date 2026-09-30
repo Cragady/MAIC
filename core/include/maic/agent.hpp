@@ -8,6 +8,7 @@
 #include <atomic>
 #include <deque>
 #include <filesystem>
+#include <optional>
 #include <mutex>
 #include <set>
 #include <string>
@@ -24,6 +25,13 @@ struct ApprovalRequest {
     std::string reason;
     Origin origin;
     std::string always_covers;  // what "always allow" would cover: "git", "this file", ...
+    std::string preview;        // for writes: the lines that would change
+};
+
+// The user's answer; `feedback` is a sentence for the model when the answer is No ("use the test config").
+struct ApprovalAnswer {
+    Approval choice = Approval::No;
+    std::string feedback;
 };
 
 // What a front end (the CLI now, the server later) implements to follow and steer a turn.
@@ -36,7 +44,7 @@ public:
     virtual void on_tool_result(const std::string& text, bool ok) = 0;
     virtual void on_notice(const std::string& text) = 0;
     // Blocks until the user answers.
-    virtual Approval ask(const ApprovalRequest& request) = 0;
+    virtual ApprovalAnswer ask(const ApprovalRequest& request) = 0;
 };
 
 class Agent {
@@ -95,6 +103,28 @@ public:
 
     const std::vector<Message>& messages() const { return messages_; }
 
+    // Undo points: the previous content of each file a tool changed this session, newest last.
+    struct UndoPoint {
+        std::filesystem::path path;
+        std::optional<std::string> before;  // nullopt: the file did not exist
+        std::string summary;
+    };
+    const std::vector<UndoPoint>& undo_points() const { return undo_; }
+    std::string undo(size_t count = 1);  // restores the newest `count` points; returns what was restored
+
+    // Session token budget (input + output over all calls); 0 = unlimited. When reached, the turn stops and
+    // later turns refuse until it is raised.
+    long budget_tokens = 0;
+
+    // The same call this many times in a row is refused (the model is stuck); at trip_repeats the lock trips.
+    int repeat_limit = 3;
+    int repeat_trip = 5;
+    // This many denials by the user in one turn end the turn.
+    int denials_limit = 3;
+
+    // Names of instruction files (MAIC.md, AGENTS.md, ...) looked for beside files the model reads.
+    void set_instruction_names(std::vector<std::string> names);
+
     // Token accounting: the last model call and this session's running totals. Thread-safe.
     struct UsageReport {
         Usage last;
@@ -108,7 +138,7 @@ public:
 
     // MAIC.md / AGENTS.md files in effect. Re-read from disk at the start of every turn.
     const std::vector<InstructionFile>& instructions() const { return instructions_; }
-    void reload_instructions() { instructions_ = load_instructions(harness_.workspace()); }
+    void reload_instructions() { instructions_ = load_instructions(harness_.workspace(), instruction_names_); }
 
 private:
     Message run_tool_call(const ToolCall& call, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel);
@@ -136,6 +166,15 @@ private:
     void rewrite_log();    // after compaction: a reset record and the new history, so resume sees the same thing
     size_t history_bytes() const;
     std::string summarise(size_t from, size_t to, const std::atomic<bool>& cancel);  // messages [from, to) -> summary text
+    void save_undo_point(const std::string& name, const nlohmann::json& args);
+    std::string nested_instructions(const std::filesystem::path& file);  // instruction files between the workspace and `file`, each once
+
+    std::vector<UndoPoint> undo_;
+    std::vector<std::string> instruction_names_ = {"MAIC.md", "AGENTS.md"};
+    std::set<std::string> attached_instructions_;
+    std::string last_call_;
+    int repeats_ = 0;
+    int denials_ = 0;
 };
 
 }  // namespace maic

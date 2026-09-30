@@ -5,6 +5,7 @@
 #include "style.hpp"
 
 #include <algorithm>
+#include <ctime>
 #include <cctype>
 
 namespace maic {
@@ -75,8 +76,16 @@ std::string lower(std::string s) {
 
 void View::append(Kind kind, std::string text) {
     std::lock_guard lock(mu_);
-    entries_.push_back({kind, std::move(text), attached(kind) && collapse_default_});
+    entries_.push_back({kind, std::move(text), attached(kind) && collapse_default_, std::time(nullptr)});
     ++version_;
+}
+
+std::string View::last_assistant() const {
+    std::lock_guard lock(mu_);
+    for (size_t i = entries_.size(); i-- > 0;) {
+        if (entries_[i].kind == Kind::Assistant) return entries_[i].text;
+    }
+    return "";
 }
 
 void View::set_all_collapsed(bool on) {
@@ -89,7 +98,7 @@ void View::set_all_collapsed(bool on) {
 
 void View::append_to_last(Kind kind, std::string_view delta) {
     std::lock_guard lock(mu_);
-    if (entries_.empty() || entries_.back().kind != kind) entries_.push_back({kind, ""});
+    if (entries_.empty() || entries_.back().kind != kind) entries_.push_back({kind, "", false, std::time(nullptr)});
     entries_.back().text += delta;
     ++version_;
 }
@@ -134,7 +143,7 @@ void View::layout(size_t width) {
     for (size_t e = 0; e < snapshot.size(); ++e) {
         const auto& entry = snapshot[e];
         if (e > 0 && !attached(entry.kind)) lines_.push_back({{}, Kind::Assistant, e, 0, 0, false});
-        size_t pre = utf8_len(prefix(entry.kind));
+        size_t pre = utf8_len(prefix(entry.kind)) + (timestamps_ ? 6 : 0);
         bool use_md = markdown_ && (entry.kind == Kind::Assistant || entry.kind == Kind::User || entry.kind == Kind::Notice);
         std::string shown_text = entry.collapsed ? preview(entry.text) : entry.text;
         // Tool output and shell output keep tabs; the renderer drops them, so expand.
@@ -209,6 +218,25 @@ void View::move_cursor_line(int delta) {
     cur_line_ = static_cast<size_t>(std::clamp<long>(target, 0, static_cast<long>(lines_.size()) - 1));
     size_t w = line_width(lines_[cur_line_].spans);
     if (cur_col_ >= w) cur_col_ = w ? w - 1 : 0;
+}
+
+void View::jump_message(int direction, bool user_only, int count) {
+    if (lines_.empty()) return;
+    for (int c = 0; c < count; ++c) {
+        size_t i = cur_line_;
+        bool moved = false;
+        while (direction > 0 ? i + 1 < lines_.size() : i > 0) {
+            i += direction > 0 ? 1 : -1;
+            const Line& l = lines_[i];
+            if (l.first && l.entry != lines_[cur_line_].entry && (!user_only || l.kind == Kind::User)) {
+                cur_line_ = i;
+                cur_col_ = 0;
+                moved = true;
+                break;
+            }
+        }
+        if (!moved) break;
+    }
 }
 
 void View::ensure_cursor_visible(int height) {
@@ -396,6 +424,13 @@ std::string View::handle(const Event& e, int height) {
     else if (k == "\x05") scroll_by(-n), (void)0;
     else if (k == "\x19") scroll_by(n), (void)0;
     else if (k == "G") move_cursor_line(static_cast<int>(lines_.size()));
+    else if (k == "}") jump_message(1, false, n);
+    else if (k == "{") jump_message(-1, false, n);
+    else if (pending_ == "]" || pending_ == "[") {
+        std::string op = pending_;
+        pending_.clear();
+        if (k == op) jump_message(op == "]" ? 1 : -1, true, n);
+    } else if (k == "]" || k == "[") pending_ = k;
     else if (k == "Y") {
         anchor_line_ = cur_line_;
         visual_ = VisualMode::Line;
@@ -515,6 +550,18 @@ Element View::render(const Settings& settings, size_t width, int height) {
         size_t pre_len = 0;
         StyledLine shown = l.spans;
         std::string pre = l.first ? prefix(l.kind) : std::string(utf8_len(prefix(l.kind)), ' ');
+        if (timestamps_) {
+            std::string stamp(6, ' ');
+            if (l.first) {
+                std::lock_guard lock(mu_);
+                if (l.entry < entries_.size() && entries_[l.entry].when) {
+                    char buf[8];
+                    std::strftime(buf, sizeof(buf), "%H:%M", std::localtime(&entries_[l.entry].when));
+                    stamp = std::string(buf) + " ";
+                }
+            }
+            pre = stamp + pre;
+        }
         if (!l.spans.empty() || l.first) {
             shown.insert(shown.begin(), Span{pre, MdNone});
             pre_len = utf8_len(pre);
@@ -522,6 +569,10 @@ Element View::render(const Settings& settings, size_t width, int height) {
         std::vector<Overlay> overlays;
         size_t li = static_cast<size_t>(i);
         size_t w = line_width(l.spans);
+        // Overlays merge in order, so the cursor-line background goes first and the selection paints over it.
+        if (focused_ && li == cur_line_ && visual_ == VisualMode::None) {
+            overlays.push_back({0, pre_len + std::max<size_t>(w, 1), &cursor_line_style});
+        }
         if (visual_ != VisualMode::None && li >= sel_a && li <= sel_b) {
             size_t from = 0, to = w;
             if (visual_ == VisualMode::Char) {
@@ -534,7 +585,6 @@ Element View::render(const Settings& settings, size_t width, int height) {
             if (ml == li) overlays.push_back({pre_len + mc, pre_len + mc + utf8_len(pattern_), &search_style});
         }
         if (focused_ && li == cur_line_) {
-            overlays.push_back({0, pre_len + std::max<size_t>(w, 1), &cursor_line_style});
             overlays.push_back({pre_len + cur_col_, pre_len + cur_col_ + 1, &cursor_style});
             if (w == 0) shown.push_back(Span{" ", MdNone});
         }

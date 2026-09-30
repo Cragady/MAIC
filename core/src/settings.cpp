@@ -46,7 +46,7 @@ const std::map<std::string, Style>& default_styles() {
         {"input_prompt_normal", {"blue"}},
         {"separator", {"gray_dark"}},
         {"focus", {"cyan"}},
-        {"visual", {std::nullopt, "#3a3a5c"}},
+        {"visual", {std::nullopt, "#3a3a5c", false, false, false, false, true}},
         {"search", {"black", "yellow"}},
         {"cursor_line", {std::nullopt, "#262626"}},
         {"status", {}},
@@ -157,6 +157,9 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.leader = j.value("leader", s.leader);
         s.record = j.value("record", s.record);
         s.models_dir = j.value("models_dir", s.models_dir);
+        s.title_model = j.value("title_model", s.title_model);
+        s.budget_tokens = j.value("budget_tokens", s.budget_tokens);
+        s.timestamps = j.value("timestamps", s.timestamps);
         s.compact_at = j.value("compact_at", s.compact_at);
         s.compact_keep_results = j.value("compact_keep_results", s.compact_keep_results);
         if (s.leader == "space" || s.leader == "<space>") s.leader = " ";
@@ -286,6 +289,9 @@ void write_default_settings(bool as_json) {
         {"leader", "space"},
         {"record", d.record},
         {"models_dir", d.models_dir},
+        {"title_model", d.title_model},
+        {"budget_tokens", d.budget_tokens},
+        {"timestamps", d.timestamps},
         {"compact_at", d.compact_at},
         {"compact_keep_results", d.compact_keep_results},
         {"//sessions_home", "auto: a project's transcripts (it has a MAIC.md) go under sessions/projects/, others under sessions/general/. Or: general, project, a name."},

@@ -18,6 +18,9 @@ Action tool_action(const Harness& harness, const std::string& name, const nlohma
 // One-line description for the transcript and approval prompts.
 std::string tool_summary(const std::string& name, const nlohmann::json& args);
 
+// For the approval prompt: what edit_file / write_file would change, as - / + lines (capped). "" otherwise.
+std::string tool_preview(const Harness& harness, const std::string& name, const nlohmann::json& args);
+
 // "Read_File", "readFile" or "read-file" -> "read_file"; "" when nothing matches.
 std::string canonical_tool_name(const std::string& name);
 std::string tool_names();  // "read_file, list_dir, ..." for error messages

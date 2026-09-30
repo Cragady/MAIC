@@ -26,6 +26,8 @@ struct FakeOllama {
     std::mutex mu;
     int delay_ms = 100;
     int usage_input = 0;  // reported as prompt_eval_count on the final line when set
+    json tool_call;       // when set and calls_left > 0, the reply is this one tool call ({"name", "arguments"})
+    int calls_left = 0;
 
     FakeOllama() {
         port = srv.bind_to_any_port("127.0.0.1");
@@ -41,7 +43,20 @@ struct FakeOllama {
             }
             int delay = delay_ms;
             int usage = usage_input;
-            res.set_chunked_content_provider("application/x-ndjson", [last, delay, usage](size_t, httplib::DataSink& sink) {
+            json call;
+            if (!tool_call.is_null() && calls_left > 0) {
+                --calls_left;
+                call = tool_call;
+            }
+            res.set_chunked_content_provider("application/x-ndjson", [last, delay, usage, call](size_t, httplib::DataSink& sink) {
+                if (!call.is_null()) {
+                    std::string line = json{{"message", {{"content", ""}, {"tool_calls", {{{"function", call}}}}}}}.dump() + "\n";
+                    sink.write(line.data(), line.size());
+                    std::string done = json{{"done", true}}.dump() + "\n";
+                    sink.write(done.data(), done.size());
+                    sink.done();
+                    return true;
+                }
                 std::string out = "echo: " + last;
                 for (size_t i = 0; i < out.size(); i += 4) {
                     std::string line = json{{"message", {{"content", out.substr(i, 4)}}}}.dump() + "\n";
@@ -71,9 +86,15 @@ struct Recorder : AgentEvents {
     std::vector<std::string> notices;
     void on_text(std::string_view d, bool) override { text += d; }
     void on_tool_call(const std::string&) override {}
-    void on_tool_result(const std::string&, bool) override {}
+    std::vector<std::string> results;
+    void on_tool_result(const std::string& t, bool) override { results.push_back(t); }
     void on_notice(const std::string& t) override { notices.push_back(t); }
-    Approval ask(const ApprovalRequest&) override { return Approval::No; }
+    std::vector<ApprovalRequest> asked;
+    ApprovalAnswer reply{Approval::No, ""};
+    ApprovalAnswer ask(const ApprovalRequest& r) override {
+        asked.push_back(r);
+        return reply;
+    }
 };
 
 std::error_code& ec_ignore() {
@@ -249,6 +270,93 @@ int main() {
         Recorder r3;
         agent.submit("and again", Origin::Local, r3, no_cancel);
         expect(has_notice(r3, "compacting") && has_notice(r3, "pruned"), "a full context compacts before the next call, pruning first");
+    }
+
+    section("denial with feedback");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", "note.txt"}, {"content", "hello"}}}};
+        fake.calls_left = 1;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Manual;
+        Recorder r;
+        r.reply = {Approval::No, "write to docs/ instead"};
+        agent.submit("make a note", Origin::Local, r, no_cancel);
+        expect(r.asked.size() == 1 && r.asked[0].preview.find("new file, 1 lines") == 0, "a write asks with a preview of the new file");
+        bool fed_back = false;
+        for (const auto& m : fake.requests.back()["messages"]) {
+            if (m["role"] == "tool" && m["content"].get<std::string>().find("write to docs/ instead") != std::string::npos) fed_back = true;
+        }
+        expect(fed_back && !fs::exists(ws / "note.txt"), "the reason reaches the model as the tool result and nothing was written");
+    }
+
+    section("undo points and nested instructions");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        fs::create_directories(ws / "svc");
+        std::ofstream(ws / "svc" / "AGENTS.md") << "svc rules: use tabs";
+        std::ofstream(ws / "svc" / "a.txt") << "old\n";
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        Recorder r;
+        fake.tool_call = json{{"name", "read_file"}, {"arguments", {{"path", "svc/a.txt"}}}};
+        fake.calls_left = 1;
+        agent.submit("read it", Origin::Local, r, no_cancel);
+        expect(!r.results.empty() && r.results[0].find("svc rules: use tabs") != std::string::npos && r.results[0].find("Instructions from") != std::string::npos,
+               "reading a file attaches the AGENTS.md above it");
+        fake.calls_left = 1;
+        r.results.clear();
+        agent.submit("read again", Origin::Local, r, no_cancel);
+        expect(!r.results.empty() && r.results[0].find("svc rules") == std::string::npos, "the same instructions are attached only once");
+
+        fake.tool_call = json{{"name", "edit_file"}, {"arguments", {{"path", "svc/a.txt"}, {"old_string", "old"}, {"new_string", "new"}}}};
+        fake.calls_left = 1;
+        agent.submit("edit", Origin::Local, r, no_cancel);
+        fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", "svc/b.txt"}, {"content", "made"}}}};
+        fake.calls_left = 1;
+        agent.submit("write", Origin::Local, r, no_cancel);
+        std::ifstream a1(ws / "svc" / "a.txt");
+        std::string a1s((std::istreambuf_iterator<char>(a1)), std::istreambuf_iterator<char>());
+        expect(a1s == "new\n" && fs::exists(ws / "svc" / "b.txt") && agent.undo_points().size() == 2, "two changes, two undo points");
+        std::string report = agent.undo(2);
+        std::ifstream a2(ws / "svc" / "a.txt");
+        std::string a2s((std::istreambuf_iterator<char>(a2)), std::istreambuf_iterator<char>());
+        expect(a2s == "old\n" && !fs::exists(ws / "svc" / "b.txt") && report.find("restored") != std::string::npos && report.find("removed") != std::string::npos,
+               "undo restores the edited file and removes the created one");
+        expect(agent.undo() == "nothing to undo", "nothing left to undo");
+    }
+
+    section("repeated calls and budgets");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        std::ofstream(ws / "same.txt") << "x";
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        agent.repeat_trip = 100;  // never trip the real lock from a test
+        fake.tool_call = json{{"name", "read_file"}, {"arguments", {{"path", "same.txt"}}}};
+        fake.calls_left = 4;
+        Recorder r;
+        agent.submit("loop", Origin::Local, r, no_cancel);
+        int refused = 0;
+        for (const auto& t : r.results) refused += t.find("REFUSED") == 0;
+        expect(r.results.size() == 4 && refused == 2, "the third and fourth identical calls are refused (" + std::to_string(refused) + ")");
+
+        Agent b(ws, "test");
+        b.providers = {fake.provider()};
+        b.budget_tokens = 100;
+        fake.usage_input = 100;
+        Recorder rb;
+        b.submit("one", Origin::Local, rb, no_cancel);
+        b.submit("two", Origin::Local, rb, no_cancel);
+        bool stopped = false;
+        for (const auto& n : rb.notices) stopped = stopped || n.find("token budget reached") == 0;
+        expect(stopped && b.messages().back().content.find("budget is used up") != std::string::npos, "a used-up budget stops the next turn with a notice");
     }
 
     section("context files");

@@ -45,9 +45,9 @@ The input starts in normal mode, like opening vim: `i` to type. Cursor: a bar in
 | normal (input) | `i a I A o O` insert; `h j k l w b e 0 ^ $` move (Enter = down a line); `x X D C S` edit; `d c y` + motion, `dd cc yy Y`; text objects after `d c y` or in visual mode: `iw aw iW aW i" a" i' i` i( a( ib i[ a[ i{ a{ iB i< a<` (so `ciw`, `di"`, `ya(`, `viw`); `v V` select; `p P` paste; `u` undo, **Ctrl-R** redo (multi-level; an insert session is one step); counts (`3w`); `:e` or **Ctrl-X Ctrl-E** opens the input in `$VISUAL` / `$EDITOR` / nvim as markdown and loads it back when you quit |
 | clipboard | `"+y` / `"*y` before any yank sends it to the system clipboard; `"+p` pastes from it; the **leader** (Space by default, `leader` in settings) then `y` yanks the line (normal) or the selection (visual) to the clipboard, leader then `p`/`P` pastes from it. In the conversation window every yank reaches the clipboard; `yiw`, `yw`, `y$`, `Y`, `yy` work there |
 | normal (input empty) | `j k` Ctrl-D/U Ctrl-F/B `G` scroll the conversation without leaving the input; `v` / `V` jump into the conversation window selecting |
-| conversation window | **Ctrl-W k** enters, **Ctrl-W j** (or Esc, `i`, Enter) returns; `j k h l w b e 0 $ gg G` Ctrl-D/U/F/B move; `v` / `V` select; `y` yanks (to the register **and** the system clipboard); `yy` a line; `/pattern` then `n` / `N` search (smart case); `o` swaps selection ends |
+| conversation window | **Ctrl-W k** enters, **Ctrl-W j** (or Esc, `i`, Enter) returns; `j k h l w b e 0 $ gg G` Ctrl-D/U/F/B move; `}` / `{` next / previous message, `]]` / `[[` your messages only; `v` / `V` select; `y` yanks (to the register **and** the system clipboard); `yy` a line; `/pattern` then `n` / `N` search (smart case); `o` swaps selection ends |
 | anywhere | **Shift-Tab** cycles the mode; **Ctrl-C** interrupts the agent, else stops a `!command`, else clears the input, else (twice) quits; scroll wheel scrolls the conversation (in insert mode: prompt history) |
-| approval prompt | **y** yes · **n** no · **a** always allow this file / program for the session · **t** trip the harness |
+| approval prompt | **y** yes · **n** no · **N** no, then type a sentence the model receives as the reason · **a** always allow this file / program for the session · **t** trip the harness. Edits show the lines that would change |
 
 Ctrl-W in insert mode deletes a word, as in vim; the window chord works from insert mode only when the input is empty, otherwise press Esc first.
 
@@ -74,12 +74,22 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:instructions` | the MAIC.md / AGENTS.md files in effect |
 | `:session` / `:artifacts` | where this transcript is; where everything is kept, with sizes |
 | `:reg` | the yank register |
+| `:undo [N]` | restore the file(s) the agent changed last; every write saves the previous content first |
+| `:copy` / `:export [FILE]` | copy the last reply to the clipboard; write the transcript as markdown |
+| `:stash` / `:pop` | park the input draft and bring it back (survives restarts) |
+| `:rename TITLE` | title the session (`maic sessions` shows it); `title_model` in settings auto-titles after the first turn |
+| `:budget [N\|off]` | tokens used; a per-session budget that stops the agent when reached |
+| `:set timestamps on` | a time beside each message (also `timestamps` in settings) |
 | `:lua [CODE]` / `:luafile PATH` / `:chat` | run Lua (vendored LuaJIT) in the workspace; an expression shows its value. `:lua` alone enters **Lua mode**: the input becomes a REPL (`lua❯`) until `:chat`. Globals persist; output goes to the conversation and to the model as context. Outside a session `maic lua` is a REPL, `maic lua FILE [args]` runs a file. See `:h lua` |
 | `:compact [prune\|head\|all]` | free context. Default order: stub old tool results (dialog untouched), then, only if still needed, summarise the oldest turns into a handover note. `all` is a whole-conversation summary. Runs automatically at `compact_at` (75%) |
 | `:clear` | start a new conversation (the session file keeps both) |
 | `:trip REASON` / `:unlock` | trip the harness now; reset it without leaving the session (asks for your sudo password) |
 | `:h [TOPIC]` | vim-style help. `:h` alone is an index; `:h w`, `:h u`, `:h Ctrl-W`, `:h Alt+Enter`, `:h modes`, `:h harness`, `:h sessions`; a unique prefix is enough and an ambiguous one lists the candidates |
 | `:q` | quit |
+
+### After every turn
+
+A footer line shows the model, how long the turn took and how many tools ran (`▣ qwen3.5:4b · 12.3s · 3 tool calls`, `· interrupted` when you stopped it). `run_shell` takes a `workdir` argument, so the approval prompt shows `pytest` in `services/api` rather than a `cd` chain; a workdir outside the workspace is asked about. Reading a file under a directory with its own `AGENTS.md` (or any name in `instruction_files`) attaches those instructions to the result once.
 
 ### Messages while the agent works
 

@@ -349,8 +349,23 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
 
     ChatOptions options{model_name, think};
     options.notice = [&](const std::string& t) { events.on_notice(t); };
+    denials_ = 0;
     for (int step = 0; step < kMaxSteps; ++step) {
         if (drain_mailbox()) events.on_notice("delivered your queued message");
+        if (budget_tokens > 0) {
+            UsageReport u = usage();
+            if (u.total_input + u.total_output >= budget_tokens) {
+                events.on_notice("token budget reached (" + std::to_string(u.total_input + u.total_output) + " of " + std::to_string(budget_tokens) +
+                                 "); stopping. :budget N raises it, :budget off removes it.");
+                push({"user", "[stopped: the session's token budget is used up]"});
+                return;
+            }
+        }
+        if (denials_ >= denials_limit) {
+            events.on_notice(std::to_string(denials_) + " denials this turn; stopping so you can say what you want instead");
+            push({"user", "[stopped: the user denied " + std::to_string(denials_) + " actions this turn; wait for new instructions]"});
+            return;
+        }
         {
             UsageReport u = usage();
             if (u.last.context > 0 && compaction.at > 0 && static_cast<double>(u.last.input) / u.last.context >= compaction.at) {
@@ -453,6 +468,25 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         return result(std::string("error: ") + e.what(), false);
     }
 
+    // The same call over and over means the model is stuck, not working.
+    std::string sig = name + "\x1f" + call.arguments.dump();
+    repeats_ = sig == last_call_ ? repeats_ + 1 : 1;
+    last_call_ = sig;
+    if (repeats_ >= repeat_trip) {
+        try {
+            trip_tripwire("repeated call: " + summary + " x" + std::to_string(repeats_));
+            events.on_notice("HARNESS TRIPPED: the same call was repeated " + std::to_string(repeats_) + " times. Run `maic unlock` to continue.");
+        } catch (const std::exception& e) {
+            events.on_notice(std::string("tripwire could not be set: ") + e.what());
+        }
+        return result("BLOCKED and the harness was tripped: this exact call was repeated " + std::to_string(repeats_) + " times. Stop.", false);
+    }
+    if (repeats_ >= repeat_limit) {
+        record["decision"] = "deny";
+        record["reason"] = "repeated call";
+        return result("REFUSED: this exact call has been made " + std::to_string(repeats_) + " times in a row. Do something different, or tell the user what is blocking you.", false);
+    }
+
     Decision d = harness_.check(action, mode, origin);
     record["decision"] = verdict_name(d.verdict);
     record["reason"] = d.reason;
@@ -462,9 +496,10 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
     if (d.verdict == Verdict::Ask) {
         std::string key = Harness::approval_key(action);
         std::string covers = key.rfind("shell:", 0) == 0 ? "the program `" + key.substr(6) + "`" : key.rfind("write:", 0) == 0 ? "writes to this file" : "reads of this file";
-        Approval answer = events.ask({name, summary, d.reason, origin, covers});
-        record["approval"] = approval_name(answer);
-        switch (answer) {
+        ApprovalAnswer answer = events.ask({name, summary, d.reason, origin, covers, tool_preview(harness_, name, call.arguments)});
+        record["approval"] = approval_name(answer.choice);
+        if (!answer.feedback.empty()) record["feedback"] = answer.feedback;
+        switch (answer.choice) {
             case Approval::Yes:
                 d.verdict = Verdict::Allow;
                 break;
@@ -473,6 +508,8 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
                 d.verdict = Verdict::Allow;
                 break;
             case Approval::No:
+                ++denials_;
+                if (!answer.feedback.empty()) return result("DENIED by the user, who says: " + answer.feedback, false);
                 return result("DENIED by the user. Ask what they want instead of retrying.", false);
             case Approval::Trip:
                 d = {Verdict::Trip, "the user tripped the harness at the approval prompt"};
@@ -492,8 +529,74 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         return result("DENIED: " + d.reason, false);
     }
 
+    if (name == "write_file" || name == "edit_file") save_undo_point(name, call.arguments);
     ToolResult r = run_tool(harness_, name, call.arguments, d.read_only_sandbox, cancel);
+    if (r.ok && name == "read_file") {
+        std::string extra = nested_instructions(action.path);
+        if (!extra.empty()) r.text += "\n" + extra;
+    }
     return result(r.text, r.ok);
+}
+
+void Agent::set_instruction_names(std::vector<std::string> names) {
+    instruction_names_ = std::move(names);
+}
+
+void Agent::save_undo_point(const std::string& name, const nlohmann::json& args) {
+    try {
+        std::filesystem::path p = harness_.resolve(args.value("path", ""));
+        UndoPoint u{p, std::nullopt, tool_summary(name, args)};
+        std::ifstream in(p, std::ios::binary);
+        if (in) u.before = std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        undo_.push_back(std::move(u));
+        if (undo_.size() > 200) undo_.erase(undo_.begin());
+    } catch (const std::exception&) {
+    }
+}
+
+std::string Agent::undo(size_t count) {
+    std::string report;
+    for (size_t i = 0; i < count && !undo_.empty(); ++i) {
+        UndoPoint u = std::move(undo_.back());
+        undo_.pop_back();
+        std::error_code ec;
+        if (u.before) {
+            std::ofstream out(u.path, std::ios::binary | std::ios::trunc);
+            out << *u.before;
+            report += "restored " + u.path.string() + " (undid: " + u.summary + ")\n";
+        } else {
+            std::filesystem::remove(u.path, ec);
+            report += "removed " + u.path.string() + " (it did not exist before: " + u.summary + ")\n";
+        }
+        if (log_) log_->write("undo", {{"path", u.path.string()}, {"summary", u.summary}});
+    }
+    if (report.empty()) return "nothing to undo";
+    add_context("[The user undid the last file change(s) with :undo]\n" + report);
+    return report;
+}
+
+std::string Agent::nested_instructions(const std::filesystem::path& file) {
+    std::error_code ec;
+    std::filesystem::path ws = std::filesystem::weakly_canonical(harness_.workspace(), ec);
+    std::filesystem::path dir = std::filesystem::weakly_canonical(file, ec).parent_path();
+    auto rel = dir.lexically_relative(ws);
+    if (rel.empty() || *rel.begin() == "..") return "";  // outside the workspace: nothing extra
+    std::string out;
+    for (std::filesystem::path d = dir; d != ws && d != d.parent_path(); d = d.parent_path()) {
+        for (const auto& fname : instruction_names_) {
+            std::filesystem::path f = d / fname;
+            if (!std::filesystem::is_regular_file(f, ec) || attached_instructions_.count(f.string())) continue;
+            bool at_top = false;
+            for (const auto& top : instructions_) at_top = at_top || top.path == f;
+            if (at_top) continue;
+            std::ifstream in(f);
+            std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (text.size() > 32 * 1024) text = text.substr(0, 32 * 1024) + "\n[truncated]";
+            attached_instructions_.insert(f.string());
+            out += "[Instructions from " + f.string() + " apply to files under " + d.string() + "; follow them]\n" + text + "\n";
+        }
+    }
+    return out;
 }
 
 }  // namespace maic

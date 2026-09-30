@@ -81,12 +81,16 @@ Every agent tool call goes through `Agent::run_tool_call` (`core/src/agent.cpp`)
 10. **Session transcripts** (`core/src/session.cpp`): every message as sent, every tool call with the harness's decision, 0600 in a 0700 directory. `maic sessions`, `maic artifacts` and `maic artifacts clean` manage them.
 11. **Remote models are labelled.** Switching to a provider off this machine prints what leaves the machine, and the status strip shows `REMOTE`.
 
+12. **Repeated calls.** The same call three times in a row is refused with a message telling the model to do something different; five times trips the lock. Three denials by the user in one turn end the turn.
+13. **Deny with a reason.** `N` at the approval prompt takes a sentence that reaches the model as the tool result ("DENIED by the user, who says: ...").
+14. **A preview before a write.** The approval prompt shows the lines an edit would remove and add (or the head of a new file).
+15. **Undo points.** Every file a tool changes is saved first; `:undo` restores, the model is told, the transcript records it.
+16. **A budget.** `budget_tokens` (or `:budget N`) stops the agent when the session's tokens reach it.
+17. **`workdir` for commands** is resolved by the harness; outside the workspace it is asked about like a write there.
+
 **Planned:**
 
 * **Landlock** as a second filesystem fence applied by the core itself, and **resource limits** (memory, process count).
-* **Repeated denials and doom loops** tripping the lock (the same call three times in a row, or three denials in one turn).
-* **Reject with feedback**: an approval answer that carries a sentence to the model ("no, use the test config instead").
-* **A diff at the approval prompt** for edits, and **git undo points** before a tool writes into a git workspace.
 * **An additive `permission` block in settings** (allow / ask / deny per tool or command pattern) that can only add restrictions or pre-approve harmless commands, never touch trip patterns, secrets or system paths.
 * **Per-tool network grants**: some future tools will need the network, declared in their manifest.
 * **Permission profiles by role** (orchestrator, builder, scout, reviewer) for sessions and future subagents: mode, write paths, network and budgets per profile, narrowing only. See [cleanroom.md](cleanroom.md).

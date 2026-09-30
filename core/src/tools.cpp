@@ -311,7 +311,13 @@ ToolResult edit_file(const fs::path& p, const std::string& old_in, const std::st
 
 ToolResult run_shell(const Harness& harness, const nlohmann::json& args, bool read_only, const std::atomic<bool>& cancel) {
     int secs = std::clamp(args.value("timeout_seconds", kDefaultShellTimeout), 1, kMaxShellTimeout);
-    auto r = run_sandboxed(arg(args, "command"), harness.workspace(), read_only, std::chrono::seconds(secs), cancel);
+    fs::path workdir;
+    if (args.contains("workdir") && args["workdir"].is_string() && !args["workdir"].get<std::string>().empty()) {
+        workdir = harness.resolve(args["workdir"].get<std::string>());
+        std::error_code ec;
+        if (!fs::is_directory(workdir, ec)) return {false, "workdir is not a directory: " + workdir.string()};
+    }
+    auto r = run_sandboxed(arg(args, "command"), harness.workspace(), read_only, std::chrono::seconds(secs), cancel, workdir);
     std::string status;
     if (r.timed_out) {
         status = "terminated: the command exceeded its timeout of " + std::to_string(secs) + " s. If it is expected to take longer and is not "
@@ -384,7 +390,9 @@ const nlohmann::json& tool_schemas() {
            "120 s, max 600). For builds, tests, git and package tools. NOT for reading, listing, searching or editing "
            "files: use read_file, list_dir, search_files, edit_file and write_file for those. Do not use echo or "
            "printf to talk to the user; write your answer as text.",
-           {{"command", {{"type", "string"}}}, {"timeout_seconds", {{"type", "integer"}, {"description", "Default 120, max 600"}}}},
+           {{"command", {{"type", "string"}}},
+            {"timeout_seconds", {{"type", "integer"}, {"description", "Default 120, max 600"}}},
+            {"workdir", {{"type", "string"}, {"description", "Directory to run in, instead of `cd dir && ...`"}}}},
            {"command"}),
     });
     return schemas;
@@ -396,8 +404,58 @@ Action tool_action(const Harness& harness, const std::string& name, const nlohma
     if (name == "list_dir") return {K::Read, harness.resolve(arg(args, "path")), ""};
     if (name == "search_files") return {K::Read, harness.resolve(args.value("path", ".")), ""};
     if (name == "write_file" || name == "edit_file") return {K::Write, harness.resolve(arg(args, "path")), ""};
-    if (name == "run_shell") return {K::Shell, {}, arg(args, "command")};
+    if (name == "run_shell") {
+        Action a{K::Shell, {}, arg(args, "command")};
+        if (args.contains("workdir") && args["workdir"].is_string() && !args["workdir"].get<std::string>().empty()) {
+            a.workdir = harness.resolve(args["workdir"].get<std::string>());
+        }
+        return a;
+    }
     throw std::runtime_error("unknown tool: " + name + " (the tools are " + tool_names() + ")");
+}
+
+namespace {
+
+std::vector<std::string> lines_of(const std::string& s) {
+    std::vector<std::string> out;
+    std::istringstream in(s);
+    for (std::string l; std::getline(in, l);) out.push_back(l);
+    return out;
+}
+
+// Removed and added lines between two texts, with the common head and tail left out. Capped.
+std::string change_lines(const std::string& before, const std::string& after, size_t cap) {
+    auto a = lines_of(before), b = lines_of(after);
+    size_t head = 0;
+    while (head < a.size() && head < b.size() && a[head] == b[head]) ++head;
+    size_t tail = 0;
+    while (tail + head < a.size() && tail + head < b.size() && a[a.size() - 1 - tail] == b[b.size() - 1 - tail]) ++tail;
+    std::string out;
+    size_t n = 0;
+    for (size_t i = head; i + tail < a.size() && n < cap; ++i, ++n) out += "- " + a[i] + "\n";
+    for (size_t i = head; i + tail < b.size() && n < cap; ++i, ++n) out += "+ " + b[i] + "\n";
+    if ((a.size() - head - tail) + (b.size() - head - tail) > cap) out += "  … more\n";
+    return out;
+}
+
+}  // namespace
+
+std::string tool_preview(const Harness& harness, const std::string& name, const nlohmann::json& args) {
+    try {
+        if (name == "edit_file") return change_lines(arg(args, "old_string"), arg(args, "new_string"), 40);
+        if (name == "write_file") {
+            fs::path p = harness.resolve(arg(args, "path"));
+            std::string content = arg(args, "content");
+            std::error_code ec;
+            if (fs::is_regular_file(p, ec)) {
+                std::string before = read_whole(p);
+                return "replaces " + std::to_string(count_lines(before)) + " lines with " + std::to_string(count_lines(content)) + ":\n" + change_lines(before, content, 40);
+            }
+            return "new file, " + std::to_string(count_lines(content)) + " lines:\n" + change_lines("", content, 12);
+        }
+    } catch (const std::exception&) {
+    }
+    return "";
 }
 
 std::string tool_summary(const std::string& name, const nlohmann::json& args) {

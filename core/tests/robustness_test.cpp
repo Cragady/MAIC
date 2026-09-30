@@ -135,6 +135,26 @@ int main() {
                canonical_tool_name("nope").empty(), "tool names are repaired from common misspellings");
     }
 
+    section("approval previews and workdir");
+    {
+        write_file(ws / "p.txt", "one\ntwo\nthree\n");
+        std::string pv = tool_preview(h, "edit_file", {{"path", "p.txt"}, {"old_string", "two"}, {"new_string", "TWO\n2.5"}});
+        expect(pv == "- two\n+ TWO\n+ 2.5\n", "edit_file preview shows removed and added lines: " + pv);
+        pv = tool_preview(h, "write_file", {{"path", "p.txt"}, {"content", "one\nzwei\nthree\n"}});
+        expect(pv.find("replaces 3 lines with 3") == 0 && pv.find("- two\n+ zwei") != std::string::npos, "write_file preview diffs against the existing file");
+        pv = tool_preview(h, "write_file", {{"path", "new.txt"}, {"content", "a\nb\n"}});
+        expect(pv.find("new file, 2 lines") == 0 && pv.find("+ a\n+ b") != std::string::npos, "a new file previews its first lines");
+        expect(tool_preview(h, "run_shell", {{"command", "ls"}}).empty(), "commands have no preview");
+        fs::create_directories(ws / "sub");
+        write_file(ws / "sub" / "here.txt", "x");
+        auto r = tool(h, "run_shell", {{"command", "ls"}, {"workdir", "sub"}});
+        expect(r.ok && r.text.find("here.txt") != std::string::npos, "workdir runs the command in that directory");
+        r = tool(h, "run_shell", {{"command", "ls"}, {"workdir", "nope"}});
+        expect(!r.ok && r.text.find("not a directory") != std::string::npos, "a missing workdir is an error, not a silent fallback");
+        auto act = tool_action(h, "run_shell", {{"command", "ls"}, {"workdir", "sub"}});
+        expect(act.workdir == fs::weakly_canonical(ws / "sub"), "tool_action resolves the workdir for the harness");
+    }
+
     section("search_files");
     write_file(ws / "minified.js", std::string(3 * 1024 * 1024, 'x') + "chat log\n");  // crashed MAIC via std::regex
     write_file(ws / "normal.txt", "a chat about a log\n");
@@ -190,6 +210,23 @@ int main() {
         std::getline(in, line);
         expect(json::parse(line, nullptr, false).is_object(), "invalid UTF-8 is written as valid JSON");
         fs::remove(log.path());
+    }
+
+    section("markdown export");
+    {
+        SessionInfo info;
+        info.id = "20260101-000000-tui-1";
+        info.title = "Fix the thing";
+        info.workspace = "/w";
+        info.started = "20260101-000000";
+        LoadedSession ls;
+        ls.model = "m";
+        ls.transcript = {{"user", "hi"}, {"tool_call", "read_file a"}, {"tool_result", "1\tx"}, {"assistant", "**done**"}};
+        std::string md = export_markdown(info, ls);
+        expect(md.rfind("# Fix the thing\n", 0) == 0 && md.find("## User\n\nhi") != std::string::npos && md.find("## Assistant\n\n**done**") != std::string::npos &&
+                   md.find("**Tool:** `read_file a`") != std::string::npos && md.find("```\n1\tx\n```") != std::string::npos,
+               "the export has a title, sections and fenced tool output");
+        expect(export_markdown(info, ls, false).find("**Tool:**") == std::string::npos, "tool details can be left out");
     }
 
     section("artifact cleaning");

@@ -21,7 +21,7 @@ namespace {
 constexpr size_t kHeadBytes = 24 * 1024;
 constexpr size_t kTailBytes = 8 * 1024;
 
-std::vector<std::string> bwrap_args(const std::string& command, const fs::path& workspace, bool read_only) {
+std::vector<std::string> bwrap_args(const std::string& command, const fs::path& workspace, bool read_only, const fs::path& workdir) {
     std::vector<std::string> args = {
         "bwrap",
         "--ro-bind", "/", "/",
@@ -41,7 +41,7 @@ std::vector<std::string> bwrap_args(const std::string& command, const fs::path& 
         "--unshare-all",       // no network, own PID/IPC/UTS namespaces
         "--die-with-parent",
         "--new-session",       // no TIOCSTI keystroke injection into this terminal
-        "--chdir", workspace.string(),
+        "--chdir", (workdir.empty() ? workspace : workdir).string(),
         "--", "/bin/bash", "-c", command,
     });
     return args;
@@ -59,8 +59,8 @@ std::string trim_output(std::string out) {
 }  // namespace
 
 SandboxResult run_sandboxed(const std::string& command, const fs::path& workspace, bool read_only,
-                            std::chrono::seconds timeout, const std::atomic<bool>& cancel) {
-    std::vector<std::string> args = bwrap_args(command, workspace, read_only);
+                            std::chrono::seconds timeout, const std::atomic<bool>& cancel, const fs::path& workdir) {
+    std::vector<std::string> args = bwrap_args(command, workspace, read_only, workdir);
     std::vector<char*> argv;
     for (auto& a : args) {
         argv.push_back(a.data());

@@ -18,6 +18,7 @@ struct SandboxResult {
 // `read_only`), the rest of the filesystem is read-only, secrets are hidden, there is no network, and
 // nothing can gain privileges.
 SandboxResult run_sandboxed(const std::string& command, const std::filesystem::path& workspace, bool read_only,
-                            std::chrono::seconds timeout, const std::atomic<bool>& cancel);
+                            std::chrono::seconds timeout, const std::atomic<bool>& cancel,
+                            const std::filesystem::path& workdir = {});
 
 }  // namespace maic

@@ -127,6 +127,16 @@ int main() {
 
     shell(h, Mode::Auto, "echo " + std::string(20000, 'a'), Verdict::Deny);
 
+    std::cout << "workdir\n";
+    {
+        Action inside{Action::Kind::Shell, {}, "make", ws / "sub"};
+        Action outside{Action::Kind::Shell, {}, "make", fs::temp_directory_path()};
+        expect(h.check(inside, Mode::Auto, Origin::Local).verdict == Verdict::Allow, "auto mode: a workdir inside the workspace runs");
+        auto d = h.check(outside, Mode::Auto, Origin::Local);
+        expect(d.verdict == Verdict::Ask && d.reason.find("outside the workspace") != std::string::npos, "a workdir outside the workspace is asked about even in auto mode");
+        expect(h.check(Action{Action::Kind::Shell, {}, "sudo make", ws}, Mode::Auto, Origin::Local).verdict == Verdict::Trip, "trip patterns still win over workdir");
+    }
+
     std::cout << "remote origin is always asked\n";
     auto d = h.check({Action::Kind::Write, h.resolve("a.txt"), ""}, Mode::Auto, Origin::Remote);
     expect(d.verdict == Verdict::Ask, "auto-mode write from a remote origin -> ask");

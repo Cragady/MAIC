@@ -42,7 +42,10 @@ struct Settings {
     // "project", or a name under sessions/.
     std::string sessions_home = "auto";
     std::string leader = " ";
-    std::string models_dir;  // where model files live (ComfyUI folders, Ollama store); empty = service defaults
+    std::string models_dir;
+    std::string title_model;   // names a session after its first turn ("" = off; e.g. "qwen3.5:4b")
+    long budget_tokens = 0;    // per-session token budget, 0 = unlimited
+    bool timestamps = false;   // a time beside each conversation entry  // where model files live (ComfyUI folders, Ollama store); empty = service defaults
     bool record = true;
     double compact_at = 0.75;      // auto-compact at this share of the context window; 0 turns it off
     int compact_keep_results = 4;  // tool results that never get pruned (the most recent)  // keep transcripts of interactive sessions (maic --no-record for one session)  // the vim leader key in normal and visual modes (Space, as in her nvim)

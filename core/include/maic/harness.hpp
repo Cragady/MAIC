@@ -28,6 +28,7 @@ struct Action {
     enum class Kind { Read, Write, Shell } kind;
     std::filesystem::path path;  // Read / Write
     std::string command;         // Shell
+    std::filesystem::path workdir;  // Shell only: where the command runs (resolved); empty = the workspace
 };
 
 enum class Verdict {

@@ -18,6 +18,7 @@ struct Entry {
     Kind kind;
     std::string text;        // the full text; tool results show a preview while collapsed
     bool collapsed = false;
+    time_t when = 0;  // appended at; shown when timestamps are on
 };
 
 // The conversation window. Appends are thread-safe; everything else runs on the UI thread. When focused
@@ -38,6 +39,8 @@ public:
 
     // UI thread
     void set_markdown(bool on) { markdown_ = on; ++version_; }
+    void set_timestamps(bool on) { timestamps_ = on; ++version_; }
+    std::string last_assistant() const;  // the newest reply's text, "" when none
     bool markdown() const { return markdown_; }
     void set_focused(bool on);
     bool focused() const { return focused_; }
@@ -72,6 +75,7 @@ private:
     void layout(size_t width);
     std::string yank_selection();
     void move_cursor_line(int delta);
+    void jump_message(int direction, bool user_only, int count);  // } { ]] [[
     void ensure_cursor_visible(int height);
     std::string text_of(const Line& l) const;
     void find_matches();
@@ -84,6 +88,7 @@ private:
     unsigned laid_out_version_ = ~0u;
     size_t laid_out_width_ = 0;
     bool markdown_ = true;
+    bool timestamps_ = false;
 
     int scroll_ = 0;          // lines up from the bottom; 0 follows new output
     size_t last_total_ = 0;

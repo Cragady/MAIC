@@ -4,6 +4,7 @@
 #include "editor.hpp"
 #include "maic/agent.hpp"
 #include "maic/artifacts.hpp"
+#include "maic/clipboard.hpp"
 #include "maic/lua.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
@@ -28,6 +29,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <cerrno>
 #include <cstdlib>
@@ -160,7 +162,9 @@ std::filesystem::path session_home_dir(const Settings& settings) {
 
 struct PendingApproval {
     ApprovalRequest request;
-    std::promise<Approval> answer;
+    std::promise<ApprovalAnswer> answer;
+    bool typing = false;   // after N: a sentence for the model is being typed
+    std::string feedback;
 };
 
 enum class Focus { Input, Conversation };
@@ -182,6 +186,9 @@ public:
         view_.set_leader(settings_.leader);
         agent_.compaction.at = settings_.compact_at;
         agent_.compaction.keep_results = settings_.compact_keep_results;
+        agent_.budget_tokens = settings_.budget_tokens;
+        agent_.set_instruction_names(settings_.instruction_files);
+        view_.set_timestamps(settings_.timestamps);
         if (resume) {
             LoadedSession old = load_session(*resume);
             for (const auto& t : old.transcript) {
@@ -221,11 +228,14 @@ public:
         view_.append_to_last(thinking ? Kind::Thinking : Kind::Assistant, delta);
         screen_.PostEvent(Event::Custom);
     }
-    void on_tool_call(const std::string& summary) override { post(Kind::Tool, summary); }
+    void on_tool_call(const std::string& summary) override {
+        ++tool_calls_;
+        post(Kind::Tool, summary);
+    }
     void on_tool_result(const std::string& text, bool ok) override { post(ok ? Kind::ToolOk : Kind::ToolErr, text); }
     void on_notice(const std::string& text) override { post(Kind::Notice, text); }
-    Approval ask(const ApprovalRequest& request) override {
-        std::future<Approval> answer;
+    ApprovalAnswer ask(const ApprovalRequest& request) override {
+        std::future<ApprovalAnswer> answer;
         {
             std::lock_guard lock(mu_);
             approval_.emplace(PendingApproval{request, {}});
@@ -254,7 +264,7 @@ private:
     Element render_approval();
 
     bool handle_approval(const Event& e);
-    void answer(Approval a);
+    void answer(Approval a, std::string feedback = "");
     void submit(std::string text, bool now);
     void start_turn(const std::string& text);
     void run_command(const std::string& line);
@@ -287,6 +297,10 @@ private:
     std::thread shell_thread_;
 
     std::string status_msg_;
+    std::atomic<int> tool_calls_{0};  // this turn
+    bool titled_ = false;
+    void maybe_title(const std::string& first_prompt);
+    void set_title(const std::string& title);
     std::unique_ptr<Lua> lua_;  // created on first :lua; keeps globals between calls
     bool lua_mode_ = false;     // :lua with no argument: sends go to Lua until :chat (or :lua again)
     void run_lua(const std::string& code, bool from_file);
@@ -515,15 +529,25 @@ Element App::render_approval() {
     if (!approval_) return emptyElement();
     const auto& r = approval_->request;
     std::string key = r.always_covers.empty() ? (r.tool == "run_shell" ? "this program" : "this file") : r.always_covers;
-    return window(text(" approve? ") | bold,
-                  vbox({
-                      text(r.summary) | bold,
-                      text("why asking: " + r.reason + (r.origin == Origin::Remote ? "  [REMOTE REQUEST]" : "")) | dim,
-                      hbox({text("[y]") | bold | color(Color::Green), text(" yes   "), text("[n]") | bold | color(Color::Red), text(" no   "),
-                            text("[a]") | bold, text(" always: " + key + " (this session)   "), text("[t]") | bold | color(Color::RedLight),
-                            text(" trip the harness")}),
-                  })) |
-           decorate(settings_.style("approval"));
+    Elements rows = {text(r.summary) | bold, text("why asking: " + r.reason + (r.origin == Origin::Remote ? "  [REMOTE REQUEST]" : "")) | dim};
+    if (!r.preview.empty()) {
+        std::istringstream in(r.preview);
+        int n = 0;
+        for (std::string line; std::getline(in, line) && n < 14; ++n) {
+            Element e = text(line);
+            if (line.rfind("+ ", 0) == 0) e = e | color(Color::Green);
+            else if (line.rfind("- ", 0) == 0) e = e | color(Color::Red);
+            rows.push_back(e);
+        }
+    }
+    if (approval_->typing) {
+        rows.push_back(hbox({text("no, because: ") | bold, text(approval_->feedback), text(" ") | inverted, text("  (Enter sends this to the model, Esc cancels)") | dim}));
+    } else {
+        rows.push_back(hbox({text("[y]") | bold | color(Color::Green), text(" yes   "), text("[n]") | bold | color(Color::Red), text(" no   "),
+                             text("[N]") | bold | color(Color::Red), text(" no, and say why   "), text("[a]") | bold, text(" always: " + key + " (this session)   "),
+                             text("[t]") | bold | color(Color::RedLight), text(" trip the harness")}));
+    }
+    return window(text(" approve? ") | bold, vbox(rows)) | decorate(settings_.style("approval"));
 }
 
 Element App::render() {
@@ -545,7 +569,13 @@ Element App::render() {
     Element palette = render_palette(palette_rows);
     bool is_asking = asking();
     bool focused = focus_ == Focus::Conversation;
-    view_height_ = std::max(1, size.dimy - input_rows - palette_rows - 3 - (is_asking ? 5 : 0) - (focused ? 2 : 0));
+    int approval_rows = 0;
+    if (is_asking) {
+        std::lock_guard lock(mu_);
+        approval_rows = 5;
+        if (approval_) approval_rows += std::min(14, static_cast<int>(std::count(approval_->request.preview.begin(), approval_->request.preview.end(), '\n')));
+    }
+    view_height_ = std::max(1, size.dimy - input_rows - palette_rows - 3 - approval_rows - (focused ? 2 : 0));
     Element conversation = view_.render(settings_, focused ? width - 2 : width, view_height_);
     if (focused) conversation = conversation | borderLight | decorate(settings_.style("focus"));
     return vbox({conversation, render_approval(), render_top_status(), separator() | decorate(settings_.style("separator")), input, palette,
@@ -686,18 +716,35 @@ bool App::handle(Event e) {
 
 bool App::handle_approval(const Event& e) {
     const std::string& k = e.input();
+    {
+        std::lock_guard lock(mu_);
+        if (approval_ && approval_->typing) {
+            if (e == Event::Escape) approval_->typing = false, approval_->feedback.clear();
+            else if (e == Event::Return) {
+                approval_->answer.set_value({Approval::No, approval_->feedback});
+                approval_.reset();
+            } else if (e == Event::Backspace) {
+                if (!approval_->feedback.empty()) approval_->feedback.erase(utf8_prev(approval_->feedback, approval_->feedback.size()));
+            } else if (e.is_character()) approval_->feedback += k;
+            return true;
+        }
+    }
     if (k == "y" || k == "Y") answer(Approval::Yes);
-    else if (k == "n" || k == "N" || e == Event::Escape) answer(Approval::No);
+    else if (k == "n" || e == Event::Escape) answer(Approval::No);
+    else if (k == "N") {
+        std::lock_guard lock(mu_);
+        if (approval_) approval_->typing = true;
+    }
     else if (k == "a" || k == "A") answer(Approval::Always);
     else if (k == "t" || k == "T") answer(Approval::Trip);
     else if (k == "\x03") answer(Approval::No), cancel_ = true;
     return true;
 }
 
-void App::answer(Approval a) {
+void App::answer(Approval a, std::string feedback) {
     std::lock_guard lock(mu_);
     if (approval_) {
-        approval_->answer.set_value(a);
+        approval_->answer.set_value({a, std::move(feedback)});
         approval_.reset();
     }
 }
@@ -752,11 +799,24 @@ void App::start_turn(const std::string& text) {
     worker_ = std::thread([this, text] {
         std::string next = text;
         for (;;) {
+            auto t0 = std::chrono::steady_clock::now();
+            tool_calls_ = 0;
             try {
                 agent_.submit(next, Origin::Local, *this, cancel_);
             } catch (const std::exception& ex) {
                 view_.append(Kind::Error, ex.what());
             }
+            // The footer: model, how long the turn took, how many tools ran.
+            double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            char dur[32];
+            if (secs < 1) snprintf(dur, sizeof(dur), "%.0fms", secs * 1000);
+            else if (secs < 60) snprintf(dur, sizeof(dur), "%.1fs", secs);
+            else if (secs < 3600) snprintf(dur, sizeof(dur), "%dm %ds", static_cast<int>(secs) / 60, static_cast<int>(secs) % 60);
+            else snprintf(dur, sizeof(dur), "%dh %dm", static_cast<int>(secs) / 3600, (static_cast<int>(secs) % 3600) / 60);
+            int calls = tool_calls_.load();
+            view_.append(Kind::Notice, "▣ " + agent_.model + " · " + dur + (calls ? " · " + std::to_string(calls) + (calls == 1 ? " tool call" : " tool calls") : "") +
+                                           (cancel_.load() ? " · interrupted" : ""));
+            maybe_title(next);
             // Messages queued after the turn's last model call start a new turn on their own.
             if (cancel_.load() || agent_.queued() == 0) break;
             next.clear();
@@ -765,6 +825,38 @@ void App::start_turn(const std::string& text) {
         busy_ = false;
         screen_.PostEvent(Event::Custom);
     });
+}
+
+void App::set_title(const std::string& title) {
+    if (log_) log_->write("title", {{"text", title}});
+    titled_ = true;
+}
+
+// After the first turn, ask a small model for a title when settings name one. A remote title model is never
+// used for a local session, so nothing leaves the machine that would not have anyway.
+void App::maybe_title(const std::string& first_prompt) {
+    if (titled_ || settings_.title_model.empty() || cancel_.load()) return;
+    titled_ = true;
+    try {
+        auto [provider, name] = resolve_model(agent_.providers, settings_.title_model);
+        if (provider.remote() && !agent_.remote()) return;
+        std::vector<Message> req = {
+            {"system", "Write a title for a conversation that starts with the message below: one line, at most 50 characters, no quotes, "
+                       "keep exact filenames and technical terms, drop articles. Output only the title."},
+            {"user", first_prompt.substr(0, 2000)},
+        };
+        ChatOptions opt{name, false};
+        std::atomic<bool> no{false};
+        Message reply = chat(provider, opt, req, nlohmann::json::array(), [](std::string_view, bool) {}, no);
+        std::string t = reply.content;
+        if (auto p = t.find("</think>"); p != std::string::npos) t = t.substr(p + 8);
+        while (!t.empty() && (t.back() == '\n' || t.back() == ' ' || t.back() == '.' || t.back() == '"')) t.pop_back();
+        while (!t.empty() && (t.front() == '\n' || t.front() == ' ' || t.front() == '"')) t.erase(0, 1);
+        if (t.empty() || t.size() > 80 || t.find('\n') != std::string::npos) return;
+        if (log_) log_->write("title", {{"text", t}});
+        post(Kind::Notice, "titled: " + t + "  (:rename changes it)");
+    } catch (const std::exception&) {
+    }
 }
 
 void App::run_shell(const std::string& command) {
@@ -908,17 +1000,75 @@ void App::run_command(const std::string& line) {
             bool on = value != "off" && value != "false" && value != "0";
             if (key == "markdown" || key == "md") view_.set_markdown(on), post(Kind::Notice, on ? "markdown rendering on" : "markdown rendering off (raw text)");
             else if (key == "mouse") settings_.mouse = on, screen_.TrackMouse(on), post(Kind::Notice, on ? "mouse on (Shift+drag selects text in the terminal)" : "mouse off");
+            else if (key == "timestamps" || key == "time") view_.set_timestamps(on), post(Kind::Notice, on ? "timestamps on" : "timestamps off");
             else if (key == "tooldetails" || key == "details") {
                 view_.set_collapse_default(!on);
                 view_.set_all_collapsed(!on);
                 post(Kind::Notice, on ? "tool output shown in full (za folds one, zM all)" : "tool output folded to a preview (za unfolds one, zR all)");
-            } else post(Kind::Error, ":set markdown|mouse|tooldetails on|off");
+            } else post(Kind::Error, ":set markdown|mouse|tooldetails|timestamps on|off");
         } else if (cmd == "lua" || cmd == "luafile") {
             if (cmd == "lua" && arg.empty()) {
                 lua_mode_ = !lua_mode_;
                 post(Kind::Notice, lua_mode_ ? "Lua mode: what you send runs in LuaJIT (globals persist). :chat or :lua returns to the model." : "back to the model");
             } else {
                 run_lua(arg, cmd == "luafile");
+            }
+        } else if (cmd == "undo") {
+            if (idle()) post(Kind::Notice, agent_.undo(arg.empty() ? 1 : static_cast<size_t>(std::max(1, std::atoi(arg.c_str())))));
+        } else if (cmd == "copy") {
+            std::string last = view_.last_assistant();
+            if (last.empty()) post(Kind::Error, "nothing to copy yet");
+            else {
+                register_ = last;
+                post(Kind::Notice, "copied the last reply (" + copy_to_clipboard(last) + ")");
+            }
+        } else if (cmd == "export") {
+            auto info = find_session(log_->path().stem().string());
+            std::filesystem::path out = arg.empty() ? agent_.harness().workspace() / (log_->path().stem().string() + ".md") : agent_.harness().resolve(arg);
+            if (!info) post(Kind::Error, "this session is not listed (temporary transcripts cannot be exported by id yet)");
+            else {
+                std::ofstream f(out);
+                f << export_markdown(*info, load_session(log_->path()));
+                post(Kind::Notice, "exported to " + out.string());
+            }
+        } else if (cmd == "stash" || cmd == "pop") {
+            std::filesystem::path stash = state_dir() / "prompt-stash.jsonl";
+            if (cmd == "stash") {
+                if (editor_.text().empty()) post(Kind::Error, "nothing to stash");
+                else {
+                    std::ofstream f(stash, std::ios::app);
+                    f << nlohmann::json{{"text", editor_.text()}}.dump() << "\n";
+                    editor_.clear();
+                    post(Kind::Notice, "stashed; :pop brings it back");
+                }
+            } else {
+                std::vector<std::string> lines;
+                std::ifstream f(stash);
+                for (std::string l; std::getline(f, l);) lines.push_back(l);
+                if (lines.empty()) post(Kind::Error, "the stash is empty");
+                else {
+                    auto j = nlohmann::json::parse(lines.back(), nullptr, false);
+                    lines.pop_back();
+                    std::ofstream w(stash, std::ios::trunc);
+                    for (const auto& l : lines) w << l << "\n";
+                    editor_.replace_text(j.value("text", ""));
+                    editor_.escape();
+                    post(Kind::Notice, "popped (" + std::to_string(lines.size()) + " left)");
+                }
+            }
+        } else if (cmd == "rename" || cmd == "title") {
+            if (arg.empty()) post(Kind::Error, ":rename TITLE");
+            else {
+                set_title(arg);
+                post(Kind::Notice, "titled: " + arg);
+            }
+        } else if (cmd == "budget") {
+            if (arg == "off" || arg == "0") agent_.budget_tokens = 0, post(Kind::Notice, "no token budget");
+            else if (!arg.empty()) agent_.budget_tokens = std::atol(arg.c_str()), post(Kind::Notice, "token budget: " + std::to_string(agent_.budget_tokens));
+            else {
+                auto u = agent_.usage();
+                post(Kind::Notice, "used " + std::to_string(u.total_input + u.total_output) + " tokens this session" +
+                                       (agent_.budget_tokens ? " of " + std::to_string(agent_.budget_tokens) : " (no budget; :budget N sets one)"));
             }
         } else if (cmd == "chat") {
             lua_mode_ = false;

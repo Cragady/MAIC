@@ -99,6 +99,52 @@ std::string preview(const std::string& s) {
 
 }  // namespace
 
+// Reads the listing fields of one transcript.
+SessionInfo read_session_info(const fs::path& path) {
+    SessionInfo info;
+    info.path = path;
+    info.id = path.stem().string();
+    info.home = path.parent_path().lexically_relative(sessions_dir()).string();
+    // 20260930-003735-tui-3234642
+    size_t second_dash = info.id.find('-', info.id.find('-') + 1);
+    info.started = info.id.substr(0, second_dash);
+    size_t third_dash = info.id.find('-', second_dash + 1);
+    info.kind = info.id.substr(second_dash + 1, third_dash == std::string::npos ? std::string::npos : third_dash - second_dash - 1);
+    std::ifstream in(path);
+    for (std::string line; std::getline(in, line);) {
+        auto j = nlohmann::json::parse(line, nullptr, false);
+        if (!j.is_object()) continue;
+        std::string type = j.value("type", "");
+        if (type == "start") {
+            if (info.workspace.empty()) info.workspace = j.value("workspace", "");
+            info.opened_in = j.value("workspace", "");
+            info.host = j.value("host", "");
+            ++info.opens;
+        } else if (type == "resumed_from") {
+            info.parent = fs::path(j.value("path", "")).stem().string();
+            info.parent_records = j.value("records", 0);
+            if (info.workspace.empty()) {
+                // A fork inherits the parent's workspace until it records its own.
+                std::ifstream pin(j.value("path", ""));
+                for (std::string pl; std::getline(pin, pl);) {
+                    auto pj = nlohmann::json::parse(pl, nullptr, false);
+                    if (pj.is_object() && pj.value("type", "") == "start") {
+                        info.workspace = pj.value("workspace", "");
+                        break;
+                    }
+                }
+            }
+        } else if (type == "user") {
+            if (info.first_prompt.empty()) info.first_prompt = preview(j.value("text", ""));
+            ++info.turns;
+        } else if (type == "title") {
+            info.title = j.value("text", "");
+        }
+    }
+    if (info.opened_in.empty()) info.opened_in = info.workspace;
+    return info;
+}
+
 std::vector<SessionInfo> list_sessions(const std::optional<fs::path>& workspace) {
     std::vector<SessionInfo> out;
     std::error_code ec;
@@ -112,45 +158,7 @@ std::vector<SessionInfo> list_sessions(const std::optional<fs::path>& workspace)
     }
     for (const auto& e : fs::recursive_directory_iterator(sessions_dir(), ec)) {
         if (e.path().extension() != ".jsonl") continue;
-        SessionInfo info;
-        info.path = e.path();
-        info.id = e.path().stem().string();
-        info.home = e.path().parent_path().lexically_relative(sessions_dir()).string();
-        // 20260930-003735-tui-3234642
-        size_t second_dash = info.id.find('-', info.id.find('-') + 1);
-        info.started = info.id.substr(0, second_dash);
-        size_t third_dash = info.id.find('-', second_dash + 1);
-        info.kind = info.id.substr(second_dash + 1, third_dash == std::string::npos ? std::string::npos : third_dash - second_dash - 1);
-        std::ifstream in(e.path());
-        for (std::string line; std::getline(in, line);) {
-            auto j = nlohmann::json::parse(line, nullptr, false);
-            if (!j.is_object()) continue;
-            std::string type = j.value("type", "");
-            if (type == "start") {
-                if (info.workspace.empty()) info.workspace = j.value("workspace", "");
-                info.opened_in = j.value("workspace", "");
-                info.host = j.value("host", "");
-                ++info.opens;
-            } else if (type == "resumed_from") {
-                info.parent = fs::path(j.value("path", "")).stem().string();
-                info.parent_records = j.value("records", 0);
-                if (info.workspace.empty()) {
-                    // A fork inherits the parent's workspace until it records its own.
-                    std::ifstream pin(j.value("path", ""));
-                    for (std::string pl; std::getline(pin, pl);) {
-                        auto pj = nlohmann::json::parse(pl, nullptr, false);
-                        if (pj.is_object() && pj.value("type", "") == "start") {
-                            info.workspace = pj.value("workspace", "");
-                            break;
-                        }
-                    }
-                }
-            } else if (type == "user") {
-                if (info.first_prompt.empty()) info.first_prompt = preview(j.value("text", ""));
-                ++info.turns;
-            }
-        }
-        if (info.opened_in.empty()) info.opened_in = info.workspace;
+        SessionInfo info = read_session_info(e.path());
         if (!want.empty() && info.workspace != want && info.opened_in != want) continue;
         out.push_back(info);
     }
@@ -171,9 +179,13 @@ fs::path rehome_session(const SessionInfo& session, const std::string& home) {
 std::optional<SessionInfo> find_session(const std::string& id_or_path) {
     std::error_code ec;
     if (fs::is_regular_file(id_or_path, ec)) {
+        // A path is taken as is, listed or not (temporary transcripts in the runtime directory are never listed).
         for (const auto& s : list_sessions()) {
             if (fs::equivalent(s.path, id_or_path, ec)) return s;
         }
+        SessionInfo info = read_session_info(fs::absolute(id_or_path));
+        info.home = "(unlisted)";
+        return info;
     }
     std::optional<SessionInfo> found;
     for (const auto& s : list_sessions()) {
@@ -250,6 +262,21 @@ void load_into(LoadedSession& out, const fs::path& path, size_t limit, int depth
 LoadedSession load_session(const fs::path& path) {
     LoadedSession out;
     load_into(out, path, ~size_t(0), 0);
+    return out;
+}
+
+std::string export_markdown(const SessionInfo& info, const LoadedSession& session, bool tool_details) {
+    std::string out = "# " + (info.title.empty() ? (info.first_prompt.empty() ? info.id : info.first_prompt) : info.title) + "\n\n";
+    out += "session `" + info.id + "`, started " + info.started + " in `" + info.workspace + "`";
+    if (!session.model.empty()) out += ", model `" + session.model + "`";
+    out += "\n\n";
+    for (const auto& t : session.transcript) {
+        if (t.type == "user") out += "## User\n\n" + t.text + "\n\n";
+        else if (t.type == "assistant") out += "## Assistant\n\n" + t.text + "\n\n";
+        else if (t.type == "tool_call" && tool_details) out += "**Tool:** `" + t.text + "`\n\n";
+        else if (t.type == "tool_result" && tool_details) out += "```\n" + (t.text.size() > 4000 ? t.text.substr(0, 4000) + "\n…" : t.text) + "\n```\n\n";
+        else if (t.type == "notice") out += "_" + t.text + "_\n\n";
+    }
     return out;
 }
 

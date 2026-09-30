@@ -16,11 +16,11 @@ The reason `server/` exists. Micaiah wants to chat with agents from her phone.
 
 ## 2. Harness: the planned layers
 
-From [harness.md](harness.md): doom-loop detection wired to the tripwire; reject-with-feedback at the approval prompt; a diff shown before an edit is approved; git undo points; an additive `permission` block in settings; role profiles (orchestrator, builder, scout, reviewer); token and cost budgets (usage tracking is in place); Landlock and resource limits; per-tool network grants; forkable transcripts with `--fork-at`; Docker as a service runtime.
+Done: repeated-call refusal and trip, deny with a reason, a change preview at approval, undo points, token budgets, `workdir`. Still from [harness.md](harness.md): an additive `permission` block in settings; role profiles (orchestrator, builder, scout, reviewer); cost budgets; Landlock and resource limits; per-tool network grants; forkable transcripts with `--fork-at`; Docker as a service runtime.
 
 ## 3. Quick wins from opencode
 
-[opencode-quick-wins.md](opencode-quick-wins.md) lists 23 small items. Done: 1 to 9 (tool-result quality for small models), 18 (token usage and the context readout), 19 (foldable tool output), 23 (`:compact`, with Micaiah's two-stage design below rather than opencode's whole-history summary). Also done: retry with backoff on 429/5xx and connection failures, only before any output has streamed, with Retry-After honoured (17). Next: the under-two-hours leftovers (10 to 16).
+[opencode-quick-wins.md](opencode-quick-wins.md) lists 23 small items. Done: 1 to 9 (tool-result quality for small models), 18 (token usage and the context readout), 19 (foldable tool output), 23 (`:compact`, with Micaiah's two-stage design below rather than opencode's whole-history summary). Also done: retry with backoff (17); the per-turn footer (10); markdown export and `:copy` (11); sessions grouped by day with titles (12); `}` `{` `]]` `[[` message jumps (13); timestamps (14); `workdir` (15); `:stash` / `:pop` (16); nested AGENTS.md on read (20); `:rename` and opt-in auto-titles (21). Left: DeepSeek reasoning replay (22), verify-first against the public API reference.
 
 ## 3a. Compaction
 

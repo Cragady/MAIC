@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <ctime>
 #include <deque>
 #include <fstream>
 #include <iostream>
@@ -56,6 +57,7 @@ void usage(std::ostream& out = std::cerr) {
                  "  sessions                   list session transcripts (where started, where last opened)\n"
                  "  sessions rehome ID [project|general|NAME]   move a transcript to another home (default: project)\n"
                  "  sessions path ID           print a transcript's path\n"
+                 "  sessions export ID [FILE]  the transcript as markdown (stdout without FILE)\n"
                  "  settings init [--json]|path  write the global settings file (Lua; --json for JSON), or show where it goes\n"
                  "  init                       scaffold this project: MAIC.md and .maic/settings.lua (transcripts then\n"
                  "                             go under sessions/projects/); :init in a session also drafts the MAIC.md\n"
@@ -184,11 +186,22 @@ int cmd_artifacts(const std::vector<std::string>& args) {
 }
 
 void print_sessions(const std::vector<maic::SessionInfo>& sessions) {
+    char today[16];
+    std::time_t now = std::time(nullptr);
+    std::strftime(today, sizeof(today), "%Y%m%d", std::localtime(&now));
+    std::string last_day;
     for (size_t i = 0; i < sessions.size(); ++i) {
         const auto& s = sessions[i];
-        std::cout << "  " << i + 1 << ". " << s.id << "  [" << s.home << "]  " << s.turns << " turn" << (s.turns == 1 ? "" : "s") << "\n"
-                  << "     " << (s.first_prompt.empty() ? "(no prompt yet)" : s.first_prompt) << "\n"
-                  << "     started in " << s.workspace;
+        std::string day = s.started.substr(0, 8);
+        std::string hm = s.started.size() >= 13 ? s.started.substr(9, 2) + ":" + s.started.substr(11, 2) : "";
+        if (day != last_day) {
+            std::cout << (day == today ? "Today" : day.substr(0, 4) + "-" + day.substr(4, 2) + "-" + day.substr(6, 2)) << "\n";
+            last_day = day;
+        }
+        std::string where = std::filesystem::path(s.workspace).filename().string();
+        std::cout << "  " << i + 1 << ". " << hm << "  " << (s.title.empty() ? (s.first_prompt.empty() ? "(no prompt yet)" : s.first_prompt) : s.title)
+                  << "  [" << where << "]  " << s.turns << " turn" << (s.turns == 1 ? "" : "s") << "\n"
+                  << "     " << s.id << "  [" << s.home << "]  started in " << s.workspace;
         if (s.opened_in != s.workspace) std::cout << ", last opened in " << s.opened_in;
         if (s.opens > 1) std::cout << " (" << s.opens << " opens)";
         if (!s.host.empty()) std::cout << " on " << s.host;
@@ -421,11 +434,22 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (cmd == "sessions") {
-            if (cargs.size() >= 2 && (cargs[0] == "rehome" || cargs[0] == "path")) {
+            if (cargs.size() >= 2 && (cargs[0] == "rehome" || cargs[0] == "path" || cargs[0] == "export")) {
                 auto s = maic::find_session(cargs[1]);
                 if (!s) throw std::runtime_error("no session matching '" + cargs[1] + "' (maic sessions)");
                 if (cargs[0] == "path") {
                     std::cout << s->path.string() << "\n";
+                    return 0;
+                }
+                if (cargs[0] == "export") {
+                    std::string md = maic::export_markdown(*s, maic::load_session(s->path));
+                    if (cargs.size() >= 3 && cargs[2] != "-") {
+                        std::ofstream out(cargs[2]);
+                        out << md;
+                        std::cout << "wrote " << cargs[2] << "\n";
+                    } else {
+                        std::cout << md;
+                    }
                     return 0;
                 }
                 std::string home = cargs.size() >= 3 ? cargs[2] : "project";

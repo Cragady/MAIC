@@ -206,7 +206,12 @@ std::string Harness::approval_key(const Action& action) {
 Decision Harness::check(const Action& action, Mode mode, Origin origin) const {
     Decision d{Verdict::Deny, "unknown action"};
     switch (action.kind) {
-        case Action::Kind::Shell: d = check_shell(action.command, mode); break;
+        case Action::Kind::Shell:
+            d = check_shell(action.command, mode);
+            if (d.verdict == Verdict::Allow && !action.workdir.empty() && !in_workspace(action.workdir)) {
+                d = {Verdict::Ask, "runs outside the workspace (" + action.workdir.string() + ")", d.read_only_sandbox};
+            }
+            break;
         case Action::Kind::Write: d = check_write(action.path, mode); break;
         case Action::Kind::Read: d = check_read(action.path, mode); break;
     }
