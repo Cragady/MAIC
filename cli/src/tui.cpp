@@ -469,11 +469,12 @@ void App::welcome() {
     for (const auto& n : agent_.tool_notices()) view_.append(Kind::Error, n);
     view_.append(Kind::Notice, "Press i to type, Alt+Enter (or :w) to send, Enter for a new line. Esc = normal mode: j/k scroll, u/Ctrl-R undo/redo, :e opens nvim, Ctrl-W k = conversation window, :help for everything.");
     if (agent_.remote()) view_.append(Kind::Error, "This model runs off this machine: prompts, files the agent reads and command output are sent to it.");
+    // The service behind the current model, if any: say so when it is down. Never a service the model does not use.
     try {
-        for (const auto& s : load_services(root_dir() / "services")) {
-            if (s.name == "ollama" && !agent_.remote() && service_status(s).state == ServiceState::Stopped) {
-                view_.append(Kind::Error, "Ollama isn't running. Start it with :up ollama");
-            }
+        auto [provider, name] = resolve_model(agent_.providers, agent_.model);
+        if (!provider.remote()) {
+            std::string hint = unreachable_hint(provider, load_services(root_dir() / "services"));
+            if (hint.find("is not running") != std::string::npos) view_.append(Kind::Error, hint.substr(0, hint.find(':')) + ": :up " + hint.substr(0, hint.find(' ')));
         }
     } catch (const std::exception& e) {
         view_.append(Kind::Error, e.what());
