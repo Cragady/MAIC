@@ -115,7 +115,11 @@ public:
     // Returns a one-line report. Call only while idle, or from within submit.
     std::string compact(Compaction stage, const std::atomic<bool>& cancel);
     // Her default: Prune, then Head only if the estimate says pruning was not enough.
-    std::string compact_auto(const std::atomic<bool>& cancel);
+    // `window` is the context size in tokens when known (0: use the last call's report); `force_head` skips
+    // the estimate and summarises after pruning, for when the server already refused the request.
+    std::string compact_auto(const std::atomic<bool>& cancel, size_t window = 0, bool force_head = false);
+    // Rough token count of the history from its bytes (3.5 bytes per token, on the safe side).
+    size_t estimated_tokens() const { return history_bytes() * 2 / 7; }
 
     const std::vector<Message>& messages() const { return messages_; }
 

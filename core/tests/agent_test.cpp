@@ -29,6 +29,9 @@ struct FakeOllama {
     json tool_call;       // when set and calls_left > 0, the reply is this one tool call ({"name", "arguments"})
     int calls_left = 0;
     std::function<std::string(const json&)> reply;  // when set and non-empty for a request, replaces the echo
+    int fail_left = 0;      // answer this many requests with fail_status / fail_body first
+    int fail_status = 400;
+    std::string fail_body;
 
     FakeOllama() {
         port = srv.bind_to_any_port("127.0.0.1");
@@ -41,6 +44,12 @@ struct FakeOllama {
             std::string last;
             for (const auto& m : body["messages"]) {
                 if (m["role"] == "user") last = m["content"];
+            }
+            if (fail_left > 0) {
+                --fail_left;
+                res.status = fail_status;
+                res.set_content(fail_body, "application/json");
+                return;
             }
             std::string echo = "echo: " + last;
             if (reply) {
@@ -575,6 +584,50 @@ int main() {
         expect(sys2.find("pelican") == std::string::npos && sys2.find("Operator") == std::string::npos, "with the switch off no instruction file is loaded");
         expect(!rb.results.empty() && rb.results[0].find("deep rule") == std::string::npos, "and none is attached on read");
         fs::remove(ws / "MAIC.md");
+    }
+
+    section("a request over the context window");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        std::string big(30000, 'x');
+        // History far past a 16k window with no usage report yet: the byte estimate compacts before sending.
+        Agent agent(ws, "test");
+        Provider p = fake.provider();
+        p.options["context_window"] = 16384;
+        agent.providers = {p};
+        std::vector<Message> hist = {{"system", "sys"}};
+        for (int i = 1; i <= 6; ++i) {
+            hist.push_back({"user", "t" + std::to_string(i)});
+            hist.push_back({"assistant", "", {{"k" + std::to_string(i), "read_file", {{"path", "f"}}}}});
+            hist.push_back({"tool", big, {}, "read_file", "k" + std::to_string(i)});
+            hist.push_back({"assistant", "r" + std::to_string(i)});
+        }
+        agent.restore(hist);
+        Recorder r;
+        agent.submit("go", Origin::Local, r, no_cancel);
+        bool compacted = false;
+        for (const auto& n : r.notices) compacted = compacted || (n.rfind("context at", 0) == 0 && n.find("pruned") != std::string::npos);
+        expect(compacted && r.text.find("echo") != std::string::npos, "a history that outgrew the window in tool results is compacted before the call, without a usage report");
+        expect(agent.estimated_tokens() < 16384, "and fits afterwards (" + std::to_string(agent.estimated_tokens()) + " estimated tokens)");
+
+        // The server refuses anyway (llama.cpp's wording): compact and retry, and the turn still completes.
+        Agent b(ws, "test");
+        b.providers = {p};
+        b.restore(hist);
+        b.compaction.at = 0;  // no proactive compaction, so the 400 path is what saves it
+        fake.fail_left = 1;
+        fake.fail_body = R"({"error":{"code":400,"message":"request (27847 tokens) exceeds the available context size (16384 tokens), try increasing it","type":"invalid_request_error"}})";
+        Recorder rb;
+        b.submit("go", Origin::Local, rb, no_cancel);
+        bool retried = false;
+        for (const auto& n : rb.notices) retried = retried || n.rfind("the request was over the context window", 0) == 0;
+        expect(retried && rb.text.find("echo") != std::string::npos && fake.requests.size() >= 2, "a 400 for a too-long request compacts and retries, and the turn completes");
+        fake.fail_left = 3;
+        Recorder rc;
+        bool threw = false;
+        try { b.submit("again", Origin::Local, rc, no_cancel); } catch (const std::exception& e) { threw = std::string(e.what()).find("exceeds") != std::string::npos; }
+        expect(threw, "after two compact-and-retry rounds the error is reported");
     }
 
     section("string and token bans");

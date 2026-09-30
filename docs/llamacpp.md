@@ -8,6 +8,10 @@ MAIC vendors [llama.cpp](https://github.com/ggml-org/llama.cpp) and runs its `ll
 
 A bare model name (`--model qwen3.5:9b`) never reaches Ollama by accident: it goes to the first provider whose name does not match `[Oo]llama`. Ollama is used only when written as `ollama/NAME`.
 
+## Context size
+
+`services/llamacpp.json` starts every model with `--ctx-size 16384`, and the `llamacpp` provider reports `context_window = 16384` for the usage readout and auto-compaction. To run larger contexts, raise both: `--ctx-size 32768` in the service file and `providers.llamacpp.options.context_window = 32768` in settings, then `maic down llamacpp` and `maic up llamacpp`. The 4B at Q4_K_M fits 32k on an 8 GB card; the 9B is tighter. A request that still exceeds the window is compacted and retried by MAIC (see `:h compact`).
+
 ## Getting a model
 
 `maic vendor model llamacpp URL SHA256` downloads a GGUF with curl into `<models_dir>/llamacpp/` (or `--into DIR`), refuses to keep it unless the SHA-256 matches, and links it as the current model. Hugging Face shows the hash under a file's LFS details; its API gives it as `?blobs=true` on the tree listing. The Ollama blobs on this machine do not work here: Ollama's Qwen3.5 files carry its own engine's metadata (three rope sections where llama.cpp expects four, and the vision tower packed into the same file), so a proper upstream GGUF is needed, for example `unsloth/Qwen3.5-4B-GGUF`'s `Qwen3.5-4B-Q4_K_M.gguf`, with `mmproj-F16.gguf` beside it for images.

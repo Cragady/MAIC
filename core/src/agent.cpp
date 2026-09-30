@@ -335,14 +335,16 @@ std::string Agent::compact(Compaction stage, const std::atomic<bool>& cancel) {
     return report + " (" + std::to_string(before / 1024) + " KB -> " + std::to_string(after / 1024) + " KB of history)";
 }
 
-std::string Agent::compact_auto(const std::atomic<bool>& cancel) {
+std::string Agent::compact_auto(const std::atomic<bool>& cancel, size_t window, bool force_head) {
     UsageReport u = usage();
+    if (!window) window = u.last.context;
     size_t before = history_bytes();
     std::string report = compact(Compaction::Prune, cancel);
-    // Was pruning enough? Estimate the next call's size from the byte ratio.
-    if (u.last.context > 0 && u.last.input > 0 && before > 0) {
-        double est = static_cast<double>(u.last.input) * history_bytes() / before;
-        if (est / u.last.context >= compaction.at) report += "; " + compact(Compaction::Head, cancel);
+    // Was pruning enough? Scale the last reported size by the byte ratio, or estimate from bytes alone.
+    double est = u.last.input > 0 && before > 0 ? static_cast<double>(u.last.input) * history_bytes() / before : static_cast<double>(estimated_tokens());
+    if (force_head || (window > 0 && est / window >= compaction.at)) {
+        report += "; " + compact(Compaction::Head, cancel);
+        if (window > 0 && static_cast<double>(estimated_tokens()) > window) report += "; " + compact(Compaction::All, cancel);
     }
     return report;
 }
@@ -430,6 +432,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
         }
     }
     int ban_attempts = 0;
+    int context_retries = 0;
     denials_ = 0;
     for (int step = 0; step < kMaxSteps; ++step) {
         if (drain_mailbox()) events.on_notice("delivered your queued message");
@@ -447,10 +450,17 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
             push({"user", "[stopped: the user denied " + std::to_string(denials_) + " actions this turn; wait for new instructions]"});
             return;
         }
+        // The context window: the last call's report, else what the provider says it is.
+        size_t window = usage().last.context;
+        if (!window) window = static_cast<size_t>(provider.options.value("context_window", provider.kind == "ollama" ? options.num_ctx : 0));
         {
+            // Two views of how full the window is: the last call's real count, and a byte estimate that also
+            // sees what tool results added since (a single read can outgrow the window in one step).
             UsageReport u = usage();
-            if (u.last.context > 0 && compaction.at > 0 && static_cast<double>(u.last.input) / u.last.context >= compaction.at) {
-                events.on_notice("context at " + std::to_string(100 * u.last.input / u.last.context) + "%: compacting (" + compact_auto(cancel) + ")");
+            double reported = window ? static_cast<double>(u.last.input) / window : 0;
+            double estimated = window ? static_cast<double>(estimated_tokens()) / window : 0;
+            if (window && compaction.at > 0 && std::max(reported, estimated) >= compaction.at) {
+                events.on_notice("context at " + std::to_string(static_cast<int>(100 * std::max(reported, estimated))) + "%: compacting (" + compact_auto(cancel, window) + ")");
                 std::lock_guard lock(usage_mu_);
                 usage_.last.input = 0;  // until the next call reports the real size
             }
@@ -544,7 +554,17 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
             push({"user", "[interrupted by the user]"});
             events.on_notice("interrupted");
             return;
+        } catch (const ApiError& e) {
+            // The server refused the request as too long: compact and try again, twice at most.
+            std::string what = e.what();
+            bool too_long = e.status == 400 && (what.find("context") != std::string::npos || what.find("too long") != std::string::npos || what.find("too many tokens") != std::string::npos);
+            if (!too_long || context_retries >= 2) throw;
+            ++context_retries;
+            events.on_notice("the request was over the context window: compacting (" + compact_auto(cancel, window, context_retries == 2) + ") and trying again");
+            --step;
+            continue;
         }
+        context_retries = 0;
         ban_attempts = 0;
         deliver_now_ = false;
         if (log_ && !reply.content.empty()) log_->write("assistant", {{"text", reply.content}});
