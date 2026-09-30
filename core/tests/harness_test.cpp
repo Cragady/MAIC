@@ -2,6 +2,7 @@
 #include "check.hpp"
 
 #include "maic/harness.hpp"
+#include "maic/settings.hpp"
 #include "maic/sandbox.hpp"
 #include "maic/tools.hpp"
 
@@ -166,6 +167,13 @@ int main() {
         expect(a.check(Action{Action::Kind::Shell, {}, "maic-storyboard next"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow, "MAIC's helpers run in auto-read");
         expect(a.check(Action{Action::Kind::Shell, {}, "maic-storyboard next"}, Mode::Plan, Origin::Local).verdict == Verdict::Deny, "plan mode still refuses one that could write");
         expect(a.check(Action{Action::Kind::Shell, {}, "maic-storyboard status"}, Mode::Plan, Origin::Local).verdict == Verdict::Allow, "but its looking-only shapes are read-only");
+        Harness defaults(ws);
+        defaults.set_allow(Settings{}.allow);
+        expect(defaults.check(Action{Action::Kind::Shell, {}, "maic-danbooru-tags check --prompt \"1girl, grey hair\""}, Mode::Manual, Origin::Local).verdict == Verdict::Allow &&
+                   defaults.check(Action{Action::Kind::Shell, {}, "maic-danbooru-tags search hair"}, Mode::Plan, Origin::Local).verdict == Verdict::Allow &&
+                   defaults.check(Action{Action::Kind::Shell, {}, "maic-danbooru-tags --help"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow,
+               "maic-danbooru-tags is allowed by default in every mode, its offline shapes as read-only");
+        expect(defaults.check(Action{Action::Kind::Shell, {}, "maic-danbooru-tags fetch"}, Mode::Plan, Origin::Local).verdict == Verdict::Deny, "fetch is not read-only, so plan mode still refuses it");
         expect(a.check(Action{Action::Kind::Shell, {}, "sudo pytest"}, Mode::Auto, Origin::Local).verdict == Verdict::Trip, "trip patterns win over the allow list");
         expect(!a.check(Action{Action::Kind::Shell, {}, "make"}, Mode::Auto, Origin::Local).trusted, "an ordinary auto-mode allow is not trusted (the reviewer still sees it)");
         expect(a.harmless(Action{Action::Kind::Shell, {}, "maic-workflow-edit inspect wf.json --json"}) && a.harmless(Action{Action::Kind::Read, ws / "x"}) && !a.harmless(Action{Action::Kind::Write, ws / "x"}) && !a.harmless(Action{Action::Kind::Shell, {}, "make"}),
