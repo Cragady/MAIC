@@ -71,8 +71,9 @@ struct Settings {
     // word (with any prefix or plural) and the bare gender combos as whole words. Halted before running; layers add up.
     // The regex halts the bare two-gender-letters-plus-o combos, o in any position, as whole words; ffm, mmf
     // and the like are deliberately not on it. The word itself, with any prefix or plural, is the substring.
-    // Also moo in any ordering (moo, omo, oom). foo is left out on purpose: it is a common placeholder in code.
-    std::vector<std::string> forbid = {"threesome", "/(^|[^a-z0-9])([fm][fm]o|[fm]o[fm]|o[fm][fm]|moo|omo|oom)s?([^a-z0-9]|$)/"};
+    // Micaiah's rule: any three letters from f, m, o with at least one o, in any order, as a whole word
+    // (fmo, moo, omo, oom, ooo, oof, foo, ...). ffm and mmf carry no o and stay allowed.
+    std::vector<std::string> forbid = {"threesome", "/(^|[^a-z0-9])([fm][fm]o|[fm]o[fmo]|o[fmo][fmo])s?([^a-z0-9]|$)/"};
     std::vector<std::string> allow = {"maic-storyboard*", "maic-workflow-edit*", "maic-danbooru-tags*", "maic path*", "maic status*", "maic artifacts*", "maic sessions*"};  // pre-approved command patterns; layers add up
     Bans bans;                      // strings, patterns and tokens the model must not produce (docs/bans.md)
     nlohmann::json sampling = nlohmann::json::object();  // sampler keys for every provider; a provider's options.sampling overrides
