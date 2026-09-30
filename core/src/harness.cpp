@@ -196,6 +196,10 @@ Mode next_mode(Mode mode) {
     return Mode::Manual;
 }
 
+Harness::~Harness() {
+    for (auto& re : forbid_res_) regfree(&re.second);
+}
+
 Harness::Harness(fs::path workspace) : workspace_(fs::weakly_canonical(workspace)) {
     fs::path home = std::getenv("HOME");
     for (const char* p : {".ssh", ".gnupg", ".aws", ".kube", ".docker", ".password-store", ".local/share/keyrings", ".ollama"}) {
@@ -287,14 +291,30 @@ bool helper_read_only(const std::string& command) {
 
 }  // namespace
 
+void Harness::set_forbid(std::vector<std::string> terms) {
+    for (auto& re : forbid_res_) regfree(&re.second);
+    forbid_res_.clear();
+    forbid_ = std::move(terms);
+    for (const auto& term : forbid_) {
+        if (term.size() > 2 && term.front() == '/' && term.back() == '/') {
+            regex_t re;
+            if (regcomp(&re, term.substr(1, term.size() - 2).c_str(), REG_EXTENDED | REG_ICASE | REG_NOSUB) == 0) forbid_res_.emplace_back(term, re);
+        }
+    }
+}
+
 std::optional<std::string> Harness::forbidden(const std::string& text) const {
     if (forbid_.empty()) return std::nullopt;
     std::string low = text;
     for (auto& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     for (const auto& term : forbid_) {
+        if (term.size() > 2 && term.front() == '/' && term.back() == '/') continue;
         std::string t = term;
         for (auto& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (!t.empty() && low.find(t) != std::string::npos) return term;
+    }
+    for (const auto& [term, re] : forbid_res_) {
+        if (regexec(&re, text.c_str(), 0, nullptr, 0) == 0) return term;
     }
     return std::nullopt;
 }

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <filesystem>
+#include <regex.h>
+
 #include <optional>
 #include <string>
 #include <string_view>
@@ -52,6 +54,9 @@ bool is_read_only_command(const std::string& command);
 class Harness {
 public:
     explicit Harness(std::filesystem::path workspace);
+    ~Harness();
+    Harness(const Harness&) = delete;
+    Harness& operator=(const Harness&) = delete;
 
     const std::filesystem::path& workspace() const { return workspace_; }
 
@@ -75,7 +80,7 @@ public:
     bool harmless(const Action& action) const;
     // Forbidden terms: a tool call whose name, arguments, command or path contains one (any letter case) is
     // halted before anything runs, in every mode and under every harness. From `forbid` in settings.
-    void set_forbid(std::vector<std::string> terms) { forbid_ = std::move(terms); }
+    void set_forbid(std::vector<std::string> terms);  // a term written /like this/ is a POSIX extended regex
     const std::vector<std::string>& forbid() const { return forbid_; }
     std::optional<std::string> forbidden(const std::string& text) const;  // the term found, if any
     // An isolated session (tripwire = "isolated"): reads stay inside the workspace, commands run only there,
@@ -93,6 +98,7 @@ private:
     std::filesystem::path workspace_;
     std::vector<std::string> allow_;
     std::vector<std::string> forbid_;
+    std::vector<std::pair<std::string, regex_t>> forbid_res_;  // compiled /regex/ entries, by their text
     bool confined_ = false;
     std::vector<std::filesystem::path> secret_paths_;     // never read, never written
     std::vector<std::filesystem::path> system_paths_;     // never written

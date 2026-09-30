@@ -140,6 +140,17 @@ int main() {
         expect(f.check(Action{Action::Kind::Shell, {}, "ls"}, Mode::Auto, Origin::Local).verdict == Verdict::Allow, "other calls are untouched");
         f.set_allow({"grep *"});
         expect(f.check(Action{Action::Kind::Shell, {}, "grep threesome x"}, Mode::Auto, Origin::Local).verdict == Verdict::Deny, "the allow list does not override it");
+        Harness g(ws);
+        g.set_forbid(Settings{}.forbid);
+        for (const char* hit : {"grep ffm_threesome .", "search MMF_threesomes", "tag: fmo", "FFM", "mfo, rain", "find . -name '*mmo*'"}) {
+            expect(g.forbidden(hit).has_value(), std::string("the default list halts: ") + hit);
+        }
+        for (const char* ok : {"ls", "three some", "firmware", "mfmo", "commodore", "affirm"}) {
+            expect(!g.forbidden(ok).has_value(), std::string("and leaves alone: ") + ok);
+        }
+        Harness bad(ws);
+        bad.set_forbid({"/(unclosed/", "plain"});
+        expect(bad.forbidden("a plain one").has_value() && !bad.forbidden("unclosed").has_value(), "a regex that does not compile is skipped; plain terms still work");
     }
 
     std::cout << "isolated (confined) sessions\n";
