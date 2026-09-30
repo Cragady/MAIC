@@ -468,6 +468,48 @@ int main() {
         unsetenv("XDG_CONFIG_HOME");
     }
 
+    section("operator instructions set mid-conversation");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        Recorder r;
+        agent.submit("one", Origin::Local, r, no_cancel);
+        agent.set_system_prefix("Always start with pelican.");
+        agent.submit("two", Origin::Local, r, no_cancel);
+        const auto& msgs = fake.requests.back()["messages"];
+        bool note = false;
+        for (const auto& m : msgs) note = note || (m["role"] == "system" && m["content"].get<std::string>().find("# Operator instructions (take precedence") == 0 && m["content"].get<std::string>().find("pelican") != std::string::npos);
+        expect(note && msgs.back()["content"].get<std::string>().find("(Operator instructions in force") != std::string::npos, "a mid-conversation :system appends a system note and the per-turn note follows");
+        agent.set_system_prefix("");
+        agent.submit("three", Origin::Local, r, no_cancel);
+        expect(fake.requests.back()["messages"].back()["content"] == "three" && fake.requests.back()["messages"][fake.requests.back()["messages"].size() - 2]["content"].get<std::string>().find("withdrawn") != std::string::npos,
+               "withdrawing it appends a note and stops the per-turn note");
+    }
+
+    section("rules");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.rules = {"answer in French", "be brief"};
+        Recorder r;
+        agent.submit("hi", Origin::Local, r, no_cancel);
+        std::string sys = fake.requests.back()["messages"][0]["content"];
+        std::string user = fake.requests.back()["messages"].back()["content"];
+        expect(sys.rfind("# Operator instructions", 0) == 0 && sys.find("- answer in French\n- be brief") != std::string::npos && sys.find("# Operator instructions, again") != std::string::npos,
+               "rules lead and close the system prompt as a list");
+        expect(user.find("(Operator instructions in force, they take precedence: - answer in French\n- be brief)") != std::string::npos, "and ride in the per-turn note");
+        agent.set_rules({"be brief"});
+        agent.submit("again", Origin::Local, r, no_cancel);
+        const auto& msgs = fake.requests.back()["messages"];
+        expect(msgs[msgs.size() - 2]["role"] == "system" && msgs[msgs.size() - 2]["content"].get<std::string>().find("- be brief") != std::string::npos &&
+                   msgs[msgs.size() - 2]["content"].get<std::string>().find("French") == std::string::npos,
+               "changing the rules mid-conversation appends a system note with the current set");
+    }
+
     section("prefill");
     {
         FakeOllama fake;

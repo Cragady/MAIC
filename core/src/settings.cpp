@@ -169,6 +169,9 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.load_instructions = j.value("load_instructions", s.load_instructions);
         s.system_prompt = j.value("system_prompt", s.system_prompt);
         s.prefill = j.value("prefill", s.prefill);
+        if (j.contains("rules") && j["rules"].is_array()) {
+            for (const auto& r : j["rules"]) if (r.is_string() && !r.get<std::string>().empty()) s.rules.push_back(r.get<std::string>());
+        }
         s.harness = j.value("harness", s.harness);
         if (j.contains("sampling") && j["sampling"].is_object()) {
             for (const auto& [k, v] : j["sampling"].items()) s.sampling[k] = v;
@@ -341,6 +344,8 @@ void write_default_settings(bool as_json) {
         {"load_instructions", d.load_instructions},
         {"system_prompt", d.system_prompt},
         {"prefill", d.prefill},
+        {"rules", nlohmann::json::array()},
+        {"//rules", "standing one-line instructions (\"always answer in French\"); they ride with system_prompt at both ends of the system prompt and in the per-turn note. :rule in a session, --rule on the command line"},
         {"//prefill", "text every reply starts with, sent as the opening of the assistant turn; a guarantee where a system prompt is a request"},
         {"harness", d.harness},
         {"//harness", "smart: a model reads the conversation and reviews every command or write the rules would allow without asking (auto, edit); dumb: the rule list alone"},

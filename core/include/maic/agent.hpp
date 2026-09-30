@@ -164,6 +164,14 @@ public:
     // Operator text placed at the very top of the system prompt, before MAIC's own briefing. Independent of
     // instruction files: use both, either, or neither.
     std::string system_prefix;
+    // Standing rules, one line each; they ride with the operator text wherever it goes.
+    std::vector<std::string> rules;
+    // The operator text as the model sees it: system_prefix, then the rules as a list. "" when both are empty.
+    std::string operator_text() const;
+    // Set either; in a running conversation the new text is also appended as a system note, since the system
+    // prompt itself is never rewritten (append-only history).
+    void set_system_prefix(const std::string& text);
+    void set_rules(std::vector<std::string> new_rules);
     // When false, no MAIC.md / AGENTS.md is loaded or attached, anywhere.
     bool load_instruction_files = true;
 

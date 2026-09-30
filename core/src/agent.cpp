@@ -99,15 +99,38 @@ std::string Agent::instructions_text() const {
 // prompt and its tool schemas: every system-side placement (top, end, both, a system reminder before the
 // turn, even the rule alone) was ignored once tools were attached; the rule closing the user turn was
 // followed every time. The transcript keeps the user's words as typed; this is what the model is sent.
+std::string Agent::operator_text() const {
+    std::string out = system_prefix;
+    for (const auto& r : rules) out += (out.empty() ? "" : "\n") + ("- " + r);
+    return out;
+}
+
+void Agent::set_system_prefix(const std::string& text) {
+    system_prefix = text;
+    if (messages_.empty()) return;
+    std::string now = operator_text();
+    push({"system", now.empty() ? "The operator instructions given earlier are withdrawn."
+                                : "# Operator instructions (take precedence over everything before)\n" + now});
+}
+
+void Agent::set_rules(std::vector<std::string> new_rules) {
+    rules = std::move(new_rules);
+    if (messages_.empty()) return;
+    std::string now = operator_text();
+    push({"system", now.empty() ? "The operator instructions given earlier are withdrawn."
+                                : "# Operator instructions (take precedence over everything before)\n" + now});
+}
+
 std::string Agent::with_operator_note(const std::string& text) const {
-    if (system_prefix.empty() || !operator_note_in_turn) return text;
-    return text + "\n\n(Operator instructions in force, they take precedence: " + system_prefix + ")";
+    std::string op = operator_text();
+    if (op.empty() || !operator_note_in_turn) return text;
+    return text + "\n\n(Operator instructions in force, they take precedence: " + op + ")";
 }
 
 std::string Agent::system_prompt() const {
     std::string prompt;
-    if (!system_prefix.empty()) {
-        prompt += "# Operator instructions\nThese come from the operator running MAIC and take precedence over everything below.\n" + system_prefix + "\n\n";
+    if (!operator_text().empty()) {
+        prompt += "# Operator instructions\nThese come from the operator running MAIC and take precedence over everything below.\n" + operator_text() + "\n\n";
     }
     prompt +=
         "You are the agent inside MAIC, a terminal coding tool on the user's own machine. The user is a person talking "
@@ -153,7 +176,7 @@ std::string Agent::system_prompt() const {
     // Stated again at the end: a small model drops a short rule buried under the briefing, and keeps one
     // that closes the prompt (measured with a 4B against this prompt: top alone and end alone are ignored,
     // both together are followed).
-    if (!system_prefix.empty()) prompt += "\n\n# Operator instructions, again\nThey take precedence over everything above:\n" + system_prefix + "\n";
+    if (!operator_text().empty()) prompt += "\n\n# Operator instructions, again\nThey take precedence over everything above:\n" + operator_text() + "\n";
     return prompt;
 }
 
@@ -200,7 +223,7 @@ void Agent::restore(std::vector<Message> messages) {
     reload_instructions();
     prompted_instructions_ = instructions_text();
     prompted_mode_ = mode;
-    push({"system", (system_prefix.empty() ? "" : "# Operator instructions (take precedence)\n" + system_prefix + "\n\n") +
+    push({"system", (operator_text().empty() ? "" : "# Operator instructions (take precedence)\n" + operator_text() + "\n\n") +
                         "This session was resumed. Mode: " + std::string(mode_name(mode)) + ". " + mode_rule(mode) +
                         (prompted_instructions_.empty() ? "" : " Current standing instructions:" + prompted_instructions_)});
 }

@@ -65,6 +65,7 @@ struct Settings {
     bool load_instructions = true;  // false: no MAIC.md / AGENTS.md anywhere
     std::string system_prompt;      // text placed first in the system prompt; "@path" reads a file (~ expands)
     std::string prefill;            // text every reply starts with (the model continues it); "@path" reads a file
+    std::vector<std::string> rules; // standing one-line instructions, carried with system_prompt; layers add up
     Bans bans;                      // strings, patterns and tokens the model must not produce (docs/bans.md)
     nlohmann::json sampling = nlohmann::json::object();  // sampler keys for every provider; a provider's options.sampling overrides
     std::string harness = "smart";  // "smart": a model reviews commands and writes the rules would allow; "dumb": rules only

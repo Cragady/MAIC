@@ -230,6 +230,7 @@ public:
         agent_.load_instruction_files = settings_.load_instructions;
         agent_.system_prefix = resolve_system_prompt(settings_.system_prompt);
         agent_.prefill = resolve_system_prompt(settings_.prefill);
+        agent_.rules = settings_.rules;
         agent_.reload_instructions();
         agent_.bans = settings_.bans;
         apply_sampling();
@@ -1566,18 +1567,50 @@ void App::run_command(const std::string& line) {
             } else {
                 post(Kind::Error, ":sampling [KEY VALUE | xtc P [T] | unset KEY | reset]");
             }
-        } else if (cmd == "prefill") {
+        } else if (cmd == "rule" || cmd == "rules") {
+            std::istringstream a(arg);
+            std::string sub;
+            a >> sub;
+            std::string rest;
+            std::getline(a >> std::ws, rest);
+            auto rs = agent_.rules;
+            if (arg.empty() || arg == "list") {
+                std::string out = "standing rules (" + std::to_string(rs.size()) + "):";
+                for (size_t i = 0; i < rs.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". " + rs[i];
+                out += "\n:rule TEXT adds one · :rule remove N · :rule clear   (a rule is a request the model is reminded of every turn; :prefix gives the literal first words)";
+                post(Kind::Notice, out);
+            } else if (!idle()) {
+                post(Kind::Error, "wait for the turn to finish");
+            } else if (sub == "remove" && !rest.empty()) {
+                size_t n = static_cast<size_t>(std::atoi(rest.c_str()));
+                if (n >= 1 && n <= rs.size()) {
+                    rs.erase(rs.begin() + static_cast<long>(n - 1));
+                    agent_.set_rules(rs);
+                    post(Kind::Notice, "rule removed");
+                } else post(Kind::Error, "no rule " + rest);
+            } else if (sub == "clear") {
+                agent_.set_rules({});
+                post(Kind::Notice, "rules cleared");
+            } else {
+                rs.push_back(arg);
+                agent_.set_rules(rs);
+                post(Kind::Notice, "rule " + std::to_string(rs.size()) + " added; it is carried with the operator instructions from the next turn");
+            }
+        } else if (cmd == "prefill" || cmd == "prefix") {
             if (arg == "off" || arg == "none") agent_.prefill.clear(), post(Kind::Notice, "no prefill");
             else if (!arg.empty()) {
                 agent_.prefill = resolve_system_prompt(arg);
-                post(Kind::Notice, "every reply now starts with: " + agent_.prefill);
+                post(Kind::Notice, "every reply now begins with these literal words: \"" + agent_.prefill + "\"  (a rule such as \"always start with X\" belongs in :system; here you give X itself)");
             } else {
                 post(Kind::Notice, agent_.prefill.empty() ? "no prefill (:prefill TEXT makes every reply start with TEXT; :prefill off clears)" : "replies start with: " + agent_.prefill);
             }
         } else if (cmd == "system") {
-            if (!arg.empty() && idle()) {
-                agent_.system_prefix = resolve_system_prompt(arg);
-                post(Kind::Notice, "operator instructions set for the next turns");
+            if (arg == "off" && idle()) {
+                agent_.set_system_prefix("");
+                post(Kind::Notice, "operator instructions withdrawn");
+            } else if (!arg.empty() && idle()) {
+                agent_.set_system_prefix(resolve_system_prompt(arg));
+                post(Kind::Notice, "operator instructions set: they now lead the system prompt and close each of your messages as the model sees them");
             } else if (arg.empty()) {
                 post(Kind::Notice, agent_.system_prefix.empty() ? "no operator instructions (:system TEXT or :system @file sets them; --system on the command line)"
                                                                  : "operator instructions (placed first in the system prompt):\n" + agent_.system_prefix);
@@ -1665,6 +1698,7 @@ int run_tui(const TuiOptions& options) {
     if (options.record) settings.record = *options.record;
     if (options.system) settings.system_prompt = *options.system;
     if (options.prefill) settings.prefill = *options.prefill;
+    settings.rules.insert(settings.rules.end(), options.rules.begin(), options.rules.end());
     if (options.load_instructions) settings.load_instructions = *options.load_instructions;
     settings.bans.strings.insert(settings.bans.strings.end(), options.bans.begin(), options.bans.end());
     settings.bans.patterns.insert(settings.bans.patterns.end(), options.ban_patterns.begin(), options.ban_patterns.end());

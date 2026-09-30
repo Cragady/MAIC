@@ -44,7 +44,8 @@ void usage(std::ostream& out = std::cerr) {
                  "                                          FILE \"-\" reads stdin (then the prompt can't also be stdin)\n"
                  "       --system TEXT|@FILE, -S            operator instructions placed first in the system prompt (front-loads behaviour)\n"
                  "       --no-instructions                  load no MAIC.md / AGENTS.md anywhere; combines with --system\n"
-                 "       --prefill TEXT|@FILE               every reply starts with TEXT: put in the model's mouth, not asked for\n"
+                 "       --prefix TEXT|@FILE                every reply starts with these literal words (also --prefill)\n"
+                 "       --rule TEXT                        a standing instruction the model is reminded of every turn (repeatable)\n"
                  "       --ban TEXT|@FILE                   a phrase the model must not say, or a file with one per line (repeatable; :ban)\n"
                  "       --ban-pattern REGEX|@FILE          a POSIX extended regex the reply must not match, or a file of them (maic help bans)\n"
                  "       --xtc P[,T]                        exclude top choices: probability and threshold (0.5,0.1); llama.cpp-style\n"
@@ -391,7 +392,12 @@ int main(int argc, char** argv) {
             else if (a == "--interactive" || a == "-i") interactive = true;
             else if (a == "--system" || a == "-S") tui.system = headless.system = value("--system");
             else if (a == "--no-instructions") tui.load_instructions = headless.load_instructions = false;
-            else if (a == "--prefill") tui.prefill = headless.prefill = value("--prefill");
+            else if (a == "--prefill" || a == "--prefix") tui.prefill = headless.prefill = value(a.c_str());
+            else if (a == "--rule") {
+                std::string r = value("--rule");
+                tui.rules.push_back(r);
+                headless.rules.push_back(r);
+            }
             else if (a == "--harness") tui.harness = headless.harness = value("--harness");
             else if (a == "--accept-dumb-auto") tui.accept_dumb_auto = headless.accept_dumb_auto = true;
             else if (a == "--xtc") {
