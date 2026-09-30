@@ -32,7 +32,7 @@ git -C vendor/lua-pins archive HEAD | tar -x -C "$work/vendor/lua-pins"
 cmake -S "$work" -B "$work/build" -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DMAIC_GIT_VERSION="$tag" \
       -DMAIC_SOURCE_ROOT="$(pwd)" -DCMAKE_INSTALL_PREFIX="$prefix" >/dev/null
-cmake --build "$work/build" -j --target maic >/dev/null
+cmake --build "$work/build" -j --target maic maic-server >/dev/null
 cmake --install "$work/build" >/dev/null
 ln -sfn "$prefix/bin/maic" "$HOME/bin/maic"
 echo "installed $("$prefix/bin/maic" --version) at $prefix; ~/bin/maic points to it"
