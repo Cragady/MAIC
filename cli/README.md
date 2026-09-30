@@ -41,8 +41,9 @@ The input starts in normal mode, like opening vim: `i` to type. Cursor: a bar in
 
 | Where | Keys |
 | :--- | :--- |
-| insert | type; **Enter** new line; **Esc** to normal; Ctrl-W / Ctrl-U delete word / line; Ctrl-Y pastes the register; ↑ ↓ or Ctrl-P / Ctrl-N prompt history, which persists across sessions (the last 500 prompts) |
-| normal (input) | `i a I A o O` insert; `h j k l w b e 0 ^ $` move (Enter = down a line); `f{c} F{c} t{c} T{c}` to a character, `;` `,` repeat, also as operator targets (`dt)`, `cf,`); `x X D C S` edit; `d c y` + motion, `dd cc yy Y`; text objects after `d c y` or in visual mode: `iw aw iW aW i" a" i' i` i( a( ib i[ a[ i{ a{ iB i< a<` (so `ciw`, `di"`, `ya(`, `viw`); `v V` select; `p P` paste; `u` undo, **Ctrl-R** redo (multi-level; an insert session is one step); counts (`3w`); `:e` or **Ctrl-X Ctrl-E** opens the input in `$VISUAL` / `$EDITOR` / nvim as markdown and loads it back when you quit |
+| insert | type; **Enter** new line; **Esc** to normal; Ctrl-W / Ctrl-U delete word / line; Ctrl-Y pastes the register, **Ctrl-R** `{reg}` a named one; **Ctrl-O** runs one normal-mode command and comes back; ↑ ↓ or Ctrl-P / Ctrl-N prompt history, which persists across sessions (the last 500 prompts) |
+| normal (input) | `i a I A o O s S R` insert (a count repeats what you type: `3ix<Esc>`); `h j k l w b e ge 0 ^ $ gg G` move (Enter = down a line); `f{c} F{c} t{c} T{c}` to a character, `;` `,` repeat; `}` `{` paragraphs, `)` `(` sentences; `x X D C J r{c} ~` edit; operators `d c y > < gq gu gU g~` + motion, doubled for the line (`dd cc yy >> gqq guu gUU g~~`), `Y`; text objects after an operator or in visual mode: `iw aw iW aW ip ap is as i" a" i' i` i( a( ib i[ a[ i{ a{ iB i< a<` (so `ciw`, `dap`, `gqip`, `di"`, `ya(`, `viw`); `.` repeats the last change (with its count, or `5.`); `m{a-z}` marks, `'a` / `` `a `` jump, `''` back; `"a`..`"z` name a register, `"A` appends; `v V` select; `p P` paste (lines go on their own line); `u` undo, **Ctrl-R** redo (multi-level; an insert session is one step); counts everywhere (`3w`, `2d3w`, `3fa`, `2p`, `3J`); `:e` or **Ctrl-X Ctrl-E** opens the input in `$VISUAL` / `$EDITOR` / nvim as markdown and loads it back when you quit |
+| visual | `y d x c s` on the selection; `> <` shift, `J` join, `~ u U` case, `r{c}` replace every character, `gq` re-wrap; `o` swaps the ends; text objects (`vip` goes linewise) |
 | clipboard | `"+y` / `"*y` before any yank sends it to the system clipboard; `"+p` pastes from it; the **leader** (Space by default, `leader` in settings) then `y` yanks the line (normal) or the selection (visual) to the clipboard, leader then `p`/`P` pastes from it. In the conversation window every yank reaches the clipboard; `yiw`, `yw`, `y$`, `Y`, `yy` work there |
 | normal (input empty) | `j k` Ctrl-D/U Ctrl-F/B `G` scroll the conversation without leaving the input; `v` / `V` jump into the conversation window selecting |
 | conversation window | **Ctrl-W k** enters, **Ctrl-W j** (or Esc, `i`, Enter) returns; `j k h l w b e 0 $ gg G` Ctrl-D/U/F/B move; `f t F T ; ,` on the line; `}` / `{` next / previous message, `]]` / `[[` your messages only; `v` / `V` select; `y` yanks (to the register **and** the system clipboard); `yy` a line; `/pattern` then `n` / `N` search (smart case); `o` swaps selection ends |
@@ -73,7 +74,7 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:settings` | which settings files are in effect and where this session's transcript lives |
 | `:instructions` | the MAIC.md / AGENTS.md files in effect |
 | `:session` / `:artifacts` | where this transcript is; where everything is kept, with sizes |
-| `:reg` | the yank register |
+| `:reg` | the yank register and the named registers `"a`..`"z` |
 | `:undo [N]` | restore the file(s) the agent changed last; every write saves the previous content first |
 | `:copy` / `:export [FILE]` | copy the last reply to the clipboard; write the transcript as markdown |
 | `:stash` / `:pop` | park the input draft and bring it back (survives restarts). `:q` with an unsent draft stashes it for you |
@@ -85,7 +86,7 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:compact [prune\|head\|all]` | free context. Default order: stub old tool results (dialog untouched), then, only if still needed, summarise the oldest turns into a handover note. `all` is a whole-conversation summary. Runs automatically at `compact_at` (75%) |
 | `:clear` | start a new conversation (the session file keeps both) |
 | `:trip REASON` / `:unlock` | trip the harness now; reset it without leaving the session (asks for your sudo password) |
-| `:h [TOPIC]` | vim-style help. `:h` alone is an index; `:h w`, `:h u`, `:h Ctrl-W`, `:h Alt+Enter`, `:h modes`, `:h harness`, `:h sessions`; a unique prefix is enough and an ambiguous one lists the candidates |
+| `:h [TOPIC]` | vim-style help. `:h` alone is an index; `:h w`, `:h u`, `:h f`, `:h .`, `:h gq`, `:h Ctrl-W`, `:h Alt+Enter`, `:h modes`, `:h harness`, `:h sessions`; a unique prefix is enough and an ambiguous one lists the candidates |
 | `:q` | quit |
 
 ### After every turn

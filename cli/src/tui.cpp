@@ -402,7 +402,7 @@ void App::welcome() {
 // ---------- rendering ----------
 
 Element App::render_input(size_t width, int& rows) {
-    bool insert = editor_.mode() == Editor::Mode::Insert;
+    bool insert = editor_.mode() == Editor::Mode::Insert || editor_.mode() == Editor::Mode::Replace;
     std::string pre = lua_mode_ ? (insert ? "lua❯" : "lua│") : insert ? "❯ " : "│ ";
     size_t avail = width > 3 ? width - 2 : 1;
     auto lines = editor_.text().empty() ? std::vector<StyledLine>{{}} : markdown_lines(editor_.text());
@@ -582,6 +582,7 @@ Element App::render_bottom_status() {
     } else {
         switch (editor_.mode()) {
             case Editor::Mode::Insert: vim = " INSERT ", style = "status_insert"; break;
+            case Editor::Mode::Replace: vim = " REPLACE ", style = "status_insert"; break;
             case Editor::Mode::Normal: vim = " NORMAL "; break;
             case Editor::Mode::Visual: vim = " VISUAL ", style = "status_visual"; break;
             case Editor::Mode::VisualLine: vim = " V-LINE ", style = "status_visual"; break;
@@ -1319,7 +1320,9 @@ void App::run_command(const std::string& line) {
             out += "\nclean with: maic artifacts clean OWNER/NAME [--older-than DAYS]";
             post(Kind::Notice, out);
         } else if (cmd == "reg" || cmd == "register") {
-            post(Kind::Notice, register_.empty() ? "register is empty" : "register:\n" + register_);
+            std::string out = register_.empty() ? "register is empty" : "register:\n" + register_;
+            for (const auto& [name, r] : editor_.registers()) out += "\n\"" + std::string(1, name) + (r.linewise ? " (lines):\n" : ":\n") + r.text;
+            post(Kind::Notice, out);
         } else if (!cmd.empty()) {
             // A unique prefix runs the command, like vim's :abbreviations.
             auto matches = match_commands(cmd);

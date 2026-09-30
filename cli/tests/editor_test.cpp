@@ -15,7 +15,7 @@ namespace {
 
 std::string reg;
 
-// Feeds keys vim-style: "<esc>", "<cr>", "<bs>", "<c-w>", "<c-u>" and plain characters.
+// Feeds keys vim-style: "<esc>", "<cr>", "<bs>", "<c-w>", "<c-u>", "<c-r>", "<c-o>" and plain characters.
 Editor::Result keys(Editor& ed, const std::string& seq) {
     Editor::Result last;
     for (size_t i = 0; i < seq.size();) {
@@ -26,6 +26,7 @@ Editor::Result keys(Editor& ed, const std::string& seq) {
         else if (seq.compare(i, 5, "<c-w>") == 0) e = Event::Character("\x17"), i += 5;
         else if (seq.compare(i, 5, "<c-u>") == 0) e = Event::Character("\x15"), i += 5;
         else if (seq.compare(i, 5, "<c-r>") == 0) e = Event::Character("\x12"), i += 5;
+        else if (seq.compare(i, 5, "<c-o>") == 0) e = Event::Character("\x0f"), i += 5;
         else e = Event::Character(seq.substr(i, utf8_next(seq, i) - i)), i = utf8_next(seq, i);
         last = ed.handle(e);
     }
@@ -145,6 +146,386 @@ int main() {
     check("say (hello) and (bye)", "<esc>$dF(", "say (hello) and )", "dF( deletes back to the paren, keeping the cursor char");
     check("one two three", "<esc>0vf y", "one two three", "v then f extends the selection");
     expect(reg == "one ", "and y yanks it");
+
+    section("paragraphs and sentences");
+    {
+        Editor ed = fresh("a b\nc d\n\ne f\ng h");
+        keys(ed, "<esc>gg}");
+        expect(ed.cursor() == 8, "} goes to the empty line after the paragraph: " + std::to_string(ed.cursor()));
+        keys(ed, "}");
+        expect(ed.cursor() == 15, "} at the last paragraph goes to the end: " + std::to_string(ed.cursor()));
+        keys(ed, "{");
+        expect(ed.cursor() == 8, "{ goes back to the empty line");
+        keys(ed, "{");
+        expect(ed.cursor() == 0, "{ at the first paragraph goes to the start");
+        keys(ed, "G2{");
+        expect(ed.cursor() == 0, "2{ takes a count");
+    }
+    check("a b\nc d\n\ne f", "<esc>ggd}", "\ne f", "d} from the line start deletes the paragraph's lines");
+    check("a b\nc d\n\ne f", "<esc>ggld}", "a\n\ne f", "d} from mid-line keeps the line break");
+    check("a b\nc d\n\ne f\ng h", "<esc>ggdap", "e f\ng h", "dap deletes the paragraph and the empty line");
+    check("a b\nc d\n\ne f\ng h", "<esc>ggdip", "\ne f\ng h", "dip leaves the empty line");
+    check("a b\nc d\n\ne f\ng h", "<esc>Gdap", "a b\nc d", "dap on the last paragraph takes the empty line before it");
+    check("a b\n\n\nc d", "<esc>ggjdip", "a b\nc d", "dip on empty lines deletes the run of them");
+    check("a b\nc d\n\ne f\ng h", "<esc>Gvipd", "a b\nc d\n", "vip selects the paragraph linewise");
+    check("a b\nc d\n\ne f\ng h", "<esc>ggcipX<esc>", "X\n\ne f\ng h", "cip changes the paragraph to one line");
+    {
+        Editor ed = fresh("a b\nc d\n\ne f\ng h");
+        keys(ed, "<esc>Gyip");
+        expect(reg == "e f\ng h", "yip yanks the paragraph");
+        keys(ed, "ggP");
+        expect(ed.text() == "e f\ng h\na b\nc d\n\ne f\ng h", "and P puts the lines above");
+    }
+    {
+        Editor ed = fresh("One two. Three four! Five six? Seven");
+        keys(ed, "<esc>0)");
+        expect(ed.cursor() == 9, ") goes to the next sentence: " + std::to_string(ed.cursor()));
+        keys(ed, "2)");
+        expect(ed.cursor() == 31, "2) takes a count: " + std::to_string(ed.cursor()));
+        keys(ed, "(");
+        expect(ed.cursor() == 21, "( goes to the start of the previous sentence");
+        keys(ed, "l(");
+        expect(ed.cursor() == 21, "( mid-sentence goes to its start");
+        keys(ed, "$)");
+        expect(ed.cursor() == 35, ") at the last sentence goes to the end");
+    }
+    check("One two. Three four! Five six? Seven", "<esc>0d)", "Three four! Five six? Seven", "d) deletes the sentence and its space");
+    check("One two. Three four! Five six? Seven", "<esc>0das", "Three four! Five six? Seven", "das deletes a sentence with its trailing space");
+    check("One two. Three four! Five six? Seven", "<esc>0dis", " Three four! Five six? Seven", "dis keeps the space");
+    check("One two. Three four! Five six? Seven", "<esc>$das", "One two. Three four! Five six?", "das on the last sentence takes the space before it");
+    check("One two. Three four! Five six? Seven", "<esc>0)cisX<esc>", "One two. X Five six? Seven", "cis changes the sentence under the cursor");
+    check("One two. Three four! Five six?", "<esc>0d2as", "Five six?", "2as takes two sentences");
+    check("One two.  Three four.", "<esc>0fThdis", "One two.Three four.", "is on the white space between sentences takes the white space");
+    check("Hi there.\n\nBye now.", "<esc>gg0das", "\n\nBye now.", "as stops before an empty line");
+    check("One two. Three four.", "<esc>0visd", " Three four.", "vis selects the sentence");
+
+    section("dot repeat");
+    check("a b c d", "<esc>0dw.", "c d", ". repeats dw");
+    check("a b c d", "<esc>0dw..", "d", ". repeats again");
+    check("one two three four", "<esc>0cwX<esc>w.", "X X three four", ". repeats a change with its typed text");
+    check("abcdefgh", "<esc>02x.", "efgh", ". keeps the count");
+    check("abcdefgh", "<esc>0x3.", "efgh", "a count on . replaces the old one");
+    check("", "<esc>ifoo<esc>.", "fofooo", ". repeats an insert session");
+    check("x\ny", "<esc>ggA!<esc>j.", "x!\ny!", ". repeats A and the typed text on another line");
+    check("abc", "<esc>xu.", "ab", "u is not a change: . repeats the x");
+    check("abcdef", "<esc>0vld.", "ef", ". repeats a visual delete on the same amount of text");
+    check("a b c", "<esc>0d2w.", "", ". repeats d2w");
+    check("one two three four", "<esc>0dt .", " three four", ". repeats an f/t target");
+    check("aa bb cc", "<esc>0ciwX<esc>w.", "X X cc", ". repeats a text object change");
+    check("ab", "<esc>$ylp.", "abbb", ". repeats p");
+    check("abc", "<esc>0rx.", "xbc", ". repeats r without moving");
+    check("abc", "<esc>0rxl.", "xxc", ". repeats r on the next character");
+    check("a\nb\nc\nd", "<esc>ggJ.", "a b c\nd", ". repeats J");
+    check("a\nb", "<esc>gg>>j.", "    a\n    b", ". repeats >>");
+    check("aaa", "<esc>0~.", "AAa", ". repeats ~");
+    check("", "<esc>3ix<esc>", "xxx", "a count on i repeats the insert");
+    check("", "<esc>2ofoo<esc>", "\nfoo\nfoo", "a count on o opens that many lines");
+    check("123456", "<esc>02Rab<esc>", "abab56", "a count on R repeats the replacement");
+    check("", "<esc>3ix<esc>.", "xxxxxx", ". repeats a counted insert with its count");
+
+    section("marks");
+    {
+        Editor ed = fresh("one\n  two\nthree");
+        keys(ed, "<esc>ggjll");
+        expect(ed.cursor() == 6, "setup: on the w of two");
+        keys(ed, "mbG");
+        expect(ed.cursor() == 10, "G goes to the last line");
+        keys(ed, "`b");
+        expect(ed.cursor() == 6, "`b jumps to the exact position");
+        keys(ed, "G'b");
+        expect(ed.cursor() == 6, "'b jumps to the first non-blank of the line");
+        keys(ed, "``");
+        expect(ed.cursor() == 10, "`` returns to where the jump left from");
+        keys(ed, "''");
+        expect(ed.cursor() == 6, "'' returns to the line of the jump");
+        keys(ed, "ggmaG");
+        keys(ed, "y'a");
+        expect(reg == "one\n  two\nthree", "y'a yanks the lines up to the mark");
+        keys(ed, "G`bd`a");
+        expect(ed.text() == "two\nthree", "d`a deletes to the exact mark");
+        Editor moved = fresh("abc def");
+        keys(moved, "<esc>$ma0iXX<esc>`a");
+        expect(moved.cursor() == 8, "a mark follows text inserted before it: " + std::to_string(moved.cursor()));
+        keys(moved, "0dwma");
+        keys(moved, "$`a");
+        expect(moved.cursor() == 0, "a mark inside deleted text moves to the start of the deletion");
+        Editor none = fresh("abc");
+        keys(none, "<esc>0l`z");
+        expect(none.cursor() == 1, "an unset mark does not move");
+    }
+
+    section("gq and case");
+    {
+        Editor ed = fresh("aaa bbb ccc");
+        ed.set_textwidth(7);
+        keys(ed, "<esc>gqq");
+        expect(ed.text() == "aaa bbb\nccc", "gqq wraps the line at textwidth -> \"" + ed.text() + "\"");
+        expect(ed.cursor() == 8, "the cursor lands on the last formatted line");
+        keys(ed, "u");
+        expect(ed.text() == "aaa bbb ccc", "gq undoes as one step");
+        Editor para = fresh("aa\nbb cc\ndd\n\nee ff");
+        para.set_textwidth(5);
+        keys(para, "<esc>gggqip");
+        expect(para.text() == "aa bb\ncc dd\n\nee ff", "gqip rejoins and rewraps the paragraph -> \"" + para.text() + "\"");
+        keys(para, "Ggqq");
+        expect(para.text() == "aa bb\ncc dd\n\nee ff", "an already wrapped line stays");
+        Editor ind = fresh("  aa bb cc");
+        ind.set_textwidth(7);
+        keys(ind, "<esc>gqgq");
+        expect(ind.text() == "  aa bb\n  cc", "gqgq keeps the indent -> \"" + ind.text() + "\"");
+        Editor two = fresh("aa\nbb\ncc");
+        keys(two, "<esc>gggqj");
+        expect(two.text() == "aa bb\ncc", "gqj joins two lines that fit -> \"" + two.text() + "\"");
+        Editor vis = fresh("aa\nbb\ncc");
+        keys(vis, "<esc>ggVjgq");
+        expect(vis.text() == "aa bb\ncc", "gq on a visual selection");
+        Editor deflt = fresh("");
+        std::string longline;
+        for (int i = 0; i < 30; ++i) longline += "word ";
+        keys(deflt, longline + "<esc>gqq");
+        expect(deflt.text().find('\n') == 79 && deflt.text().find('\n', 80) == std::string::npos, "the default textwidth is 80");
+    }
+    check("Hello World", "<esc>guu", "hello world", "guu lowercases the line");
+    check("Hello World", "<esc>gUU", "HELLO WORLD", "gUU uppercases the line");
+    check("Hello World", "<esc>g~~", "hELLO wORLD", "g~~ toggles the line");
+    check("Hello World", "<esc>gugu", "hello world", "gugu is guu");
+    check("hello world", "<esc>0wgUiw", "hello WORLD", "gUiw uppercases the word");
+    check("hello world", "<esc>0gUw", "HELLO world", "gUw takes a motion");
+    check("Hello World", "<esc>0g~$", "hELLO wORLD", "g~$ to the end of the line");
+    check("HELLO World", "<esc>0gue", "hello World", "gue");
+    check("a\nb\nc", "<esc>gggUj", "A\nB\nc", "gUj is linewise");
+    check("abc", "<esc>0~", "Abc", "~ toggles one character");
+    check("abc", "<esc>0~~", "ABc", "~ moves right");
+    check("abc", "<esc>02~", "ABc", "2~");
+    check("abc", "<esc>0viwU", "ABC", "U in visual mode");
+    check("ABC", "<esc>0viwu", "abc", "u in visual mode");
+    check("aBc", "<esc>0v$~", "AbC", "~ in visual mode");
+    check("Hello", "<esc>0vlgU", "HEllo", "gU in visual mode");
+    {
+        Editor ed = fresh("hello world");
+        keys(ed, "<esc>$gUiw");
+        expect(ed.cursor() == 6, "gUiw leaves the cursor at the start of the word");
+        keys(ed, "$g~~");
+        expect(ed.cursor() == 10, "g~~ leaves the cursor where it was");
+    }
+
+    section("counts");
+    check("abcdef", "<esc>05x", "f", "5x");
+    check("a\nb\nc\nd", "<esc>gg3dd", "d", "3dd deletes three lines");
+    check("a\nb\nc\nd", "<esc>gg2dj", "d", "2dj deletes three lines");
+    check("a\nb\nc\nd", "<esc>gg2d2j", "", "2d2j deletes four");
+    check("ab", "<esc>$yl2p", "abbb", "2p pastes twice");
+    check("a\nb", "<esc>ggyy2p", "a\na\na\nb", "2p with lines");
+    check("a b c d e", "<esc>03dw", "d e", "3dw");
+    check("a b c d e", "<esc>0d3w", "d e", "d3w");
+    check("a b c d e f g", "<esc>02d3w", "g", "2d3w deletes six words");
+    check("aXbXcXd", "<esc>03fXD", "aXbXc", "3fX then D");
+    check("a b c d", "<esc>03fx", "a b c d", "a count that is not there does nothing");
+    check("abcdef", "<esc>03rx", "xxxdef", "3rx");
+    check("a\nb\nc\nd", "<esc>gg3J", "a b c\nd", "3J joins three lines");
+    check("abc", "<esc>02sX<esc>", "Xc", "2s substitutes two characters");
+    check("a\nb\nc", "<esc>gg2>>", "    a\n    b\nc", "2>> shifts two lines");
+    check("abc", "<esc>0xx2u", "abc", "2u undoes twice");
+    check("one two", "<esc>02cwX<esc>", "X", "2cw");
+    {
+        Editor ed = fresh("a\nb\nc");
+        keys(ed, "<esc>2G");
+        expect(ed.cursor() == 2, "2G goes to line 2");
+        keys(ed, "3gg");
+        expect(ed.cursor() == 4, "3gg goes to line 3");
+        keys(ed, "gg2$");
+        expect(ed.cursor() == 2, "2$ goes to the end of the next line");
+        keys(ed, "gg2<cr>");
+        expect(ed.cursor() == 4, "2 Enter moves two lines down");
+    }
+    check("x\ny", "<esc>gg3ia<esc>", "aaax\ny", "3ia");
+    check("abcdef", "<esc>03X", "abcdef", "3X at the start does nothing");
+    check("abcdef", "<esc>$3X", "abf", "3X");
+    check("abcdef", "<esc>$2X", "abcf", "2X");
+    check("ab\ncd\nef", "<esc>gg2D", "\nef", "2D deletes to the end of the next line");
+
+    section("J r R s > <");
+    {
+        Editor ed = fresh("one\n  two\nthree");
+        keys(ed, "<esc>ggJ");
+        expect(ed.text() == "one two\nthree", "J joins and drops the indent -> \"" + ed.text() + "\"");
+        expect(ed.cursor() == 3, "the cursor sits on the inserted space");
+        keys(ed, "J");
+        expect(ed.text() == "one two three", "J again");
+        keys(ed, "J");
+        expect(ed.text() == "one two three", "J on the last line does nothing");
+    }
+    check("one \ntwo", "<esc>ggJ", "one two", "no extra space after trailing white space");
+    check("one\n)two", "<esc>ggJ", "one)two", "no space before a closing paren");
+    check("one\n\ntwo", "<esc>ggJ", "one\ntwo", "joining an empty line adds no space");
+    check("\ntwo", "<esc>ggJ", "two", "joining onto an empty line adds no space");
+    check("a\nb\nc\nd", "<esc>ggVjJ", "a b\nc\nd", "J in visual mode joins the selected lines");
+    check("a\nb\nc", "<esc>ggVJ", "a b\nc", "J on a one-line selection joins two");
+    check("a\nb", "<esc>ggJu", "a\nb", "J undoes");
+    {
+        Editor ed = fresh("abc");
+        keys(ed, "<esc>0rx");
+        expect(ed.text() == "xbc" && ed.cursor() == 0, "rx replaces and stays");
+        keys(ed, "2rY");
+        expect(ed.text() == "YYc" && ed.cursor() == 1, "2rY ends on the last replaced character");
+        keys(ed, "05rz");
+        expect(ed.text() == "YYc", "a count past the end changes nothing");
+        keys(ed, "0lr<cr>");
+        expect(ed.text() == "Y\nc" && ed.cursor() == 2, "r Enter breaks the line -> \"" + ed.text() + "\"");
+        keys(ed, "u");
+        expect(ed.text() == "YYc", "r undoes");
+        keys(ed, "r<esc>");
+        expect(ed.text() == "YYc", "Esc cancels r");
+        keys(ed, "0ré");
+        expect(ed.text() == "éYc", "r with a multi-byte character");
+        keys(ed, "$r1");
+        expect(ed.text() == "éY1", "r with a digit");
+    }
+    check("abc", "<esc>0vlrx", "xxc", "r in visual mode replaces the selection");
+    check("ab\ncd", "<esc>ggVjrx", "xx\nxx", "r on a linewise selection keeps the line breaks");
+    {
+        Editor ed = fresh("abcdef");
+        keys(ed, "<esc>0R");
+        expect(ed.mode() == Editor::Mode::Replace, "R enters replace mode");
+        keys(ed, "xyz");
+        expect(ed.text() == "xyzdef", "typing replaces");
+        keys(ed, "<bs><bs>");
+        expect(ed.text() == "xbcdef", "backspace restores what was replaced");
+        keys(ed, "<esc>");
+        expect(ed.mode() == Editor::Mode::Normal && ed.cursor() == 0, "Esc leaves replace mode and steps back");
+        keys(ed, "u");
+        expect(ed.text() == "abcdef", "a replace session undoes as one step");
+        keys(ed, "$Rxyz<esc>");
+        expect(ed.text() == "abcdexyz", "R past the end appends");
+        Editor nl = fresh("abc");
+        keys(nl, "<esc>0lR<cr>x<esc>");
+        expect(nl.text() == "a\nxc", "Enter in replace mode breaks the line -> \"" + nl.text() + "\"");
+    }
+    check("abc", "<esc>0sX<esc>", "Xbc", "s substitutes a character");
+    check("abc", "<esc>$sX<esc>", "abX", "s at the end");
+    check("a\nb", "<esc>ggSx<esc>", "x\nb", "S changes the line");
+    {
+        Editor ed = fresh("a\nb");
+        keys(ed, "<esc>gg>>");
+        expect(ed.text() == "    a\nb", ">> shifts by shiftwidth -> \"" + ed.text() + "\"");
+        expect(ed.cursor() == 4, "the cursor goes to the first non-blank");
+        keys(ed, "<<");
+        expect(ed.text() == "a\nb", "<< shifts back");
+        keys(ed, "<<");
+        expect(ed.text() == "a\nb", "<< on an unindented line does nothing");
+        keys(ed, ">j");
+        expect(ed.text() == "    a\n    b", ">j shifts both lines");
+        keys(ed, "G<k");
+        expect(ed.text() == "a\nb", "<k shifts both back");
+        ed.set_shiftwidth(2);
+        keys(ed, "gg>>");
+        expect(ed.text() == "  a\nb", "shiftwidth is settable");
+        keys(ed, "Vj>");
+        expect(ed.text() == "    a\n  b", "> in visual mode");
+        keys(ed, "ggVj2<");
+        expect(ed.text() == "a\nb", "a count in visual mode shifts that many times");
+        keys(ed, "gg>ip");
+        expect(ed.text() == "  a\n  b", ">ip");
+    }
+    check("a\n\nb", "<esc>gg>ip", "    a\n\nb", ">> skips empty lines");
+
+    section("named registers");
+    {
+        Editor ed = fresh("one two three");
+        keys(ed, "<esc>0\"ayw");
+        expect(ed.registers().count('a') && ed.registers().at('a').text == "one ", "\"ayw yanks into a");
+        expect(reg == "one ", "and the unnamed register follows");
+        keys(ed, "w\"byw");
+        expect(ed.registers().at('b').text == "two " && ed.registers().at('a').text == "one ", "\"byw fills b, a stays");
+        keys(ed, "w\"Ayw");
+        expect(ed.registers().at('a').text == "one three", "\"Ayw appends to a");
+        keys(ed, "$\"ap");
+        expect(ed.text() == "one two threeone three", "\"ap pastes a");
+        keys(ed, "$\"bp");
+        expect(ed.text() == "one two threeone threetwo ", "\"bp pastes b");
+        keys(ed, "\"zp");
+        expect(ed.text() == "one two threeone threetwo ", "an empty register pastes nothing");
+        Editor lines = fresh("a\nb");
+        keys(lines, "<esc>gg\"qdd");
+        expect(lines.text() == "b" && lines.registers().at('q').linewise, "\"qdd deletes the line into q as lines");
+        keys(lines, "\"qp");
+        expect(lines.text() == "b\na", "\"qp puts it below");
+        keys(lines, "gg\"Qyy");
+        expect(lines.registers().at('q').text == "a\nb", "\"Qyy appends a line");
+        keys(lines, "\"qP");
+        expect(lines.text() == "a\nb\nb\na", "and \"qP puts both lines above -> \"" + lines.text() + "\"");
+        Editor vis = fresh("one two");
+        keys(vis, "<esc>0viw\"cy");
+        expect(vis.registers().at('c').text == "one", "\"c before y in visual mode");
+        keys(vis, "$\"cp");
+        expect(vis.text() == "one twoone", "\"cp");
+        Editor ins = fresh("x");
+        keys(ins, "<esc>\"ryl");
+        keys(ins, "A<c-r>r<c-r>r<esc>");
+        expect(ins.text() == "xxx", "Ctrl-R r in insert mode pastes register r twice");
+        keys(ins, "\"syyA-<c-r>s<esc>");
+        expect(ins.text() == "xxx-xxx\n", "Ctrl-R with a linewise register adds the line break");
+        keys(ins, "gg0i<c-r>\"<esc>");
+        expect(ins.text() == "xxx\nxxx-xxx\n", "Ctrl-R \" pastes the unnamed register");
+    }
+
+    section("Ctrl-O in insert mode");
+    check("hello world", "<esc>0ihi <c-o>$!<esc>", "hi hello world!", "Ctrl-O $ goes past the end and returns to insert");
+    check("abc def", "<esc>A<c-o>db!<esc>", "abc !", "Ctrl-O with an operator runs the whole command");
+    check("abcdef", "<esc>0i<c-o>lX<esc>", "aXbcdef", "Ctrl-O l");
+    check("abc", "<esc>A<c-o>2h-<esc>", "a-bc", "Ctrl-O with a count");
+    check("abc", "<esc>A<c-o>\"ayiw-<c-r>a<esc>", "-abcabc", "Ctrl-O yank into a register (the cursor moves to its start), then Ctrl-R");
+    {
+        Editor ed = fresh("abc");
+        keys(ed, "<esc>0i<c-o>");
+        expect(ed.mode() == Editor::Mode::Normal, "Ctrl-O switches to normal mode");
+        keys(ed, "$");
+        expect(ed.mode() == Editor::Mode::Insert && ed.cursor() == 3, "and back after one command, past the last character");
+        keys(ed, "<c-o><esc>");
+        expect(ed.mode() == Editor::Mode::Insert, "Ctrl-O then Esc stays in insert mode");
+        keys(ed, "<c-o>u");
+        expect(ed.mode() == Editor::Mode::Insert, "Ctrl-O u stays in insert mode");
+    }
+
+    section("lines");
+    check("one\ntwo", "<esc>ggyyjp", "one\ntwo\none", "yy then p puts the line below");
+    check("one\ntwo", "<esc>ggyyjP", "one\none\ntwo", "P puts it above");
+    check("one\ntwo", "<esc>ggddp", "two\none", "ddp swaps lines");
+    check("one\ntwo", "<esc>Gdd", "one", "dd on the last line takes the line break before it");
+    check("one\ntwo\nthree", "<esc>ggjdd", "one\nthree", "dd in the middle");
+    check("a\nb\nc", "<esc>ggdj", "c", "dj deletes two lines");
+    check("a\nb\nc", "<esc>Gdk", "a", "dk deletes two lines upward");
+    check("a\nb\nc", "<esc>ggjdG", "a", "dG deletes to the end");
+    check("a\nb\nc", "<esc>ggjdgg", "c", "dgg deletes to the start");
+    check("a\nb\nc", "<esc>ggjcck<esc>", "a\nk\nc", "cc keeps the line's break");
+    check("one two\nthree", "<esc>ggwdw", "one \nthree", "dw on the last word of a line keeps the line break");
+    check("one two\nthree", "<esc>ggwd$", "one \nthree", "d$ keeps the line break");
+    check("one two\nthree", "<esc>Gdb", "one \nthree", "db from the start of a line deletes the previous word but not the break");
+    check("one\ntwo", "<esc>Gdb", "two", "db onto a one-word line is linewise, as in vim");
+    check("a\nb", "<esc>ggAx<esc>", "ax\nb", "A appends at the end of the line, not the text");
+    check("abc\ndef", "<esc>ggllax<esc>", "abcx\ndef", "a on the last character inserts before the line break");
+    check("abc\ndef", "<esc>ggllx", "ab\ndef", "x on the last character");
+    check("abc\ndef", "<esc>ggllxx", "a\ndef", "x again moves back first");
+    check("  abc", "<esc>$Ix<esc>", "  xabc", "I inserts at the first non-blank");
+    check("abc\ndef", "<esc>ggox<esc>u", "abc\ndef", "o undoes with its line");
+    {
+        Editor ed = fresh("abc\ndef");
+        keys(ed, "<esc>gg$");
+        expect(ed.cursor() == 2, "$ on a middle line stops on its last character");
+        keys(ed, "l");
+        expect(ed.cursor() == 2, "l does not cross the line break");
+        keys(ed, "jh");
+        expect(ed.cursor() == 5, "j then h stays on the line: " + std::to_string(ed.cursor()));
+        keys(ed, "^");
+        expect(ed.cursor() == 4, "^ on a line without indent");
+        keys(ed, "$ge");
+        expect(ed.cursor() == 2, "ge goes back to the end of the previous word");
+        Editor ind = fresh("  abc");
+        keys(ind, "<esc>$^");
+        expect(ind.cursor() == 2, "^ goes to the first non-blank");
+        keys(ind, "0");
+        expect(ind.cursor() == 0, "0 goes to column 0");
+    }
 
     section("register, yank and paste");
     {
@@ -327,6 +708,10 @@ int main() {
         expect(help_text("harn").find("*harness*") == 0, "a unique prefix resolves");
         expect(help_text("sess").find("several") != std::string::npos, "sess matches :session and sessions, so it lists both");
         expect(help_text("nope").find("no help") == 0, "an unknown topic says so");
+        expect(help_text("f").find("*f*") == 0 && help_text(";") == help_text("f") && help_text(".").find("*.*") == 0 && help_text("m").find("*m*") == 0 &&
+                   help_text("gq").find("*gq*") == 0 && help_text("gU") == help_text("gq") && help_text("J").find("*J*") == 0 && help_text("r").find("*r*") == 0 &&
+                   help_text("R") == help_text("r") && help_text("shift").find("*>*") == 0,
+               "the key topics f . m gq J r R and shift resolve");
     }
 
     section("conversation window folds");
