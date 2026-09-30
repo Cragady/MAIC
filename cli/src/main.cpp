@@ -55,7 +55,7 @@ void usage() {
                  "  sessions rehome ID [project|general|NAME]   move a transcript to another home (default: project)\n"
                  "  sessions path ID           print a transcript's path\n"
                  "  settings init [--json]|path  write the global settings file (Lua; --json for JSON), or show where it goes\n"
-                 "  init                       scaffold this project: MAIC.md and .maic/settings.json (transcripts then\n"
+                 "  init                       scaffold this project: MAIC.md and .maic/settings.lua (transcripts then\n"
                  "                             go under sessions/projects/); :init in a session also drafts the MAIC.md\n"
                  "  trip [reason]              trip the harness lock now (blocks all actions until unlocked)\n"
                  "  unlock                     reset the harness lock (asks for your sudo password)\n"

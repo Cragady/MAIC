@@ -196,7 +196,7 @@ int run_doctor() {
     std::cout << "  quick model (default):  " << quick << (has_model(models, quick) ? "  (installed)" : "  ->  ollama pull " + quick) << "\n";
     std::cout << "  deep model (:model):    " << deep << (has_model(models, deep) ? "  (installed)" : "  ->  ollama pull " + deep) << "\n";
     if (settings.model != quick && settings.model.find('/') == std::string::npos) {
-        std::cout << "  settings.json model is \"" << settings.model << "\"; set \"model\": \"" << quick << "\" to use the recommendation\n";
+        std::cout << "  your settings choose \"" << settings.model << "\"; set model = \"" << quick << "\" in settings.lua to use the recommendation\n";
     }
     if (!fs::exists(settings_path())) std::cout << "  no settings file yet: maic settings init\n";
     if (!fs::exists(global_instructions_path())) std::cout << "  no global MAIC.md yet: " << global_instructions_path().string() << " (name, pronouns, standing rules)\n";

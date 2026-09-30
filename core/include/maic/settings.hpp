@@ -26,10 +26,11 @@ struct Style {
 };
 
 // Layered settings, every key optional:
-//   1. $XDG_CONFIG_HOME/maic/settings.json (default ~/.config/maic/settings.json)
-//   2. <dir>/.maic/settings.json and then <dir>/.maic/settings.local.json for every directory from just under
-//      $HOME down to the workspace; the nearest file wins. settings.json is meant to be committed with a
-//      project, settings.local.json is personal.
+//   1. $XDG_CONFIG_HOME/maic/settings.lua (default ~/.config/maic/settings.lua)
+//   2. <dir>/.maic/settings.lua and then <dir>/.maic/settings.local.lua for every directory from just under
+//      $HOME down to the workspace; the nearest file wins. settings.lua is meant to be committed with a
+//      project, settings.local.lua is personal.
+// At each location a .json file with the same stem is the fallback when no .lua exists.
 struct Settings {
     std::string model = "qwen3.5:4b";
     std::string mode = "manual";

@@ -137,7 +137,7 @@ int run_user_shell(const std::string& command, const std::filesystem::path& cwd,
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }
 
-// Scaffolds a project: a MAIC.md placeholder and .maic/settings.json. Returns what was created.
+// Scaffolds a project: a MAIC.md placeholder and .maic/settings.lua. Returns what was created.
 std::string init_project(const std::filesystem::path& ws) {
     std::string made;
     std::filesystem::create_directories(ws / ".maic");
@@ -954,7 +954,7 @@ void App::run_command(const std::string& line) {
         } else if (cmd == "init") {
             std::filesystem::path ws = agent_.harness().workspace();
             std::string made = init_project(ws);
-            post(Kind::Notice, made.empty() ? "already initialised: MAIC.md and .maic/settings.json exist" : made);
+            post(Kind::Notice, made.empty() ? "already initialised: MAIC.md and .maic/settings.lua exist" : made);
             if (!std::filesystem::exists(ws / "MAIC.md") || std::filesystem::file_size(ws / "MAIC.md") < 200) {
                 submit("Look over this project (list the top level, read the README and build files) and write a MAIC.md at the workspace root: "
                        "what the project is, how it is built and tested, the conventions to follow, and anything an agent should know before editing. "
