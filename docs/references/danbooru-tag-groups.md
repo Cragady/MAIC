@@ -2,6 +2,10 @@
 
 Source: https://danbooru.donmai.us/wiki_pages/tag_groups (fetched 2026-09-30). Each group is a wiki page listing the canonical tags for that subject; a link below is `https://danbooru.donmai.us` plus the path. NoobAI, Illustrious and Anima are trained on these tags, so a prompt built from them lands on-model: use the tag exactly as the wiki spells it (underscores or spaces both work in ComfyUI prompts), count the characters first (`1girl`, `2girls`, `1boy`), then appearance, then attire, then pose and expression, then the scene, camera and lighting. `maic-storyboard plan` tells the agent to write tags in that order; this page is where the vocabulary comes from.
 
+## Where the data lives
+
+The GitHub repository https://github.com/danbooru/danbooru is the Rails application only; no tag, wiki or post data is in it. The data lives in the site's database and is served by the JSON API (every page has a `.json` twin: `/tags.json`, `/wiki_pages.json`, `/tag_aliases.json`, `/tag_implications.json`, with `search[...]` parameters; reads need no key at modest rates). Bulk copies exist as the `danbooru1` public dataset on Google BigQuery and as community dumps on Hugging Face (the "danbooru20xx" sets the image models were trained on). `maic-danbooru-tags fetch` keeps a local copy of the most-used tags and the active aliases under `~/.local/state/maic/references/danbooru/`, and `check`, `search` and `show` answer from it offline.
+
 ## Image composition and style
 - Artistic license (/wiki_pages/tag_group%3Aartistic_license)
 - Image composition (/wiki_pages/tag_group%3Aimage_composition): framing, camera angle, cropping

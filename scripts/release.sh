@@ -37,5 +37,6 @@ cmake --install "$work/build" >/dev/null
 ln -sfn "$prefix/bin/maic" "$HOME/bin/maic"
 ln -sfn "$prefix/bin/maic-workflow-edit" "$HOME/bin/maic-workflow-edit"
 ln -sfn "$prefix/bin/maic-storyboard" "$HOME/bin/maic-storyboard"
+ln -sfn "$prefix/bin/maic-danbooru-tags" "$HOME/bin/maic-danbooru-tags"
 echo "installed $("$prefix/bin/maic" --version) at $prefix; ~/bin/maic points to it"
 echo "dev build stays at build/cli/maic (run it directly while testing)"

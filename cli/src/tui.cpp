@@ -1418,7 +1418,14 @@ void App::run_command(const std::string& line) {
             std::string todo = todo_text();
             post(Kind::Notice, todo.empty() ? "no plan yet: the agent keeps one with the todo tool during multi-step work" : todo);
         } else if (cmd == "tools") {
-            std::string out = "tools the model can call: " + tool_names();
+            std::string out = "built-in tools (all through the harness):";
+            for (const auto& t : tool_schemas()) {
+                std::string desc = t["function"].value("description", "");
+                if (auto nl = desc.find('\n'); nl != std::string::npos) desc = desc.substr(0, nl);
+                if (desc.size() > 90) desc = desc.substr(0, 87) + "...";
+                out += "\n  " + t["function"].value("name", "") + "  " + desc;
+            }
+            out += "\nhelpers: maic-workflow-edit, maic-storyboard, maic-danbooru-tags (run_shell; allow-listed)";
             if (agent_.tools().empty()) out += "\nno user-defined tools. Put a <name>.lua in .maic/tools/ or " + global_tools_dir().string() + " (see :h tools)";
             for (const auto& t : agent_.tools()) out += "\n  " + t.name + "  " + t.file.string() + "\n    " + t.description;
             for (const auto& n : agent_.tool_notices()) out += "\n  " + n;

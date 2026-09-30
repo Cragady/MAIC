@@ -74,7 +74,8 @@ void usage(std::ostream& out = std::cerr) {
                  "  vendor model llamacpp URL SHA256 [--into DIR]   download a GGUF, verify it, link it as the model\n"
                  "  vendor unlink NAME         stop using it (nothing is deleted)\n"
                  "  lua [FILE [args...] | -e CODE]   Lua (vendored LuaJIT) here, with the maic table; no arguments: a REPL (maic help lua)\n"
-                 "  tools                      the user-defined Lua tools this directory's sessions get (maic help tools)\n"
+                 "  tools                      every tool the model can call: built-ins, the helpers beside maic, this\n"
+                 "                             directory's Lua tools (maic help tools)\n"
                  "  doctor                     what this machine has, what MAIC needs, a recommended setup\n"
                  "  status                     harness, services, where they run, quick actions\n"
                  "  up <service...|all>        start services\n"
@@ -754,11 +755,25 @@ int main(int argc, char** argv) {
             return r.ok ? 0 : 1;
         }
         if (cmd == "tools") {
-            auto set = maic::load_lua_tools(std::filesystem::current_path());
-            if (set.tools.empty()) {
-                std::cout << "no user-defined tools. Put a <name>.lua in .maic/tools/ here or in " << maic::global_tools_dir().string() << " (maic help tools)\n";
+            std::cout << "built-in tools (what the model can call; every one goes through the harness):\n";
+            for (const auto& t : maic::tool_schemas()) {
+                std::string desc = t["function"].value("description", "");
+                if (auto nl = desc.find('\n'); nl != std::string::npos) desc = desc.substr(0, nl);
+                if (desc.size() > 110) desc = desc.substr(0, 107) + "...";
+                char line[200];
+                snprintf(line, sizeof(line), "  %-14s %s\n", t["function"].value("name", "").c_str(), desc.c_str());
+                std::cout << line;
             }
-            for (const auto& t : set.tools) std::cout << t.name << "  " << t.file.string() << "\n    " << t.description << "\n";
+            std::cout << "\nhelpers beside maic (run through run_shell; on the allow list):\n"
+                         "  maic-workflow-edit    edit a ComfyUI workflow's fields without touching its wiring\n"
+                         "  maic-storyboard       a story JSON into a manga workflow, one panel per turn\n"
+                         "  maic-danbooru-tags    check prompt tags against a local copy of Danbooru's vocabulary\n";
+            auto set = maic::load_lua_tools(std::filesystem::current_path());
+            std::cout << "\nuser-defined Lua tools for this directory:\n";
+            if (set.tools.empty()) {
+                std::cout << "  none. Put a <name>.lua in .maic/tools/ here or in " << maic::global_tools_dir().string() << " (maic help tools)\n";
+            }
+            for (const auto& t : set.tools) std::cout << "  " << t.name << "  " << t.file.string() << "\n    " << t.description << "\n";
             for (const auto& n : set.notices) std::cout << n << "\n";
             return 0;
         }

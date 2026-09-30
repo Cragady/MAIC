@@ -67,7 +67,7 @@ struct Settings {
     std::string system_prompt;      // text placed first in the system prompt; "@path" reads a file (~ expands)
     std::string prefill;            // text every reply starts with (the model continues it); "@path" reads a file
     std::vector<std::string> rules; // standing one-line instructions, carried with system_prompt; layers add up
-    std::vector<std::string> allow = {"maic-storyboard*", "maic-workflow-edit*", "maic path*", "maic status*", "maic artifacts*", "maic sessions*"};  // pre-approved command patterns; layers add up
+    std::vector<std::string> allow = {"maic-storyboard*", "maic-workflow-edit*", "maic-danbooru-tags check*", "maic-danbooru-tags search*", "maic-danbooru-tags show*", "maic path*", "maic status*", "maic artifacts*", "maic sessions*"};  // pre-approved command patterns; layers add up
     Bans bans;                      // strings, patterns and tokens the model must not produce (docs/bans.md)
     nlohmann::json sampling = nlohmann::json::object();  // sampler keys for every provider; a provider's options.sampling overrides
     std::string tripwire = "machine";  // "machine": the root-owned lock (default); "session": a lock beside this transcript, no sudo; "isolated": session lock and the machine lock ignored (needs allow_isolated)

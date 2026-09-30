@@ -40,6 +40,10 @@ Long text can come from stdin: `set FILE 50.text -`. Exit codes: 0 written (or t
 
 Known node types show named slots (`CLIPTextEncode.text`, `KSampler.seed/steps/cfg/sampler_name/scheduler/denoise`, `SaveImage.filename_prefix`, `TextOverlay.text/font_size/color/...`, `ImageStitch.direction/...`, MAIC's `MaicLlmChat.system/prompt/...`); anything else shows `w0`, `w1`, ... in the order ComfyUI stores them. `inspect` always shows the current value beside the name, so a slot is never a guess.
 
+# danbooru_tags.py (`maic-danbooru-tags`): is this a real tag?
+
+Danbooru's tag data is not in its repository; `maic-danbooru-tags fetch` pulls the most-used tags and the active aliases from the JSON API (one request a second, five pages of a thousand by default, `--category all` for characters and copyrights too) into `~/.local/state/maic/references/danbooru/tags.json`. Then, offline: `check TAG ...` or `check --prompt "a, b, c"` (ok, alias with the canonical name, or unknown with near matches; exit 1 when anything is unknown), `search WORD`, `show`. The agent's briefing tells it to check a prompt before writing it and never to fetch; the storyboard plan repeats the command.
+
 # storyboard.py (`maic-storyboard`): a story JSON into the manga workflow, one panel at a time
 
 The story has `characters[]` (with an `appearance`), a `setting`, and `panels[]` with a `caption`, a `visual_description`, a `mood`, sometimes a `dialogue` line, and which characters are present (`character_positions` / `character_details`). The workflow has, per panel, a prompt node and two caption overlays. The split:
