@@ -129,4 +129,6 @@ Where the continuation is written depends on `--append` / `--no-append`:
 
 ## Tools the model gets
 
-`read_file`, `list_dir`, `search_files` (grep -E syntax), `write_file`, `edit_file`, `run_shell`. Every call goes through the harness in `core/`. The model is briefed at the start of the conversation about MAIC, the tools, the modes, the harness and what a denial means (`core/src/agent.cpp`, `system_prompt`).
+`read_file`, `list_dir`, `glob` (files by name pattern), `search_files` (grep -E syntax), `write_file`, `edit_file`, `run_shell`, `question` (asks you something, with options to pick by number) and `todo` (the model's plan; `:todo` shows it, the status strip counts it). Every call goes through the harness in `core/`. The model is briefed at the start of the conversation about MAIC, the tools, the modes, the harness and what a denial means (`core/src/agent.cpp`, `system_prompt`).
+
+Your own tools are Lua files in `.maic/tools/` or `~/.config/maic/tools/`, each call in its own sandboxed LuaJIT state whose `maic.read` / `write` / `list` / `search` / `shell` go through the same authorisation step as the built-ins. `:tools` and `maic tools` list them. Format and an example: [docs/tools.md](../docs/tools.md).

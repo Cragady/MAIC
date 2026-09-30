@@ -87,6 +87,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 
 * [ollama-setup.md](docs/ollama-setup.md) — local-only Ollama install, service settings, privacy audit.
 * [harness.md](docs/harness.md) — the safety harness: tripwire (built) and planned layers.
+* [tools.md](docs/tools.md): the model's tools, and writing your own in Lua behind the harness.
 * [settings.md](docs/settings.md) — the settings file: model providers (local and remote), styles, instruction files.
 * [vendor.md](docs/vendor.md) — the services MAIC installs for itself (ComfyUI, Ollama) at pinned versions, and the artifact tree.
 * [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.
@@ -126,7 +127,7 @@ MAIC/
 ├── harness/    maic-lock (root-owned tripwire helper) + its installer
 ├── services/   one JSON file per service MAIC runs (ollama, comfyui)
 ├── vendor/     pinned submodules (ComfyUI, comfyui-ollama), patches, install scripts, manifest.json. See docs/vendor.md
-├── tools/      planned: polyglot agent tools
+├── tools/      examples of user-defined Lua tools (docs/tools.md); the polyglot runtimes are planned
 ├── server/     maic-server: sessions over HTTP with server-sent events, the phone web client. See docs/remote.md
 └── docs/
 ```

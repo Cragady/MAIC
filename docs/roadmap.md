@@ -42,8 +42,8 @@ Plan: bring the transcript work into MAIC as `maic sessions import` (claude.ai e
 
 ## 5. Tools and the polyglot spokes
 
-* The `tools/` design from `programming-lang-for-agentic-cli.md`: tools as manifests plus scripts in Lua, Perl, Python, TypeScript, Go, WASM and shell, run through the harness with per-tool network grants. LuaJIT is in (vendored, `:lua`, `maic lua`); a Lua tool the *model* can call still needs the harness in front of `maic.shell` / `maic.write` and a manifest format.
-* More built-in tools: `glob`, `question` (ask the user something structured), a todo/plan tracker, `web_fetch` behind an explicit grant.
+* Done: user-defined Lua tools the model can call, each in its own sandboxed LuaJIT state with the harness in front of every `maic.*` call ([tools.md](tools.md)); the built-in `glob`, `question` and `todo` tools.
+* The rest of the `tools/` design from `programming-lang-for-agentic-cli.md`: tools as manifests plus scripts in Perl, Python, TypeScript, Go, WASM and shell, run through the same authorisation step, with per-tool network grants. `web_fetch` behind an explicit grant.
 * Subagents: a scout/reviewer that runs with its own profile, reporting back into the main session.
 
 ## 6. Editor and UI
