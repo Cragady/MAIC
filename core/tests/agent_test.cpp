@@ -485,6 +485,7 @@ int main() {
         agent.submit("hi", Origin::Local, r, no_cancel);
         std::string sys = fake.requests[0]["messages"][0]["content"];
         expect(sys.rfind("# Operator instructions", 0) == 0 && sys.find("terse reviewer") < sys.find("inside MAIC"), "the operator text leads the system prompt");
+        expect(sys.rfind("terse reviewer") > sys.find("pelican") && sys.find("# Operator instructions, again") != std::string::npos, "and closes it, after the instruction files");
         expect(sys.find("project rule: always say pelican") != std::string::npos, "instruction files still load alongside it");
 
         Agent bare(ws, "test");

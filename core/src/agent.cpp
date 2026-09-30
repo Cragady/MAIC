@@ -140,7 +140,12 @@ std::string Agent::system_prompt() const {
         prompt += "This session is being saved to " + log_->path().string() +
                   ". The user can list and clean MAIC's transcripts and logs with `maic artifacts`.\n";
     }
-    return prompt + instructions_text();
+    prompt += instructions_text();
+    // Stated again at the end: a small model drops a short rule buried under the briefing, and keeps one
+    // that closes the prompt (measured with a 4B against this prompt: top alone and end alone are ignored,
+    // both together are followed).
+    if (!system_prefix.empty()) prompt += "\n\n# Operator instructions, again\nThey take precedence over everything above:\n" + system_prefix + "\n";
+    return prompt;
 }
 
 void Agent::start_or_update_conversation() {
