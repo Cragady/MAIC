@@ -147,6 +147,11 @@ bool read_only_segment(const std::string& segment) {
 
 }  // namespace
 
+bool is_simple_command(const std::string& command) {
+    if (command.find_first_of(";&|<>`\n\r") != std::string::npos) return false;
+    return command.find("$(") == std::string::npos;
+}
+
 bool is_read_only_command(const std::string& command) {
     // No redirection, substitution, backgrounding or multi-line scripts.
     for (const char* bad : {">", "<", "`", "$(", "\n", "\r"}) {
@@ -299,7 +304,7 @@ Decision Harness::check(const Action& action, Mode mode, Origin origin) const {
     if (d.verdict == Verdict::Allow || d.verdict == Verdict::Ask) {
         if (permitted(permission_.deny, action)) d = {Verdict::Deny, "denied by the permission block"};
         else if (permitted(permission_.ask, action)) d = {Verdict::Ask, "the permission block asks", d.read_only_sandbox};
-        else if (origin == Origin::Local && permitted(permission_.allow, action)) d = {Verdict::Allow, "on the allow list", d.read_only_sandbox, true};
+        else if (origin == Origin::Local && (action.kind != Action::Kind::Shell || is_simple_command(action.command)) && permitted(permission_.allow, action)) d = {Verdict::Allow, "on the allow list", d.read_only_sandbox, true};
     }
     if (d.verdict == Verdict::Allow && origin == Origin::Remote) {
         d = {Verdict::Ask, "request did not come from this terminal"};
@@ -360,7 +365,7 @@ namespace {
 
 // cai (docs/cai.md) under any of its spellings: `cai`, `maic-cai`, `maic cai`, and `maic trans-fairy`. Read-only are
 // the dispatcher's listing, every tool's help, `read` without `--out` (argparse takes any prefix of it), `time`, and
-// trans-fairy's plain `state` report and its `--audit`. One command only: no redirection, chaining or substitution.
+// trans-fairy's plain `state` report and its `--audit`.
 bool cai_read_only(const std::vector<std::string>& w) {
     if (w.empty()) return true;
     const std::string& tool = w[0];
@@ -373,8 +378,9 @@ bool cai_read_only(const std::vector<std::string>& w) {
     return false;
 }
 
-// MAIC's own helpers: their looking-only invocations count as read-only commands.
+// MAIC's own helpers: their looking-only invocations count as read-only commands, each as one simple command.
 bool helper_read_only(const std::string& command) {
+    if (!is_simple_command(command)) return false;
     std::istringstream in(command);
     std::vector<std::string> words;
     for (std::string x; in >> x;) words.push_back(x);
@@ -386,7 +392,6 @@ bool helper_read_only(const std::string& command) {
     if (prog == "maic-panel-check") return true;  // it only reads the workflow and the local tag file
     bool cai = prog == "cai" || prog == "maic-cai" || (prog == "maic" && (sub == "cai" || sub == "trans-fairy" || sub == "trans-fairy-write"));
     if (cai) {
-        if (command.find_first_of(";&|<>`\n\r") != std::string::npos || command.find("$(") != std::string::npos) return false;
         size_t skip = prog == "maic" && sub == "cai" ? 2 : 1;
         return cai_read_only(std::vector<std::string>(words.begin() + std::min(skip, words.size()), words.end()));
     }
@@ -442,6 +447,7 @@ std::vector<std::string> Harness::allow() const {
 }
 
 bool Harness::allowed_by_list(const std::string& command) const {
+    if (!is_simple_command(command)) return false;
     for (const auto& p : allow()) {
         if (fnmatch(p.c_str(), command.c_str(), 0) == 0) return true;
     }

@@ -1050,7 +1050,7 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     record["decision"] = verdict_name(d.verdict);
     record["reason"] = d.reason;
     bool user_allowed = false;
-    if (d.verdict == Verdict::Ask && always_allowed_.count(Harness::approval_key(action))) {
+    if (d.verdict == Verdict::Ask && (action.kind != Action::Kind::Shell || is_simple_command(action.command)) && always_allowed_.count(Harness::approval_key(action))) {
         d = {Verdict::Allow, "allowed earlier this session"};
         user_allowed = true;
     }

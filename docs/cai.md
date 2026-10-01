@@ -63,7 +63,7 @@ cai trans-fairy-write restore ID [--backup TS]     put the newest copy (or the o
 
 ## Permissions
 
-These cai invocations write nothing and are on the default allow list, under both spellings of the wrapper (`run_shell:cai ...` and `run_shell:maic-cai ...`): `read*`, `time*`, `--help`, `trans-fairy --help`, `trans-fairy --man-help`, `trans-fairy state` and `trans-fairy state --audit`. `read --out` writes a new file, so `read* --o*` is a default ask entry. The read-only classifier counts the same commands as read-only under `cai`, `maic-cai`, `maic cai` and `maic trans-fairy`, plus any tool's `--help`, `-h` and `--man-help`, and only as one plain command (no redirection, chaining or substitution). Nothing that writes is pre-approved: not `trans-fairy-write`, `fabricate`, `commit`, `hook`, `grant`, `enroll`, `redact`, `reflow`, `edit` or `sync`.
+These cai invocations write nothing and are on the default allow list, under both spellings of the wrapper (`run_shell:cai ...` and `run_shell:maic-cai ...`): `read*`, `time*`, `--help`, `trans-fairy --help`, `trans-fairy --man-help`, `trans-fairy state` and `trans-fairy state --audit`. `read --out` writes a new file, so `read* --o*` is a default ask entry. The read-only classifier counts the same commands as read-only under `cai`, `maic-cai`, `maic cai` and `maic trans-fairy`, plus any tool's `--help`, `-h` and `--man-help`, and only as one plain command (no redirection, chaining or substitution); the allow entries match only such a command too (docs/harness.md, the allow list). Nothing that writes is pre-approved: not `trans-fairy-write`, `fabricate`, `commit`, `hook`, `grant`, `enroll`, `redact`, `reflow`, `edit` or `sync`.
 
 ## Tests
 

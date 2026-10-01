@@ -230,6 +230,66 @@ int main() {
                "harmless: reads, read-only and helper commands; not writes or other commands");
     }
 
+    std::cout << "list and helper rules match one simple command only\n";
+    {
+        for (const char* cmd : {"maic path", "pytest tests/ -q", "cai read s.jsonl", "maic-danbooru-tags check --prompt \"1girl, grey hair\"", "git log --oneline -3"}) {
+            expect(is_simple_command(cmd), std::string("simple: ") + cmd);
+        }
+        for (const char* cmd : {"maic path && rm -rf .", "maic path; x", "maic path | sh", "maic path > f", "maic path $(x)", "maic path < f", "maic path & x",
+                                "maic path `x`", "maic path\nx", "maic path\rx", "diff <(maic path) f", "maic path >(sh)", "maic path || x", "maic path >> f"}) {
+            expect(!is_simple_command(cmd), std::string("not simple: ") + cmd);
+        }
+        // The five chained forms on each kind of rule; the plain form is still approved.
+        auto chained = [](const std::string& plain) {
+            return std::vector<std::string>{plain + " && rm -rf .", plain + "; x", plain + " | sh", plain + " > f", plain + " $(x)"};
+        };
+        auto check = [](const Harness& h, Mode m, const std::string& cmd) { return h.check(Action{Action::Kind::Shell, {}, cmd, {}, "run_shell"}, m, Origin::Local); };
+
+        // The allow list (`allow`, `:allow`) and the permission block's run_shell: allow entries.
+        Harness listed(ws);
+        listed.set_allow({"pytest *"});
+        Harness block(ws);
+        block.set_permission(Permission{{"run_shell:npm test*"}, {}, {}});
+        for (auto [h, plain] : {std::pair<const Harness*, std::string>{&listed, "pytest tests"}, {&block, "npm test"}}) {
+            Decision d = check(*h, Mode::Manual, plain);
+            expect(d.verdict == Verdict::Allow && d.trusted, "an allow entry still approves the plain form: " + plain);
+            for (const auto& cmd : chained(plain)) {
+                expect(check(*h, Mode::Manual, cmd).verdict == Verdict::Ask, "an allow entry does not approve a chained form, manual asks: " + cmd);
+                Decision a = check(*h, Mode::Auto, cmd);
+                expect(a.verdict == Verdict::Allow && !a.trusted, "and auto hands it to the reviewer, untrusted: " + cmd);
+            }
+        }
+
+        // An ask entry: the chained form is not approved either; it stays asked, even in auto (the entry still
+        // matches, so appending `; true` cannot move an asked command over to the reviewer).
+        Harness asking(ws);
+        asking.set_permission(Permission{{}, {"run_shell:git push*"}, {}});
+        expect(check(asking, Mode::Manual, "git push").verdict == Verdict::Ask && check(asking, Mode::Auto, "git push").verdict == Verdict::Ask, "an ask entry asks for the plain form");
+        for (const auto& cmd : chained("git push")) {
+            expect(check(asking, Mode::Manual, cmd).verdict == Verdict::Ask && check(asking, Mode::Auto, cmd).verdict == Verdict::Ask, "and for each chained form: " + cmd);
+        }
+
+        // The default entries for MAIC's helpers and cai, and the read-only shapes behind them (helper_read_only
+        // and the cai classifier).
+        Harness defaults(ws);
+        defaults.set_permission(Settings{}.permission);
+        Harness bare(ws);
+        for (const std::string plain : {"maic path", "maic-panel-check wf.json 1", "maic-storyboard status", "cai read s.jsonl", "maic-cai trans-fairy state", "maic cai read s.jsonl"}) {
+            if (plain.rfind("maic cai", 0) != 0) {
+                Decision d = check(defaults, Mode::Manual, plain);
+                expect(d.verdict == Verdict::Allow && d.trusted, "a default entry approves the plain form: " + plain);
+            }
+            expect(check(bare, Mode::Plan, plain).verdict == Verdict::Allow, "and its plain form is read-only: " + plain);
+            for (const auto& cmd : chained(plain)) {
+                expect(check(defaults, Mode::Manual, cmd).verdict == Verdict::Ask, "a default entry does not approve a chained form: " + cmd);
+                Decision a = check(defaults, Mode::Auto, cmd);
+                expect(a.verdict == Verdict::Allow && !a.trusted, "auto hands it to the reviewer: " + cmd);
+                expect(check(bare, Mode::Plan, cmd).verdict == Verdict::Deny, "and a chained form is not read-only, so plan refuses it: " + cmd);
+                expect(!defaults.harmless(Action{Action::Kind::Shell, {}, cmd}), "nor is it harmless to repeat: " + cmd);
+            }
+        }
+    }
+
     std::cout << "permission block: deny over ask over allow, after the fixed rules\n";
     {
         Harness p(ws);

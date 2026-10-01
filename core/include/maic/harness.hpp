@@ -61,6 +61,11 @@ struct Decision {
     bool trusted = false;            // on the allow list: no second reader, and never a reason to trip on repeats
 };
 
+// One simple command: none of ; & | < > ` $( or a line break anywhere, so no chaining, piping, backgrounding,
+// redirection or substitution. An allow entry, a helper's read-only shape or a session's "always" for a program
+// matches only such a command; anything else falls through to the mode's own decision (asked, or reviewed).
+bool is_simple_command(const std::string& command);
+
 // Commands that only look at things (ls, grep, git log, ...), with no redirection or substitution.
 // Allowed ones still run in a fully read-only sandbox, so a wrong guess can't change anything.
 bool is_read_only_command(const std::string& command);
@@ -88,8 +93,8 @@ public:
     // The additive permission block. Its run_shell allow entries are the allow list (`:allow`).
     void set_permission(Permission p) { permission_ = std::move(p); }
     const Permission& permission() const { return permission_; }
-    // Commands the user pre-approved (glob patterns over the whole command line, `*` and `?`): allowed in
-    // every mode but plan without asking or review. Trip patterns are checked first and still win.
+    // Commands the user pre-approved (glob patterns over the whole command line, `*` and `?`, matching only
+    // an is_simple_command): allowed in every mode but plan without asking or review. Trip patterns are checked first and still win.
     void set_allow(const std::vector<std::string>& patterns);  // replaces the run_shell entries of permission.allow
     std::vector<std::string> allow() const;
     bool allowed_by_list(const std::string& command) const;

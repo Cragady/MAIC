@@ -1330,6 +1330,28 @@ int main() {
         expect(fake.requests.back()["logit_bias"]["1234"] == -100 && !has_notice(rb, "token ban"), "numeric token bans reach an OpenAI-compatible provider as logit_bias, without a notice");
     }
 
+    section("always for a program covers one simple command");
+    {
+        FakeServer fake;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Manual;
+        auto run = [&](const std::string& command, ApprovalAnswer reply) {
+            fake.tool_call = json{{"name", "run_shell"}, {"arguments", {{"command", command}}}};
+            fake.calls_left = 1;
+            Recorder r;
+            r.reply = reply;
+            agent.submit("run it", Origin::Local, r, no_cancel);
+            return r;
+        };
+        expect(run("echo one", {Approval::Always, ""}).asked.size() == 1, "the first echo is asked, and answered always");
+        expect(run("echo two", {Approval::No, ""}).asked.empty(), "a second plain echo is not asked again");
+        for (const char* cmd : {"echo x && touch chained.txt", "echo x; touch chained.txt", "echo x | sh", "echo x > chained.txt", "echo x $(touch chained.txt)"}) {
+            Recorder r = run(cmd, {Approval::No, ""});
+            expect(r.asked.size() == 1 && !fs::exists(ws / "chained.txt"), std::string("but a chained one is asked, whatever came before: ") + cmd);
+        }
+    }
+
     section("the reviewer (smart harness) and the dumb harness");
     {
         FakeServer fake;
