@@ -14,6 +14,10 @@ nlohmann::json to_json(const Message& m) {
         }
     }
     if (!m.tool_name.empty()) j["tool_name"] = m.tool_name;
+    if (!m.images.empty()) {
+        j["images"] = nlohmann::json::array();
+        for (const auto& im : m.images) j["images"].push_back(im.base64);
+    }
     return j;
 }
 

@@ -397,6 +397,22 @@ int main() {
                "Ollama requests carry stop and sampler options in `options`, never logit_bias");
     }
 
+    section("images reach the OpenAI-compatible shape");
+    {
+        Fake f;
+        f.serve("/v1/chat/completions", {"data: {\"choices\":[{\"delta\":{\"content\":\"a cat\"}}]}\n\n", "data: [DONE]\n\n"});
+        f.start();
+        Message u{"user", "what is in the picture"};
+        u.images.push_back({"image/png", "QUJD", "p.png"});
+        ChatOptions o;
+        o.model = "x";
+        o.retries = 0;
+        chat(Provider{"lab", "openai", f.url() + "/v1"}, o, {u}, json::array(), [](std::string_view, bool) {}, no_cancel);
+        auto content = json::parse(f.last_body)["messages"][0]["content"];
+        expect(content.is_array() && content.size() == 2 && content[0]["type"] == "text" && content[1]["type"] == "image_url" && content[1]["image_url"]["url"] == "data:image/png;base64,QUJD",
+               "an OpenAI-compatible request carries the picture as an image_url part beside the text");
+    }
+
     section("bare model names and listing");
     {
         auto ps = default_providers();

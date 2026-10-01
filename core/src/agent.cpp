@@ -123,6 +123,18 @@ void Agent::set_rules(std::vector<std::string> new_rules) {
                                 : "# Operator instructions (take precedence over everything before)\n" + now});
 }
 
+void Agent::attach_image(const std::filesystem::path& file) {
+    pending_images_.push_back(load_image(file));
+}
+
+std::vector<std::string> Agent::pending_images() const {
+    std::vector<std::string> out;
+    for (const auto& im : pending_images_) out.push_back(im.name);
+    return out;
+}
+
+void Agent::clear_pending_images() { pending_images_.clear(); }
+
 std::string Agent::with_operator_note(const std::string& text) const {
     std::string op = operator_text();
     if (op.empty() || !operator_note_in_turn) return text;
@@ -264,7 +276,10 @@ void Agent::add_context(const std::string& text) {
 
 size_t Agent::history_bytes() const {
     size_t n = 0;
-    for (const auto& m : messages_) n += m.content.size() + (m.raw.is_null() ? 0 : m.raw.dump().size()) + 40;
+    for (const auto& m : messages_) {
+        n += m.content.size() + (m.raw.is_null() ? 0 : m.raw.dump().size()) + 40;
+        for (const auto& im : m.images) n += im.base64.size();
+    }
     return n;
 }
 
@@ -320,8 +335,19 @@ std::string Agent::compact(Compaction stage, const std::atomic<bool>& cancel) {
                         " output to save context; call the tool again if you need it]";
             ++stubbed;
         }
-        if (!stubbed) return "nothing to prune";
-        report = "pruned " + std::to_string(stubbed) + " old tool result" + (stubbed == 1 ? "" : "s");
+        // Pictures are the other thing that fills a context: keep the ones on the last two user turns.
+        int user_seen = 0;
+        size_t pictures = 0;
+        for (size_t i = messages_.size(); i-- > 0;) {
+            auto& m = messages_[i];
+            if (m.role != "user") continue;
+            if (++user_seen <= 2 || m.images.empty()) continue;
+            for (const auto& im : m.images) m.content += "\n[image " + im.name + " removed to save context]";
+            pictures += m.images.size();
+            m.images.clear();
+        }
+        if (!stubbed && !pictures) return "nothing to prune";
+        report = "pruned " + std::to_string(stubbed) + " old tool result" + (stubbed == 1 ? "" : "s") + (pictures ? ", " + std::to_string(pictures) + " old image" + (pictures == 1 ? "" : "s") : "");
     } else {
         // Summarise messages [1, cut) into one user message; the system prompt at 0 stays.
         size_t turns = 0;
@@ -432,7 +458,12 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
         log_->write("user", {{"text", text}, {"provider", provider.name}, {"model", model}, {"remote", provider.remote()},
                              {"mode", mode_name(mode)}, {"origin", origin == Origin::Local ? "local" : "remote"}});
     }
-    push({"user", with_operator_note(text)});
+    {
+        Message user{"user", with_operator_note(text)};
+        user.images = std::move(pending_images_);
+        pending_images_.clear();
+        push(std::move(user));
+    }
 
     ChatOptions options{model_name, think};
     options.notice = [&](const std::string& t) { events.on_notice(t); };

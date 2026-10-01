@@ -84,6 +84,7 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:gpu [free]` | who holds the card (llama-server's resident model, ComfyUI's VRAM view); `free` unloads without stopping anything. `maic gpu` in the shell. A failed `maic up` explains a CUDA out of memory in plain words |
 | `:open NAME folder` / `maic cd NAME [--subshell]` | the containing folder in the file manager; the place's directory printed for `cd "$(maic cd NAME)"`, or with `--subshell` a shell there (`exit` returns) |
 | `:open SERVICE [firefox\|chrome]` | a service's URL in the browser (`browser` in settings picks the default one; `remote` in settings opens a subscribed maic-server's copy) |
+| `:image [FILE\|clear]` | a picture for the next message; `![alt](path)` in the text or a file dragged onto the terminal is attached on send (a plain path inside a sentence stays text). `--image FILE` on the command line. Vision models only. See `:h image` |
 | `:forbid [TERM]` | terms no tool call may contain; a search, command or path with one is halted in every mode, under every harness. See `:h forbid` |
 | `:allow [PATTERN]` | commands pre-approved for every mode: no asking, no reviewer. MAIC's helpers are on it by default. See `:h allow` |
 | `:reg` | the yank register and the named registers `"a`..`"z` |

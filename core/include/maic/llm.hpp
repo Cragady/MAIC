@@ -1,5 +1,7 @@
 #pragma once
 
+#include "maic/image.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <atomic>
@@ -37,6 +39,7 @@ struct Message {
     std::string raw_kind;
     nlohmann::json raw;
     Usage usage;  // assistant replies only
+    std::vector<ImageData> images;  // user turns only: pictures sent with the text
 };
 
 // Session files store messages this way; raw provider blocks survive the round trip.

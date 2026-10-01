@@ -220,6 +220,7 @@ int run_headless(const HeadlessOptions& options) {
     }
     if (agent.remote()) fprintf(stderr, "※ REMOTE model %s: prompts and tool output leave this machine\n", agent.model.c_str());
     for (const auto& n : agent.tool_notices()) fprintf(stderr, "※ %s\n", n.c_str());
+    for (const auto& im : options.images) agent.attach_image(im);
     for (const auto& c : options.context) {
         try {
             fprintf(stderr, "※ %s\n", agent.add_context_file(c).c_str());

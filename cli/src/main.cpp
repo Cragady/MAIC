@@ -45,6 +45,8 @@ void usage(std::ostream& out = std::cerr) {
                  "       maic -p \"prompt\" --interactive     an interactive session that opens with that prompt sent (-i)\n"
                  "       --context FILE, -C FILE            attach a text file to the conversation before the prompt; repeatable;\n"
                  "                                          FILE \"-\" reads stdin (then the prompt can't also be stdin)\n"
+                 "       --image FILE, -I                   a picture sent with the first (or only) prompt; repeatable; the model must\n"
+                 "                                          be a vision one (both Qwen3.5 GGUFs here are)\n"
                  "       --system TEXT|@FILE, -S            operator instructions placed first in the system prompt (front-loads behaviour)\n"
                  "       --no-instructions                  load no MAIC.md / AGENTS.md anywhere; combines with --system\n"
                  "       --ctx N                            context window in tokens: starts (or restarts) the local llama.cpp server\n"
@@ -598,6 +600,10 @@ int main(int argc, char** argv) {
                 if (n < 1024) throw std::runtime_error("--ctx takes the context window in tokens (16384, 32768, ...)");
                 tui.ctx = headless.ctx = n;
                 setenv("MAIC_CONTEXT", std::to_string(n).c_str(), 1);  // service files read it at load
+            } else if (a == "--image" || a == "-I") {
+                std::filesystem::path f = value(a.c_str());
+                tui.images.push_back(f);
+                headless.images.push_back(f);
             } else if (a == "--context" || a == "-C") {
                 std::string f = value("--context");
                 tui.context.push_back(f);

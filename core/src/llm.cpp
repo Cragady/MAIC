@@ -27,6 +27,10 @@ nlohmann::json message_to_json(const Message& m) {
         j["raw_kind"] = m.raw_kind;
         j["raw"] = m.raw;
     }
+    if (!m.images.empty()) {
+        j["images"] = nlohmann::json::array();
+        for (const auto& im : m.images) j["images"].push_back({{"mime", im.mime}, {"name", im.name}, {"data", im.base64}});
+    }
     return j;
 }
 
@@ -43,6 +47,9 @@ Message message_from_json(const nlohmann::json& j) {
     m.is_error = j.value("is_error", false);
     m.raw_kind = j.value("raw_kind", "");
     if (j.contains("raw")) m.raw = j["raw"];
+    for (const auto& im : j.value("images", nlohmann::json::array())) {
+        if (im.is_object()) m.images.push_back({im.value("mime", "image/png"), im.value("data", ""), im.value("name", "")});
+    }
     return m;
 }
 

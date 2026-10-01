@@ -69,6 +69,10 @@ public:
 
     // Runs the user's message to completion: model replies, tool calls, approvals. Throws on transport errors.
     void submit(const std::string& text, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel);
+    // Pictures for the next user turn (the user's own attachments: --image, :image, a dropped file).
+    void attach_image(const std::filesystem::path& file);  // throws when it cannot be read
+    std::vector<std::string> pending_images() const;       // their names
+    void clear_pending_images();
     void clear();
 
     // Something the user did outside the agent (e.g. a `!command` and its output) that the model should know
@@ -238,6 +242,7 @@ private:
     UsageReport usage_;
     mutable std::mutex mailbox_mu_;
     std::deque<std::string> mailbox_;
+    std::vector<ImageData> pending_images_;
     std::atomic<bool> deliver_now_{false};
     bool drain_mailbox();  // appends queued messages as user turns; true if any
     void rewrite_log();    // after compaction: a reset record and the new history, so resume sees the same thing

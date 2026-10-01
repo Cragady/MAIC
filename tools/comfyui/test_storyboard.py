@@ -127,6 +127,49 @@ class Tests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("destination is the workflow itself", r.stderr)
 
+    def test_critique_against_a_fake_vision_server(self):
+        import http.server, threading
+
+        class Fake(http.server.BaseHTTPRequestHandler):
+            seen = {}
+
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(b'{"data":[{"id":"Qwen3.5-9B-Q4_K_M"},{"id":"small"}]}')
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length", 0)); body = json.loads(self.rfile.read(n))
+                Fake.seen["body"] = body
+                self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+                reply = {"choices": [{"message": {"content": 'Here: {"matches": ["1girl"], "missing": ["red scarf"], "wrong": ["two girls"], "add": ["red_scarf", "not_a_tag_zz"], "drop": ["bus stop"], "note": "one extra person"}'}}]}
+                self.wfile.write(json.dumps(reply).encode())
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fake)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        d = os.path.dirname(self.wf)
+        dest = os.path.join(d, "crit-wf.json")
+        subprocess.run([sys.executable, TOOL, "start", self.story, self.wf, "--out", dest], capture_output=True, text=True, cwd=d)
+        png = os.path.join(d, "p1.png")
+        with open(png, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"x" * 20)
+        r = subprocess.run([sys.executable, TOOL, "critique", "1", "--image", png, "--server", "http://127.0.0.1:%d" % srv.server_address[1]], capture_output=True, text=True, cwd=d, env=dict(os.environ, MAIC_DANBOORU_TAGS=os.path.join(d, "none.json")))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        body = Fake.seen["body"]
+        self.assertEqual(body["model"], "Qwen3.5-9B-Q4_K_M")
+        parts = body["messages"][1]["content"]
+        self.assertEqual(parts[1]["type"], "image_url")
+        self.assertTrue(parts[1]["image_url"]["url"].startswith("data:image/png;base64,iVBOR"))
+        self.assertIn("Prompt tags:", parts[0]["text"])
+        self.assertIn("missing  red scarf", r.stdout)
+        self.assertIn("wrong    two girls", r.stdout)
+        self.assertIn("maic-workflow-edit set", r.stdout)
+        self.assertIn("red_scarf", r.stdout)
+        self.assertNotIn("bus stop", r.stdout.split("apply:")[1])
+        srv.shutdown()
+
     def test_no_arguments_says_how_to_begin(self):
         r = run()
         self.assertEqual(r.returncode, 0)

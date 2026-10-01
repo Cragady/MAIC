@@ -17,6 +17,7 @@ add_library(maic_core
     src/openai.cpp
     src/paths.cpp
     src/places.cpp
+    src/image.cpp
     src/redact.cpp
     src/sandbox.cpp
     src/service.cpp

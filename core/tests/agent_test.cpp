@@ -638,6 +638,39 @@ int main() {
         expect(!r4.results.empty() && r4.results[0].rfind("DENIED", 0) != 0, "an ordinary search runs");
     }
 
+    section("images on a user turn");
+    {
+        FakeOllama fake;
+        fake.delay_ms = 1;
+        fs::path png = ws / "pic.png";
+        std::ofstream(png, std::ios::binary) << std::string("\x89PNG\r\n\x1a\n", 8) << "rest";
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.attach_image(png);
+        expect(agent.pending_images() == std::vector<std::string>{"pic.png"}, "an attached image waits for the next turn");
+        Recorder r;
+        agent.submit("what is this", Origin::Local, r, no_cancel);
+        auto last = fake.requests.back()["messages"].back();
+        expect(last["role"] == "user" && last.contains("images") && last["images"].size() == 1 && last["images"][0].get<std::string>().rfind("iVBORw0KGg", 0) == 0,
+               "Ollama gets the picture as base64 beside the text");
+        expect(agent.pending_images().empty() && agent.messages().back().role == "assistant" && agent.messages()[agent.messages().size() - 2].images.size() == 1,
+               "the picture is on the stored user message, and the queue is empty");
+        bool threw = false;
+        try {
+            agent.attach_image(ws / "notes.txt");
+        } catch (const std::exception& e) {
+            threw = std::string(e.what()).find("not an image") != std::string::npos;
+        }
+        expect(threw, "a non-image file is refused");
+        agent.submit("second", Origin::Local, r, no_cancel);
+        agent.submit("third", Origin::Local, r, no_cancel);
+        std::string rep = agent.compact(Agent::Compaction::Prune, no_cancel);
+        bool gone = false;
+        for (const auto& m : agent.messages()) gone = gone || (m.role == "user" && m.content.find("[image pic.png removed") != std::string::npos && m.images.empty());
+        expect(gone && rep.find("1 old image") != std::string::npos, "pruning removes a picture older than the last two turns and says so: " + rep);
+        expect(base64_encode("Man") == "TWFu" && base64_encode("Ma") == "TWE=" && base64_encode("M") == "TQ==", "base64 pads correctly");
+    }
+
     section("prefill");
     {
         FakeOllama fake;

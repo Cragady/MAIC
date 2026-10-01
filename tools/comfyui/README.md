@@ -52,6 +52,8 @@ The story has `characters[]` (with an `appearance`), a `setting`, and `panels[]`
 - **Judgement, done by the agent, one panel per turn.** `maic-storyboard plan STORY WORKFLOW --panel 7` prints that panel's story values in full, the characters present with their appearance, the setting, what the prompt holds now, the quality baseline the workflow already uses (never changed), and the exact `maic-workflow-edit set ...` command with the baseline filled in and a `YOUR TAGS HERE` slot. The agent writes Danbooru-style tags for that one panel and runs the command; the vocabulary is the Danbooru tag groups, kept in [docs/references/danbooru-tag-groups.md](../../docs/references/danbooru-tag-groups.md). Small enough for a 4B's context.
 - `maic-storyboard check STORY WORKFLOW` lists the panels still on the baseline alone, overlays that differ from the story, and story fields the tool does not map (production notes, dialogue summaries: for a person).
 
+`maic-storyboard critique N [--image PATH]` closes the loop with the vision model: it finds panel N's newest render (the clean-panel SaveImage prefix under `maic path comfyui/outputs`, or `--image`), sends it with the panel's prompt and story to llama-server (the 9B when it is listed, loopback only), and prints what matched, what is missing, what is wrong, plus the `maic-workflow-edit set` command that applies the model's proposed tag changes after checking them against the local Danbooru set. For a person, or MAIC itself outside the sandbox: the agent's sandbox has no network.
+
 The brief for the agent (all of it):
 
 ```

@@ -50,6 +50,12 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
             // A system message after the first: most local chat templates (Qwen's among them) reject or
             // mishandle one, so it goes as a user-role note unless the provider says otherwise.
             msgs.push_back({{"role", "user"}, {"content", "[system note] " + m.content}});
+        } else if (m.role == "user" && !m.images.empty()) {
+            // Pictures ride as image_url parts beside the text (llama-server with --mmproj, and the OpenAI shape).
+            nlohmann::json parts = nlohmann::json::array();
+            if (!m.content.empty()) parts.push_back({{"type", "text"}, {"text", m.content}});
+            for (const auto& im : m.images) parts.push_back({{"type", "image_url"}, {"image_url", {{"url", im.data_url()}}}});
+            msgs.push_back({{"role", "user"}, {"content", parts}});
         } else {
             msgs.push_back({{"role", m.role}, {"content", m.content}});
         }

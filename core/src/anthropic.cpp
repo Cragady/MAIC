@@ -57,6 +57,11 @@ Converted convert_messages(const std::vector<Message>& messages, bool mid_system
             if (i == 0) c.system = m.content;
             else if (mid_system) c.messages.push_back({{"role", "system"}, {"content", m.content}});
             else c.messages.push_back({{"role", "user"}, {"content", "[system note] " + m.content}});
+        } else if (m.role == "user" && !m.images.empty()) {
+            nlohmann::json blocks = nlohmann::json::array();
+            for (const auto& im : m.images) blocks.push_back({{"type", "image"}, {"source", {{"type", "base64"}, {"media_type", im.mime}, {"data", im.base64}}}});
+            if (!m.content.empty()) blocks.push_back({{"type", "text"}, {"text", m.content}});
+            c.messages.push_back({{"role", "user"}, {"content", blocks}});
         } else if (m.role == "user") {
             c.messages.push_back({{"role", "user"}, {"content", m.content}});
         } else if (m.role == "assistant") {

@@ -29,6 +29,11 @@ Commands:
     storyboard.py start STORY.json WORKFLOW.json --out DEST.json    copy, fill, and print panel 1's work order
     storyboard.py next                                             verify the current panel, print the next
     storyboard.py status                                           which panel is current, what is done
+    storyboard.py critique N [--image PATH] [--model ID] [--server URL]
+        Shows panel N's rendered image and its prompt to the vision model on the local llama-server, asks what
+        is missing or wrong, checks the tags it proposes against the local Danbooru set, and prints the
+        maic-workflow-edit command that would apply them. Network to loopback only; for a person, or MAIC
+        itself outside the sandbox.
     storyboard.py fill STORY.json WORKFLOW.json [--out PATH] [--dry-run]
         Writes every caption and dialogue line into the overlays and prints the panel list. Run once.
     storyboard.py plan STORY.json WORKFLOW.json --panel N
@@ -245,6 +250,125 @@ def cmd_next(args):
     print("When this panel's command has run, run:  maic-storyboard next")
 
 
+def find_render(workflow_path, n):
+    """The newest image ComfyUI saved for panel N: the clean-panel SaveImage prefix, under the outputs place."""
+    import glob
+    import subprocess
+    wf = load(workflow_path, "workflow")
+    prefix = None
+    for node in wf["nodes"]:
+        if node.get("type") == "SaveImage" and node.get("title", "") == f"Panel {n} (clean)":
+            prefix = node["widgets_values"][0]
+    if not prefix:
+        return None
+    outputs = None
+    try:
+        outputs = subprocess.run(["maic", "path", "comfyui/outputs"], capture_output=True, text=True, timeout=20).stdout.strip()
+    except Exception:
+        pass
+    roots = [r for r in [os.environ.get("MAIC_COMFY_OUTPUT"), outputs] if r]
+    hits = []
+    for root in roots:
+        hits += glob.glob(os.path.join(root, prefix + "_*.png")) + glob.glob(os.path.join(root, os.path.basename(prefix) + "_*.png"))
+    return max(hits, key=os.path.getmtime) if hits else None
+
+
+def cmd_critique(args):
+    import base64
+    import urllib.request
+    sp = find_state()
+    st = load_state(sp)
+    story, wf = load(st["story"], "story"), load(st["workflow"], "workflow")
+    nodes, panels = panel_nodes(wf), story_panels(story)
+    n = args.panel
+    if n not in nodes or "prompt" not in nodes[n]:
+        sys.exit(f"the workflow has no panel {n}")
+    image = args.image or find_render(st["workflow"], n)
+    if not image or not os.path.isfile(image):
+        sys.exit(f"no rendered image found for panel {n}: render it in ComfyUI first, or pass --image PATH")
+    prompt = nodes[n]["prompt"]["widgets_values"][0]
+    p = panels.get(n, {})
+    server = args.server.rstrip("/")
+    model = args.model
+    if not model:
+        try:
+            ids = [m["id"] for m in json.load(urllib.request.urlopen(server + "/v1/models", timeout=10))["data"]]
+            model = next((i for i in ids if "9B" in i), ids[0] if ids else "current")
+        except Exception:
+            model = "current"
+    with open(image, "rb") as f:
+        data = base64.b64encode(f.read()).decode()
+    mime = "image/png" if image.lower().endswith(".png") else "image/jpeg"
+    story_text = "\n".join(f"{k}: {p[k]}" for k in ("caption", "visual_description", "mood", "dialogue") if p.get(k))
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You check a manga panel render against the prompt that produced it. Answer with one JSON object and nothing else: "
+                                          '{"matches": [tags the render honours], "missing": [tags or details asked for but not visible], "wrong": [what the render shows that was not asked for or is broken: extra people, merged bodies, bad hands], '
+                                          '"add": [Danbooru tags to add to the prompt], "drop": [tags to remove], "note": "one sentence"}. Tags are lowercase with underscores.'},
+            {"role": "user", "content": [
+                {"type": "text", "text": f"Prompt tags:\n{prompt}\n\nStory for this panel:\n{story_text or '(none)'}\n\nCompare the image with the prompt and the story."},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}},
+            ]},
+        ],
+        "max_tokens": 600,
+        "reasoning_effort": "none",
+        "chat_template_kwargs": {"enable_thinking": False},
+        "temperature": 0.2,
+    }
+    req = urllib.request.Request(server + "/v1/chat/completions", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    try:
+        reply = json.load(urllib.request.urlopen(req, timeout=300))["choices"][0]["message"]["content"]
+    except Exception as e:
+        sys.exit(f"llama-server at {server} did not answer: {e} (maic up llamacpp; the model must carry a vision projector)")
+    start, end = reply.find("{"), reply.rfind("}")
+    try:
+        verdict = json.loads(reply[start:end + 1])
+    except Exception:
+        sys.exit("the model did not return JSON:\n" + reply)
+    print(f"panel {n}, image {os.path.basename(image)}, read by {model}")
+    for key in ("matches", "missing", "wrong"):
+        vals = verdict.get(key) or []
+        print(f"  {key:<8} " + (", ".join(map(str, vals)) if vals else "-"))
+    if verdict.get("note"):
+        print(f"  note     {verdict['note']}")
+    add = [norm(t) for t in verdict.get("add") or []]
+    drop = [norm(t) for t in verdict.get("drop") or []]
+    # Check proposed additions against the local tag set when it exists.
+    tagfile = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[0]))), "danbooru_tags.py")
+    known = None
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import danbooru_tags  # noqa: E402
+
+        if os.path.isfile(danbooru_tags.store_path()):
+            known = danbooru_tags.load()
+    except Exception:
+        known = None
+    kept_add = []
+    for t in add:
+        if known is None:
+            kept_add.append(t)
+        elif t in known["tags"]:
+            kept_add.append(t)
+        elif t in known["aliases"]:
+            kept_add.append(known["aliases"][t])
+            print(f"  add      {t}: alias, using {known['aliases'][t]}")
+        else:
+            print(f"  add      {t}: not a known tag, left out")
+    current = [t.strip() for t in prompt.split(",") if t.strip()]
+    new = [t for t in current if norm(t) not in drop] + [t for t in kept_add if norm(t) not in [norm(c) for c in current]]
+    if new == current:
+        print("no prompt change proposed")
+        return
+    print("  proposed prompt change: " + (f"drop {', '.join(drop)}; " if drop else "") + (f"add {', '.join(kept_add)}" if kept_add else ""))
+    print(f"  apply:   maic-workflow-edit set {shell_quote(st['workflow'])} \"Panel {n} prompt\".text {shell_quote(', '.join(new))}")
+
+
+def norm(tag):
+    return tag.strip().lower().replace(" ", "_")
+
+
 def cmd_status(args):
     sp = find_state()
     st = load_state(sp)
@@ -386,6 +510,12 @@ def main():
     p.set_defaults(func=cmd_next)
     p = sub.add_parser("status", help="where the storyboard stands")
     p.set_defaults(func=cmd_status)
+    p = sub.add_parser("critique", help="show a rendered panel to the vision model")
+    p.add_argument("panel", type=int)
+    p.add_argument("--image")
+    p.add_argument("--model")
+    p.add_argument("--server", default=os.environ.get("MAIC_LLAMACPP_URL", "http://127.0.0.1:8081"))
+    p.set_defaults(func=cmd_critique)
     p = sub.add_parser("fill", help="captions and dialogue into the overlays")
     p.add_argument("story")
     p.add_argument("workflow")

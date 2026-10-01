@@ -16,6 +16,7 @@ struct TuiOptions {
     bool append = true;  // continue in the same file (false: a new file that points at the old one)
     std::optional<size_t> fork_at;  // with resume: fork from its first N records (append is then false)
     std::vector<std::filesystem::path> context;  // files attached to the conversation before the first turn
+    std::vector<std::filesystem::path> images;   // --image FILE: pictures for the first turn
     std::string initial_prompt;
     std::optional<bool> record;  // overrides settings.record
     std::optional<std::string> system;        // --system TEXT|@FILE, overrides settings.system_prompt

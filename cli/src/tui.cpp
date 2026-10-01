@@ -5,6 +5,7 @@
 #include "maic/agent.hpp"
 #include "maic/artifacts.hpp"
 #include "maic/clipboard.hpp"
+#include "maic/image.hpp"
 #include "maic/places.hpp"
 #include "maic/vendor.hpp"
 #include "maic/lua.hpp"
@@ -266,6 +267,101 @@ public:
 
     void welcome();
     void startup_notice(const std::string& t) { view_.append(Kind::Notice, t); }
+    void attach_image(const std::filesystem::path& f) {
+        try {
+            agent_.attach_image(f.string().rfind("~/", 0) == 0 ? std::filesystem::path(std::getenv("HOME")) / f.string().substr(2) : f);
+            post(Kind::Notice, "image attached to the next message: " + f.filename().string() + "  (:image lists, :image clear drops)");
+        } catch (const std::exception& e) {
+            post(Kind::Error, e.what());
+        }
+    }
+    // A file dragged onto the terminal arrives as its path in the input, quoted or backslash-escaped the way
+    // terminals write a drop. Only that shape is taken as an attachment: the whole message being one image
+    // path, or a message that begins with a quoted/escaped/file:// one. A plain path inside a sentence stays
+    // text, so a pasted path is something the agent can be asked to read rather than a picture MAIC sends.
+    std::string take_dropped_image(const std::string& text) {
+        // The explicit form first: ![alt](path) or [text](path) whose target is an image file, anywhere in the
+        // message. Micaiah's suggestion: no guessing, and it works for a pasted path too.
+        {
+            std::string out;
+            size_t pos = 0;
+            bool any = false;
+            while (true) {
+                size_t lb = text.find('[', pos);
+                if (lb == std::string::npos) break;
+                size_t rb = text.find("](", lb);
+                size_t rp = rb == std::string::npos ? std::string::npos : text.find(')', rb + 2);
+                if (rp == std::string::npos) break;
+                std::string alt = text.substr(lb + 1, rb - lb - 1), target = text.substr(rb + 2, rp - rb - 2);
+                while (!target.empty() && (target.front() == '"' || target.front() == '\'' || target.front() == '<')) target.erase(0, 1);
+                while (!target.empty() && (target.back() == '"' || target.back() == '\'' || target.back() == '>')) target.pop_back();
+                if (target.rfind("file://", 0) == 0) target = target.substr(7);
+                if (target.rfind("~/", 0) == 0) target = std::string(std::getenv("HOME")) + target.substr(1);
+                std::filesystem::path p = std::filesystem::path(target).is_absolute() ? std::filesystem::path(target) : agent_.harness().workspace() / target;
+                std::error_code ec;
+                size_t start = lb > 0 && text[lb - 1] == '!' ? lb - 1 : lb;
+                if (is_image_path(p) && std::filesystem::is_regular_file(p, ec)) {
+                    try {
+                        agent_.attach_image(p);
+                        out += text.substr(pos, start - pos) + "[image: " + (alt.empty() ? p.filename().string() : alt) + "]";
+                        any = true;
+                        pos = rp + 1;
+                        continue;
+                    } catch (const std::exception&) {
+                    }
+                }
+                out += text.substr(pos, rp + 1 - pos);
+                pos = rp + 1;
+            }
+            if (any) return out + text.substr(pos);
+        }
+        std::string t = text;
+        while (!t.empty() && std::isspace(static_cast<unsigned char>(t.back()))) t.pop_back();
+        size_t start = t.find_first_not_of(" \t\n");
+        if (start == std::string::npos) return text;
+        t = t.substr(start);
+        std::string path, rest;
+        bool dropped_shape = false;
+        if (t.rfind("file://", 0) == 0) {
+            dropped_shape = true;
+            size_t sp = t.find_first_of(" \n");
+            path = t.substr(7, sp == std::string::npos ? std::string::npos : sp - 7);
+            rest = sp == std::string::npos ? "" : t.substr(sp);
+        } else if (t.front() == '\'' || t.front() == '"') {
+            size_t end = t.find(t.front(), 1);
+            if (end == std::string::npos) return text;
+            dropped_shape = true;
+            path = t.substr(1, end - 1);
+            rest = t.substr(end + 1);
+        } else {
+            // Backslash-escaped spaces mark a drop; a path with no spaces counts only when it is the whole message.
+            size_t i = 0;
+            while (i < t.size() && !(t[i] == ' ' || t[i] == '\n')) {
+                if (t[i] == '\\' && i + 1 < t.size()) {
+                    path += t[i + 1];
+                    dropped_shape = true;
+                    i += 2;
+                } else {
+                    path += t[i++];
+                }
+            }
+            rest = t.substr(i);
+            if (!dropped_shape && !rest.empty()) return text;  // a bare path followed by words: text
+        }
+        if (path.rfind("~/", 0) == 0) path = std::string(std::getenv("HOME")) + path.substr(1);
+        std::filesystem::path p(path);
+        std::error_code ec;
+        if (!is_image_path(p) || !std::filesystem::is_regular_file(p, ec)) return text;
+        try {
+            agent_.attach_image(p);
+        } catch (const std::exception&) {
+            return text;
+        }
+        std::string r = rest;
+        size_t rs = r.find_first_not_of(" \t\n");
+        r = rs == std::string::npos ? "" : r.substr(rs);
+        return "[image: " + p.filename().string() + "]" + (r.empty() ? "" : " " + r);
+    }
     // The current provider's `sampling` settings table, merged into every request.
     void apply_sampling() {
         auto [provider, name] = resolve_model(agent_.providers, agent_.model);
@@ -1053,8 +1149,10 @@ void App::submit(std::string text, bool now) {
     start_turn(text);
 }
 
-void App::start_turn(const std::string& text) {
-    view_.append(Kind::User, text);
+void App::start_turn(const std::string& text_in) {
+    std::string text = take_dropped_image(text_in);
+    auto pics = agent_.pending_images();
+    view_.append(Kind::User, text + (pics.empty() ? "" : "\n(with " + std::to_string(pics.size()) + " image" + (pics.size() == 1 ? "" : "s") + ")"));
     if (worker_.joinable()) worker_.join();
     busy_ = true;
     cancel_ = false;
@@ -1603,6 +1701,18 @@ void App::run_command(const std::string& line) {
             } else {
                 post(Kind::Error, ":sampling [KEY VALUE | xtc P [T] | unset KEY | reset]");
             }
+        } else if (cmd == "image" || cmd == "img") {
+            if (arg.empty()) {
+                auto pics = agent_.pending_images();
+                std::string out = pics.empty() ? "no image attached. :image FILE attaches one to the next message; a file dropped onto the terminal is attached on send" : "attached to the next message:";
+                for (const auto& p : pics) out += "\n  " + p;
+                post(Kind::Notice, out);
+            } else if (arg == "clear") {
+                agent_.clear_pending_images();
+                post(Kind::Notice, "attachments dropped");
+            } else {
+                attach_image(arg);
+            }
         } else if (cmd == "forbid") {
             std::istringstream a(arg);
             std::string sub;
@@ -1877,6 +1987,7 @@ int run_tui(const TuiOptions& options) {
     }
     app.welcome();
     app.attach_context(options.context);
+    for (const auto& im : options.images) app.attach_image(im);
     if (!first.empty()) app.send(first);
     auto component = CatchEvent(Renderer([&] { return app.render(); }), [&](Event e) { return app.handle(e); });
     screen.Loop(component);

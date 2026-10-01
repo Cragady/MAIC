@@ -17,6 +17,7 @@ struct HeadlessOptions {
     bool think = false;
     std::optional<std::filesystem::path> resume;
     std::vector<std::filesystem::path> context;  // files attached to the turn before the prompt ("-" = stdin)
+    std::vector<std::filesystem::path> images;   // --image FILE: pictures sent with the prompt
     std::optional<std::string> system;
     std::optional<std::string> prefill;
     std::optional<int> ctx;
