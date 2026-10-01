@@ -122,6 +122,7 @@ int run_headless(const HeadlessOptions& options) {
     if (options.system) settings.system_prompt = *options.system;
     if (options.prefill) settings.prefill = *options.prefill;
     if (options.ctx) settings.context = *options.ctx;
+    if (options.ctx2) settings.context_2 = *options.ctx2;
     settings.rules.insert(settings.rules.end(), options.rules.begin(), options.rules.end());
     if (options.load_instructions) settings.load_instructions = *options.load_instructions;
     settings.bans.strings.insert(settings.bans.strings.end(), options.bans.begin(), options.bans.end());
@@ -159,8 +160,13 @@ int run_headless(const HeadlessOptions& options) {
     Agent agent(std::filesystem::current_path(), settings.model);
     agent.providers = settings.providers;
     set_context(agent.providers, settings.context);
+    set_context(agent.providers, settings.context_2, "llamacpp-2");
     if (options.ctx) {
         std::string r = restart_llamacpp_if_changed();
+        if (!r.empty()) fprintf(stderr, "※ %s\n", r.c_str());
+    }
+    if (options.ctx2) {
+        std::string r = restart_llamacpp_if_changed("llamacpp-2");
         if (!r.empty()) fprintf(stderr, "※ %s\n", r.c_str());
     }
     agent.mode = *mode;

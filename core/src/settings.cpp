@@ -202,6 +202,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.record = j.value("record", s.record);
         s.models_dir = j.value("models_dir", s.models_dir);
         s.context = std::max(1024, j.value("context", s.context));
+        s.context_2 = std::max(1024, j.value("context_2", s.context_2));
         s.title_model = j.value("title_model", s.title_model);
         s.budget_tokens = j.value("budget_tokens", s.budget_tokens);
         s.timestamps = j.value("timestamps", s.timestamps);
@@ -401,6 +402,8 @@ void write_default_settings(bool as_json) {
         {"models_dir", d.models_dir},
         {"context", d.context},
         {"//context", "context window in tokens for the local llama.cpp server (${MAIC_CONTEXT} in service files) and the usage readout; --ctx N and :ctx N override"},
+        {"context_2", d.context_2},
+        {"//context_2", "the same for the side server llamacpp-2 on port 8082 (${MAIC_CONTEXT_2}); --ctx2 N and :ctx2 N override"},
         {"title_model", d.title_model},
         {"budget_tokens", d.budget_tokens},
         {"timestamps", d.timestamps},
@@ -439,7 +442,7 @@ void write_default_settings(bool as_json) {
         {"server", {{"listen", d.server.listen}, {"workspaces", json::array()}, {"cert", ""}, {"key", ""}}},
         {"providers", providers},
         {"models", json::object()},
-        {"//models", "presets by short name, adding to or overriding the built-in ones (opus-5.5, sonnet-5, haiku-4.5, fable-5.1, qwen-4b, qwen-9b, qwen-9b-vision): models = { [\"opus-5.5\"] = { model = \"anthropic/claude-opus-5-5\", context = 1000000, reviewer = \"anthropic/claude-sonnet-5\", think = true } }. reviewer \"same\" means the model reviews itself; context sizes are your plan's figures"},
+        {"//models", "presets by short name, adding to or overriding the built-in ones (opus-5.5, sonnet-5, haiku-4.5, fable-5.1, qwen-4b, qwen-9b, qwen-9b-vision): models = { [\"opus-5.5\"] = { model = \"anthropic/claude-opus-5-5\", context = 1000000, reviewer = \"anthropic/claude-sonnet-5\", think = true } }. reviewer \"same\" means the model reviews itself; context sizes are your plan's figures. A model on the side server: [\"qwen-4b-side\"] = { model = \"llamacpp-2/Qwen3.5-4B-Q4_K_M\", context = 8192 }"},
         {"style", styles},
     };
     std::ofstream out(p);

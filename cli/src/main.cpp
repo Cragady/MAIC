@@ -51,6 +51,7 @@ void usage(std::ostream& out = std::cerr) {
                  "       --no-instructions                  load no MAIC.md / AGENTS.md anywhere; combines with --system\n"
                  "       --ctx N                            context window in tokens: starts (or restarts) the local llama.cpp server\n"
                  "                                          with --ctx-size N and sizes the readout; also `maic up llamacpp --ctx N`\n"
+                 "       --ctx2 N                           the same for the side server llamacpp-2 (port 8082; default 8192)\n"
                  "       --prefix TEXT|@FILE                every reply starts with these literal words (also --prefill)\n"
                  "       --rule TEXT                        a standing instruction the model is reminded of every turn (repeatable)\n"
                  "       --ban TEXT|@FILE                   a phrase the model must not say, or a file with one per line (repeatable; :ban)\n"
@@ -83,8 +84,8 @@ void usage(std::ostream& out = std::cerr) {
                  "  up <service...|all>        start services\n"
                  "  down <service...|all>      stop services MAIC started\n"
                  "  logs <service> [lines]     the end of a service's log (default 40 lines)\n"
-                 "  gpu [free [all|llamacpp|comfyui]]   who holds the card (llama-server's resident model, ComfyUI's VRAM);\n"
-                 "                             free unloads models without stopping anything\n"
+                 "  gpu [free [all|llamacpp|llamacpp-2|comfyui]]   who holds the card (each llama server's resident model, ComfyUI's\n"
+                 "                             VRAM) and whether two models fit it; free unloads models without stopping anything\n"
                  "  path [NAME] [--copy]       every place maic knows (workspace, sessions, models, workflows, ...) or one path;\n"
                  "                             --copy puts it on the clipboard; a unique prefix is enough\n"
                  "  cd NAME [--subshell]       print a place's directory (cd \"$(maic cd NAME)\"; a file's parent); --subshell (-s)\n"
@@ -178,14 +179,17 @@ int cmd_up(const std::vector<maic::ServiceDef>& services) {
 int cmd_gpu(const std::vector<std::string>& args) {
     auto services = maic::load_services(maic::root_dir() / "services");
     if (args.empty() || args[0] == "show") {
-        std::cout << maic::gpu_report(services).text() << "maic gpu free [all|llamacpp|comfyui] releases memory without stopping anything\n";
+        maic::GpuReport report = maic::gpu_report(services);
+        std::cout << report.text();
+        if (std::string fit = maic::gpu_budget(report, maic::load_settings()); !fit.empty()) std::cout << fit << "\n";
+        std::cout << "maic gpu free [all|llamacpp|llamacpp-2|comfyui] releases memory without stopping anything\n";
         return 0;
     }
     if (args[0] == "free") {
         std::cout << maic::gpu_free(services, args.size() > 1 ? args[1] : "all");
         return 0;
     }
-    throw std::runtime_error("maic gpu [show | free [all|llamacpp|comfyui]]");
+    throw std::runtime_error("maic gpu [show | free [all|llamacpp|llamacpp-2|comfyui]]");
 }
 
 int cmd_down(const std::vector<maic::ServiceDef>& services) {
@@ -508,6 +512,7 @@ int main(int argc, char** argv) {
         maic::Settings early = maic::load_settings();
         if (!early.models_dir.empty()) setenv("MAIC_MODELS_DIR", early.models_dir.c_str(), 0);
         setenv("MAIC_CONTEXT", std::to_string(early.context).c_str(), 1);
+        setenv("MAIC_CONTEXT_2", std::to_string(early.context_2).c_str(), 1);
     } catch (const std::exception&) {
         // a broken settings file is reported by whichever command loads it properly
     }
@@ -600,6 +605,11 @@ int main(int argc, char** argv) {
                 if (n < 1024) throw std::runtime_error("--ctx takes the context window in tokens (16384, 32768, ...)");
                 tui.ctx = headless.ctx = n;
                 setenv("MAIC_CONTEXT", std::to_string(n).c_str(), 1);  // service files read it at load
+            } else if (a == "--ctx2") {
+                int n = std::atoi(value("--ctx2").c_str());
+                if (n < 1024) throw std::runtime_error("--ctx2 takes the side server's context window in tokens (8192, 16384, ...)");
+                tui.ctx2 = headless.ctx2 = n;
+                setenv("MAIC_CONTEXT_2", std::to_string(n).c_str(), 1);
             } else if (a == "--image" || a == "-I") {
                 std::filesystem::path f = value(a.c_str());
                 tui.images.push_back(f);

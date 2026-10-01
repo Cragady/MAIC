@@ -23,7 +23,7 @@ class MaicLlmServer:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "base_url": ("STRING", {"default": "http://127.0.0.1:8081/v1", "tooltip": "The OpenAI-compatible root of a llama-server. MAIC's service listens on 127.0.0.1:8081."}),
+                "base_url": ("STRING", {"default": "http://127.0.0.1:8081/v1", "tooltip": "The OpenAI-compatible root of a llama-server. MAIC's main server listens on 127.0.0.1:8081, its side server (llamacpp-2) on 8082."}),
                 "model": ("STRING", {"default": "current", "tooltip": "The model field of each request. `current` is the alias services/llamacpp.json gives the linked GGUF; a single-model llama-server answers with that model whatever the name."}),
                 "timeout": ("INT", {"default": 300, "min": 1, "max": 3600, "tooltip": "Seconds to wait for a reply."}),
             },
@@ -33,7 +33,7 @@ class MaicLlmServer:
     RETURN_NAMES = ("connection",)
     FUNCTION = "connect"
     CATEGORY = "MAIC/llm"
-    DESCRIPTION = "A llama-server to chat with. One model per server: a second model means a second llama-server on another port."
+    DESCRIPTION = "A llama-server to chat with. One resident model per server: MAIC's main server is on 8081, its side server (maic up llamacpp-2) on 8082."
 
     def connect(self, base_url, model, timeout):
         return ({"base_url": base_url.rstrip("/"), "model": model, "timeout": timeout},)

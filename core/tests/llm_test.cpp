@@ -74,6 +74,13 @@ int main() {
     expect(p2.name == "llamacpp" && m2 == "hf.co/org/some-model:Q4", "an unknown prefix stays a whole model name on the first provider");
     auto by_name = [&](const std::string& n) { return *std::find_if(provs.begin(), provs.end(), [&](const Provider& p) { return p.name == n; }); };
     expect(!by_name("llamacpp").remote() && by_name("anthropic").remote(), "llamacpp is local, anthropic is remote");
+    {
+        const Provider& side = by_name("llamacpp-2");
+        expect(side.kind == "openai" && side.base_url == "http://127.0.0.1:8082/v1" && !side.remote() && side.options.value("thinking_controls", false) && side.options.value("context_window", 0) == 8192,
+               "llamacpp-2 is shipped: OpenAI-compatible on 8082, local, thinking controls, an 8k window");
+        auto [ps, ms] = resolve_model(provs, "llamacpp-2/Qwen3.5-4B-Q4_K_M");
+        expect(ps.name == "llamacpp-2" && ms == "Qwen3.5-4B-Q4_K_M", "llamacpp-2/NAME reaches the side server");
+    }
 
     section("anthropic");
     setenv("MAIC_TEST_KEY", "sk-test", 1);
@@ -403,6 +410,8 @@ int main() {
         f.start();
         auto ids = list_openai_models({"lab", "openai", f.url() + "/v1"});
         expect(ids == std::vector<std::string>{"Qwen3.5-4B-Q4_K_M", "Qwen3.5-9B-Q4_K_M"}, "an OpenAI-compatible server's models are listed by id, sorted");
+        expect(server_answers({"lab", "openai", f.url() + "/v1"}), "a server that is up answers (any reply to GET /health counts)");
+        expect(!server_answers({"lab", "openai", "http://127.0.0.1:9/v1"}), "a closed port does not");
     }
 
     section("cancel");

@@ -53,7 +53,8 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 | `compact_at` | Auto-compact when the last model call used this share of the context window (default `0.75`; `0` disables). Old tool results are stubbed first; the oldest turns are summarised only if that was not enough. See `:h compact`. |
 | `compact_keep_results` | Tool results that are never stubbed, counting from the most recent (default `4`). |
 | `context` | The context window in tokens (default `16384`): the local llama.cpp server's `--ctx-size` and the readout. `--ctx N` and `:ctx N` override and restart the server. |
-| `models` | Presets by short name, adding to or overriding the built-in ones: `models = { ["opus-5.5"] = { model = "anthropic/claude-opus-5-5", context = 1000000, reviewer = "anthropic/claude-sonnet-5", think = true } }`. `reviewer = "same"` makes the model review itself; `context` sets the provider's window for the readout (and the server's size for a local model). Built in: `opus-5.5`, `fable-5.1`, `sonnet-5`, `haiku-4.5`, `qwen-4b`, `qwen-9b` (text, 16k), `qwen-9b-vision` (8k). `--model NAME` and `:model NAME` accept a preset's name. |
+| `context_2` | The same for the side server, `llamacpp-2` on port 8082 (default `8192`; `${MAIC_CONTEXT_2}` in its service file). `--ctx2 N` and `:ctx2 N` override and restart it. Two models share the card, so this is the window to lower first; `maic gpu` says whether the pair fits ([llamacpp.md](llamacpp.md), Two servers). |
+| `models` | Presets by short name, adding to or overriding the built-in ones: `models = { ["opus-5.5"] = { model = "anthropic/claude-opus-5-5", context = 1000000, reviewer = "anthropic/claude-sonnet-5", think = true } }`. `reviewer = "same"` makes the model review itself; `context` sets the provider's window for the readout (and the server's size for a local model: `context` for `llamacpp`, `context_2` for `llamacpp-2`). Built in: `opus-5.5`, `fable-5.1`, `sonnet-5`, `haiku-4.5`, `qwen-4b`, `qwen-9b` (text, 16k), `qwen-9b-vision` (8k). None is shipped for the side server; the pattern is `models = { ["qwen-4b-side"] = { model = "llamacpp-2/Qwen3.5-4B-Q4_K_M", context = 8192 } }`. `--model NAME` and `:model NAME` accept a preset's name. |
 | `models_dir` | Where model files live. llama.cpp's router serves every GGUF under `<models_dir>/llamacpp/` (`${MAIC_MODELS}` in service files). Also ComfyUI's `checkpoints/ diffusion_models/ loras/ text_encoders/ vae/`. Used when MAIC installs ComfyUI (see [vendor.md](vendor.md)). |
 | `forbid` | Terms no tool call may contain, in any letter case (`/.../` for a POSIX extended regex): a search pattern, a command, a path or any argument with one is halted before it runs, under the dumb harness too. Layers add to the built-in list; `:forbid` at run time. |
 | `allow` | Command patterns (glob over the whole command line) that run in every mode but plan without an approval prompt or the reviewer; MAIC's own helpers are always on it. Trip patterns still win. Layers add up; `:allow` at run time. |
@@ -66,7 +67,7 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 | `browser` | What `maic open SERVICE` / `:open` uses: `default` (the system's browser), `firefox`, `chrome`. |
 | `remote` | A maic-server you subscribe to (`https://host:7373`). When it answers, `maic open SERVICE` opens the remote's copy of the service and `maic open server` its web client. |
 | `harness` | `"smart"` (default): a model reviews every command or write the rules would allow without asking, see `:h harness`. `"dumb"`: the rule list alone. |
-| `reviewer_model` | The model that reviews under the smart harness (default: the session's model). Same `provider/model` form as `model`. |
+| `reviewer_model` | The model that reviews under the smart harness. Same `provider/model` form as `model`. Default empty: the session's model reviews itself, except that when the model is on `llamacpp` and the side server `llamacpp-2` is up, the review goes there with the same model name, so the main server never has to evict its model for a review. `reviewer_model = "llamacpp-2/Qwen3.5-4B-Q4_K_M"` fixes that choice (and the model) regardless; see [llamacpp.md](llamacpp.md), Two servers. |
 | `dumb_auto_ok` | `true` skips the once-per-session warning when entering auto mode under a dumb harness (default `false`). |
 | `bans` | `{ strings = {...}, patterns = {...}, tokens = {...}, retries = 3, replacement = "[banned]", ignore_case = false, window = 64 }`. Strings and POSIX regex patterns are enforced by MAIC on every provider (cut before they show, re-asked, then replaced); tokens (ids or text) become `logit_bias` on OpenAI-compatible providers. Layers add strings, patterns and tokens. `--ban`, `--ban-pattern` and `:ban` at run time. See [bans.md](bans.md). |
 | `sampling` | Sampler keys sent with every request: `temperature`, `top_k`, `top_p`, `min_p`, `seed`, `repeat_penalty`, and on llama.cpp-style servers `xtc_probability` / `xtc_threshold`. A provider's `options.sampling` overrides it; `:sampling` changes it live. Nothing is sent to Anthropic. |
@@ -79,11 +80,12 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 
 ## Providers
 
-Where models come from. MAIC ships with `llamacpp` (local, the default), `anthropic`, `deepseek` and `openrouter`; a `providers` entry adds a new one or changes a shipped one by name.
+Where models come from. MAIC ships with `llamacpp` (local, the default), `llamacpp-2` (the local side server), `anthropic`, `deepseek` and `openrouter`; a `providers` entry adds a new one or changes a shipped one by name.
 
 | Shipped | Kind | `base_url` | Key |
 | :--- | :--- | :--- | :--- |
 | `llamacpp` | `openai` | `http://127.0.0.1:8081/v1` (the vendored llama-server, [llamacpp.md](llamacpp.md); every `sampling` key reaches it, including `xtc_probability`, `dry_multiplier`, `grammar`, `json_schema`, and `logit_bias` from token bans) | none |
+| `llamacpp-2` | `openai` | `http://127.0.0.1:8082/v1` (the side server, `maic up llamacpp-2`: the same router over the same GGUFs, so a second model stays resident; `context_window` follows `context_2`) | none |
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
 | `deepseek` | `openai` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` |
 | `openrouter` | `openai` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |

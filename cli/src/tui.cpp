@@ -201,6 +201,7 @@ public:
           agent_(std::filesystem::current_path(), settings_.model), editor_(&register_), view_(&register_) {
         agent_.providers = settings_.providers;
         set_context(agent_.providers, settings_.context);
+        set_context(agent_.providers, settings_.context_2, "llamacpp-2");
         agent_.think = settings_.think;
         agent_.review_with_model = settings_.harness != "dumb";
         agent_.reviewer_model = settings_.reviewer_model;
@@ -1313,9 +1314,10 @@ void App::set_model(const std::string& model_in) {
         agent_.reviewer_model = settings_.reviewer_model;
         agent_.think = settings_.think;
         set_context(agent_.providers, settings_.context);
-        if (provider.name == "llamacpp") {
+        set_context(agent_.providers, settings_.context_2, "llamacpp-2");
+        if (is_llama_server(provider.name)) {
             try {
-                std::string r = restart_llamacpp_if_changed();
+                std::string r = restart_llamacpp_if_changed(provider.name);
                 if (!r.empty()) post(Kind::Notice, r);
             } catch (const std::exception& e) {
                 post(Kind::Error, e.what());
@@ -1407,8 +1409,8 @@ void App::run_command(const std::string& line) {
             try {
                 std::vector<std::string> names = list_openai_models(provider);
                 for (const auto& m : names) out += "\n  " + provider.name + "/" + m + (provider.name + "/" + m == agent_.model ? "   (in use)" : "");
-                if (provider.name == "llamacpp") {
-                    out += "\nfiles under " + llamacpp_models_root().string() + " (a subdirectory holds a GGUF plus its mmproj); one model is resident at a time; :model llamacpp/NAME switches";
+                if (is_llama_server(provider.name)) {
+                    out += "\nfiles under " + llamacpp_models_root().string() + " (a subdirectory holds a GGUF plus its mmproj); one model is resident per server; :model " + provider.name + "/NAME switches";
                 }
             } catch (const std::exception& e) {
                 out += "\n  " + std::string(e.what());
@@ -1805,26 +1807,30 @@ void App::run_command(const std::string& line) {
                 agent_.set_rules(rs);
                 post(Kind::Notice, "rule " + std::to_string(rs.size()) + " added; it is carried with the operator instructions from the next turn");
             }
-        } else if (cmd == "ctx" || cmd == "context-size") {
+        } else if (cmd == "ctx" || cmd == "context-size" || cmd == "ctx2") {
+            bool side = cmd == "ctx2";
+            int& current = side ? settings_.context_2 : settings_.context;
+            std::string service = side ? "llamacpp-2" : "llamacpp";
             if (arg.empty()) {
-                post(Kind::Notice, "context window: " + std::to_string(settings_.context) + " tokens (:ctx N sets it and restarts the local server; --ctx N on the command line; context in settings)");
+                post(Kind::Notice, (side ? "side server context window: " : "context window: ") + std::to_string(current) + " tokens (:" + cmd + " N sets it and restarts " + service + "; --" + cmd + " N on the command line; " +
+                                       (side ? "context_2" : "context") + " in settings)");
             } else if (!idle()) {
                 post(Kind::Error, "wait for the turn to finish");
             } else {
                 int n = std::atoi(arg.c_str());
                 if (n < 1024) {
-                    post(Kind::Error, ":ctx N takes tokens (16384, 32768, ...)");
+                    post(Kind::Error, ":" + cmd + " N takes tokens (8192, 16384, 32768, ...)");
                 } else {
-                    settings_.context = n;
-                    set_context(agent_.providers, n);
+                    current = n;
+                    set_context(agent_.providers, n, service);
                     std::string r;
                     try {
                         require_armed("restart services");
-                        r = restart_llamacpp_if_changed();
+                        r = restart_llamacpp_if_changed(service);
                     } catch (const std::exception& e) {
                         r = e.what();
                     }
-                    post(Kind::Notice, "context window: " + std::to_string(n) + " tokens" + (r.empty() ? " (the local server was not running with another size)" : "; " + r));
+                    post(Kind::Notice, (side ? "side server context window: " : "context window: ") + std::to_string(n) + " tokens" + (r.empty() ? " (" + service + " was not running with another size)" : "; " + r));
                 }
             }
         } else if (cmd == "prefill" || cmd == "prefix") {
@@ -1874,7 +1880,9 @@ void App::run_command(const std::string& line) {
                     std::string what = arg.size() > 5 ? arg.substr(5) : "all";
                     post(Kind::Notice, gpu_free(services(), what));
                 } else {
-                    post(Kind::Notice, gpu_report(services()).text() + ":gpu free [all|llamacpp|comfyui] releases memory without stopping anything");
+                    GpuReport report = gpu_report(services());
+                    std::string fit = gpu_budget(report, settings_);
+                    post(Kind::Notice, report.text() + (fit.empty() ? "" : fit + "\n") + ":gpu free [all|llamacpp|llamacpp-2|comfyui] releases memory without stopping anything");
                 }
             } catch (const std::exception& e) {
                 post(Kind::Error, e.what());
@@ -1978,6 +1986,7 @@ int run_tui(const TuiOptions& options) {
     if (options.system) settings.system_prompt = *options.system;
     if (options.prefill) settings.prefill = *options.prefill;
     if (options.ctx) settings.context = *options.ctx;
+    if (options.ctx2) settings.context_2 = *options.ctx2;
     settings.rules.insert(settings.rules.end(), options.rules.begin(), options.rules.end());
     if (options.load_instructions) settings.load_instructions = *options.load_instructions;
     settings.bans.strings.insert(settings.bans.strings.end(), options.bans.begin(), options.bans.end());
@@ -2005,6 +2014,10 @@ int run_tui(const TuiOptions& options) {
     if (options.ctx) {
         // --ctx: the local server is restarted to match before the first message.
         std::string r = restart_llamacpp_if_changed();
+        if (!r.empty()) app.startup_notice(r);
+    }
+    if (options.ctx2) {
+        std::string r = restart_llamacpp_if_changed("llamacpp-2");
         if (!r.empty()) app.startup_notice(r);
     }
     app.welcome();

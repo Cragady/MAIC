@@ -86,6 +86,9 @@ std::vector<Provider> default_providers() {
         // request, so logit_bias, xtc_probability, dry_multiplier, grammar and json_schema all reach it; thinking is
         // switched per request; the context matches the service; later system messages go as user notes.
         {"llamacpp", "openai", "http://127.0.0.1:8081/v1", "", "", {{"thinking_controls", true}, {"context_window", 16384}}},
+        // The side server (services/llamacpp-2.json): the same router over the same GGUFs on port 8082, so a second
+        // model can stay resident while the first does. No preset by default; `llamacpp-2/NAME` reaches it.
+        {"llamacpp-2", "openai", "http://127.0.0.1:8082/v1", "", "", {{"thinking_controls", true}, {"context_window", 8192}}},
         {"anthropic", "anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "",
          {{"max_tokens", 64000}, {"effort", "high"}, {"think_effort", "xhigh"}, {"fallbacks", "default"}}},
         {"deepseek", "openai", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "", nlohmann::json::object()},
@@ -111,11 +114,27 @@ std::pair<Provider, std::string> resolve_model(const std::vector<Provider>& prov
     throw std::runtime_error("model '" + model + "' names no provider, and a bare name never goes to a provider called ollama; write it as " + providers.front().name + "/" + model + " to use that one on purpose");
 }
 
+namespace {
+
+// "http://127.0.0.1:8081/v1" -> {"http://127.0.0.1:8081", "/v1"}
+std::pair<std::string, std::string> split_base_url(const std::string& base_url) {
+    size_t root = base_url.find("://");
+    size_t slash = root == std::string::npos ? std::string::npos : base_url.find('/', root + 3);
+    if (slash == std::string::npos) return {base_url, ""};
+    return {base_url.substr(0, slash), base_url.substr(slash)};
+}
+
+}  // namespace
+
+bool server_answers(const Provider& provider) {
+    httplib::Client client(split_base_url(provider.base_url).first);
+    client.set_connection_timeout(1);
+    client.set_read_timeout(2);
+    return static_cast<bool>(client.Get("/health"));
+}
+
 std::vector<std::string> list_openai_models(const Provider& provider) {
-    size_t root = provider.base_url.find("://");
-    size_t slash = root == std::string::npos ? std::string::npos : provider.base_url.find('/', root + 3);
-    std::string host = slash == std::string::npos ? provider.base_url : provider.base_url.substr(0, slash);
-    std::string prefix = slash == std::string::npos ? "" : provider.base_url.substr(slash);
+    auto [host, prefix] = split_base_url(provider.base_url);
     httplib::Client client(host);
     client.set_connection_timeout(5);
     httplib::Headers headers;

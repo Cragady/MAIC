@@ -884,6 +884,40 @@ int main() {
         expect(!review_req.contains("tools") && body.find("User: please write the file") != std::string::npos && body.find("Write to:") != std::string::npos && body.find("Mode: auto") != std::string::npos,
                "the reviewer sees the user's words, the mode and the action, and has no tools");
         fake.reply = nullptr;
+
+        // The side server reviews when it is up, so the main server keeps its model: with no reviewer_model and
+        // the model on llamacpp, a llamacpp-2 that answers gets the review with the same model name; a closed
+        // port falls back to the main server.
+        FakeServer side;
+        side.delay_ms = 1;
+        auto side_run = [&](const std::string& side_url, const std::string& path) {
+            fake.reply = [&](const json& b) { return is_review(b) ? std::string("ALLOW: fine") : std::string(); };
+            side.reply = fake.reply;
+            fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", path}, {"content", "x"}}}};
+            fake.calls_left = 1;
+            Agent agent(ws, "Qwen3.5-4B-Q4_K_M");
+            Provider main_p = fake.provider();
+            main_p.name = "llamacpp";
+            agent.providers = {main_p, {"llamacpp-2", "openai", side_url, "", "", {{"context_window", 8192}}}};
+            agent.mode = Mode::Auto;
+            Recorder r;
+            r.reply = {Approval::Yes, ""};
+            agent.submit("please write the file", Origin::Local, r, no_cancel);
+            return r;
+        };
+        int main_reviews = reviews();
+        side_run("http://127.0.0.1:9/v1", "side1.txt");
+        expect(fs::exists(ws / "side1.txt") && reviews() == main_reviews + 1 && side.requests.empty(), "with the side server down, the main server reviews as before");
+        main_reviews = reviews();
+        side_run(side.provider().base_url, "side2.txt");
+        int side_reviews = 0;
+        std::string side_model;
+        for (const auto& q : side.requests) {
+            if (is_review(q)) ++side_reviews, side_model = q.value("model", "");
+        }
+        expect(fs::exists(ws / "side2.txt") && side_reviews == 1 && reviews() == main_reviews && side_model == "Qwen3.5-4B-Q4_K_M",
+               "with llamacpp-2 answering, the review goes there with the same model name and the main server is left alone");
+        fake.reply = nullptr;
     }
 
     section("context files");
