@@ -29,6 +29,7 @@ maic sessions                      # every session, with a preview
 maic artifacts                     # where MAIC and its services keep transcripts, logs, outputs
 maic settings init                 # a documented settings file (docs/settings.md)
 maic doctor                        # the machine, the tools MAIC needs, installed models, a recommended setup
+maic setup                         # the first run as yes/no questions: settings, llama.cpp, ComfyUI, a model, the tripwire
 ```
 
 ## Screen
@@ -76,7 +77,7 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:think on\|off` | let the model reason before answering |
 | `:set markdown\|mouse on\|off` | rendering and scroll-wheel toggles |
 | `:!cmd` or `!cmd` | run a command in **your** shell, unsandboxed, in the workspace; output shows in the conversation and is passed to the model as context (Ctrl-C stops it) |
-| `:status` | harness, every service with where it runs and what to do about it, model and whether it is remote, session file, queue |
+| `:status` | harness, every service with where it runs (`[host]` pid or `[docker]` container) and what it holds (resident model; ComfyUI's VRAM and queue), model and whether it is remote, session file, queue. See `:h status` |
 | `:up NAME` / `:down NAME` | start / stop a service |
 | `:init` | scaffold `MAIC.md` and `.maic/settings.json` here, then have the agent draft the `MAIC.md` from the project |
 | `:settings` | which settings files are in effect and where this session's transcript lives |

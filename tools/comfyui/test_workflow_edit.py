@@ -104,6 +104,51 @@ class Tests(unittest.TestCase):
         self.assertTrue(wf["nodes"][0]["widgets_values"][0].endswith(", snow"))
         self.assertEqual(self.load(), WORKFLOW)  # the original is untouched with --out
 
+    def test_check_lists_node_types_nobody_provides(self):
+        # A fake checkout: core as a mapping dict, an extra as a v3 schema, one custom node pack (through a link).
+        root = os.path.join(self.dir, "ComfyUI")
+        os.makedirs(os.path.join(root, "comfy_extras"))
+        os.makedirs(os.path.join(root, "custom_nodes"))
+        with open(os.path.join(root, "nodes.py"), "w") as f:
+            f.write('class KSampler: pass\n\nNODE_CLASS_MAPPINGS = {\n    "KSampler": KSampler,\n    "CLIPTextEncode": CLIPTextEncode,\n}\n\nNODE_DISPLAY_NAME_MAPPINGS = {\n    "KSampler": "KSampler",\n}\n')
+        with open(os.path.join(root, "comfy_extras", "nodes_images.py"), "w") as f:
+            f.write('class ImageCrop(IO.ComfyNode):\n    @classmethod\n    def define_schema(cls):\n        return IO.Schema(\n            node_id="ImageCrop",\n            display_name="Image Crop",\n        )\n')
+        pack = os.path.join(self.dir, "pack-src")
+        os.makedirs(pack)
+        with open(os.path.join(pack, "__init__.py"), "w") as f:
+            f.write("NODE_CLASS_MAPPINGS = {'TextOverlay': TextOverlay}\n")
+        os.symlink(pack, os.path.join(root, "custom_nodes", "comfyui-pack"))
+        wf = json.loads(json.dumps(WORKFLOW))
+        wf["nodes"].append({"id": 4, "type": "ImageCrop", "pos": [0, 300], "inputs": [], "outputs": [], "widgets_values": []})
+        wf["nodes"].append({"id": 5, "type": "Note", "pos": [0, 400], "inputs": [], "outputs": [], "widgets_values": ["a note"]})
+        with open(self.path, "w") as f:
+            json.dump(wf, f)
+        r = run("check", self.path, "--comfyui", root)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("every node type is provided", r.stdout)
+        # Two types nobody provides, one of them naming its pack; a subgraph's own id is never missing.
+        wf["nodes"].append({"id": 6, "type": "UltimateSDUpscale", "pos": [0, 500], "inputs": [], "outputs": [], "widgets_values": [],
+                            "properties": {"cnr_id": "comfyui_ultimatesdupscale"}})
+        wf["nodes"].append({"id": 7, "type": "abc-123-sub", "pos": [0, 600], "inputs": [], "outputs": [], "widgets_values": []})
+        wf["definitions"] = {"subgraphs": [{"id": "abc-123-sub", "nodes": [{"id": 1, "type": "FaceDetailer", "widgets_values": []}]}]}
+        with open(self.path, "w") as f:
+            json.dump(wf, f)
+        r = run("check", self.path, "--comfyui", root)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("missing: UltimateSDUpscale  (pack comfyui_ultimatesdupscale)", r.stdout)
+        self.assertIn("missing: FaceDetailer", r.stdout)
+        self.assertNotIn("abc-123-sub", r.stdout)
+        self.assertNotIn("missing: Note", r.stdout)
+        r = run("check", self.path, "--comfyui", os.path.join(self.dir, "nowhere"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no ComfyUI checkout", r.stderr)
+        # The default checkout is the vendored one under the state directory.
+        env = dict(os.environ, XDG_STATE_HOME=os.path.join(self.dir, "state"))
+        os.makedirs(os.path.join(self.dir, "state", "maic", "vendor"))
+        os.symlink(root, os.path.join(self.dir, "state", "maic", "vendor", "ComfyUI"))
+        r = subprocess.run([sys.executable, TOOL, "check", self.path], capture_output=True, text=True, env=env)
+        self.assertIn("missing: FaceDetailer", r.stdout)
+
     def test_edit_needs_a_terminal(self):
         r = run("edit", self.path)
         self.assertNotEqual(r.returncode, 0)

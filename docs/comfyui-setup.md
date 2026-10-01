@@ -33,19 +33,25 @@ uv pip install --python .venv -r requirements.txt
 # -> 2.14.0+cu130 True
 ```
 
-Create `extra_model_paths.yaml` in the ComfyUI folder:
+Model paths: `maic vendor wire comfyui` writes the `maic:` block of `extra_model_paths.yaml` from `models_dir` in settings and the manifest's `models` map (every category ComfyUI reads, `upscale_models` included), and leaves any other root key in the file alone. No symlinking into `ComfyUI/models` is needed. The block it writes:
 
 ```yaml
-extra_storage:
-    base_path: "/run/media/cragady/Extra Storage/LinBox-Overflow/llm-models/"
+maic:
+    base_path: "/path/to/llm-models/"
     checkpoints: checkpoints/
+    clip_vision: clip_vision/
+    controlnet: controlnet/
     diffusion_models: diffusion_models/
+    embeddings: embeddings/
     loras: loras/
+    model_patches: model_patches/
+    style_models: style_models/
     text_encoders: text_encoders/
+    upscale_models: upscale_models/
     vae: vae/
 ```
 
-The external drive must be mounted before ComfyUI starts, or those models won't show up.
+The external drive must be mounted before ComfyUI starts, or those models won't show up. `maic doctor` says whether the venv's torch and the NVIDIA driver agree on a CUDA version.
 
 ### Update
 
@@ -69,7 +75,7 @@ NoobAI, Illustrious and Anima are trained on Danbooru tags. The tag group index,
 
 ## Editing workflows without the UI
 
-`maic-workflow-edit` (installed beside `maic`; source in `tools/comfyui/workflow_edit.py`) changes prompts, seeds, steps, captions and file prefixes in a workflow JSON by exact path, interactively or from the command line, without touching the wiring; the agent knows it from its briefing and drives it through `run_shell` when MAIC runs in the workflow's folder. See [tools/comfyui/README.md](../tools/comfyui/README.md).
+`maic-workflow-edit` (installed beside `maic`; source in `tools/comfyui/workflow_edit.py`) changes prompts, seeds, steps, captions and file prefixes in a workflow JSON by exact path, interactively or from the command line, without touching the wiring; the agent knows it from its briefing and drives it through `run_shell` when MAIC runs in the workflow's folder. `maic-workflow-edit check FILE` lists the node types a workflow uses that neither ComfyUI core nor the installed `custom_nodes/` provide, read from the vendored checkout, offline. See [tools/comfyui/README.md](../tools/comfyui/README.md).
 
 ## Run
 
@@ -79,7 +85,7 @@ maic down comfyui
 maic logs comfyui
 ```
 
-MAIC starts it from `services/comfyui.json` with `--disable-api-nodes --listen 127.0.0.1 --port 8188`. The Story chat workflow also needs `maic up llamacpp` (with a GGUF linked by `maic vendor use llamacpp`).
+MAIC starts it from `services/comfyui.json` with `--disable-api-nodes --listen 127.0.0.1 --port 8188` and reports ready once the port is open and the log says `To see the GUI go to` (the file's `ready_pattern`); `maic status` then shows its VRAM in use and whether the queue is busy. The Story chat workflow also needs `maic up llamacpp` (with a GGUF linked by `maic vendor use llamacpp`). A containerised ComfyUI instead: `services/comfyui-docker.json.example` and [vendor.md](vendor.md), Docker as a runtime.
 
 Useful flags (add them to the `command` in `services/comfyui.json`):
 

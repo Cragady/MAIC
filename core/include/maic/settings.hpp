@@ -118,7 +118,7 @@ std::string resolve_system_prompt(const std::string& value);
 std::filesystem::path resolve_sessions_home(const Settings& settings, const std::filesystem::path& workspace);
 
 // Writes the settings file with a documented default for every key. Never overwrites an existing file.
-// Lua by default (settings.lua); `json` writes settings.json instead.
-void write_default_settings(bool json = false);
+// Lua by default (settings.lua); `json` writes settings.json instead. `models_dir` fills that key (maic setup asks).
+void write_default_settings(bool json = false, const std::string& models_dir = "");
 
 }  // namespace maic

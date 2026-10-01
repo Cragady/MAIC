@@ -372,7 +372,7 @@ std::string lua_literal(const json& j, int indent) {
 
 }  // namespace
 
-void write_default_settings(bool as_json) {
+void write_default_settings(bool as_json, const std::string& models_dir) {
     fs::path p = settings_path();
     if (!as_json) p.replace_extension(".lua");
     if (fs::exists(p) || fs::exists(settings_path()) || fs::exists(fs::path(settings_path()).replace_extension(".lua"))) {
@@ -399,7 +399,7 @@ void write_default_settings(bool as_json) {
         {"sessions_home", d.sessions_home},
         {"leader", "space"},
         {"record", d.record},
-        {"models_dir", d.models_dir},
+        {"models_dir", models_dir.empty() ? d.models_dir : models_dir},
         {"context", d.context},
         {"//context", "context window in tokens for the local llama.cpp server (${MAIC_CONTEXT} in service files) and the usage readout; --ctx N and :ctx N override"},
         {"context_2", d.context_2},

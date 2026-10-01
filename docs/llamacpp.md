@@ -36,7 +36,7 @@ A folder with an `mmproj` file always loads with vision, which costs about a gig
 
 ## Getting a model
 
-`maic vendor model llamacpp URL SHA256` downloads a GGUF with curl into `<models_dir>/llamacpp/` (or `--into DIR`), refuses to keep it unless the SHA-256 matches, and links it as the current model. Hugging Face shows the hash under a file's LFS details; its API gives it as `?blobs=true` on the tree listing. Use an upstream GGUF, for example `unsloth/Qwen3.5-4B-GGUF`'s `Qwen3.5-4B-Q4_K_M.gguf`, with `mmproj-F16.gguf` beside it for images. (Blobs from an Ollama store do not load: its Qwen3.5 files carry that engine's own metadata, three rope sections where llama.cpp expects four, with the vision tower packed into the same file.)
+`maic vendor model llamacpp URL SHA256` downloads a GGUF with curl into `<models_dir>/llamacpp/` (or `--into DIR`), refuses to keep it unless the SHA-256 matches, and links it as the current model (a file named `mmproj-*` is a projector: saved where asked, never linked). `maic setup` offers the two files below with their hashes filled in. Hugging Face shows the hash under a file's LFS details; its API gives it as `?blobs=true` on the tree listing. Use an upstream GGUF, for example `unsloth/Qwen3.5-4B-GGUF`'s `Qwen3.5-4B-Q4_K_M.gguf`, with `mmproj-F16.gguf` beside it for images. (Blobs from an Ollama store do not load: its Qwen3.5 files carry that engine's own metadata, three rope sections where llama.cpp expects four, with the vision tower packed into the same file.)
 
 ## What llama-server exposes
 

@@ -615,9 +615,14 @@ int main() {
         setenv("XDG_STATE_HOME", state.c_str(), 1);
         fs::path fake_lc = ws / "fake-llama.cpp";
         write_file(fake_lc / "ggml" / "CMakeLists.txt", "# ggml\n");
+        (void)!std::system(("git -C '" + fake_lc.string() + "' init -q && git -C '" + fake_lc.string() + "' remote add origin https://example.com/someone/not-the-one").c_str());
+        std::stringstream adopt_out;
+        auto* real_cout = std::cout.rdbuf(adopt_out.rdbuf());
         VendorEntry e = *lc;
         e.install.clear();  // no script: adopt only links
         vendor_adopt(e, fake_lc);
+        std::cout.rdbuf(real_cout);
+        expect(adopt_out.str().find("note: its origin is https://example.com/someone/not-the-one, not a llama.cpp repository") != std::string::npos, "adopt reads the git remote and says when it is not the upstream: " + adopt_out.str());
         auto st = vendor_status(e);
         expect(st.linked && st.installed && fs::path(st.target) == fs::weakly_canonical(fake_lc), "adopt links the checkout the user gave: " + st.target);
         expect(fs::is_symlink(vendor_link(e)) && vendor_link(e) == state / "maic" / "vendor" / "llama.cpp", "the link lives at <state>/vendor/llama.cpp");
@@ -869,6 +874,7 @@ int main() {
             httplib::Server srv;
             std::string blob = std::string("GGUF") + std::string(64, 'x');
             srv.Get("/m/tiny.gguf", [&](const httplib::Request&, httplib::Response& res) { res.set_content(blob, "application/octet-stream"); });
+            srv.Get("/m/mmproj-F16.gguf", [&](const httplib::Request&, httplib::Response& res) { res.set_content(blob, "application/octet-stream"); });
             int port = srv.bind_to_any_port("127.0.0.1");
             std::thread th([&] { srv.listen_after_bind(); });
             srv.wait_until_ready();
@@ -903,6 +909,9 @@ int main() {
                 threw_short = true;
             }
             expect(threw_short, "the SHA-256 is required");
+            fs::path proj = vendor_model(*ll, "http://127.0.0.1:" + std::to_string(port) + "/m/mmproj-F16.gguf", good, into / "Proj-Q4");
+            expect(proj == into / "Proj-Q4" / "mmproj-F16.gguf" && fs::exists(proj) && fs::read_symlink(vendor_model_link(*ll)) == fs::weakly_canonical(got),
+                   "a vision projector is saved where asked and never linked as the current model");
             // Router ids: a flat GGUF by stem, a subdirectory by its name; `current` resolves to the linked id.
             fs::create_directories(ws / "mroot" / "llamacpp" / "Big-Q4");
             write_file(ws / "mroot" / "llamacpp" / "Big-Q4" / "Big-Q4.gguf", "GGUF....");
@@ -1220,6 +1229,186 @@ int main() {
         }
         expect(bad, "an unknown scope is an error");
         fs::remove(ws / "proj" / ".maic" / "settings.lua");
+    }
+
+    section("docker runtime, ready patterns and health");
+    {
+        fs::path state = ws / "xdg-state-docker";
+        setenv("XDG_STATE_HOME", state.c_str(), 1);
+        setenv("XDG_CONFIG_HOME", (ws / "xdg-config-empty").c_str(), 1);
+        fs::create_directories(state / "maic" / "models");
+        // The shipped files: host services, ready patterns, no docker; the .example is not loaded.
+        auto shipped = load_services(root_dir() / "services");
+        bool patterns = false, no_docker = true;
+        for (const auto& d : shipped) {
+            if (d.name == "comfyui") patterns = d.ready_pattern == "To see the GUI go to";
+            if (d.name == "llamacpp") patterns = patterns && d.ready_pattern == "listening on";
+            no_docker = no_docker && d.runtime == "host";
+        }
+        expect(patterns && no_docker && fs::exists(root_dir() / "services" / "comfyui-docker.json.example"), "the shipped services are host services with ready patterns; the docker example is not loaded");
+
+        fs::path sdir = ws / "services-docker";
+        std::string vol_ok = (state / "maic" / "models").string();
+        write_file(sdir / "dk.json", R"({"name":"dk","runtime":"docker","image":"example/comfy:1","command":["--listen","0.0.0.0"],"port":8188,"gpu":true,
+            "volumes":{"${MAIC_MODELS}":"/models","${MAIC_STATE}/workflows/comfyui":"/wf"},"env":{"PYTHONUNBUFFERED":"1"},"ready_pattern":"GUI go to"})");
+        write_file(sdir / "skipped.json.example", R"({"name":"skipped","runtime":"docker","image":"x"})");
+        auto defs = load_services(sdir);
+        expect(defs.size() == 1 && defs[0].runtime == "docker" && defs[0].image == "example/comfy:1" && defs[0].gpu && defs[0].volumes.size() == 2 && defs[0].volumes.at(vol_ok) == "/models",
+               "a docker service loads its image, volumes and gpu flag; the .example file is skipped");
+        std::vector<std::string> want = {"docker", "run", "--rm", "-d", "--name", "maic-dk", "-p", "127.0.0.1:8188:8188", "-v", vol_ok + ":/models", "-v",
+                                         (state / "maic" / "workflows" / "comfyui").string() + ":/wf", "-e", "PYTHONUNBUFFERED=1", "--gpus", "all", "example/comfy:1", "--listen", "0.0.0.0"};
+        expect(launch_argv(defs[0]) == want, "docker run binds loopback only, mounts the volumes, passes env and the GPU, then the image and its command");
+        auto refuses = [&](const std::string& json, const std::string& needle) {
+            fs::path bad = ws / "services-bad";
+            fs::remove_all(bad);
+            write_file(bad / "bad.json", json);
+            try {
+                load_services(bad);
+            } catch (const std::exception& e) {
+                return std::string(e.what()).find(needle) != std::string::npos;
+            }
+            return false;
+        };
+        expect(refuses(R"({"name":"b","runtime":"docker","image":"x","volumes":{"/etc":"/etc"}})", "outside ${MAIC_STATE}"), "a volume outside MAIC's trees is refused");
+        expect(refuses(R"({"name":"b","runtime":"docker","command":["x"]})", "needs an image"), "a docker service without an image is refused");
+        expect(refuses(R"({"name":"b","runtime":"podman","command":["x"]})", "unknown (host or docker)"), "an unknown runtime is refused");
+        expect(refuses(R"({"name":"b","command":["x"],"ready_pattern":"("})", "ready_pattern"), "a ready_pattern that does not compile is refused");
+
+        // A fake docker on PATH: records its argv, answers inspect from a marker file, logs from a file.
+        fs::path fake = ws / "fake-docker";
+        write_file(fake / "bin" / "docker", "#!/bin/sh\necho \"$*\" >> \"$FAKE_DOCKER_DIR/argv\"\n"
+                                           "case \"$1\" in\n"
+                                           "run) [ -e \"$FAKE_DOCKER_DIR/fail\" ] && { echo 'Unable to find image' >&2; exit 125; }; echo abc123; touch \"$FAKE_DOCKER_DIR/running\";;\n"
+                                           "inspect) [ -e \"$FAKE_DOCKER_DIR/running\" ] && echo true || { echo \"Error: No such object: $4\" >&2; exit 1; };;\n"
+                                           "logs) cat \"$FAKE_DOCKER_DIR/log\";;\n"
+                                           "stop) rm -f \"$FAKE_DOCKER_DIR/running\"; echo \"$4\";;\n"
+                                           "esac\n");
+        fs::permissions(fake / "bin" / "docker", fs::perms::owner_all);
+        std::string old_path = std::getenv("PATH") ? std::getenv("PATH") : "";
+        setenv("PATH", ((fake / "bin").string() + ":" + old_path).c_str(), 1);
+        setenv("FAKE_DOCKER_DIR", fake.c_str(), 1);
+        ServiceDef dk = defs[0];
+        dk.port = 0;  // the fake opens nothing; readiness comes from the pattern
+        write_file(fake / "log", "loading\nTo see the GUI go to: http://0.0.0.0:8188\n");
+        expect(service_status(dk).state == ServiceState::Stopped, "nothing recorded: stopped, and docker is not even asked");
+        expect(start_service(dk), "start_service runs docker and is ready once the pattern shows in docker logs");
+        std::string argv = read_whole_text(fake / "argv");
+        expect(argv.find("run --rm -d --name maic-dk -v ") == 0 && argv.find("--gpus all example/comfy:1 --listen 0.0.0.0\n") != std::string::npos && argv.find("inspect -f {{.State.Running}} maic-dk") != std::string::npos,
+               "the fake saw docker run and docker inspect: " + argv.substr(0, argv.find('\n')));
+        expect(fs::exists(state / "maic" / "run" / "dk.container") && read_whole_text(state / "maic" / "run" / "dk.container") == "maic-dk\n", "the container name is recorded where a pid file would be");
+        ServiceStatus st = service_status(dk);
+        expect(st.state == ServiceState::Running && st.container == "maic-dk" && st.pid == 0 && st.who() == "container maic-dk", "status asks docker inspect and names the container");
+        auto reports = service_reports({dk});
+        std::string shown = format_status(StatusReport{false, "", reports, {}});
+        expect(reports.size() == 1 && reports[0].runtime == "docker" && reports[0].where.rfind("container maic-dk", 0) == 0 && shown.find("dk: starting [docker]  container maic-dk") != std::string::npos,
+               "maic status shows [docker] and the container: " + shown);
+        expect(log_tail(dk, 10) == read_whole_text(fake / "log") && argv.find("logs --tail 10 maic-dk") == std::string::npos && read_whole_text(fake / "argv").find("logs --tail 10 maic-dk") != std::string::npos,
+               "logs come from docker logs while the container runs");
+        expect(!recorded_command(dk).empty() && !command_changed(dk), "the docker run argv is the recorded command");
+        bool again = false;
+        try {
+            start_service(dk);
+        } catch (const std::exception& e) {
+            again = std::string(e.what()).find("already running (container maic-dk)") != std::string::npos;
+        }
+        expect(again, "starting it twice says which container runs");
+        stop_service(dk);
+        expect(read_whole_text(fake / "argv").find("stop -t 15 maic-dk") != std::string::npos && !fs::exists(state / "maic" / "run" / "dk.container") && service_status(dk).state == ServiceState::Stopped,
+               "stop_service runs docker stop and forgets the container");
+        bool not_running = false;
+        try {
+            stop_service(dk);
+        } catch (const std::exception& e) {
+            not_running = std::string(e.what()) == "dk is not running";
+        }
+        expect(not_running, "stopping it again says so");
+        write_file(fake / "log", "loading\nstill loading\n");
+        dk.ready_timeout = std::chrono::seconds{1};
+        expect(!start_service(dk) && service_status(dk).state == ServiceState::Running, "without the pattern in the logs the container is still starting when the timeout runs out");
+        stop_service(dk);
+        expect(log_tail(dk, 5).find("=== maic: starting dk") != std::string::npos && log_tail(dk, 5).find("abc123") != std::string::npos, "stopped, logs fall back to MAIC's own notes (the start header, docker's output)");
+        write_file(fake / "fail", "");
+        bool failed = false;
+        try {
+            start_service(dk);
+        } catch (const std::exception& e) {
+            failed = std::string(e.what()).find("docker run failed (Unable to find image)") != std::string::npos;
+        }
+        expect(failed && !fs::exists(state / "maic" / "run" / "dk.container"), "a failed docker run is reported with docker's words and records nothing");
+        fs::remove(fake / "fail");
+        setenv("PATH", old_path.c_str(), 1);
+        unsetenv("FAKE_DOCKER_DIR");
+
+        // Host services: the pattern must appear in the output written since this start.
+        ServiceDef hp;
+        hp.name = "hp";
+        hp.command = {"sh", "-c", "echo hello ready; sleep 30"};
+        hp.ready_pattern = "hello ready";
+        hp.ready_timeout = std::chrono::seconds{5};
+        write_file(service_log_path(hp), "hello ready from an earlier run\n");
+        expect(start_service(hp) && service_status(hp).state == ServiceState::Running, "a host service is ready once its output matches ready_pattern");
+        stop_service(hp);
+        hp.command = {"sh", "-c", "echo nothing of note; sleep 30"};
+        hp.ready_timeout = std::chrono::seconds{1};
+        expect(!start_service(hp), "an old match in the log does not count; the pattern must come from this start");
+        stop_service(hp);
+        hp.ready_pattern = "";
+        expect(start_service(hp), "without a pattern (and without a port) a started process is ready");
+        stop_service(hp);
+        expect(service_status(hp).state == ServiceState::Stopped, "and stops cleanly");
+
+        // Health detail: a fake ComfyUI and a fake router.
+        httplib::Server comfy;
+        std::string queue = R"({"queue_running":[[0,"a"]],"queue_pending":[[1,"b"],[2,"c"]]})";
+        comfy.Get("/system_stats", [](const httplib::Request&, httplib::Response& res) {
+            res.set_content(R"({"devices":[{"name":"cuda:0","vram_total":8589934592,"vram_free":5368709120}]})", "application/json");
+        });
+        comfy.Get("/queue", [&](const httplib::Request&, httplib::Response& res) { res.set_content(queue, "application/json"); });
+        comfy.Get("/v1/models", [](const httplib::Request&, httplib::Response& res) {
+            res.set_content(R"({"data":[{"id":"Big","status":{"value":"loaded"}}]})", "application/json");
+        });
+        int cport = comfy.bind_to_any_port("127.0.0.1");
+        std::thread ct([&] { comfy.listen_after_bind(); });
+        comfy.wait_until_ready();
+        ServiceDef cf;
+        cf.name = "comfyui";
+        cf.port = cport;
+        ServiceStatus open;
+        open.port_open = true;
+        expect(service_detail(cf, open) == "VRAM 3.0 GB used of 8.0 GB; queue: 1 running, 2 pending", "ComfyUI's detail: VRAM from /system_stats and the queue: " + service_detail(cf, open));
+        queue = R"({"queue_running":[],"queue_pending":[]})";
+        expect(service_detail(cf, open) == "VRAM 3.0 GB used of 8.0 GB; queue idle", "an empty queue is idle");
+        ServiceDef lsrv;
+        lsrv.name = "llamacpp-2";
+        lsrv.port = cport;
+        expect(service_detail(lsrv, open) == "model: Big", "a llama server's detail is its resident model");
+        expect(service_detail(cf, ServiceStatus{}).empty(), "a closed port has no detail");
+        ServiceDef other;
+        other.name = "server";
+        other.port = cport;
+        expect(service_detail(other, open).empty(), "other services have none");
+        comfy.stop();
+        ct.join();
+
+        // The venv's torch against the driver.
+        expect(cuda_agreement("13.0", "13.0").find("they agree") != std::string::npos && cuda_agreement("12.8", "13.0").find("they agree") != std::string::npos, "a driver at or above torch's CUDA agrees");
+        std::string bad = cuda_agreement("13.0", "12.8");
+        expect(bad.find("only 12.8") != std::string::npos && bad.find("update the driver (580 or newer for CUDA 13)") != std::string::npos && bad.find("cu128") != std::string::npos, "an older driver names the fix: " + bad);
+        expect(cuda_agreement("", "13.0").empty() && cuda_agreement("13.0", "").empty(), "nothing to say when either side is unknown");
+        expect(comfyui_torch_cuda().empty(), "no vendored ComfyUI venv here: torch's CUDA is unknown");
+
+        // extra_model_paths.yaml: only the maic: block is regenerated.
+        std::map<std::string, std::string> cats = {{"checkpoints", "checkpoints"}, {"upscale_models", "upscale_models"}, {"vae", "vae/"}};
+        std::string yaml = "# mine\nother:\n    base_path: /elsewhere/\n    loras: loras/\n\nmaic:\n    base_path: \"/old/\"\n    checkpoints: checkpoints/\n\nthird:\n    vae: v/\n";
+        std::string merged = merge_model_paths_yaml(yaml, "/models", cats);
+        expect(merged == "# mine\nother:\n    base_path: /elsewhere/\n    loras: loras/\n\nthird:\n    vae: v/\n\nmaic:\n    base_path: \"/models/\"\n    checkpoints: checkpoints/\n    upscale_models: upscale_models/\n    vae: vae/\n",
+               "other root keys and comments stay, the old maic: block goes, the new one lists every category: " + merged);
+        expect(merge_model_paths_yaml(merged, "/models", cats) == merged, "running it again changes nothing");
+        expect(merge_model_paths_yaml("", "/models/", cats).rfind("maic:\n    base_path: \"/models/\"\n", 0) == 0, "a missing file gets the block alone");
+        auto comfy_entry = find_vendor("comfyui");
+        expect(comfy_entry && comfy_entry->models.size() == 11 && comfy_entry->models.count("upscale_models") && comfy_entry->models.count("model_patches"), "the manifest maps every category ComfyUI reads");
+        unsetenv("XDG_CONFIG_HOME");
+        unsetenv("XDG_STATE_HOME");
     }
 
     section("system prompt setting");

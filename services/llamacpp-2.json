@@ -22,6 +22,7 @@
     "${MAIC_MODELS}/llamacpp"
   ],
   "ready_timeout": 120,
+  "ready_pattern": "listening on",
   "needs_gpu": true,
   "artifacts": []
 }

@@ -36,6 +36,16 @@ std::string sh(const std::string& s) {
     return out + "'";
 }
 
+std::string capture(const std::string& command) {
+    FILE* p = popen(command.c_str(), "r");
+    if (!p) return "";
+    char buf[512] = "";
+    std::string out = fgets(buf, sizeof(buf), p) ? buf : "";
+    pclose(p);
+    while (!out.empty() && (out.back() == '\n' || out.back() == ' ')) out.pop_back();
+    return out;
+}
+
 void run_or_throw(const std::string& command, const std::string& what) {
     if (run(command) != 0) throw std::runtime_error(what + " failed");
 }
@@ -79,6 +89,7 @@ std::vector<VendorEntry> load_vendor_manifest() {
         e.description = v.value("description", "");
         e.patches = v.value("patches", std::vector<std::string>{});
         e.needs = v.value("needs", std::vector<std::string>{});
+        e.models = v.value("models", std::map<std::string, std::string>{});
         out.push_back(e);
     }
     return out;
@@ -147,7 +158,55 @@ void vendor_adopt(const VendorEntry& e, const fs::path& existing) {
     else if (fs::exists(link, ec)) throw std::runtime_error(link.string() + " exists and is not a link; remove it first");
     fs::create_directory_symlink(target, link);
     std::cout << link.string() << " -> " << target.string() << "\n";
-    // Wire it in (workflows link, custom node link, history link) without touching packages or the network.
+    // What the checkout is, from git: its origin against the upstream name, its ref against the manifest's.
+    std::string origin = capture("git -C " + sh(target.string()) + " config --get remote.origin.url 2>/dev/null");
+    std::string upstream = fs::path(e.url).filename().string();  // ComfyUI, llama.cpp
+    if (!origin.empty() && origin.find(upstream) == std::string::npos) std::cout << "note: its origin is " << origin << ", not a " << upstream << " repository\n";
+    if (std::string head = capture("git -C " + sh(target.string()) + " describe --tags --always 2>/dev/null"); !head.empty()) {
+        std::cout << "checked out " << head << (head == e.ref ? " (the manifest's ref)" : ", the manifest pins " + e.ref) << "\n";
+    }
+    vendor_wire(e);
+}
+
+std::string merge_model_paths_yaml(const std::string& existing, const std::string& base_path, const std::map<std::string, std::string>& models) {
+    // Drop the old maic: block: its key line and every indented or blank line after it, up to the next root key.
+    std::string kept;
+    bool in_block = false;
+    size_t pos = 0;
+    while (pos < existing.size()) {
+        size_t nl = existing.find('\n', pos);
+        std::string line = existing.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+        pos = nl == std::string::npos ? existing.size() : nl + 1;
+        bool root_key = !line.empty() && line[0] != ' ' && line[0] != '\t' && line[0] != '#';
+        if (root_key) in_block = line == "maic:" || line.rfind("maic: ", 0) == 0;
+        if (!in_block) kept += line + "\n";
+    }
+    while (kept.size() > 1 && kept.compare(kept.size() - 2, 2, "\n\n") == 0) kept.pop_back();
+    if (kept == "\n") kept.clear();
+    std::string base = base_path;
+    if (base.empty() || base.back() != '/') base += '/';
+    std::string block = "maic:\n    base_path: \"" + base + "\"\n";
+    for (const auto& [category, folder] : models) block += "    " + category + ": " + folder + (folder.empty() || folder.back() == '/' ? "" : "/") + "\n";
+    return kept + (kept.empty() ? "" : "\n") + block;
+}
+
+void vendor_wire(const VendorEntry& e) {
+    if (e.name == "comfyui" && !e.models.empty()) {
+        Settings s = load_settings();
+        if (s.models_dir.empty()) throw std::runtime_error("models_dir is not set in settings (maic settings init), so extra_model_paths.yaml cannot be written");
+        fs::path yaml = vendor_link(e) / "extra_model_paths.yaml";
+        std::ifstream in(yaml);
+        std::string existing((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        std::string merged = merge_model_paths_yaml(existing, s.models_dir, e.models);
+        if (merged != existing) {
+            fs::path tmp = yaml;
+            tmp += ".tmp";
+            std::ofstream(tmp, std::ios::trunc) << merged;
+            fs::rename(tmp, yaml);
+            std::cout << "wrote the maic: block of " << yaml.string() << " -> " << s.models_dir << " (" << e.models.size() << " categories)\n";
+        }
+    }
     if (!e.install.empty()) run_install(e, "wire");
 }
 
@@ -173,6 +232,7 @@ void vendor_add(const VendorEntry& e) {
     if (fs::is_symlink(link, ec)) fs::remove(link);
     if (!fs::exists(link, ec)) fs::create_directory_symlink(checkout, link);
     run_install(e, "install");
+    vendor_wire(e);
 }
 
 void vendor_unlink(const VendorEntry& e) {
@@ -291,7 +351,9 @@ fs::path vendor_model(const VendorEntry& e, const std::string& url, const std::s
     }
     fs::rename(part, final);
     std::cout << "sha256 ok: " << final.string() << "\n";
-    if (router_id(final, llamacpp_models_root()).empty()) {
+    if (name.rfind("mmproj", 0) == 0) {
+        std::cout << "a vision projector: the server loads it with the GGUF in the same folder; the current model is unchanged\n";
+    } else if (router_id(final, llamacpp_models_root()).empty()) {
         std::cout << "not under " << llamacpp_models_root().string() << ", so the server will not list it; move it there to use it\n";
     } else {
         vendor_use(e, final);

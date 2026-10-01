@@ -13,13 +13,19 @@ namespace maic {
 struct ServiceReport {
     std::string name;
     std::string state;    // running, stopped, foreign, starting
-    std::string runtime;  // host (a process MAIC started), docker (planned)
-    std::string where;    // "pid 1234 · http://127.0.0.1:11434", or the port for a foreign process
+    std::string runtime;  // host (a process MAIC started), docker (a container it started)
+    std::string where;    // "pid 1234 · http://127.0.0.1:8081", "container maic-comfyui · ...", or the port for a foreign process
+    std::string detail;   // what it holds, when it answers: a llama server's resident model, ComfyUI's VRAM and queue
     std::string log;      // path of the log MAIC keeps for it
     std::vector<std::string> actions;  // quick actions, as commands the user can run
 };
 
 std::vector<ServiceReport> service_reports(const std::vector<ServiceDef>& services);
+
+// Health beyond the open port, for a service that answers: "model: Qwen3.5-4B-Q4_K_M" or "no model resident" for a
+// llama server; "VRAM 3.0 GB used of 8.0 GB; queue idle" (or "queue: 1 running, 2 pending") for ComfyUI. "" for
+// the rest, or when the port is closed.
+std::string service_detail(const ServiceDef& def, const ServiceStatus& status);
 
 struct StatusReport {
     bool tripped = false;
@@ -94,5 +100,12 @@ std::string gpu_budget(const GpuReport& report, const Settings& settings, long c
 // Why a service died, from the tail of its log: a CUDA out of memory, a missing module, a port in use, and
 // what to do about it. "" when nothing recognisable is there.
 std::string explain_exit(const ServiceDef& def, const std::vector<ServiceDef>& services);
+
+// The CUDA version the vendored ComfyUI's torch was built for ("13.0"; "" when the venv or torch is not there)
+// and the one the driver supports, from nvidia-smi ("" without a driver).
+std::string comfyui_torch_cuda();
+std::string driver_cuda();
+// One sentence on whether the two agree: the driver must support at least torch's version. "" when either is unknown.
+std::string cuda_agreement(const std::string& torch_cuda, const std::string& driver_cuda);
 
 }  // namespace maic

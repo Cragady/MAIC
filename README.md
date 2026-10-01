@@ -149,6 +149,7 @@ Use:
 
 ```sh
 maic doctor                  # what this machine has and a recommended setup
+maic setup                   # or the first run as questions: settings, llama.cpp, ComfyUI, a model, the tripwire
 maic vendor add llamacpp     # first run: build llama.cpp (docs/llamacpp.md), ...
 maic vendor use llamacpp /path/to/model.gguf   # ... link a GGUF (or: maic vendor model llamacpp URL SHA256), ...
 maic up llamacpp             # ... start llama-server on 127.0.0.1:8081, and

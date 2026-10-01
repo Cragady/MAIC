@@ -5,7 +5,20 @@
     "url": "https://github.com/Comfy-Org/ComfyUI",
     "ref": "v0.38.0",
     "install": "vendor/comfyui.sh",
-    "description": "ComfyUI in its own Python (uv, 3.13, CUDA 13 torch), API nodes and auto-launch off, models on the external drive, MAIC's llama.cpp chat nodes linked in"
+    "description": "ComfyUI in its own Python (uv, 3.13, CUDA 13 torch), API nodes and auto-launch off, models on the external drive, MAIC's llama.cpp chat nodes linked in",
+    "models": {
+      "checkpoints": "checkpoints",
+      "clip_vision": "clip_vision",
+      "controlnet": "controlnet",
+      "diffusion_models": "diffusion_models",
+      "embeddings": "embeddings",
+      "loras": "loras",
+      "model_patches": "model_patches",
+      "style_models": "style_models",
+      "text_encoders": "text_encoders",
+      "upscale_models": "upscale_models",
+      "vae": "vae"
+    }
   },
   "llamacpp": {
     "path": "vendor/llama.cpp",

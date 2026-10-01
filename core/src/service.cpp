@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <regex.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -15,6 +16,7 @@
 #include <cerrno>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <fstream>
 #include <optional>
 #include <sstream>
@@ -98,6 +100,104 @@ void write_pid_file(const ServiceDef& def, const ProcessId& id) {
     fs::rename(tmp, path);
 }
 
+std::string container_name(const ServiceDef& def) {
+    return "maic-" + def.name;
+}
+
+// The docker equivalent of the pid file: its presence says MAIC started the container.
+fs::path container_path(const ServiceDef& def) {
+    return state_dir() / "run" / (def.name + ".container");
+}
+
+std::vector<char*> c_strings(std::vector<std::string>& strings) {
+    std::vector<char*> out;
+    for (auto& s : strings) {
+        out.push_back(s.data());
+    }
+    out.push_back(nullptr);
+    return out;
+}
+
+// Runs a program with stdout and stderr captured; the exit code, 127 when it could not be run.
+int run_capture(std::vector<std::string> args, std::string& out) {
+    int fds[2];
+    if (pipe2(fds, O_CLOEXEC) != 0) return 127;
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return 127;
+    }
+    if (pid == 0) {
+        int null_fd = open("/dev/null", O_RDONLY);
+        dup2(null_fd, STDIN_FILENO);
+        dup2(fds[1], STDOUT_FILENO);
+        dup2(fds[1], STDERR_FILENO);
+        std::vector<char*> argv = c_strings(args);
+        execvp(argv[0], argv.data());
+        _exit(127);
+    }
+    close(fds[1]);
+    char buf[4096];
+    for (ssize_t n; (n = read(fds[0], buf, sizeof buf)) > 0;) out.append(buf, static_cast<size_t>(n));
+    close(fds[0]);
+    int wstatus = 0;
+    waitpid(pid, &wstatus, 0);
+    return WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : 128 + WTERMSIG(wstatus);
+}
+
+bool container_running(const ServiceDef& def) {
+    std::string out;
+    return run_capture({"docker", "inspect", "-f", "{{.State.Running}}", container_name(def)}, out) == 0 && out.rfind("true", 0) == 0;
+}
+
+std::vector<std::string> docker_run_argv(const ServiceDef& def) {
+    std::vector<std::string> a = {"docker", "run", "--rm", "-d", "--name", container_name(def)};
+    if (def.port) {
+        std::string p = std::to_string(def.port);
+        a.insert(a.end(), {"-p", "127.0.0.1:" + p + ":" + p});  // loopback only, like every host service
+    }
+    for (const auto& [host, inside] : def.volumes) a.insert(a.end(), {"-v", host + ":" + inside});
+    for (const auto& [k, v] : def.env) a.insert(a.end(), {"-e", k + "=" + v});
+    if (def.gpu) a.insert(a.end(), {"--gpus", "all"});
+    a.push_back(def.image);
+    a.insert(a.end(), def.command.begin(), def.command.end());
+    return a;
+}
+
+// POSIX extended regex over the text; a pattern that does not compile matches nothing (load_services refused it).
+bool matches(const std::string& pattern, const std::string& text) {
+    regex_t re;
+    if (regcomp(&re, pattern.c_str(), REG_EXTENDED | REG_NOSUB | REG_NEWLINE) != 0) return false;
+    bool hit = regexec(&re, text.c_str(), 0, nullptr, 0) == 0;
+    regfree(&re);
+    return hit;
+}
+
+std::string regex_error(const std::string& pattern) {
+    regex_t re;
+    int rc = regcomp(&re, pattern.c_str(), REG_EXTENDED | REG_NOSUB | REG_NEWLINE);
+    if (rc == 0) {
+        regfree(&re);
+        return "";
+    }
+    char buf[256];
+    regerror(rc, &re, buf, sizeof buf);
+    return buf;
+}
+
+// The service's output since `since` (a byte offset into the log file; a container's whole log).
+std::string output_since(const ServiceDef& def, std::streamoff since) {
+    if (def.runtime == "docker") {
+        std::string out;
+        run_capture({"docker", "logs", container_name(def)}, out);
+        return out;
+    }
+    std::ifstream in(service_log_path(def), std::ios::binary);
+    in.seekg(since);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
 bool port_open(int port) {
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
@@ -132,15 +232,6 @@ std::vector<std::string> build_env(const ServiceDef& def) {
     return out;
 }
 
-std::vector<char*> c_strings(std::vector<std::string>& strings) {
-    std::vector<char*> out;
-    for (auto& s : strings) {
-        out.push_back(s.data());
-    }
-    out.push_back(nullptr);
-    return out;
-}
-
 std::string timestamp() {
     std::time_t now = std::time(nullptr);
     char buf[32];
@@ -166,7 +257,7 @@ std::vector<ServiceDef> load_services(const fs::path& dir) {
             ServiceDef def;
             def.name = j.at("name").get<std::string>();
             def.description = j.value("description", "");
-            for (const auto& arg : j.at("command")) {
+            for (const auto& arg : j.value("command", nlohmann::json::array())) {
                 def.command.push_back(expand_vars(arg.get<std::string>()));
             }
             nlohmann::json env = j.value("env", nlohmann::json::object());
@@ -183,14 +274,35 @@ std::vector<ServiceDef> load_services(const fs::path& dir) {
             def.ready_timeout = std::chrono::seconds(j.value("ready_timeout", 30));
             def.runtime = j.value("runtime", "host");
             def.needs_gpu = j.value("needs_gpu", false);
-            if (def.runtime != "host") {
-                throw std::runtime_error("runtime '" + def.runtime + "' is not implemented yet (only \"host\")");
+            def.ready_pattern = j.value("ready_pattern", "");
+            if (std::string err = regex_error(def.ready_pattern); !err.empty()) {
+                throw std::runtime_error("ready_pattern: " + err);
+            }
+            if (def.runtime == "docker") {
+                def.image = j.value("image", "");
+                if (def.image.empty()) throw std::runtime_error("a docker service needs an image");
+                def.gpu = j.value("gpu", false);
+                // A container sees only MAIC's own trees: state, models, vendor. Anything else stays outside.
+                std::vector<fs::path> roots = {state_dir(), expand_vars("${MAIC_MODELS}"), expand_vars("${MAIC_VENDOR}")};
+                nlohmann::json volumes = j.value("volumes", nlohmann::json::object());
+                for (const auto& [host, inside] : volumes.items()) {
+                    fs::path h = fs::path(expand_vars(host)).lexically_normal();
+                    bool allowed = false;
+                    for (const auto& root : roots) {
+                        auto rel = h.lexically_relative(root.lexically_normal());
+                        if (!rel.empty() && *rel.begin() != "..") allowed = true;
+                    }
+                    if (!allowed) throw std::runtime_error("volume " + h.string() + " is outside ${MAIC_STATE}, ${MAIC_MODELS} and ${MAIC_VENDOR}");
+                    def.volumes[h.string()] = inside.get<std::string>();
+                }
+            } else if (def.runtime != "host") {
+                throw std::runtime_error("runtime '" + def.runtime + "' is unknown (host or docker)");
             }
             for (const auto& a : j.value("artifacts", nlohmann::json::array())) {
                 def.artifacts.push_back({a.at("name").get<std::string>(), a.value("description", ""),
                                          expand_vars(a.at("path").get<std::string>())});
             }
-            if (def.command.empty()) {
+            if (def.command.empty() && def.runtime == "host") {
                 throw std::runtime_error("command is empty");
             }
             out.push_back(std::move(def));
@@ -209,9 +321,13 @@ std::string recorded_command(const ServiceDef& def) {
     return out;
 }
 
+std::vector<std::string> launch_argv(const ServiceDef& def) {
+    return def.runtime == "docker" ? docker_run_argv(def) : def.command;
+}
+
 bool command_changed(const ServiceDef& def) {
     std::string now;
-    for (const auto& a : def.command) now += a + '\n';
+    for (const auto& a : launch_argv(def)) now += a + '\n';
     std::string was = recorded_command(def);
     return !was.empty() && was != now;
 }
@@ -220,9 +336,41 @@ fs::path service_log_path(const ServiceDef& def) {
     return state_dir() / "logs" / (def.name + ".log");
 }
 
+std::string log_tail(const ServiceDef& def, size_t lines) {
+    std::error_code ec;
+    if (def.runtime == "docker" && fs::exists(container_path(def), ec) && container_running(def)) {
+        std::string out;
+        run_capture({"docker", "logs", "--tail", std::to_string(lines), container_name(def)}, out);
+        return out;
+    }
+    std::ifstream in(service_log_path(def));
+    std::deque<std::string> tail;
+    for (std::string line; std::getline(in, line);) {
+        tail.push_back(std::move(line));
+        if (tail.size() > lines) tail.pop_front();
+    }
+    std::string out;
+    for (const auto& l : tail) out += l + "\n";
+    return out;
+}
+
+std::string ServiceStatus::who() const {
+    return container.empty() ? "pid " + std::to_string(pid) : "container " + container;
+}
+
 ServiceStatus service_status(const ServiceDef& def) {
     ServiceStatus status;
     status.port_open = def.port && port_open(def.port);
+    if (def.runtime == "docker") {
+        std::error_code ec;
+        if (fs::exists(container_path(def), ec) && container_running(def)) {
+            status.state = ServiceState::Running;
+            status.container = container_name(def);
+        } else if (status.port_open) {
+            status.state = ServiceState::Foreign;
+        }
+        return status;
+    }
     if (auto id = read_pid_file(def); id && is_alive(*id)) {
         status.state = ServiceState::Running;
         status.pid = id->pid;
@@ -235,7 +383,7 @@ ServiceStatus service_status(const ServiceDef& def) {
 bool start_service(const ServiceDef& def) {
     ServiceStatus status = service_status(def);
     if (status.state == ServiceState::Running) {
-        throw std::runtime_error(def.name + " is already running (pid " + std::to_string(status.pid) + ")");
+        throw std::runtime_error(def.name + " is already running (" + status.who() + ")");
     }
     if (status.state == ServiceState::Foreign) {
         throw std::runtime_error("port " + std::to_string(def.port) + " is already in use by a process MAIC did not start");
@@ -246,6 +394,7 @@ bool start_service(const ServiceDef& def) {
         }
     }
     fs::remove(pid_path(def));
+    fs::remove(container_path(def));
 
     fs::path log = service_log_path(def);
     fs::create_directories(log.parent_path());
@@ -255,6 +404,34 @@ bool start_service(const ServiceDef& def) {
     }
     std::string header = "\n=== maic: starting " + def.name + " at " + timestamp() + " ===\n";
     (void)!write(log_fd, header.data(), header.size());
+    std::streamoff since = static_cast<std::streamoff>(lseek(log_fd, 0, SEEK_CUR));  // the service's own output starts here
+    fs::create_directories(state_dir() / "run");
+    {
+        std::ofstream cmd(state_dir() / "run" / (def.name + ".cmd"), std::ios::trunc);
+        for (const auto& a : launch_argv(def)) cmd << a << '\n';
+    }
+    auto ready = [&] { return (!def.port || port_open(def.port)) && (def.ready_pattern.empty() || matches(def.ready_pattern, output_since(def, since))); };
+
+    if (def.runtime == "docker") {
+        std::string out;
+        int rc = run_capture(docker_run_argv(def), out);
+        (void)!write(log_fd, out.data(), out.size());
+        close(log_fd);
+        while (!out.empty() && (out.back() == '\n' || out.back() == ' ')) out.pop_back();
+        if (rc != 0) throw std::runtime_error(def.name + ": docker run failed (" + (out.empty() ? "exit " + std::to_string(rc) : out) + "); see " + log.string());
+        fs::create_directories(container_path(def).parent_path());
+        std::ofstream(container_path(def), std::ios::trunc) << container_name(def) << '\n';
+        auto deadline = std::chrono::steady_clock::now() + def.ready_timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (!container_running(def)) {
+                fs::remove(container_path(def));
+                throw std::runtime_error(def.name + " exited (the container is gone with --rm); see " + log.string());
+            }
+            if (ready()) return true;
+            std::this_thread::sleep_for(500ms);
+        }
+        return false;
+    }
 
     // Everything the child needs is built before fork so the child only makes syscalls.
     std::vector<std::string> args = def.command;
@@ -289,10 +466,6 @@ bool start_service(const ServiceDef& def) {
         throw std::runtime_error(def.name + " exited immediately; see " + log.string());
     }
     write_pid_file(def, {pid, stat->start_time});
-    {
-        std::ofstream cmd(state_dir() / "run" / (def.name + ".cmd"), std::ios::trunc);
-        for (const auto& a : def.command) cmd << a << '\n';
-    }
 
     auto deadline = std::chrono::steady_clock::now() + def.ready_timeout;
     while (std::chrono::steady_clock::now() < deadline) {
@@ -303,7 +476,7 @@ bool start_service(const ServiceDef& def) {
                                                  : "was killed by signal " + std::to_string(WTERMSIG(wstatus));
             throw std::runtime_error(def.name + " " + how + "; see " + log.string());
         }
-        if (!def.port || port_open(def.port)) {
+        if (ready()) {
             return true;
         }
         std::this_thread::sleep_for(200ms);
@@ -312,6 +485,21 @@ bool start_service(const ServiceDef& def) {
 }
 
 void stop_service(const ServiceDef& def, std::chrono::seconds timeout) {
+    if (def.runtime == "docker") {
+        std::error_code ec;
+        if (!fs::exists(container_path(def), ec) || !container_running(def)) {
+            fs::remove(container_path(def), ec);
+            if (def.port && port_open(def.port)) {
+                throw std::runtime_error(def.name + " was not started by MAIC; refusing to stop it");
+            }
+            throw std::runtime_error(def.name + " is not running");
+        }
+        std::string out;
+        int rc = run_capture({"docker", "stop", "-t", std::to_string(timeout.count()), container_name(def)}, out);
+        if (rc != 0) throw std::runtime_error("docker stop " + container_name(def) + " failed: " + out);
+        fs::remove(container_path(def), ec);
+        return;
+    }
     auto id = read_pid_file(def);
     if (!id || !is_alive(*id)) {
         fs::remove(pid_path(def));
