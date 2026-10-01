@@ -780,7 +780,6 @@ int main() {
         std::ofstream(ws / "poem.txt") << "one two three\nfour\n";
         std::ofstream(ws / "data.json") << R"({"version": 3, "nodes": [{"title": "Panel 1 prompt"}]})";
         FakeServer fake;
-        fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         agent.mode = Mode::Auto;
