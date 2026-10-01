@@ -131,6 +131,8 @@ void usage(std::ostream& out = std::cerr) {
                  "                             after an optional root text and a note that the earlier part is missing\n"
                  "                             (none of these three changes an existing transcript)\n"
                  "  settings init [--json]|path  write the global settings file (Lua; --json for JSON), or show where it goes\n"
+                 "  settings read diction      diction.lua beside settings.lua, evaluated in a restricted Lua state, as JSON\n"
+                 "                             ({} when it does not exist); diction reads its config through this\n"
                  "  init                       scaffold this project: MAIC.md and .maic/settings.lua (transcripts then\n"
                  "                             go under sessions/projects/); :init in a session also drafts the MAIC.md\n"
                  "  server start [--listen ADDR:PORT] [--model M] [--mode MODE]   the remote-access server and its web client\n"
@@ -787,6 +789,11 @@ int cmd_model(const std::vector<std::string>& args) {
 }
 
 int cmd_settings(const std::vector<std::string>& args) {
+    if (!args.empty() && args[0] == "read") {
+        if (args.size() != 2 || args[1] != "diction") throw std::runtime_error("maic settings read diction   (diction.lua beside settings.lua, as JSON)");
+        std::cout << maic::eval_restricted_table_file(maic::settings_path().parent_path() / "diction.lua").dump() << "\n";
+        return 0;
+    }
     if (!args.empty() && args[0] == "init") {
         bool as_json = args.size() > 1 && args[1] == "--json";
         maic::write_default_settings(as_json);

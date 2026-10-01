@@ -31,9 +31,27 @@ Resuming an existing document keeps that document's own shape, whatever flag you
     cd ~/notes/some-process
     maic diction                 # writes ./some-process.md, Ctrl-C to stop
     maic diction devices         # list mics with live/dead status
+    maic diction migrate-config  # ~/.config/maic/diction.lua from the old config.toml
     maic help diction            # diction's own --help
 
 `maic diction` hands its arguments to diction untouched and exits with diction's exit code.
+
+## Configuration
+
+diction's settings live in `~/.config/maic/diction.lua` (`$XDG_CONFIG_HOME/maic/diction.lua`), beside MAIC's `settings.lua`. Like that file it is Lua returning a table; the keys are `presets` ([Presets](#presets)) and `log_dir` ([A global log directory](#a-global-log-directory)):
+
+    -- ~/.config/maic/diction.lua
+    return {
+        log_dir = "~/diction-logs",
+        presets = {
+            ["local"] = { whisper = "distil-large-v3" },
+            night = { backend = "local", scribe = "qwen-4b", note = "the 4B wherever it is loaded" },
+        },
+    }
+
+diction never runs the Lua itself: it asks `maic settings read diction`, which evaluates the file and prints the table as JSON (`{}` when there is no file; exit 1 with `file:line: message` on an error, which diction prints and then runs without the file). maic evaluates it in a restricted Lua state, not the one `settings.lua` gets: the base library, `string`, `table`, `math`, `bit`, and `os` with only `getenv`, `time`, `date` and `clock`. There is no `io`, `package`, `require`, `dofile`, `loadfile`, `debug`, `ffi` or `jit`, `load` takes source text only, `print` goes to stderr, and a run that goes on for 10 million VM instructions is stopped. So `os.getenv("HOME") .. "/logs"` works and anything that touches files or runs a command is an error.
+
+**From config.toml.** diction used to read `~/.config/diction/config.toml`. While `diction.lua` does not exist it still does, with one line at start: ``diction reads ~/.config/diction/config.toml; `diction migrate-config` writes ~/.config/maic/diction.lua from it``. `diction migrate-config` writes `diction.lua` with the same content and a header comment naming the TOML it came from (comments in the TOML are not carried over), leaves the TOML where it was, and refuses to overwrite an existing `diction.lua` without `--force`. Once `diction.lua` exists the TOML is ignored, and diction says so at start until it is deleted.
 
 ## Presets
 
@@ -71,15 +89,14 @@ Each field is chosen on its own, highest first:
 
 So `maic diction --preset local -m distil-large-v3` keeps the local scribe and takes the bigger whisper model, and with nothing set at all diction is Claude Haiku through `claude` and `distil-large-v3`. An unknown preset or backend name is an error that lists the ones there are.
 
-**Your own presets** go in `~/.config/diction/config.toml`, each with any of `backend`, `scribe`, `whisper` and `note`:
+**Your own presets** go in `presets` of [diction.lua](#configuration), each with any of `backend`, `scribe`, `whisper` and `note`:
 
-    [presets.local]
-    whisper = "distil-large-v3"         # the built-in local, with the bigger whisper model
+    presets = {
+        ["local"] = { whisper = "distil-large-v3" },   -- the built-in local, with the bigger whisper model
+        night = { backend = "local", scribe = "qwen-4b", note = "the 4B wherever it is loaded" },
+    },
 
-    [presets.night]
-    backend = "local"
-    scribe = "qwen-4b"
-    note = "the 4B wherever it is loaded"
+(`local` is a Lua keyword, hence `["local"]`.)
 
 A preset named like a built-in one overrides it field by field; a field a preset leaves out comes from `default`, the backend too, so a new preset for a local or API model names its `backend`.
 
@@ -259,8 +276,8 @@ The scribe runs seconds behind the transcriber, so entries are buffered and emit
 
 By default logs land next to the document being dictated. Set a global directory to collect every session in one place instead:
 
-    # ~/.config/diction/config.toml
-    log_dir = "~/diction-logs"
+    -- ~/.config/maic/diction.lua
+    return { log_dir = "~/diction-logs" }
 
 or per-shell, which takes precedence:
 
@@ -272,14 +289,14 @@ Precedence, highest first:
     --hidden-logs      .h-diction-logs/ next to the document
     --local-logs       diction-logs/ next to the document
     DICTION_LOG_DIR    environment
-    log_dir            ~/.config/diction/config.toml
+    log_dir            ~/.config/maic/diction.lua
     (default)          diction-logs/ next to the document
 
 `--local-logs` and `--hidden-logs` both mean "next to the document", so they override a configured global directory -- that is what they are for once one exists. When the directory comes from a global setting, diction prints where it is at startup, so it is never a surprise.
 
 Filenames carry both the document slug and a timestamp, so a single global directory holds many documents and many sessions without collisions.
 
-MAIC lists the directory as the artifact `diction/logs`: `maic artifacts` shows its size, `maic path diction/logs` prints it, `maic open diction/logs` opens it. It resolves the way diction does without flags: `DICTION_LOG_DIR`, then `log_dir` in the config file, then `diction-logs/` in the current directory.
+MAIC lists the directory as the artifact `diction/logs`: `maic artifacts` shows its size, `maic path diction/logs` prints it, `maic open diction/logs` opens it. It resolves the way diction does without flags: `DICTION_LOG_DIR`, then `log_dir` in `diction.lua` (or in the old `config.toml` while `diction.lua` does not exist), then `diction-logs/` in the current directory.
 
 ## Setup
 

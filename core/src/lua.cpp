@@ -5,6 +5,7 @@
 extern "C" {
 #include <lauxlib.h>
 #include <lua.h>
+#include <luajit.h>
 #include <lualib.h>
 }
 
@@ -310,6 +311,92 @@ bool Lua::compiles(const std::string& code) {
     bool ok = luaL_loadbuffer(L, code.data(), code.size(), "=input") == 0;
     lua_pop(L, 1);
     return ok;
+}
+
+namespace {
+
+constexpr int kRestrictedInstructions = 10'000'000;
+
+// Past the limit every further instruction fails too, so a pcall in the chunk cannot swallow it and carry on.
+void restricted_hook(lua_State* L, lua_Debug*) {
+    lua_sethook(L, restricted_hook, LUA_MASKCOUNT, 1);
+    luaL_where(L, 0);
+    lua_pushstring(L, "instruction limit reached (a loop that never ends?)");
+    lua_concat(L, 2);
+    lua_error(L);
+}
+
+// load and loadstring with the mode forced to text, so compiled bytecode never runs here.
+int l_load_text(lua_State* L) {
+    lua_settop(L, 4);
+    lua_pushliteral(L, "t");
+    lua_replace(L, 3);
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_insert(L, 1);
+    lua_call(L, 4, LUA_MULTRET);
+    return lua_gettop(L);
+}
+
+// stderr, so the stdout of whoever evaluates the file stays the JSON it reads.
+int l_print_stderr(lua_State* L) {
+    int n = lua_gettop(L);
+    for (int i = 1; i <= n; ++i) fprintf(stderr, "%s%s", i > 1 ? "\t" : "", tostr(L, i).c_str());
+    fputc('\n', stderr);
+    return 0;
+}
+
+}  // namespace
+
+lua_State* make_restricted_lua_state() {
+    lua_State* L = luaL_newstate();
+    for (auto [name, open] : {std::pair<const char*, lua_CFunction>{"", luaopen_base}, {LUA_STRLIBNAME, luaopen_string}, {LUA_TABLIBNAME, luaopen_table},
+                              {LUA_MATHLIBNAME, luaopen_math}, {LUA_BITLIBNAME, luaopen_bit}, {LUA_OSLIBNAME, luaopen_os}}) {
+        lua_pushcfunction(L, open);
+        lua_pushstring(L, name);
+        lua_call(L, 1, 0);
+    }
+    lua_newtable(L);
+    lua_getglobal(L, "os");
+    for (const char* f : {"getenv", "time", "date", "clock"}) {
+        lua_getfield(L, -1, f);
+        lua_setfield(L, -3, f);
+    }
+    lua_pop(L, 1);
+    lua_setglobal(L, "os");
+    for (const char* g : {"dofile", "loadfile", "require", "module"}) {
+        lua_pushnil(L);
+        lua_setglobal(L, g);
+    }
+    lua_getglobal(L, "load");
+    for (const char* g : {"load", "loadstring"}) {
+        lua_pushvalue(L, -1);
+        lua_pushcclosure(L, l_load_text, 1);
+        lua_setglobal(L, g);
+    }
+    lua_pop(L, 1);
+    lua_pushcfunction(L, l_print_stderr);
+    lua_setglobal(L, "print");
+    luaJIT_setmode(L, 0, LUAJIT_MODE_ENGINE | LUAJIT_MODE_OFF);  // the count hook must see every loop
+    lua_sethook(L, restricted_hook, LUA_MASKCOUNT, kRestrictedInstructions);
+    return L;
+}
+
+nlohmann::json eval_restricted_table_file(const fs::path& path) {
+    std::error_code ec;
+    if (!fs::exists(path, ec)) return nlohmann::json::object();
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw std::runtime_error("can't read " + path.string());
+    std::string code((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    lua_State* L = make_restricted_lua_state();
+    struct Close {
+        lua_State* L;
+        ~Close() { lua_close(L); }
+    } close{L};
+    std::string chunk = "@" + path.string();
+    if (luaL_loadbufferx(L, code.data(), code.size(), chunk.c_str(), "t") != 0 || lua_pcall(L, 0, 1, 0) != 0)
+        throw std::runtime_error(lua_tostring(L, -1) ? lua_tostring(L, -1) : "unknown error");
+    if (!lua_istable(L, -1)) throw std::runtime_error(path.string() + ": must return a table");
+    return lua_to_json(L, -1);
 }
 
 Lua::Result Lua::run_file(const fs::path& path) {

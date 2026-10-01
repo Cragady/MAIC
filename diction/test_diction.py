@@ -1,8 +1,8 @@
 """diction against a fake whisper-server and a fake OpenAI-compatible scribe, never the microphone.
 
 The pipeline runs as a user runs it, `python3 -m diction.cli`, with each utterance given as a WAV file (--from-wav)
-instead of being cut from the mic. A fake `maic` answers `maic model resolve`. Two cases run the real maic from
-MAIC_BIN (ctest sets it) and are skipped without it.
+instead of being cut from the mic. A fake `maic` answers `maic model resolve` and hands `maic settings` to the real
+maic from MAIC_BIN (ctest sets it); the cases that need the real one are skipped without it.
 
     python3 -m unittest -v diction.test_diction        from the repository root
 """
@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
 import unittest
 import wave
 from unittest import mock
@@ -116,6 +117,8 @@ def silence(path: Path, seconds: float = 0.4):
 
 FAKE_MAIC = """#!/usr/bin/env python3
 import json, os, sys
+if sys.argv[1:2] == ["settings"] and os.environ.get("REAL_MAIC"):
+    os.execv(os.environ["REAL_MAIC"], [os.environ["REAL_MAIC"], *sys.argv[1:]])
 specs = json.loads(os.environ["FAKE_MAIC_SPECS"])
 if sys.argv[1:3] == ["model", "resolve"] and sys.argv[3] in specs:
     print(json.dumps(specs[sys.argv[3]]))
@@ -199,7 +202,7 @@ class Pipeline(unittest.TestCase):
         self.env.update(PYTHONPATH=str(REPO), PYTHONDONTWRITEBYTECODE="1", MAIC_BIN=str(maic),
                         MAIC_MODELS_DIR=str(self.tmp / "models"), XDG_CONFIG_HOME=str(self.tmp / "config"),
                         XDG_STATE_HOME=str(self.tmp / "state"), PATH=f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin",
-                        FAKE_CLAUDE_LOG=str(self.claude_log),
+                        FAKE_CLAUDE_LOG=str(self.claude_log), REAL_MAIC=os.environ.get("MAIC_BIN", ""),
                         DICTION_WHISPER_URL=f"http://127.0.0.1:{self.whisper.server_address[1]}")
         # Most cases exercise the pipeline on a local scribe and whatever whisper-server holds; the preset cases
         # below drop these to get the defaults.
@@ -405,22 +408,101 @@ class Pipeline(unittest.TestCase):
         start = claude_log(self.claude_log)[0]
         self.assertEqual(start["argv"], legacy_argv(SYSTEM_PROMPT_NORMAL, "sonnet"))
 
-    def test_config_preset_overrides_a_builtin_field_by_field(self):
-        conf = self.tmp / "config" / "diction" / "config.toml"
-        conf.parent.mkdir(parents=True)
-        conf.write_text('[presets.local]\nwhisper = "distil-large-v3"\n\n[presets.mine]\nscribe = "qwen-4b"\n')
+    @unittest.skipUnless(os.environ.get("MAIC_BIN"), "needs the built maic (MAIC_BIN; ctest sets it)")
+    def test_diction_lua_through_maic_overrides_a_preset_and_sets_the_log_dir(self):
+        lua = self.tmp / "config" / "maic" / "diction.lua"
+        lua.parent.mkdir(parents=True)
+        logs = self.tmp / "all-logs"
+        lua.write_text('-- a comment, as Lua has them\n'
+                       f'return {{ log_dir = "{logs}", presets = {{ ["local"] = {{ whisper = "distil-large-v3" }}, '
+                       'mine = { scribe = "qwen-4b" } } }\n')
         self.defaults()
         self.specs["llamacpp-2/Qwen3.5-9B-Q4_K_M-text"] = spec("llamacpp-2", self.scribe.server_address[1])
         ggml(self.tmp / "models" / "whisper" / "ggml-distil-large-v3.bin")
         p, _ = self.run_diction(["hello there"], "--preset", "local")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("backend: local · whisper: distil-large-v3 · scribe: llamacpp-2/fake", p.stdout)
+        self.assertIn(f"logs: {logs} ({lua})", p.stdout)
+        self.assertTrue(list(logs.glob("*-raw-*.log")))
+        self.assertNotIn("config.toml", p.stdout)
         cfg = {"presets": {"local": {"whisper": "distil-large-v3"}, "mine": {"scribe": "qwen-4b", "backend": "local"}}}
         self.assertEqual(presets.table(cfg)["local"], dict(presets.BUILTIN["local"], whisper="distil-large-v3"))
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(presets.choose("mine", None, None, None, cfg), ("mine", "local", "qwen-4b", "distil-large-v3"))
             with self.assertRaisesRegex(ValueError, "no scribe backend 'cloud'"):
                 presets.choose("mine", None, None, None, {"presets": {"mine": {"backend": "cloud"}}})
+
+    def test_config_toml_alone_is_still_read_with_one_notice(self):
+        toml = self.tmp / "config" / "diction" / "config.toml"
+        toml.parent.mkdir(parents=True)
+        logs = self.tmp / "toml-logs"
+        toml.write_text(f'log_dir = "{logs}"\n\n[presets.local]\nwhisper = "distil-large-v3"\n')
+        self.defaults()
+        self.specs["llamacpp-2/Qwen3.5-9B-Q4_K_M-text"] = spec("llamacpp-2", self.scribe.server_address[1])
+        ggml(self.tmp / "models" / "whisper" / "ggml-distil-large-v3.bin")
+        p, _ = self.run_diction(["hello there"], "--preset", "local")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("whisper: distil-large-v3", p.stdout)
+        self.assertIn(f"logs: {logs} ({toml})", p.stdout)
+        notice = (f"diction reads {toml}; `diction migrate-config` writes "
+                  f"{self.tmp / 'config' / 'maic' / 'diction.lua'} from it")
+        self.assertEqual(p.stdout.count(notice), 1, p.stdout)
+
+    @unittest.skipUnless(os.environ.get("MAIC_BIN"), "needs the built maic (MAIC_BIN; ctest sets it)")
+    def test_diction_lua_wins_over_config_toml_and_says_so(self):
+        toml = self.tmp / "config" / "diction" / "config.toml"
+        lua = self.tmp / "config" / "maic" / "diction.lua"
+        for f in (toml, lua):
+            f.parent.mkdir(parents=True)
+        toml.write_text(f'log_dir = "{self.tmp / "toml-logs"}"\n')
+        lua.write_text(f'return {{ log_dir = "{self.tmp / "lua-logs"}" }}\n')
+        p, _ = self.run_diction(["hello there"])
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn(f"logs: {self.tmp / 'lua-logs'} ({lua})", p.stdout)
+        self.assertIn(f"diction reads {lua}; {toml} is ignored", p.stdout)
+        self.assertNotIn("migrate-config", p.stdout)
+        self.assertFalse((self.tmp / "toml-logs").exists())
+
+    @unittest.skipUnless(os.environ.get("MAIC_BIN"), "needs the built maic (MAIC_BIN; ctest sets it)")
+    def test_a_broken_diction_lua_is_named_and_ignored(self):
+        lua = self.tmp / "config" / "maic" / "diction.lua"
+        lua.parent.mkdir(parents=True)
+        lua.write_text("return { log_dir = os.execute('true') }\n")
+        p, _ = self.run_diction(["hello there"])
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertRegex(p.stdout, rf"ignoring {re.escape(str(lua))}: {re.escape(str(lua))}:1: ")
+        self.assertTrue((self.work / "diction-logs").is_dir())
+
+    @unittest.skipUnless(os.environ.get("MAIC_BIN"), "needs the built maic (MAIC_BIN; ctest sets it)")
+    def test_migrate_config_round_trips_through_maic(self):
+        toml = self.tmp / "config" / "diction" / "config.toml"
+        lua = self.tmp / "config" / "maic" / "diction.lua"
+        toml.parent.mkdir(parents=True)
+        text = ('# mine\nlog_dir = "~/diction-logs"\n\n[presets.mine]\nbackend = "local"\nscribe = "qwen-4b"\n'
+                'note = "says \\"hi\\", a \\\\ and a tab\\t, caf\u00e9"\n\n[presets.local]\nwhisper = "distil-large-v3"\n\n'
+                '[presets."two words"]\nend = "a keyword as a key"\n')
+        toml.write_text(text)
+        self.assertEqual(self.diction("migrate-config").returncode, 0)
+        self.assertTrue(toml.exists(), "the TOML stays")
+        written = lua.read_text()
+        self.assertTrue(written.startswith(f"-- diction's settings, written by `diction migrate-config` from {toml}"), written)
+        r = subprocess.run([os.environ["MAIC_BIN"], "settings", "read", "diction"], env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), tomllib.loads(text))
+
+        lua.write_text("return {}\n")
+        again = self.diction("migrate-config")
+        self.assertEqual(again.returncode, 1)
+        self.assertIn("--force overwrites it", again.stdout)
+        self.assertEqual(lua.read_text(), "return {}\n")
+        self.assertEqual(self.diction("migrate-config", "--force").returncode, 0)
+        self.assertEqual(lua.read_text(), written)
+
+    def test_migrate_config_without_a_toml_says_so(self):
+        p = self.diction("migrate-config")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("no " + str(self.tmp / "config" / "diction" / "config.toml"), p.stdout)
+        self.assertFalse((self.tmp / "config" / "maic" / "diction.lua").exists())
 
     def test_presets_lists_each_with_what_is_missing(self):
         conf = self.tmp / "config" / "diction" / "config.toml"
@@ -619,6 +701,42 @@ class Maic(unittest.TestCase):
             got = json.loads(self.maic("model", "resolve", name).stdout)
             self.assertEqual((got["base_url"], got["model"], got["context"]), ("http://127.0.0.1:8082/v1", name.split("/")[1], 8192))
         self.assertNotEqual(self.maic("model", "resolve").returncode, 0)
+
+    def settings_read(self, lua: str | None):
+        path = self.tmp / "config" / "maic" / "diction.lua"
+        if lua is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(lua)
+        return self.maic("settings", "read", "diction")
+
+    def test_settings_read_diction_is_empty_without_the_file(self):
+        p = self.settings_read(None)
+        self.assertEqual((p.returncode, p.stdout), (0, "{}\n"), p.stderr)
+
+    def test_settings_read_diction_evaluates_lua_as_json(self):
+        p = self.settings_read('local home = os.getenv("HOME")\n'
+                               'assert(os.time() and os.date("%Y") and os.clock())\n'
+                               'local f = load("return 1 + 1")\n'
+                               'print("to stderr")\n'
+                               'return { log_dir = home .. "/logs", two = f(), presets = { mine = { scribe = "qwen-4b" } } }\n')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(json.loads(p.stdout), {"log_dir": os.environ["HOME"] + "/logs", "two": 2,
+                                                "presets": {"mine": {"scribe": "qwen-4b"}}})
+        self.assertEqual(p.stderr, "to stderr\n")
+
+    def test_settings_read_diction_runs_in_a_restricted_state(self):
+        path = self.tmp / "config" / "maic" / "diction.lua"
+        for line in ("os.execute('touch " + str(self.tmp / "ran") + "')", "io.open('/etc/hostname')", "require('os')",
+                     "local _ = ffi.C", "require('ffi')", "jit.off()", "debug.getinfo(1)", "package.loaded.os.exit(0)",
+                     "dofile('/dev/null')", "loadfile('/dev/null')", "os.exit(0)", "os.remove('x')",
+                     "local f, e = load(string.dump(function() end)); if not f then error(e) end",
+                     "while true do end", "while true do pcall(function() while true do end end) end", "return {"):
+            p = self.settings_read("local x = 1\n" + line + "\nreturn {}\n")
+            self.assertEqual((p.returncode, p.stdout), (1, ""), line)
+            self.assertRegex(p.stderr, rf"^maic: {re.escape(str(path))}:[23]: ", line)
+        p = self.settings_read("return 1\n")
+        self.assertEqual((p.returncode, p.stderr), (1, f"maic: {path}: must return a table\n"))
+        self.assertFalse((self.tmp / "ran").exists())
 
     def test_maic_diction_passes_through(self):
         p = self.maic("diction", "--help")

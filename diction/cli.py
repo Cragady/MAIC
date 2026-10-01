@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import queue
 import re
@@ -27,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 import wave
 from datetime import datetime
 from pathlib import Path
@@ -69,20 +71,88 @@ def build_id() -> str:
 LOG_DIR = "diction-logs"
 HIDDEN_LOG_DIR = ".h-diction-logs"
 
-CONFIG_PATH = (Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-               / "diction" / "config.toml")
+CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+CONFIG_PATH = CONFIG_HOME / "maic" / "diction.lua"
+TOML_PATH = CONFIG_HOME / "diction" / "config.toml"
+
+
+def config_file() -> Path | None:
+    """The file diction's settings come from: diction.lua beside MAIC's settings.lua, else the config.toml diction
+    read before it."""
+    return CONFIG_PATH if CONFIG_PATH.exists() else TOML_PATH if TOML_PATH.exists() else None
 
 
 def load_config() -> dict:
-    """Settings from ~/.config/diction/config.toml. Absent or broken is fine."""
-    if not CONFIG_PATH.exists():
+    """diction.lua as `maic settings read diction` evaluates it (diction never runs the Lua itself), else the old
+    config.toml with a notice. Absent or broken is fine."""
+    src = config_file()
+    if src is None:
         return {}
+    if src == TOML_PATH:
+        print(f"{YELLOW}  diction reads {TOML_PATH}; `diction migrate-config` writes {CONFIG_PATH} from it{OFF}")
+        try:
+            return tomllib.loads(TOML_PATH.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            print(f"{YELLOW}  ignoring {TOML_PATH}: {e}{OFF}")
+            return {}
+    if TOML_PATH.exists():
+        print(f"{YELLOW}  diction reads {CONFIG_PATH}; {TOML_PATH} is ignored (delete it){OFF}")
+    exe = whisper_mod.maic_bin()
+    if not exe:
+        print(f"{YELLOW}  ignoring {CONFIG_PATH}: maic evaluates it, and no maic was found (MAIC_BIN or PATH){OFF}")
+        return {}
+    r = subprocess.run([exe, "settings", "read", "diction"], capture_output=True, text=True, timeout=20)
+    if r.returncode != 0:
+        print(f"{YELLOW}  ignoring {CONFIG_PATH}: {(r.stderr.strip() or r.stdout.strip()).removeprefix('maic: ')}{OFF}")
+        return {}
+    return json.loads(r.stdout)
+
+
+LUA_KEYWORDS = {"and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in", "local",
+                "nil", "not", "or", "repeat", "return", "then", "true", "until", "while"}
+
+
+def lua_key(k: str) -> str:
+    return k if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k) and k not in LUA_KEYWORDS else f"[{lua_value(k)}]"
+
+
+def lua_value(v, indent: str = "") -> str:
+    """A TOML value as Lua source: tables one key a line, strings quoted so Lua reads back the same bytes."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, list):
+        return "{ " + ", ".join(lua_value(x, indent) for x in v) + " }"
+    if isinstance(v, dict):
+        inner = indent + "    "
+        rows = [f"{inner}{lua_key(k)} = {lua_value(x, inner)}," for k, x in v.items()]
+        return "{\n" + "\n".join(rows) + f"\n{indent}}}" if rows else "{}"
+    escapes = {'"': '\\"', "\\": "\\\\", "\n": "\\n"}
+    return '"' + "".join(escapes.get(c) or (f"\\{ord(c):03d}" if ord(c) < 32 or ord(c) == 127 else c) for c in str(v)) + '"'
+
+
+
+
+def migrate_config(force: bool) -> int:
+    """`diction migrate-config`: diction.lua from config.toml, which stays where it is."""
+    if not TOML_PATH.exists():
+        print(f"{RED}  no {TOML_PATH} to migrate{OFF}")
+        return 1
+    if CONFIG_PATH.exists() and not force:
+        print(f"{RED}  {CONFIG_PATH} exists; --force overwrites it{OFF}")
+        return 1
     try:
-        import tomllib
-        return tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except Exception as e:
-        print(f"{YELLOW}  ignoring {CONFIG_PATH}: {e}{OFF}")
-        return {}
+        cfg = tomllib.loads(TOML_PATH.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as e:
+        print(f"{RED}  {TOML_PATH}: {e}{OFF}")
+        return 1
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(f"-- diction's settings, written by `diction migrate-config` from {TOML_PATH} on "
+                           f"{datetime.now():%Y-%m-%d}.\n-- maic evaluates it (`maic settings read diction`); "
+                           f"the TOML is no longer read and can go.\nreturn {lua_value(cfg)}\n", encoding="utf-8")
+    print(f"wrote {CONFIG_PATH} (from {TOML_PATH}, which is left in place and no longer read)")
+    return 0
 
 
 def resolve_logdir(args, cfg: dict, cwd: Path) -> tuple[Path, str]:
@@ -100,7 +170,7 @@ def resolve_logdir(args, cfg: dict, cwd: Path) -> tuple[Path, str]:
         return cwd / LOG_DIR, "--local-logs"
     g = os.environ.get("DICTION_LOG_DIR") or cfg.get("log_dir")
     if g:
-        src = "DICTION_LOG_DIR" if os.environ.get("DICTION_LOG_DIR") else str(CONFIG_PATH)
+        src = "DICTION_LOG_DIR" if os.environ.get("DICTION_LOG_DIR") else str(config_file())
         return Path(g).expanduser(), src
     return cwd / LOG_DIR, "default"
 
@@ -111,11 +181,18 @@ def slugify(text: str) -> str:
 
 
 def run(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(prog="diction", description="Narrate a task; get a written procedure.")
+    ap = argparse.ArgumentParser(prog="diction", description="Narrate a task; get a written procedure.",
+                                 epilog=f"Settings (presets, log_dir) live in {CONFIG_PATH}, a Lua file returning a "
+                                        f"table, beside MAIC's settings.lua; maic evaluates it in a restricted Lua "
+                                        f"state (`maic settings read diction`). Without it, the old {TOML_PATH} is "
+                                        f"still read, and `diction migrate-config` writes diction.lua from it.")
     ap.add_argument("command", nargs="?", default="start",
-                    choices=["start", "devices", "taptest", "presets"],
+                    choices=["start", "devices", "taptest", "presets", "migrate-config"],
                     help="start (default); devices: list mics; taptest: tune the tap gesture; "
-                         "presets: list the presets and whether their models are ready")
+                         "presets: list the presets and whether their models are ready; "
+                         "migrate-config: write diction.lua from the old config.toml (kept in place)")
+    ap.add_argument("--force", action="store_true",
+                    help="migrate-config: overwrite an existing diction.lua")
     ap.add_argument("-o", "--out", help="procedure markdown file (default: <cwd-name>.md)")
     ap.add_argument("-t", "--title", help="document title (default: derived from filename)")
     ap.add_argument("-d", "--device", help="pulse/pipewire source name (default: system default)")
@@ -124,7 +201,7 @@ def run(argv: list[str]) -> int:
                          "(Claude Haiku through the claude CLI and distil-large-v3, as diction always "
                          "ran; the text goes to Anthropic), api (the same Haiku through Anthropic's "
                          "API), local (the Qwen3.5 9B on llamacpp-2 and large-v3-turbo-q5_0), "
-                         "local-small (the 4B), or a [presets.NAME] of config.toml. Also "
+                         "local-small (the 4B), or a presets.NAME of diction.lua. Also "
                          "DICTION_PRESET. --backend, -m and --agent-model, and DICTION_BACKEND, "
                          "DICTION_MODEL and DICTION_AGENT_MODEL, override its parts")
     ap.add_argument("--backend", choices=list(presets.BACKENDS),
@@ -219,6 +296,8 @@ def run(argv: list[str]) -> int:
     if args.command == "devices":
         list_devices()
         return 0
+    if args.command == "migrate-config":
+        return migrate_config(args.force)
 
     cfg = load_config()
     if args.command == "presets":

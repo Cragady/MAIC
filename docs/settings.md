@@ -6,6 +6,8 @@ Settings are Lua files that return a table (JSON with the same keys works too). 
 2. `<dir>/.maic/settings.lua` for each directory from just under `$HOME` down to the workspace: the project's, meant to be committed.
 3. `<dir>/.maic/settings.local.lua` next to each of those: personal overrides, keep it out of git.
 
+diction's settings are a file of their own beside the global one, `~/.config/maic/diction.lua`, read only by diction and evaluated in a restricted Lua state with no file or command access (`maic settings read diction`; see [diction.md](diction.md#configuration)).
+
 At each location a `settings.lua` is used when it exists, else a `settings.json` (`maic settings init --json` writes that form). Nearer files win. Scalars replace, `providers` merge by name, `style` merges by role. `:settings` in a session lists the files that were read; `maic init` (or `:init`, which also has the agent draft the `MAIC.md`) scaffolds a project's.
 
 Because a settings file is code, it can decide things per machine:

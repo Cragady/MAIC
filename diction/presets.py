@@ -2,8 +2,8 @@
 
 `default` is diction as it always ran: Claude Haiku through the `claude` CLI on the user's own login, and
 distil-large-v3 for speech. `api` is the same Haiku through Anthropic's API. `local` and `local-small` keep the
-narration on this machine. `[presets.NAME]` in diction's config.toml adds a preset, or overrides a built-in one
-field by field.
+narration on this machine. `presets.NAME` in diction.lua (beside MAIC's settings.lua) adds a preset, or overrides a
+built-in one field by field.
 """
 
 from __future__ import annotations
@@ -37,11 +37,11 @@ SCRIBE_CATALOG = {"Qwen3.5-9B-Q4_K_M-text": "qwen3.5-9b-text", "Qwen3.5-4B-Q4_K_
 
 
 def table(cfg: dict) -> dict[str, dict]:
-    """The built-in presets with config.toml's [presets.NAME] laid over them, field by field."""
+    """The built-in presets with diction.lua's presets.NAME laid over them, field by field."""
     out = {name: dict(p) for name, p in BUILTIN.items()}
     for name, p in (cfg.get("presets") or {}).items():
         if not isinstance(p, dict):
-            raise ValueError(f"[presets.{name}] in config.toml is not a table")
+            raise ValueError(f"presets.{name} in diction's config is not a table")
         out.setdefault(name, {}).update({k: str(v) for k, v in p.items() if k in FIELDS})
     return out
 

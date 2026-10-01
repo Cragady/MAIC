@@ -98,8 +98,21 @@ def main():
     r = subprocess.run([maic, "tools"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
     list_ok = r.returncode == 0 and "word_count  (python)" in r.stdout and "reads **; writes nothing; timeout 10 s" in r.stdout
     print(("ok" if list_ok else "FAIL") + ": maic tools lists script tools with language and declared reads/writes" + ("" if list_ok else "\n" + r.stdout[-1500:]))
+    # `maic settings read diction`: {} without the file, the table as JSON, a refused call with file:line.
+    diction_lua = os.path.join(home, "config", "maic", "diction.lua")
+    r = subprocess.run([maic, "settings", "read", "diction"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    read_ok = r.returncode == 0 and r.stdout == "{}\n"
+    with open(diction_lua, "w") as f:
+        f.write("return { log_dir = '/tmp/x', presets = { mine = { scribe = 'qwen-4b' } } }\n")
+    r = subprocess.run([maic, "settings", "read", "diction"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    read_ok = read_ok and r.returncode == 0 and json.loads(r.stdout) == {"log_dir": "/tmp/x", "presets": {"mine": {"scribe": "qwen-4b"}}}
+    with open(diction_lua, "w") as f:
+        f.write("return {\n  x = io.open('/etc/hostname'),\n}\n")
+    r = subprocess.run([maic, "settings", "read", "diction"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    read_ok = read_ok and r.returncode == 1 and r.stdout == "" and diction_lua + ":2: " in r.stderr and "AddressSanitizer" not in r.stderr
+    print(("ok" if read_ok else "FAIL") + ": maic settings read diction" + ("" if read_ok else "\n" + r.stdout[-1500:] + r.stderr[-1500:]))
     srv.shutdown()
-    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok else 1)
+    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and read_ok else 1)
 
 
 if __name__ == "__main__":
