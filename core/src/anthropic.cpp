@@ -11,7 +11,7 @@ namespace maic::detail {
 
 namespace {
 
-// OpenAI/Ollama function schemas -> Anthropic tools. Large inputs (whole files) stream as they're generated.
+// OpenAI function schemas -> Anthropic tools. Large inputs (whole files) stream as they're generated.
 nlohmann::json convert_tools(const nlohmann::json& tools) {
     nlohmann::json out = nlohmann::json::array();
     for (const auto& t : tools) {

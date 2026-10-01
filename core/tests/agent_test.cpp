@@ -1,6 +1,6 @@
 #include <unistd.h>
 #include <cstdlib>
-// The agent loop against a fake Ollama: mid-turn messages, deliver-now, cancellation, resume.
+// The agent loop against a fake OpenAI-compatible server: mid-turn messages, deliver-now, cancellation, resume.
 #include "check.hpp"
 
 #include "maic/agent.hpp"
@@ -21,15 +21,17 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// Answers every chat with a slow stream of the last user message's text, echoed word by word.
-struct FakeOllama {
+// An OpenAI-compatible /v1/chat/completions that answers every chat with a slow SSE stream of the last user
+// message's text, echoed four characters at a time. mid_system keeps later system messages as system turns, so
+// the tests can look for them; context_window matches the shipped llamacpp provider.
+struct FakeServer {
     httplib::Server srv;
     int port = 0;
     std::thread thread;
     std::vector<json> requests;
     std::mutex mu;
     int delay_ms = 100;
-    int usage_input = 0;  // reported as prompt_eval_count on the final line when set
+    int usage_input = 0;  // reported as prompt_tokens in the final usage chunk when set
     json tool_call;       // when set and calls_left > 0, the reply is this one tool call ({"name", "arguments"})
     int calls_left = 0;
     std::function<std::string(const json&)> reply;  // when set and non-empty for a request, replaces the echo
@@ -37,9 +39,19 @@ struct FakeOllama {
     int fail_status = 400;
     std::string fail_body;
 
-    FakeOllama() {
+    static std::string text_of(const json& content) {
+        if (content.is_string()) return content;
+        std::string out;
+        for (const auto& part : content) {
+            if (part.value("type", "") == "text") out += part.value("text", "");
+        }
+        return out;
+    }
+    static std::string event(const json& j) { return "data: " + j.dump() + "\n\n"; }
+
+    FakeServer() {
         port = srv.bind_to_any_port("127.0.0.1");
-        srv.Post("/api/chat", [this](const httplib::Request& req, httplib::Response& res) {
+        srv.Post("/v1/chat/completions", [this](const httplib::Request& req, httplib::Response& res) {
             json body = json::parse(req.body);
             {
                 std::lock_guard lock(mu);
@@ -47,7 +59,7 @@ struct FakeOllama {
             }
             std::string last;
             for (const auto& m : body["messages"]) {
-                if (m["role"] == "user") last = m["content"];
+                if (m["role"] == "user") last = text_of(m["content"]);
             }
             if (fail_left > 0) {
                 --fail_left;
@@ -67,25 +79,25 @@ struct FakeOllama {
                 --calls_left;
                 call = tool_call;
             }
-            res.set_chunked_content_provider("application/x-ndjson", [echo, delay, usage, call](size_t, httplib::DataSink& sink) {
+            res.set_chunked_content_provider("text/event-stream", [echo, delay, usage, call](size_t, httplib::DataSink& sink) {
+                auto write = [&](const std::string& s) { return sink.write(s.data(), s.size()); };
                 if (!call.is_null()) {
-                    std::string line = json{{"message", {{"content", ""}, {"tool_calls", {{{"function", call}}}}}}}.dump() + "\n";
-                    sink.write(line.data(), line.size());
-                    std::string done = json{{"done", true}}.dump() + "\n";
-                    sink.write(done.data(), done.size());
+                    json tc = {{"index", 0}, {"id", "call_1"}, {"type", "function"},
+                               {"function", {{"name", call["name"]}, {"arguments", call["arguments"].dump()}}}};
+                    write(event({{"choices", {{{"index", 0}, {"delta", {{"content", ""}, {"tool_calls", {tc}}}}}}}}));
+                    write(event({{"choices", {{{"index", 0}, {"delta", json::object()}, {"finish_reason", "tool_calls"}}}}}));
+                    write("data: [DONE]\n\n");
                     sink.done();
                     return true;
                 }
-                std::string out = echo;
-                for (size_t i = 0; i < out.size(); i += 4) {
-                    std::string line = json{{"message", {{"content", out.substr(i, 4)}}}}.dump() + "\n";
-                    if (!sink.write(line.data(), line.size())) return false;
+                for (size_t i = 0; i < echo.size(); i += 4) {
+                    if (!write(event({{"choices", {{{"index", 0}, {"delta", {{"content", echo.substr(i, 4)}}}}}}}))) return false;
                     std::this_thread::sleep_for(std::chrono::milliseconds(delay));
                 }
-                json done_j = {{"done", true}};
-                if (usage) done_j["prompt_eval_count"] = usage, done_j["eval_count"] = 5;
-                std::string done = done_j.dump() + "\n";
-                sink.write(done.data(), done.size());
+                json done = {{"choices", {{{"index", 0}, {"delta", json::object()}, {"finish_reason", "stop"}}}}};
+                if (usage) done["usage"] = {{"prompt_tokens", usage}, {"completion_tokens", 5}};
+                write(event(done));
+                write("data: [DONE]\n\n");
                 sink.done();
                 return true;
             });
@@ -93,11 +105,13 @@ struct FakeOllama {
         thread = std::thread([this] { srv.listen_after_bind(); });
         srv.wait_until_ready();
     }
-    ~FakeOllama() {
+    ~FakeServer() {
         srv.stop();
         thread.join();
     }
-    Provider provider() const { return {"fake", "ollama", "http://127.0.0.1:" + std::to_string(port)}; }
+    Provider provider() const {
+        return {"fake", "openai", "http://127.0.0.1:" + std::to_string(port) + "/v1", "", "", {{"mid_system", true}, {"context_window", 16384}}};
+    }
 };
 
 struct Recorder : AgentEvents {
@@ -147,7 +161,7 @@ int main() {
 
     section("plain turn");
     {
-        FakeOllama fake;
+        FakeServer fake;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         Recorder r;
@@ -162,7 +176,7 @@ int main() {
 
     section("mode change is appended, not rewritten");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
@@ -181,7 +195,7 @@ int main() {
 
     section("mid-turn messages");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 150;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
@@ -208,7 +222,7 @@ int main() {
         expect(r.text.find("echo: interjection") != std::string::npos, "the final reply answers the newest message");
     }
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
@@ -223,7 +237,7 @@ int main() {
 
     section("compaction");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         fs::path path;
         std::string big(3000, 'x');
@@ -302,7 +316,7 @@ int main() {
 
     section("denial with feedback");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", "note.txt"}, {"content", "hello"}}}};
         fake.calls_left = 1;
@@ -326,7 +340,7 @@ int main() {
 
     section("undo points and nested instructions");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         fs::create_directories(ws / "svc");
         std::ofstream(ws / "svc" / "AGENTS.md") << "svc rules: use tabs";
@@ -405,7 +419,7 @@ int main() {
 
     section("repeated calls and budgets");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         std::ofstream(ws / "same.txt") << "x";
         Agent agent(ws, "test");
@@ -445,7 +459,7 @@ int main() {
 
     section("question and todo");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
@@ -503,7 +517,7 @@ int main() {
                                                                  "  run = function(args) maic.write(args.where, 'x') return 'wrote ' .. args.where end,\n"
                                                                  "}\n";
         std::ofstream(ws / "note.txt") << "the note says heron\n";
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
@@ -539,7 +553,7 @@ int main() {
 
     section("operator instructions set mid-conversation");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
@@ -559,7 +573,7 @@ int main() {
 
     section("rules");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
@@ -581,7 +595,7 @@ int main() {
 
     section("the harness protects itself");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         auto attempt = [&](bool smart, const std::string& path) {
             fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", path}, {"content", "return { harness = 'dumb' }"}}}};
@@ -610,7 +624,7 @@ int main() {
 
     section("forbidden terms halt a call under any harness");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         auto attempt = [&](bool smart, const json& call) {
             fake.tool_call = call;
@@ -640,7 +654,7 @@ int main() {
 
     section("images on a user turn");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         fs::path png = ws / "pic.png";
         std::ofstream(png, std::ios::binary) << std::string("\x89PNG\r\n\x1a\n", 8) << "rest";
@@ -651,8 +665,9 @@ int main() {
         Recorder r;
         agent.submit("what is this", Origin::Local, r, no_cancel);
         auto last = fake.requests.back()["messages"].back();
-        expect(last["role"] == "user" && last.contains("images") && last["images"].size() == 1 && last["images"][0].get<std::string>().rfind("iVBORw0KGg", 0) == 0,
-               "Ollama gets the picture as base64 beside the text");
+        expect(last["role"] == "user" && last["content"].is_array() && last["content"].size() == 2 && last["content"][1]["type"] == "image_url" &&
+                   last["content"][1]["image_url"]["url"].get<std::string>().rfind("data:image/png;base64,iVBORw0KGg", 0) == 0,
+               "the picture rides as an image_url part beside the text");
         expect(agent.pending_images().empty() && agent.messages().back().role == "assistant" && agent.messages()[agent.messages().size() - 2].images.size() == 1,
                "the picture is on the stored user message, and the queue is empty");
         bool threw = false;
@@ -673,7 +688,7 @@ int main() {
 
     section("prefill");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
@@ -699,7 +714,7 @@ int main() {
 
     section("operator prompt and instruction switch");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         std::ofstream(ws / "MAIC.md") << "project rule: always say pelican";
         fs::create_directories(ws / "deep");
@@ -740,7 +755,7 @@ int main() {
 
     section("a request over the context window");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         std::string big(30000, 'x');
         // History far past a 16k window with no usage report yet: the byte estimate compacts before sending.
@@ -784,7 +799,7 @@ int main() {
 
     section("string and token bans");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
@@ -810,14 +825,12 @@ int main() {
         b.bans.tokens = {nlohmann::json(1234)};
         Recorder rb;
         b.submit("hi", Origin::Local, rb, no_cancel);
-        bool warned = false;
-        for (const auto& n : rb.notices) warned = warned || n.find("token ban") != std::string::npos;
-        expect(warned && !fake.requests.back().contains("logit_bias"), "numeric token bans on Ollama are reported, not sent");
+        expect(fake.requests.back()["logit_bias"]["1234"] == -100 && !has_notice(rb, "token ban"), "numeric token bans reach an OpenAI-compatible provider as logit_bias, without a notice");
     }
 
     section("the reviewer (smart harness) and the dumb harness");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         auto is_review = [](const json& b) { return b["messages"][0]["role"] == "system" && b["messages"][0]["content"].get<std::string>().rfind("You review one action", 0) == 0; };
         auto reviews = [&] {
@@ -875,7 +888,7 @@ int main() {
 
     section("context files");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
@@ -900,7 +913,7 @@ int main() {
 
     section("cancel");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 200;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
@@ -926,7 +939,7 @@ int main() {
 
     section("session log and resume");
     {
-        FakeOllama fake;
+        FakeServer fake;
         fake.delay_ms = 1;
         fs::path path;
         {

@@ -1,4 +1,4 @@
-// The server against a fake Ollama: tokens, streaming, the remote-origin approval round trip, interrupt, audit.
+// The server against a fake OpenAI-compatible server: tokens, streaming, the remote-origin approval round trip, interrupt, audit.
 #include "check.hpp"
 
 #include "auth.hpp"
@@ -23,8 +23,9 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// Echoes the last user message word by word, or replies with one tool call while calls_left > 0.
-struct FakeOllama {
+// An OpenAI-compatible /v1/chat/completions that echoes the last user message four characters at a time, or
+// replies with one tool call while calls_left > 0.
+struct FakeServer {
     httplib::Server srv;
     int port = 0;
     std::thread thread;
@@ -34,13 +35,15 @@ struct FakeOllama {
     json tool_call;
     int calls_left = 0;
 
-    FakeOllama() {
+    static std::string event(const json& j) { return "data: " + j.dump() + "\n\n"; }
+
+    FakeServer() {
         port = srv.bind_to_any_port("127.0.0.1");
-        srv.Post("/api/chat", [this](const httplib::Request& req, httplib::Response& res) {
+        srv.Post("/v1/chat/completions", [this](const httplib::Request& req, httplib::Response& res) {
             json body = json::parse(req.body);
             std::string last;
             for (const auto& m : body["messages"]) {
-                if (m["role"] == "user") last = m["content"];
+                if (m["role"] == "user" && m["content"].is_string()) last = m["content"];
             }
             int delay;
             json call;
@@ -53,20 +56,23 @@ struct FakeOllama {
                     call = tool_call;
                 }
             }
-            res.set_chunked_content_provider("application/x-ndjson", [last, delay, call](size_t, httplib::DataSink& sink) {
+            res.set_chunked_content_provider("text/event-stream", [last, delay, call](size_t, httplib::DataSink& sink) {
+                auto write = [&](const std::string& s) { return sink.write(s.data(), s.size()); };
+                std::string finish = "stop";
                 if (!call.is_null()) {
-                    std::string line = json{{"message", {{"content", ""}, {"tool_calls", {{{"function", call}}}}}}}.dump() + "\n";
-                    sink.write(line.data(), line.size());
+                    json tc = {{"index", 0}, {"id", "call_1"}, {"type", "function"},
+                               {"function", {{"name", call["name"]}, {"arguments", call["arguments"].dump()}}}};
+                    write(event({{"choices", {{{"index", 0}, {"delta", {{"content", ""}, {"tool_calls", {tc}}}}}}}}));
+                    finish = "tool_calls";
                 } else {
                     std::string out = "echo: " + last;
                     for (size_t i = 0; i < out.size(); i += 4) {
-                        std::string line = json{{"message", {{"content", out.substr(i, 4)}}}}.dump() + "\n";
-                        if (!sink.write(line.data(), line.size())) return false;
+                        if (!write(event({{"choices", {{{"index", 0}, {"delta", {{"content", out.substr(i, 4)}}}}}}}))) return false;
                         std::this_thread::sleep_for(std::chrono::milliseconds(delay));
                     }
                 }
-                std::string done = json{{"done", true}, {"prompt_eval_count", 10}, {"eval_count", 5}}.dump() + "\n";
-                sink.write(done.data(), done.size());
+                write(event({{"choices", {{{"index", 0}, {"delta", json::object()}, {"finish_reason", finish}}}}, {"usage", {{"prompt_tokens", 10}, {"completion_tokens", 5}}}}));
+                write("data: [DONE]\n\n");
                 sink.done();
                 return true;
             });
@@ -74,11 +80,11 @@ struct FakeOllama {
         thread = std::thread([this] { srv.listen_after_bind(); });
         srv.wait_until_ready();
     }
-    ~FakeOllama() {
+    ~FakeServer() {
         srv.stop();
         thread.join();
     }
-    Provider provider() const { return {"fake", "ollama", "http://127.0.0.1:" + std::to_string(port)}; }
+    Provider provider() const { return {"fake", "openai", "http://127.0.0.1:" + std::to_string(port) + "/v1"}; }
     json last_request() {
         std::lock_guard lock(mu);
         return requests.back();
@@ -214,7 +220,7 @@ int main() {
         expect(!limit.blocked("10.0.0.9"), "a success clears the count");
     }
 
-    FakeOllama fake;
+    FakeServer fake;
     server::ServerOptions o;
     o.listen = "127.0.0.1:0";
     o.settings.model = "test";

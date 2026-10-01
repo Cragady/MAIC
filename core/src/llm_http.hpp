@@ -56,8 +56,6 @@ std::string dump(const nlohmann::json& j);
 // Pulls a readable message out of a provider's error body.
 std::string api_error(const std::string& provider, const HttpResult& r);
 
-Message chat_ollama(const Provider&, const ChatOptions&, const std::vector<Message>&, const nlohmann::json& tools,
-                    const TextSink&, const std::atomic<bool>&);
 Message chat_anthropic(const Provider&, const ChatOptions&, const std::vector<Message>&, const nlohmann::json& tools,
                        const TextSink&, const std::atomic<bool>&);
 Message chat_openai(const Provider&, const ChatOptions&, const std::vector<Message>&, const nlohmann::json& tools,

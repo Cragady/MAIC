@@ -17,8 +17,8 @@ namespace maic {
 // before the text reaches the screen; the agent then re-asks with the clean part kept and a nudge, up to
 // `retries` times, and after that replaces the string instead. Token bans map to `logit_bias` (the token's
 // probability becomes minus infinity) on providers that take it: OpenAI-compatible servers such as llama.cpp,
-// vLLM and LM Studio. Ollama's own API and Anthropic have no logit bias; there a token ban given as text is
-// treated as a string ban and one given as a number is reported as unsupported.
+// vLLM and LM Studio. Anthropic has no logit bias; there a token ban given as text is treated as a string ban
+// and one given as a number is reported as unsupported.
 // Regex bans (`patterns`, POSIX extended) are matched over the same stream. A regex cannot say how much more
 // text might complete a match, so the filter keeps the last `window` characters back until more arrives or
 // the reply ends; a pattern longer than the window can slip partly onto the screen before it is cut.

@@ -112,19 +112,9 @@ Gpu detect_gpu() {
     return g;
 }
 
-std::vector<std::string> ollama_models() {
-    std::vector<std::string> out;
-    std::string list = run("ollama list 2>/dev/null | tail -n +2 | awk '{print $1}'");
-    std::istringstream in(list);
-    for (std::string m; std::getline(in, m);) {
-        if (!m.empty()) out.push_back(m);
-    }
-    return out;
-}
-
 bool has_model(const std::vector<std::string>& models, const std::string& name) {
     for (const auto& m : models) {
-        if (m == name || m.rfind(name + ":", 0) == 0) return true;
+        if (m == name || m.rfind(name + "-", 0) == 0) return true;
     }
     return false;
 }
@@ -157,29 +147,25 @@ int run_doctor() {
     line("tripwire installed", fs::exists("/usr/local/sbin/maic-lock"), fs::exists("/usr/local/sbin/maic-lock") ? "" : "sudo ./harness/install-tripwire.sh");
     for (const auto& e : load_vendor_manifest()) {
         auto st = vendor_status(e);
-        line("vendored " + e.name + " (" + (e.kind == "submodule" ? e.ref : e.version) + ")", st.installed, st.installed ? st.target : st.note);
+        line("vendored " + e.name + " (" + e.ref + ")", st.installed, st.installed ? st.target : st.note);
         if (e.name == "llamacpp" && st.installed) line("llama.cpp model", !st.model.empty(), st.model.empty() ? "maic vendor use llamacpp PATH" : st.model);
     }
-    bool llamacpp_up = false, ollama_up = false;
+    bool llamacpp_up = false;
     try {
         for (const auto& s : load_services(root_dir() / "services")) {
             if (s.name == "llamacpp") llamacpp_up = service_status(s).state != ServiceState::Stopped;
-            if (s.name == "ollama") ollama_up = service_status(s).state != ServiceState::Stopped;
         }
     } catch (const std::exception&) {
     }
     line("llamacpp running", llamacpp_up, llamacpp_up ? "" : "maic up llamacpp");
-    bool ollama_bin = has_program("ollama");
-    line("ollama (optional second backend)", ollama_bin, ollama_bin ? run("ollama --version 2>/dev/null | tail -1") : "see docs/ollama-setup.md");
-    line("ollama running", ollama_up, ollama_up ? "" : "maic up ollama, if you want it");
     bool clip = has_program("wl-copy") || has_program("xclip") || has_program("xsel");
     line("clipboard tool (wl-copy / xclip / xsel)", clip, clip ? "" : "yanks still reach the terminal through OSC 52");
     line("nvim (for :e)", has_program("nvim"), "");
     std::cout << "\n";
 
     // ---- models and the recommendation
-    std::vector<std::string> models = ollama_bin ? ollama_models() : std::vector<std::string>{};
-    std::cout << "models on ollama (optional; their blobs are GGUFs llama.cpp can serve): ";
+    std::vector<std::string> models = llamacpp_model_ids();
+    std::cout << "models under " << llamacpp_models_root().string() << " (llama.cpp serves them by file name): ";
     if (models.empty()) std::cout << "none\n";
     else {
         for (size_t i = 0; i < models.size(); ++i) std::cout << (i ? ", " : "") << models[i];
@@ -188,24 +174,23 @@ int run_doctor() {
     std::cout << "\nrecommendation\n";
     int vram_gb = gpu.vram_mb / 1024;
     std::string quick, deep, why;
-    if (vram_gb >= 24) quick = "qwen3.5:9b", deep = "qwen3.5:27b", why = "24 GB or more fits a 27B at 4-bit with room for context";
-    else if (vram_gb >= 16) quick = "qwen3.5:9b", deep = "qwen3.5:14b", why = "16 GB fits a 14B at 4-bit";
-    else if (vram_gb >= 12) quick = "qwen3.5:4b", deep = "qwen3.5:14b", why = "12 GB fits a 14B at 4-bit, tightly";
-    else if (vram_gb >= 8) quick = "qwen3.5:4b", deep = "qwen3.5:9b", why = "8 GB: the 4B fits entirely on the GPU, the 9B mostly (measured 81 and 21 tokens/s on an RTX 2080)";
-    else if (vram_gb > 0) quick = "qwen3.5:2b", deep = "qwen3.5:4b", why = "under 8 GB: keep models small so they stay on the GPU";
-    else if (ram_gb >= 32) quick = "qwen3.5:4b", deep = "qwen3.5:9b", why = "no usable GPU found; a 4B on CPU is workable, a 9B is slow";
-    else quick = "qwen3.5:2b", deep = "qwen3.5:4b", why = "no usable GPU and limited RAM";
+    if (vram_gb >= 24) quick = "Qwen3.5-9B", deep = "Qwen3.5-27B", why = "24 GB or more fits a 27B at 4-bit with room for context";
+    else if (vram_gb >= 16) quick = "Qwen3.5-9B", deep = "Qwen3.5-14B", why = "16 GB fits a 14B at 4-bit";
+    else if (vram_gb >= 12) quick = "Qwen3.5-4B", deep = "Qwen3.5-14B", why = "12 GB fits a 14B at 4-bit, tightly";
+    else if (vram_gb >= 8) quick = "Qwen3.5-4B", deep = "Qwen3.5-9B", why = "8 GB: the 4B fits entirely on the GPU, the 9B mostly (measured 81 and 21 tokens/s on an RTX 2080)";
+    else if (vram_gb > 0) quick = "Qwen3.5-2B", deep = "Qwen3.5-4B", why = "under 8 GB: keep models small so they stay on the GPU";
+    else if (ram_gb >= 32) quick = "Qwen3.5-4B", deep = "Qwen3.5-9B", why = "no usable GPU found; a 4B on CPU is workable, a 9B is slow";
+    else quick = "Qwen3.5-2B", deep = "Qwen3.5-4B", why = "no usable GPU and limited RAM";
     std::cout << "  " << why << "\n";
-    // llama.cpp first: every sampler, logit bias and grammars reach it (docs/llamacpp.md). Ollama stays for pulling
-    // models, and its blobs are the GGUFs to link.
     auto lc = find_vendor("llamacpp");
     VendorStatus lcs = lc ? vendor_status(*lc) : VendorStatus{};
     std::cout << "  llama.cpp (default, llamacpp/current):  ";
     if (!lcs.installed) std::cout << "not built  ->  maic vendor add llamacpp\n";
-    else if (lcs.model.empty()) std::cout << "no GGUF linked yet  ->  maic vendor use llamacpp PATH (an Ollama blob works: ollama show --modelfile " << quick << ")\n";
+    else if (lcs.model.empty()) std::cout << "no GGUF linked yet  ->  maic vendor use llamacpp PATH, or maic vendor model llamacpp URL SHA256 (docs/llamacpp.md)\n";
     else std::cout << lcs.model << "  ->  maic up llamacpp\n";
-    std::cout << "  ollama quick model (ollama/" << quick << "):  " << (has_model(models, quick) ? "installed" : "ollama pull " + quick) << "\n";
-    std::cout << "  ollama deep model (ollama/" << deep << "):   " << (has_model(models, deep) ? "installed" : "ollama pull " + deep) << "\n";
+    // Q4_K_M of these from unsloth/<name>-GGUF on Hugging Face; the file's stem is the model id.
+    std::cout << "  quick model (" << quick << " at Q4_K_M):  " << (has_model(models, quick) ? "installed" : "maic vendor model llamacpp URL SHA256") << "\n";
+    std::cout << "  deep model (" << deep << " at Q4_K_M):   " << (has_model(models, deep) ? "installed" : "maic vendor model llamacpp URL SHA256") << "\n";
     if (settings.model != "llamacpp/current") std::cout << "  your settings choose \"" << settings.model << "\"; the default is llamacpp/current\n";
     if (!fs::exists(settings_path())) std::cout << "  no settings file yet: maic settings init\n";
     if (!fs::exists(global_instructions_path())) std::cout << "  no global MAIC.md yet: " << global_instructions_path().string() << " (name, pronouns, standing rules)\n";

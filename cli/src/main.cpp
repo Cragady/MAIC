@@ -56,7 +56,7 @@ void usage(std::ostream& out = std::cerr) {
                  "       --ban TEXT|@FILE                   a phrase the model must not say, or a file with one per line (repeatable; :ban)\n"
                  "       --ban-pattern REGEX|@FILE          a POSIX extended regex the reply must not match, or a file of them (maic help bans)\n"
                  "       --xtc P[,T]                        exclude top choices: probability and threshold (0.5,0.1); llama.cpp-style\n"
-                 "                                          servers only, Ollama has no XTC (maic help sampling)\n"
+                 "                                          servers only (maic help sampling)\n"
                  "       --sampling KEY=VALUE               any sampler key for this run (temperature=0.7, min_p=0.05, seed=7); repeatable\n"
                  "       --harness smart|dumb               smart (default): a model reviews commands and writes the rules would let\n"
                  "                                          through without asking; dumb: the rule list alone (maic help harness)\n"
@@ -69,7 +69,7 @@ void usage(std::ostream& out = std::cerr) {
                  "       --fork-at N                        with -c/-r: continue from the old session's first N records only, in a\n"
                  "                                          new file that points at them (the old file is never changed)\n"
                  "\n"
-                 "  vendor                     the services MAIC can install for itself (ComfyUI, Ollama, llama.cpp), pinned versions\n"
+                 "  vendor                     the services MAIC can install for itself (ComfyUI, llama.cpp), pinned versions\n"
                  "  vendor add NAME            fetch, verify, build and link one (network; asks nothing else)\n"
                  "  vendor adopt NAME PATH     use an install you already have instead of fetching\n"
                  "  vendor use llamacpp PATH   the GGUF that llamacpp/current means (a file under the models directory)\n"
@@ -789,7 +789,7 @@ int main(int argc, char** argv) {
                 std::cout << "vendored services (" << maic::vendor_dir().string() << "):\n";
                 for (const auto& e : entries) {
                     auto st = maic::vendor_status(e);
-                    std::cout << "  " << e.name << "  " << (e.kind == "submodule" ? e.ref : e.version) << "  "
+                    std::cout << "  " << e.name << "  " << e.ref << "  "
                               << (st.installed ? "installed" : st.linked ? "linked" : "not installed") << (st.target.empty() ? "" : "  -> " + st.target) << "\n"
                               << "    " << e.description << (st.note.empty() ? "" : "\n    " + st.note) << "\n";
                     if (e.name == "llamacpp") std::cout << "    model: " << (st.model.empty() ? "none (maic vendor use llamacpp PATH)" : st.model) << "\n";

@@ -510,7 +510,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
         }
         // The context window: the last call's report, else what the provider says it is.
         size_t window = usage().last.context;
-        if (!window) window = static_cast<size_t>(provider.options.value("context_window", provider.kind == "ollama" ? options.num_ctx : 0));
+        if (!window) window = static_cast<size_t>(provider.options.value("context_window", 0));
         {
             // Two views of how full the window is: the last call's real count, and a byte estimate that also
             // sees what tool results added since (a single read can outgrow the window in one step).

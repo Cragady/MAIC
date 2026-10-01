@@ -82,13 +82,10 @@ std::string Provider::api_key() const {
 
 std::vector<Provider> default_providers() {
     return {
-        // llama.cpp's OpenAI-compatible endpoint (services/llamacpp.json). Everything in `sampling` is merged into
-        // the request, so logit_bias, xtc_probability, xtc_threshold, dry_multiplier, grammar and json_schema all reach it.
-        // llama.cpp's OpenAI-compatible server: thinking is switched per request, the context matches
-        // services/llamacpp.json, and later system messages go as user notes (the default for this kind).
+        // llama.cpp's OpenAI-compatible server (services/llamacpp.json): everything in `sampling` is merged into the
+        // request, so logit_bias, xtc_probability, dry_multiplier, grammar and json_schema all reach it; thinking is
+        // switched per request; the context matches the service; later system messages go as user notes.
         {"llamacpp", "openai", "http://127.0.0.1:8081/v1", "", "", {{"thinking_controls", true}, {"context_window", 16384}}},
-        // Kept as an option; never chosen for a bare model name (see resolve_model).
-        {"ollama", "ollama", "http://127.0.0.1:11434", "", "", nlohmann::json::object()},
         {"anthropic", "anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "",
          {{"max_tokens", 64000}, {"effort", "high"}, {"think_effort", "xhigh"}, {"fallbacks", "default"}}},
         {"deepseek", "openai", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "", nlohmann::json::object()},
@@ -104,14 +101,14 @@ std::pair<Provider, std::string> resolve_model(const std::vector<Provider>& prov
             if (p.name == prefix) return {p, model.substr(slash + 1)};
         }
     }
-    // A bare name never lands on Ollama by accident: it goes to the first provider whose name does not
-    // match [Oo]llama. Ollama is used only when the model is written as ollama/NAME.
+    // A bare name goes to the first provider whose name does not match [Oo]llama. A provider someone
+    // configures under that name (its tags look like bare names) is used only when written as NAME/model.
     for (const auto& p : providers) {
         std::string lower = p.name;
         for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (lower.find("ollama") == std::string::npos) return {p, model};
     }
-    throw std::runtime_error("model '" + model + "' names no provider, and only Ollama providers are configured; write it as ollama/" + model + " to use Ollama on purpose");
+    throw std::runtime_error("model '" + model + "' names no provider, and a bare name never goes to a provider called ollama; write it as " + providers.front().name + "/" + model + " to use that one on purpose");
 }
 
 std::vector<std::string> list_openai_models(const Provider& provider) {
@@ -133,27 +130,13 @@ std::vector<std::string> list_openai_models(const Provider& provider) {
     return out;
 }
 
-std::vector<std::string> list_ollama_models(const Provider& provider) {
-    httplib::Client client(provider.base_url);
-    client.set_connection_timeout(5);
-    auto res = client.Get("/api/tags");
-    if (!res || res->status != 200) throw std::runtime_error("can't list models on " + provider.base_url + " (is it running? `maic up ollama`)");
-    std::vector<std::string> out;
-    for (const auto& m : nlohmann::json::parse(res->body, nullptr, false).value("models", nlohmann::json::array())) {
-        if (m.contains("name") && m["name"].is_string()) out.push_back(m["name"].get<std::string>());
-    }
-    std::sort(out.begin(), out.end());
-    return out;
-}
-
 namespace {
 
 Message chat_once(const Provider& provider, const ChatOptions& options, const std::vector<Message>& messages,
                   const nlohmann::json& tools, const TextSink& on_text, const std::atomic<bool>& cancel) {
-    if (provider.kind == "ollama") return detail::chat_ollama(provider, options, messages, tools, on_text, cancel);
     if (provider.kind == "anthropic") return detail::chat_anthropic(provider, options, messages, tools, on_text, cancel);
     if (provider.kind == "openai") return detail::chat_openai(provider, options, messages, tools, on_text, cancel);
-    throw std::runtime_error(provider.name + ": unknown provider kind '" + provider.kind + "' (ollama, anthropic, openai)");
+    throw std::runtime_error(provider.name + ": unknown provider kind '" + provider.kind + "' (anthropic, openai)");
 }
 
 bool sleep_unless_cancelled(int ms, const std::atomic<bool>& cancel) {

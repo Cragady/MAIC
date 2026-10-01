@@ -71,42 +71,9 @@ int main() {
     auto [p1, m1] = resolve_model(provs, "anthropic/claude-opus-5-5");
     expect(p1.name == "anthropic" && m1 == "claude-opus-5-5", "anthropic/claude-opus-5-5 -> anthropic, claude-opus-5-5");
     auto [p2, m2] = resolve_model(provs, "hf.co/org/some-model:Q4");
-    expect(p2.name == "llamacpp" && m2 == "hf.co/org/some-model:Q4", "an unknown prefix stays a whole model name on the first non-Ollama provider");
+    expect(p2.name == "llamacpp" && m2 == "hf.co/org/some-model:Q4", "an unknown prefix stays a whole model name on the first provider");
     auto by_name = [&](const std::string& n) { return *std::find_if(provs.begin(), provs.end(), [&](const Provider& p) { return p.name == n; }); };
-    expect(!by_name("ollama").remote() && !by_name("llamacpp").remote() && by_name("anthropic").remote(), "ollama and llamacpp are local, anthropic is remote");
-
-    section("ollama");
-    {
-        Fake f;
-        f.serve("/api/chat", {R"({"message":{"content":"Hel)", R"(lo"}})" "\n" R"({"message":{"content":" there"}})" "\n",
-                              "not json at all\n", R"({"done":true,"prompt_eval_count":120,"eval_count":7})" "\n"});
-        f.start();
-        std::string streamed;
-        auto m = run({"ollama", "ollama", f.url()}, hello, &streamed);
-        expect(m.content == "Hello there" && streamed == "Hello there", "lines split across chunks are reassembled; junk lines skipped");
-        expect(m.usage.input == 120 && m.usage.output == 7 && m.usage.context == 16384, "Ollama token counts and the context size are reported");
-    }
-    {
-        Fake f;
-        f.serve("/api/chat", {R"({"message":{"tool_calls":[{"function":{"arguments":{"x":1}}},{"id":"c1","function":{"name":"list_dir","arguments":"oops"}}]}})" "\n"});
-        f.start();
-        auto m = run({"ollama", "ollama", f.url()}, hello);
-        expect(m.tool_calls.size() == 1 && m.tool_calls[0].id == "c1" && m.tool_calls[0].arguments.is_object(),
-               "nameless tool calls dropped, ids kept, non-object arguments become {}");
-    }
-    {
-        Fake f;
-        f.serve("/api/chat", {R"({"error":"model 'x' not found"})"}, 404);
-        f.start();
-        std::string msg;
-        try { run({"ollama", "ollama", f.url()}, hello); } catch (const std::exception& e) { msg = e.what(); }
-        expect(msg.find("not found") != std::string::npos, "an Ollama error is reported with its message");
-    }
-    {
-        std::string msg;
-        try { run({"ollama", "ollama", "http://127.0.0.1:1"}, hello); } catch (const std::exception& e) { msg = e.what(); }
-        expect(msg.find("can't reach") != std::string::npos, "no server -> clear error");
-    }
+    expect(!by_name("llamacpp").remote() && by_name("anthropic").remote(), "llamacpp is local, anthropic is remote");
 
     section("anthropic");
     setenv("MAIC_TEST_KEY", "sk-test", 1);
@@ -245,7 +212,22 @@ int main() {
                "replay sends arguments as a JSON string and results by tool_call_id");
     }
     {
-        // A conversation that switches from Ollama (no call ids) to an OpenAI-style provider mid-way.
+        Fake f;
+        f.serve("/v1/chat/completions", {"data: {\"choices\":[{\"delta\":{\"content\":\"Hel", "lo\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" there\"}}]}\n\n",
+                                         "not an event at all\n", "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}},"
+                                         "{\"index\":1,\"id\":\"c1\",\"function\":{\"name\":\"list_dir\",\"arguments\":\"oops\"}}]}}]}\n\n",
+                                         "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":7}}\n\ndata: [DONE]\n\n"});
+        f.start();
+        Provider local{"lab", "openai", f.url() + "/v1", "", "", {{"context_window", 16384}}};
+        std::string streamed;
+        auto m = run(local, hello, &streamed);
+        expect(m.content == "Hello there" && streamed == "Hello there", "events split across chunks are reassembled; junk lines skipped");
+        expect(m.usage.input == 120 && m.usage.output == 7 && m.usage.context == 16384, "token counts come from the usage chunk, the context size from the provider's context_window");
+        expect(m.tool_calls.size() == 1 && m.tool_calls[0].id == "c1" && m.tool_calls[0].arguments.contains("_maic_invalid_input"),
+               "nameless tool calls dropped, ids kept, unparseable arguments flagged");
+    }
+    {
+        // A history whose tool calls carry no ids (an older transcript) replayed to an OpenAI-style provider.
         Fake f;
         f.serve("/chat/completions", {"data: " + json{{"choices", {{{"delta", {{"content", "ok"}}}}}}}.dump() + "\n\ndata: [DONE]\n\n"});
         f.start();
@@ -291,28 +273,28 @@ int main() {
     {
         Fake f;
         int calls = 0;
-        f.srv.Post("/api/chat", [&](const httplib::Request&, httplib::Response& res) {
+        f.srv.Post("/chat/completions", [&](const httplib::Request&, httplib::Response& res) {
             if (++calls < 3) {
                 res.status = 503;
                 res.set_header("Retry-After", "0");
                 res.set_content("{\"error\":\"overloaded\"}", "application/json");
                 return;
             }
-            res.set_content(R"({"message":{"content":"finally"}})" "\n", "application/x-ndjson");
+            res.set_content("data: {\"choices\":[{\"delta\":{\"content\":\"finally\"}}]}\n\ndata: [DONE]\n\n", "text/event-stream");
         });
         f.start();
         std::vector<std::string> notices;
         ChatOptions opt{"test-model"};
         opt.retry_base_ms = 10;
         opt.notice = [&](const std::string& n) { notices.push_back(n); };
-        auto m = chat({"ollama", "ollama", f.url()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+        auto m = chat({"lab", "openai", f.url()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
         expect(m.content == "finally" && calls == 3 && notices.size() == 2 && notices[0].find("HTTP 503") != std::string::npos,
                "503 is retried with a notice each time, then succeeds");
     }
     {
         Fake f;
         int calls = 0;
-        f.srv.Post("/api/chat", [&](const httplib::Request&, httplib::Response& res) {
+        f.srv.Post("/chat/completions", [&](const httplib::Request&, httplib::Response& res) {
             ++calls;
             res.status = 400;
             res.set_content("{\"error\":\"bad request\"}", "application/json");
@@ -321,13 +303,13 @@ int main() {
         ChatOptions opt{"test-model"};
         opt.retry_base_ms = 10;
         std::string msg;
-        try { chat({"ollama", "ollama", f.url()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError& e) { msg = e.what(); }
+        try { chat({"lab", "openai", f.url()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError& e) { msg = e.what(); }
         expect(calls == 1 && msg.find("400") != std::string::npos, "a 400 is not retried and comes back as ApiError");
     }
     {
         Fake f;
         int calls = 0;
-        f.srv.Post("/api/chat", [&](const httplib::Request&, httplib::Response& res) {
+        f.srv.Post("/chat/completions", [&](const httplib::Request&, httplib::Response& res) {
             ++calls;
             res.status = 500;
             res.set_content("{}", "application/json");
@@ -337,17 +319,17 @@ int main() {
         opt.retries = 2;
         opt.retry_base_ms = 10;
         bool threw = false;
-        try { chat({"ollama", "ollama", f.url()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError&) { threw = true; }
+        try { chat({"lab", "openai", f.url()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError&) { threw = true; }
         expect(threw && calls == 3, "gives up after the configured retries (1 try + 2 retries)");
     }
     {
         // A failure after output started is not retried (it would duplicate what the user saw).
         Fake f;
         int calls = 0;
-        f.srv.Post("/api/chat", [&](const httplib::Request&, httplib::Response& res) {
+        f.srv.Post("/chat/completions", [&](const httplib::Request&, httplib::Response& res) {
             ++calls;
-            res.set_chunked_content_provider("application/x-ndjson", [](size_t, httplib::DataSink& sink) {
-                std::string line = R"({"message":{"content":"partial"}})" "\n";
+            res.set_chunked_content_provider("text/event-stream", [](size_t, httplib::DataSink& sink) {
+                std::string line = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
                 sink.write(line.data(), line.size());
                 return false;  // drop the connection
             });
@@ -356,7 +338,7 @@ int main() {
         ChatOptions opt{"test-model"};
         opt.retry_base_ms = 10;
         std::string streamed;
-        try { chat({"ollama", "ollama", f.url()}, opt, hello, json::array(), [&](std::string_view d, bool) { streamed += d; }, no_cancel); } catch (const std::exception&) {}
+        try { chat({"lab", "openai", f.url()}, opt, hello, json::array(), [&](std::string_view d, bool) { streamed += d; }, no_cancel); } catch (const std::exception&) {}
         expect(calls == 1, "no retry once output has streamed");
     }
     {
@@ -366,7 +348,7 @@ int main() {
         std::vector<std::string> notices;
         opt.notice = [&](const std::string& n) { notices.push_back(n); };
         std::string msg;
-        try { chat({"ollama", "ollama", "http://127.0.0.1:1"}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const TransportError& e) { msg = e.what(); }
+        try { chat({"lab", "openai", "http://127.0.0.1:1"}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const TransportError& e) { msg = e.what(); }
         expect(notices.size() == 2 && msg.find("can't reach") != std::string::npos, "connection failures are retried too, then reported as TransportError");
     }
 
@@ -383,18 +365,7 @@ int main() {
         chat(p, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
         auto body = json::parse(f.last_body);
         expect(body["stop"][0] == "STOP" && body["logit_bias"]["1234"] == -100 && body["logit_bias"]["▲"] == -100 && body["temperature"] == 0.2 && body["xtc_probability"] == 0.5,
-               "OpenAI-compatible requests carry stop, logit_bias and sampler keys");
-        Fake g;
-        g.serve("/api/chat", {R"({"message":{"content":"ok"},"done":true})" "\n"});
-        g.start();
-        ChatOptions o2{"test-model"};
-        o2.stop = {"STOP"};
-        o2.sampling = {{"temperature", 0.1}, {"top_k", 20}};
-        o2.logit_bias = {{"1", -100}};
-        chat({"ollama", "ollama", g.url()}, o2, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
-        auto b2 = json::parse(g.last_body);
-        expect(b2["options"]["stop"][0] == "STOP" && b2["options"]["temperature"] == 0.1 && b2["options"]["top_k"] == 20 && !b2.contains("logit_bias") && !b2["options"].contains("logit_bias"),
-               "Ollama requests carry stop and sampler options in `options`, never logit_bias");
+               "OpenAI-compatible requests carry stop, logit_bias and sampler keys at the top level");
     }
 
     section("images reach the OpenAI-compatible shape");
@@ -417,11 +388,13 @@ int main() {
     {
         auto ps = default_providers();
         expect(ps.front().name == "llamacpp", "llamacpp is the first provider");
-        auto [p, name] = resolve_model(ps, "qwen3.5:9b");
-        expect(p.name == "llamacpp" && name == "qwen3.5:9b", "a bare name goes to llamacpp, never to Ollama");
-        auto [po, no] = resolve_model(ps, "ollama/qwen3.5:9b");
-        expect(po.name == "ollama" && no == "qwen3.5:9b", "ollama/NAME is the only way to Ollama");
-        std::vector<Provider> only_ollama = {{"ollama", "ollama", "http://127.0.0.1:11434"}, {"MyOllama", "openai", "http://127.0.0.1:1"}};
+        auto [p, name] = resolve_model(ps, "Qwen3.5-9B-Q4_K_M");
+        expect(p.name == "llamacpp" && name == "Qwen3.5-9B-Q4_K_M", "a bare name goes to llamacpp");
+        // A user may still run an OpenAI-compatible server under the old name; its tags look like bare names, so
+        // a bare name never lands there by accident.
+        std::vector<Provider> only_ollama = {{"ollama", "openai", "http://127.0.0.1:11434/v1"}, {"MyOllama", "openai", "http://127.0.0.1:1"}};
+        auto [po, no] = resolve_model(only_ollama, "ollama/qwen3.5:9b");
+        expect(po.name == "ollama" && no == "qwen3.5:9b", "a provider called ollama is reached by prefix");
         bool threw = false;
         try { resolve_model(only_ollama, "x"); } catch (const std::exception& e) { threw = std::string(e.what()).find("ollama/x") != std::string::npos; }
         expect(threw, "with only [Oo]llama providers a bare name is refused with the fix spelled out");
@@ -435,9 +408,9 @@ int main() {
     section("cancel");
     {
         Fake f;
-        f.srv.Post("/api/chat", [](const httplib::Request&, httplib::Response& res) {
+        f.srv.Post("/chat/completions", [](const httplib::Request&, httplib::Response& res) {
             std::this_thread::sleep_for(std::chrono::seconds(5));  // like a model still loading
-            res.set_content("{}\n", "application/x-ndjson");
+            res.set_content("data: [DONE]\n\n", "text/event-stream");
         });
         f.start();
         std::atomic<bool> cancel{false};
@@ -448,7 +421,7 @@ int main() {
         auto t0 = std::chrono::steady_clock::now();
         bool cancelled = false;
         try {
-            run({"ollama", "ollama", f.url()}, hello, nullptr, cancel);
+            run({"lab", "openai", f.url()}, hello, nullptr, cancel);
         } catch (const Cancelled&) {
             cancelled = true;
         } catch (const std::exception&) {
@@ -461,11 +434,11 @@ int main() {
     section("request encoding");
     {
         Fake f;
-        f.serve("/api/chat", {R"({"message":{"content":"ok"}})" "\n"});
+        f.serve("/chat/completions", {"data: " + json{{"choices", {{{"delta", {{"content", "ok"}}}}}}}.dump() + "\n\ndata: [DONE]\n\n"});
         f.start();
         std::vector<Message> msgs = {{"user", "hi"}, {"tool", std::string("binary \xff\xfe\x80 output"), {}, "read_file"}};
         bool ok = false;
-        try { ok = run({"ollama", "ollama", f.url()}, msgs).content == "ok"; } catch (const std::exception&) {}
+        try { ok = run({"lab", "openai", f.url()}, msgs).content == "ok"; } catch (const std::exception&) {}
         expect(ok && json::parse(f.last_body, nullptr, false).is_object(), "invalid UTF-8 in history is sent as valid JSON");
     }
 

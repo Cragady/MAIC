@@ -483,7 +483,7 @@ private:
     Element render_input(size_t width, int& rows);
     Element render_palette(int& rows);
     std::vector<std::string> palette_entries();  // what the palette lists for the current command line
-    std::vector<std::string> installed_models();  // Ollama models, cached for a while (a localhost call)
+    std::vector<std::string> installed_models();  // the local providers' models, cached for a while (a localhost call)
     std::vector<std::string> models_cache_;
     std::chrono::steady_clock::time_point models_cached_at_{};
     void complete_command();
@@ -652,8 +652,8 @@ std::vector<std::string> App::installed_models() {
         const auto& p = agent_.providers[i];
         if (p.remote()) continue;
         try {
-            std::vector<std::string> names = p.kind == "ollama" ? list_ollama_models(p) : p.kind == "openai" ? list_openai_models(p) : std::vector<std::string>{};
-            // The first provider's models complete bare; the rest need their prefix (Ollama always does).
+            std::vector<std::string> names = p.kind == "openai" ? list_openai_models(p) : std::vector<std::string>{};
+            // The first provider's models complete bare; the rest need their prefix.
             for (const auto& m : names) out.push_back(i == 0 ? m : p.name + "/" + m);
         } catch (const std::exception&) {
         }
@@ -1405,7 +1405,7 @@ void App::run_command(const std::string& line) {
             auto [provider, name] = resolve_model(agent_.providers, agent_.model);
             std::string out = "models on " + provider.name + " (" + provider.base_url + "):";
             try {
-                std::vector<std::string> names = provider.kind == "ollama" ? list_ollama_models(provider) : list_openai_models(provider);
+                std::vector<std::string> names = list_openai_models(provider);
                 for (const auto& m : names) out += "\n  " + provider.name + "/" + m + (provider.name + "/" + m == agent_.model ? "   (in use)" : "");
                 if (provider.name == "llamacpp") {
                     out += "\nfiles under " + llamacpp_models_root().string() + " (a subdirectory holds a GGUF plus its mmproj); one model is resident at a time; :model llamacpp/NAME switches";
@@ -1694,7 +1694,6 @@ void App::run_command(const std::string& line) {
                 for (const auto& [k, v] : agent_.sampling.items()) out += "\n  " + k + " = " + v.dump();
                 out += "\n:sampling KEY VALUE · :sampling xtc P [T] · :sampling unset KEY · :sampling reset";
                 if (provider.kind == "anthropic") out += "\nAnthropic's current models reject sampling parameters; nothing is sent there.";
-                else if (provider.kind == "ollama") out += "\nOllama takes temperature, top_k, top_p, min_p, seed, repeat_penalty, num_predict; it has no XTC.";
                 post(Kind::Notice, out);
             } else if (key == "xtc") {
                 if (v1.empty()) post(Kind::Error, ":sampling xtc PROBABILITY [THRESHOLD]  (0.5 0.1 is a common start)");

@@ -90,7 +90,7 @@ bool read_only_segment(const std::string& segment) {
     static const std::set<std::string> toolchains = {
         "python", "python3", "node", "npm", "npx", "bun", "deno", "cargo", "rustc", "cmake", "make", "ninja", "meson",
         "gcc", "g++", "cc", "c++", "clang", "clang++", "go", "java", "javac", "ruby", "perl", "pip", "pip3", "uv", "tsc",
-        "bash", "zsh", "sh", "docker", "ollama", "clang-format", "clang-tidy", "ctest",
+        "bash", "zsh", "sh", "docker", "clang-format", "clang-tidy", "ctest",
     };
     auto words = split_words(segment);
     if (words.empty()) return false;

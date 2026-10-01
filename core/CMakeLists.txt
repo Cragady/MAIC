@@ -13,7 +13,6 @@ add_library(maic_core
     src/lua.cpp
     src/lua_tools.cpp
     src/markdown.cpp
-    src/ollama.cpp
     src/openai.cpp
     src/paths.cpp
     src/places.cpp

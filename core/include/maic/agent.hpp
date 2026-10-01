@@ -97,7 +97,7 @@ public:
     void restore(std::vector<Message> messages);
 
     std::atomic<Mode> mode{Mode::Manual};
-    std::string model;  // "<provider>/<model>", or a bare name for the first provider (Ollama)
+    std::string model;  // "<provider>/<model>", or a bare name for the first provider (llamacpp)
     bool think = false;
     std::vector<Provider> providers = default_providers();
 

@@ -11,7 +11,7 @@
 
 namespace maic {
 
-// Tool schemas in Ollama's function-calling format.
+// Tool schemas in OpenAI's function-calling format.
 const nlohmann::json& tool_schemas();
 
 // What a call would do, for the harness to judge: one action for most tools, one per path for move_file

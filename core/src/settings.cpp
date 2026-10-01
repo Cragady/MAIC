@@ -281,7 +281,6 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             if (pj.contains("api_key")) throw std::runtime_error("providers." + name + ": keys don't go in settings; use api_key_env or api_key_command");
             json opts = pj.value("options", json::object());
             for (const auto& [k, v] : opts.items()) p->options[k] = v;
-            if (p->kind == "ollama" && p->base_url.empty()) p->base_url = "http://127.0.0.1:11434";
             if (p->base_url.empty()) throw std::runtime_error("providers." + name + ": base_url is required");
         }
         json styles = j.value("style", json::object());

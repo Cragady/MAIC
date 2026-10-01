@@ -693,7 +693,7 @@ int main() {
         m = match_commands("quit");
         expect(m.size() == 1 && m.front()->name == "q", "aliases match");
         expect(match_commands("zzz").empty(), "nothing matches nonsense");
-        CompletionContext ctx{{"ollama", "comfyui"}, {"ollama", "anthropic"}};
+        CompletionContext ctx{{"llamacpp", "comfyui"}, {"llamacpp", "anthropic"}};
         auto a = complete_argument("mode", "au", ctx);
         expect(a.size() == 2 && a[0] == "auto" && a[1] == "auto-read", "mode arguments complete");
         expect(complete_argument("up", "c", ctx) == std::vector<std::string>{"comfyui"}, "service names complete");
