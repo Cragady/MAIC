@@ -21,6 +21,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -75,6 +76,18 @@ int run(const std::vector<std::string>& argv) {
     }
     int status = 0;
     waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 128;
+}
+
+// A command's exit code and its stdout and stderr together (the arguments hold no spaces or quotes).
+int capture(const std::vector<std::string>& argv, std::string& out) {
+    std::string line;
+    for (const auto& a : argv) line += (line.empty() ? "" : " ") + a;
+    FILE* p = popen((line + " 2>&1").c_str(), "r");
+    out.clear();
+    char buf[4096];
+    for (size_t n; p && (n = fread(buf, 1, sizeof buf, p)) > 0;) out.append(buf, n);
+    int status = p ? pclose(p) : -1;
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128;
 }
 
@@ -542,6 +555,28 @@ int main() {
     if (waitpid(nvim, &status, WNOHANG) == 0) {
         kill(-nvim, SIGKILL);
         waitpid(nvim, &status, 0);
+    }
+
+    section("maic nvim keymaps");
+    {
+        // The real binary runs the same check as :checkhealth maic in a headless nvim; -u points it at a config.
+        fs::path cfg = tmp / "init.lua", clean = tmp / "clean.lua";
+        std::string rtp = "vim.g.mapleader = ' '\nvim.opt.rtp:prepend('" MAIC_PLUGIN_DIR "')\n";
+        std::ofstream(clean) << rtp;
+        std::ofstream(cfg) << rtp << "vim.keymap.set('t', '<C-w>', '<C-\\\\><C-n><C-w>', { desc = 'window from a terminal' })\n"
+                                     "vim.g.llama_config = { endpoint_fim = 'http://127.0.0.1:8084/infill' }\n";
+        std::string out;
+        int rc = capture({MAIC_BINARY, "nvim", "keymaps", "-u", cfg.string()}, out);
+        expect(rc == 1 && out.find("MAIC never gets <C-w>") != std::string::npos && out.find("fix: terminal_passthrough = { [\"<C-w>\"] = true }") != std::string::npos,
+               "a terminal-mode <C-w> in the config is a collision, exit 1, with the fix: " + out);
+        expect(out.find("<leader>llf (insert), keymap_fim_trigger") != std::string::npos && out.find("typing <Space> in insert mode waits") != std::string::npos,
+               "llama.vim's default insert-mode trigger under a Space leader is reported");
+        rc = capture({MAIC_BINARY, "nvim", "keymaps", "-u", clean.string()}, out);
+        expect(rc == 0 && out.find("no collisions") != std::string::npos, "a plain config: no collisions, exit 0: " + out);
+        rc = capture({MAIC_BINARY, "nvim", "keymaps", "--all", "-u", clean.string()}, out);
+        expect(rc == 0 && out.find("ok     <leader>mm (normal): MAIC: open or focus") != std::string::npos, "--all lists every key");
+        rc = capture({MAIC_BINARY, "nvim"}, out);
+        expect(rc == 2 && out.find("usage: maic nvim keymaps") != std::string::npos, "maic nvim alone is a usage error, exit 2");
     }
 
     section("the plugin's own Lua tests");

@@ -3,6 +3,7 @@
 #include "check.hpp"
 
 #include "maic/lazy_lock.hpp"
+#include "maic/nvim_keymaps.hpp"
 #include "maic/settings.hpp"
 #include "maic/status.hpp"
 
@@ -246,6 +247,34 @@ int main() {
         write_file(lazy_lock_hash_path(), "not a hash\n");
         s = lazy_lock_state(lock);
         expect(s.kind == LazyLockState::Kind::Error && command("", lock, out) == 2 && has(out, "does not start with a SHA-256"), "a broken hash file is an error, exit 2: " + out);
+    }
+
+    section("the keymap check's record, for the re-check after a lock change");
+    {
+        auto report = [](std::vector<std::pair<std::string, std::string>> items) {
+            nlohmann::json sections = nlohmann::json::array();
+            nlohmann::json list = nlohmann::json::array();
+            for (const auto& [level, id] : items) list.push_back({{"level", level}, {"text", id + " text"}, {"hint", "fix " + id}, {"id", level == "ok" ? "" : id}});
+            sections.push_back({{"name", "llama.vim"}, {"items", list}});
+            return parse_keymap_report({{"sections", sections}, {"hash", "h" + std::to_string(items.size())}, {"nvim", "0.12.2"}});
+        };
+        KeymapReport first = report({{"ok", "a"}, {"warn", "llama.vim|<leader>llf"}});
+        expect(first.error.empty() && first.items.size() == 2 && first.collisions().size() == 1 && keymap_exit_code(first) == 1, "a warn is a collision: exit 1");
+        expect(keymap_summary(first) == "1 collision: maic nvim keymaps", "doctor's line: " + keymap_summary(first));
+        std::string text = format_keymap_report(first, false);
+        expect(has(text, "1 collision") && has(text, "  WARN   llama.vim|<leader>llf text") && has(text, "fix: fix llama.vim|<leader>llf") && !has(text, "a text"), "the CLI lists the collisions with their fixes: " + text);
+        expect(has(format_keymap_report(first, true), "  ok     a text"), "--all lists every key");
+        expect(!load_keymap_record().exists, "no record before the first check");
+        save_keymap_record(first, "lock1");
+        KeymapRecord rec = load_keymap_record();
+        expect(rec.exists && rec.lock_hash == "lock1" && rec.ids == std::vector<std::string>{"llama.vim|<leader>llf"}, "the record keeps the lock hash and the collision ids");
+        KeymapReport second = report({{"warn", "llama.vim|<leader>llf"}, {"error", "MAIC's terminal input|<C-w>"}});
+        auto fresh = new_collisions(rec, second);
+        expect(fresh.size() == 1 && fresh[0].id == "MAIC's terminal input|<C-w>", "only the collision the record did not have is new");
+        KeymapReport broken = parse_keymap_report({{"error", "boom"}});
+        expect(keymap_exit_code(broken) == 2 && has(keymap_summary(broken), "boom"), "a check that failed inside nvim: exit 2");
+        KeymapReport missing = run_keymap_check("", nullptr, std::chrono::seconds(10), "/nonexistent/nvim");
+        expect(keymap_exit_code(missing) == 2 && has(missing.error, "can't run /nonexistent/nvim"), "no nvim: exit 2 and why: " + missing.error);
     }
 
     fs::remove_all(root);

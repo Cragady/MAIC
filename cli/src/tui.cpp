@@ -13,6 +13,7 @@
 #include "maic/vendor.hpp"
 #include "maic/lua.hpp"
 #include "maic/nvim_host.hpp"
+#include "maic/nvim_keymaps.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
@@ -610,6 +611,10 @@ private:
     bool quit_armed_ = false;
     int view_height_ = 10;
     std::unique_ptr<LazyLockWatch> lazy_lock_;  // nvim's lazy-lock.json; null when lazy_lock_notice is off
+    void maybe_check_keymaps(const LazyLockState& lock);  // the keymap check, once per lazy-lock.json content
+    std::thread keymap_thread_;
+    std::atomic<bool> keymap_cancel_{false}, keymap_running_{false};
+    std::string keymap_checked_lock_;  // the lock file hash maybe_check_keymaps last looked at (UI thread)
 };
 
 void App::welcome() {
@@ -623,6 +628,7 @@ void App::welcome() {
         lazy_lock_ = std::make_unique<LazyLockWatch>(lazy_lock_path(settings_.lazy_lock));
         if (std::string n = lazy_lock_notice(lazy_lock_->check()); !n.empty()) view_.append(Kind::Notice, n);
     }
+    maybe_check_keymaps(lazy_lock_ ? lazy_lock_->check() : lazy_lock_state(lazy_lock_path(settings_.lazy_lock)));
     view_.append(Kind::Notice, "session transcript: " + log_path() + (files.empty() ? "" : "\ninstructions: " + files));
     if (!agent_.tools().empty() || !agent_.script_tools().empty()) {
         std::string names;
@@ -645,6 +651,34 @@ void App::welcome() {
     } catch (const std::exception& e) {
         view_.append(Kind::Error, e.what());
     }
+}
+
+// When lazy-lock.json is not the one the keymap check last ran at (a plugin update, or no check yet), the check runs
+// once in the background and the new collisions, if any, become a notice (docs/nvim.md). A machine without nvim or
+// without a lock file stays quiet.
+void App::maybe_check_keymaps(const LazyLockState& lock) {
+    if (lock.hash.empty() || lock.hash == keymap_checked_lock_ || keymap_running_) return;
+    keymap_checked_lock_ = lock.hash;
+    KeymapRecord before = load_keymap_record();
+    if (before.exists && before.lock_hash == lock.hash) return;
+    if (keymap_thread_.joinable()) keymap_thread_.join();
+    keymap_running_ = true;
+    keymap_thread_ = std::thread([this, before, hash = lock.hash] {
+        KeymapReport r = run_keymap_check("", &keymap_cancel_);
+        keymap_running_ = false;
+        if (r.error == "stopped" || r.error.rfind("can't run ", 0) == 0) return;
+        save_keymap_record(r, hash);
+        if (!r.error.empty()) {
+            post(Kind::Error, "nvim keymaps: the check after the lazy-lock.json change could not run: " + r.error + " (maic nvim keymaps)");
+            return;
+        }
+        auto fresh = new_collisions(before, r);
+        if (fresh.empty()) return;
+        std::string text = before.exists ? "a plugin update added keymaps that collide: maic nvim keymaps"
+                                         : "nvim keymaps, checked for the first time: " + std::to_string(fresh.size()) + " collide: maic nvim keymaps";
+        for (const auto& c : fresh) text += "\n  " + c.text;
+        post(Kind::Notice, text);
+    });
 }
 
 // ---------- rendering ----------
@@ -1521,7 +1555,7 @@ void App::start_turn(const std::string& text_in) {
             next.clear();
             for (const auto& p : agent_.take_queued()) next += (next.empty() ? "" : "\n\n") + p;
         }
-        if (lazy_lock_) lazy_lock_->check();
+        if (lazy_lock_) screen_.Post([this, lock = lazy_lock_->check()] { maybe_check_keymaps(lock); });
         busy_ = false;
         if (quit_when_idle_.load() && !cancel_.load()) {
             quit_when_idle_ = false;
@@ -2355,6 +2389,8 @@ void App::shutdown() {
     if (shell_thread_.joinable()) shell_thread_.join();
     if (theme_thread_.joinable()) theme_thread_.join();
     if (nvim_colors_thread_.joinable()) nvim_colors_thread_.join();
+    keymap_cancel_ = true;
+    if (keymap_thread_.joinable()) keymap_thread_.join();
 }
 
 }  // namespace

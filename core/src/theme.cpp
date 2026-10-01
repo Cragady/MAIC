@@ -2,9 +2,8 @@
 
 #include "maic/lua.hpp"
 #include "maic/paths.hpp"
+#include "nvim_run.hpp"
 
-#include <fcntl.h>
-#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -17,9 +16,6 @@
 #include <optional>
 #include <set>
 #include <stdexcept>
-#include <thread>
-
-extern char** environ;
 
 namespace maic {
 
@@ -415,8 +411,7 @@ f:close()
 vim.cmd('qa!')
 )lua";
 
-// One headless nvim with the user's configuration, stdin from /dev/null so nothing waits on a prompt, in its
-// own process group so a plugin manager's children go with it; killed at the timeout. Returns what it wrote.
+// One headless nvim with the user's configuration (run_nvim_child); killed at the timeout. Returns what it wrote.
 json run_nvim(const std::string& nvim, const std::string& scheme, std::chrono::seconds timeout) {
     std::string tmpl = (fs::temp_directory_path() / "maic-theme-XXXXXX").string();
     if (!mkdtemp(tmpl.data())) throw std::runtime_error("can't create a temporary directory for the nvim run");
@@ -431,48 +426,13 @@ json run_nvim(const std::string& nvim, const std::string& scheme, std::chrono::s
     std::ofstream(dir / "import.lua") << kImportLua;
     fs::path out = dir / "out.json";
 
-    // The environment is built before fork: the child of a threaded process may only exec.
-    std::vector<std::string> env;
-    for (char** e = environ; *e; ++e) {
-        std::string kv = *e;
-        if (kv.rfind("MAIC_THEME_", 0) != 0) env.push_back(kv);
-    }
-    env.push_back("MAIC_THEME_SCRIPT=" + (dir / "import.lua").string());
-    env.push_back("MAIC_THEME_OUT=" + out.string());
-    env.push_back("MAIC_THEME_NAME=" + scheme);
-    env.push_back("MAIC_THEME_GROUPS=" + json(nvim_theme_groups()).dump());
-    std::vector<char*> envp;
-    for (auto& kv : env) envp.push_back(kv.data());
-    envp.push_back(nullptr);
     std::vector<std::string> args = {nvim, "--headless", "-i", "NONE", "-n", "--cmd", "let g:maic_theme_import = 1", "-c", "lua dofile(os.getenv('MAIC_THEME_SCRIPT'))"};
-    std::vector<char*> argv;
-    for (auto& a : args) argv.push_back(a.data());
-    argv.push_back(nullptr);
-
-    pid_t pid = fork();
-    if (pid < 0) throw std::runtime_error("fork failed");
-    if (pid == 0) {
-        setpgid(0, 0);
-        int null_fd = open("/dev/null", O_RDWR);
-        if (null_fd >= 0) {
-            dup2(null_fd, STDIN_FILENO);
-            dup2(null_fd, STDOUT_FILENO);
-            dup2(null_fd, STDERR_FILENO);
-        }
-        execvpe(argv[0], argv.data(), envp.data());
-        _exit(127);
-    }
-    setpgid(pid, pid);
-    int status = 0;
-    bool done = false;
-    auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (!done && std::chrono::steady_clock::now() < deadline) {
-        done = waitpid(pid, &status, WNOHANG) == pid;
-        if (!done) std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-    kill(-pid, SIGKILL);  // whatever it left behind, and nvim itself when it ran out of time
-    if (!done) {
-        waitpid(pid, &status, 0);
+    NvimRun run = run_nvim_child(args, {"MAIC_THEME_"},
+                                 {"MAIC_THEME_SCRIPT=" + (dir / "import.lua").string(), "MAIC_THEME_OUT=" + out.string(), "MAIC_THEME_NAME=" + scheme,
+                                  "MAIC_THEME_GROUPS=" + json(nvim_theme_groups()).dump()},
+                                 timeout);
+    int status = run.status;
+    if (run.timed_out) {
         throw std::runtime_error(nvim + " did not finish within " + std::to_string(timeout.count()) +
                                  " s and was stopped (a plugin manager installing in headless mode? g:maic_theme_import is set for a config that wants to skip plugins)");
     }

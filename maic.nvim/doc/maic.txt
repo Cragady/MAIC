@@ -241,7 +241,7 @@ global mappings. |:checkhealth| maic lists every key.
     Lists every key maic.nvim sets (global, and buffer-local in MAIC's own
     buffers), the keys MAIC's own input needs in its terminal (<Esc>,
     <C-w>, <C-p>, <S-Tab>, <C-z>, <C-c>, <M-CR>) and, when llama.vim is
-    installed (|g:llama_config| is set or its autoload/llama.vim is on
+    installed (`g:llama_config` is set or its autoload/llama.vim is on
     'runtimepath'), every key llama.vim uses, against your mappings in the
     modes each is used in. Your buffer-local mappings are collected too: the
     check opens a plain file buffer, a scratch buffer of filetype

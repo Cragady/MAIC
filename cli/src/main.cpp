@@ -5,6 +5,7 @@
 #include "maic/artifacts.hpp"
 #include "maic/import.hpp"
 #include "maic/lazy_lock.hpp"
+#include "maic/nvim_keymaps.hpp"
 #include "maic/paths.hpp"
 #include "maic/redact.hpp"
 #include "maic/service.hpp"
@@ -106,6 +107,9 @@ void usage(std::ostream& out = std::cerr) {
                  "                             active one marked, with where each comes from (maic help theme)\n"
                  "  themes import NAME [--as FILE]   a neovim colorscheme as a theme file, from a headless nvim with your config\n"
                  "  doctor                     what this machine has, what MAIC needs, a recommended setup\n"
+                 "  nvim keymaps [--all] [-u FILE]   maic.nvim's keymap check (:checkhealth maic) in a headless nvim with your\n"
+                 "                             config: the keys maic.nvim, MAIC's terminal input and llama.vim need against\n"
+                 "                             your mappings; exit 0 none collide, 1 collisions, 2 nvim could not run\n"
                  "  lazy-lock [record|diff]    is nvim's lazy-lock.json as recorded? record its hash (a file to commit with your\n"
                  "                             dotfiles), or list what changed per plugin; exit 0 in sync, 1 changed, 2 no file\n"
                  "  setup                      a guided first run: prerequisites, settings, llama.cpp, ComfyUI, a model, the\n"
@@ -1493,6 +1497,25 @@ int main(int argc, char** argv) {
         if (cmd == "cd") return cmd_cd(cargs);
         if (cmd == "gpu" || cmd == "vram") return cmd_gpu(cargs);
         if (cmd == "models") return cmd_models(cargs);
+        if (cmd == "nvim") {
+            // maic nvim keymaps [--all] [-u FILE]: maic.nvim's keymap check, headless, against the user's nvim config.
+            bool all = false;
+            std::string config;
+            bool ok = !cargs.empty() && cargs[0] == "keymaps";
+            for (size_t i = 1; ok && i < cargs.size(); ++i) {
+                if (cargs[i] == "--all") all = true;
+                else if (cargs[i] == "-u" && i + 1 < cargs.size()) config = cargs[++i];
+                else ok = false;
+            }
+            if (!ok) {
+                std::cerr << "usage: maic nvim keymaps [--all] [-u FILE]\n";
+                return 2;
+            }
+            maic::KeymapReport r = maic::run_keymap_check(config);
+            if (config.empty() && r.error.empty()) maic::save_keymap_record(r, maic::lazy_lock_state(maic::lazy_lock_path(maic::load_settings().lazy_lock)).hash);
+            (r.error.empty() ? std::cout : std::cerr) << maic::format_keymap_report(r, all);
+            return maic::keymap_exit_code(r);
+        }
         if (cmd == "lazy-lock" || cmd == "lazylock") {
             std::string out;
             int rc = maic::lazy_lock_command(cargs.empty() ? "" : cargs[0], maic::lazy_lock_path(maic::load_settings().lazy_lock), out);

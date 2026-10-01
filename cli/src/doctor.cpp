@@ -3,6 +3,7 @@
 
 #include "maic/instructions.hpp"
 #include "maic/lazy_lock.hpp"
+#include "maic/nvim_keymaps.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
@@ -197,6 +198,11 @@ int run_doctor() {
     line("nvim (for :e)", has_program("nvim"), "");
     LazyLockState lock = lazy_lock_state(lazy_lock_path(settings.lazy_lock));
     if (std::string s = lazy_lock_summary(lock); !s.empty()) line("nvim lazy-lock.json", lock.kind == LazyLockState::Kind::InSync, s);
+    if (has_program("nvim")) {
+        KeymapReport keys = run_keymap_check();
+        if (keys.error.empty()) save_keymap_record(keys, lock.hash);
+        line("nvim keymaps", keymap_exit_code(keys) == 0, keymap_summary(keys));
+    }
     std::cout << "\n";
 
     // ---- models and the recommendation

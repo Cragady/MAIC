@@ -282,7 +282,8 @@ function K.check()
             found = true
             add("warn", where .. ": it starts with " .. vim.fn.keytrans(string.char(first)) .. ", so typing " .. vim.fn.keytrans(string.char(first))
               .. " in insert mode waits 'timeoutlen' (or the next key) before it appears" .. (when == "insert" and ", in every buffer" or " while a suggestion shows"),
-              "a chord that types nothing: " .. name .. " = '<M-f>' (or another free <M-...>) in g:llama_config", key(k) .. "|starts with a printable key")
+              "a chord that types nothing: " .. name .. " = '" .. (name == "keymap_fim_accept_word" and "<M-]>" or "<M-f>") .. "' (or another free <M-...>) in g:llama_config",
+              key(k) .. "|starts with a printable key")
           end
           for _, mk in ipairs(planned) do
             if mk.mode == mode and shares_prefix(mk.lhs, lhs) then
@@ -315,7 +316,8 @@ function K.check()
     end
   end
   table.sort(ids)
-  return { sections = sections, hash = vim.fn.sha256(table.concat(ids, "\n")), nvim = tostring(vim.version()) }
+  local v = vim.version()
+  return { sections = sections, hash = vim.fn.sha256(table.concat(ids, "\n")), nvim = ("%d.%d.%d"):format(v.major, v.minor, v.patch) }
 end
 
 -- `maic nvim keymaps`: run headless inside the user's config (with g:maic_keymap_check set), after User VeryLazy
