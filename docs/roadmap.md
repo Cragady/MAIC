@@ -36,21 +36,17 @@ Measured on 2026-09-30 with qwen3.5:4b: under Ollama and under llama.cpp alike, 
 * The rest of the `tools/` design from `programming-lang-for-agentic-cli.md`: tools as manifests plus scripts in Perl, Python, TypeScript, Go, WASM and shell, run through the same authorisation step, with per-tool network grants declared in the manifest.
 * More MAIC-owned helpers in the style of `maic-storyboard`: single-entry drivers that do the mechanical part and hand a small model one decision per turn.
 
-### 6. Absorbing the rest of cai-tools
-
-`~/dev2/cai-tools` is Claude-specific tooling; import, redact and fork-at are in MAIC ([sessions.md](sessions.md)). Still in cai, each a candidate once it is clear what it means against a MAIC session: `trans-fairy compose`, `install --graft-onto`, `install --inject`, `state`, `trans-fairy-write`, `redact --project`, and the subtools notation, grant, commit, enroll, hook, edit, time, document, name, fabricate, sync, flow, read, reflow.
-
-### 7. Windows
+### 6. Windows
 
 The tripwire design for Windows is in [harness.md](harness.md); the rest needs a port of the sandbox (AppContainer), the service manager (job objects with kill-on-close, junctions instead of symlinks, portable git on PATH, `%LOCALAPPDATA%\maic` for state and the uv cache), the runtime directory for temporary transcripts, and the terminal layer.
 
-### 8. Editor and UI
+### 7. Editor and UI
 
 * nvim as the highlighter for the input (an embedded `nvim --embed` over msgpack-rpc, one instance kept alive) for people who have it; the built-in highlighter stays the default.
 * Macros, `W B E` and `%` in the input; diff rendering for edits in the conversation window.
 * A settings key to make Enter send on one-line inputs, if it ever turns out to matter.
 
-### 9. Tests and tooling
+### 8. Tests and tooling
 
 * Make the timing-sensitive agent tests (cancel, mid-turn delivery) robust under load; they have flaked once under a parallel build.
 * A UI test harness that drives the TUI through a pty in CI, like the ad-hoc driver used during development.
@@ -79,3 +75,4 @@ Built, in the order it landed, so the list above is only what is left.
 * **Remote access, first slice**: `maic-server` with per-device tokens, TLS off loopback, audit log, SSE streaming, approvals over the API, a one-file phone-friendly web client; `Origin::Remote` always asked.
 * **Tools and the polyglot spokes (2026-10-01)**: script tools beside the Lua ones, a directory with a `tool.json` manifest (name, description, JSON schema, `run` as argv, `timeout_s`, `reads`/`writes` globs) and a script in any language `run` can name (Python, shell, Perl, Node, Deno, a Go binary, `wasmtime`); arguments checked against the schema and sent as JSON on stdin, the declared reads and writes judged by the harness before the script starts, the same bubblewrap sandbox as `run_shell` with the workspace writable only for declared writes, stdout as the result, stderr on failure, killed at the timeout; `maic tools` / `check` / `new`; examples `word_count` and `json_pick`. `maic-panel-check`, a helper in the `maic-storyboard` style: one panel's prompt, negative, sampler and captions on one screen with the usual mistakes flagged offline. Per-tool network grants are still to come (`network: true` is refused).
 * **Subagents and role profiles (2026-10-01)**: the `delegate` tool runs a child agent in the workspace under a profile (`orchestrator`, `builder`, `scout`, `reviewer`, or one from `profiles` in settings) that only narrows: mode capped by the session's, write paths, tool list, step and token budgets, its own transcript of kind `sub` listed under the parent, approvals through the parent, one level only. The additive `permission` block (allow / ask / deny over `tool:pattern`) with the `allow` list folded in; it runs after the trip patterns, secrets and system paths and never touches them.
+* **The rest of cai-tools (2026-10-01)**: what made sense against a MAIC session came over as `maic sessions` subcommands, each creating a file and rewriting none: `inject` (a fork plus one note marked as injected, cai's `install --inject`), `graft` (a fork of the target with another session's conversation copied in after a note, `install --graft-onto`), `compose` (a session's tail with its system prompt and an optional root in front, `trans-fairy compose`, the cheap re-root), `read` (the conversation as text, cai's `read` and `redact --project`, which is that projection), `state` (one screen of turns, tools, files, tokens against the budget, compactions, forks), `time` (per-turn durations and the slowest tool calls, from the record stamps cai's `time` existed to type by hand), `name` (the auto-title on demand). Skipped, with the reason in the merge: `trans-fairy-write` (MAIC never rewrites a transcript), `reflow` (ids cannot collide here; its projection is `read`), `fabricate` (manufactured assistant turns; `inject` covers the honest case), `sync` (snapshots of SOPIA's definitions, nothing of MAIC's), and notation, grant, commit, enroll, hook, edit, document and flow (repository governance for Claude Code sessions, not transcript tools; the harness and the edit tools are MAIC's answer).

@@ -24,8 +24,13 @@ Every line has `type` and `time`. The rest depends on the type.
 | `undo` | `:undo` | `path`, `summary` | A file the agent changed was restored. |
 | `resumed_from` | `--no-append`, `--record` with `-c`/`-r`, `--fork-at` | `id`, `path`, `records` | The first record of a fork: this file's history starts as the first `records` lines of the named session. Nothing is copied. |
 | `imported_from` | `maic sessions import` | `path`, `format`, `model`, `messages`, `skipped`, `malformed` | The session was built from another tool's transcript (see Import). |
+| `inject` | `maic sessions inject` | `role` | The `msg` that follows is a note placed by the command, not something typed or generated (see Building sessions from sessions). |
+| `graft` | `maic sessions graft` | `id`, `path`, `messages` | The records that follow the next note were copied from the named session. |
+| `compose` | `maic sessions compose` | `id`, `path`, `from`, `records` | This file holds the named session's records from line `from` on, copied; what came before is not here. |
 
 Loading follows `resumed_from` pointers first (by path, then by id if the parent was rehomed), then reads the file: `msg` records become the conversation, `user`, `assistant`, `tool`, `context` and `compact` become the transcript, `reset` and `clear` cut as described. A line that is not a JSON object is skipped. Unknown types are ignored, so an older MAIC can read a newer file.
+
+`SessionLog::write` stamps `time` only when the record has none, so a record copied from another session keeps the moment it was written.
 
 ## Homes
 
@@ -41,6 +46,25 @@ A fork is a new file whose first record is `resumed_from`. It names the parent a
 * `maic -r ID --fork-at N` (also with `-c`, and with `-p`) forks at record N: the new session loads the parent's first N lines and nothing after them. The parent's file itself is never modified, so N stays meaningful. To pick N, look at the file (`maic sessions path ID`, then number its lines); a `user` record is a natural cut point, since the assistant turn that follows it is then re-generated. `--fork-at` cannot be combined with `--append`.
 
 `maic sessions` shows a fork as "resumed from ID (first N records)".
+
+## Building sessions from sessions
+
+Three commands make a new session out of existing ones. Each creates one file and modifies nothing: the sources are read, never rewritten, so an experiment that lands badly costs a file, not the thread. All three take `--home general|project|NAME` (`project` is the session's own workspace) and print the new id; `maic -r ID` opens the result like any session. Anything placed by a command is marked twice: for a reader of the file by its own record type, and in the conversation itself by a note the model reads as a system message and the transcript shows as a notice, never as a typed turn. The ideas come from cai's `install --inject`, `install --graft-onto` and `trans-fairy compose` ([cleanroom.md](cleanroom.md): behaviour, no code).
+
+| command | what the new file holds |
+| :--- | :--- |
+| `maic sessions inject ID (--text T \| --file F\|-) [--at N] [--role user\|system]` | `resumed_from` ID at N (the whole file by default), an `inject` record, the note as a `msg` of that role, and a `context` notice `injected ROLE note (DATE): ...`. For handing a resumed session an understanding, a reminder or a repo summary without pretending someone typed it. |
+| `maic sessions graft ID --onto TARGET [--at N]` | `resumed_from` TARGET at N (its end by default), a `graft` record, a note (`The next K messages were grafted from session ID on DATE: they took place separately and are not this conversation's own history.`), then ID's records copied: everything but its `start`, `title`, `imported_from` and system-prompt messages. A fork is copied as the conversation it holds (its parent's first records, then its own), not as a pointer. |
+| `maic sessions compose ID --from N [--root FILE\|-]` | A `start` record with ID's workspace, model and mode; a `compose` record; the system prompt from ID's first N records; the root text, if any, as a user `msg` with a `context` notice `root (composed, not typed): ...`; a note (`This conversation continues session ID from its record N on ...; what came before the cut is not present. Do not infer what the missing context said.`); then ID's records from N on, copied with the same exclusions. A cheap way to resume a long session: the recent stretch with a short briefing in front of it, instead of the whole history or a compaction summary. |
+
+`N` counts lines of the named file, as `--fork-at` does; `maic sessions path ID` finds the file. A `user` record is the natural cut for all three.
+
+## Reading and summarising
+
+* `maic sessions read ID [--range A-B] [--tools]` prints the conversation as plain text (`[user]`, `[assistant]`, `[notice]` blocks; `[tool]` and `[result]` lines with `--tools`), user turns `A` to `B` (`3`, `3-`, `-5`), for piping into another tool or another session. This is what cai's `redact --project` and `read` do (a projection of the transcript to what was said); it is read-only here, with no in-place path at all.
+* `maic sessions state ID` is one screen: title, where and when, model, parent and subagent links, record count with first and last times, turns, replies, tool calls per tool with failures, the files written, edited, moved, copied, deleted or restored, token totals against `budget_tokens` in settings, the last context window, compactions by stage, clears and undos, and every fork and subagent of this session. The counts cover the whole history, parents included.
+* `maic sessions time ID [--slowest N]` gives each turn's length (from the prompt to the last record before the next prompt), its tool calls, the total, and the slowest tool calls (each from the record before it to its result). Records are stamped to the second, so that is the resolution.
+* `maic sessions name ID [--model M]` titles a finished session with the title model (`title_model` in settings, or `--model`), the same prompt and clean-up as the auto-title after a first turn, appended as a `title` record. A remote title model is refused for a session that ran on a local model, as in the TUI; a running session is refused (`:rename` inside it).
 
 ## Import
 

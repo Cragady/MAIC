@@ -203,6 +203,21 @@ Message chat(const Provider& provider, const ChatOptions& options, const std::ve
     }
 }
 
+std::string generate_title(const Provider& provider, const std::string& model, const std::string& first_prompt) {
+    std::vector<Message> req = {
+        {"system", "Write a title for a conversation that starts with the message below: one line, at most 50 characters, no quotes, "
+                   "keep exact filenames and technical terms, drop articles. Output only the title."},
+        {"user", first_prompt.substr(0, 2000)},
+    };
+    std::atomic<bool> no{false};
+    std::string t = chat(provider, ChatOptions{model, false}, req, nlohmann::json::array(), [](std::string_view, bool) {}, no).content;
+    if (auto p = t.find("</think>"); p != std::string::npos) t = t.substr(p + 8);
+    while (!t.empty() && (t.back() == '\n' || t.back() == ' ' || t.back() == '.' || t.back() == '"')) t.pop_back();
+    while (!t.empty() && (t.front() == '\n' || t.front() == ' ' || t.front() == '"')) t.erase(0, 1);
+    if (t.size() > 80 || t.find('\n') != std::string::npos) return "";
+    return t;
+}
+
 namespace detail {
 
 std::string dump(const nlohmann::json& j) {

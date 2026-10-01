@@ -336,6 +336,207 @@ int main() {
                "maic sessions shows the fork point and inherits the parent's workspace");
     }
 
+    // Two sessions of two turns each; a's records: 0 start, 1 system, 2-3 "a one", 4-5 "a first", 6-7 "a two", 8-9 "a second",
+    // 10 title, 11 a usage record with its own time.
+    auto two_turns = [](SessionLog& log, const std::string& ws_name, const std::string& tag) {
+        log.write("start", {{"workspace", ws_name}, {"model", "m"}, {"mode", "manual"}});
+        log.write("msg", message_to_json({"system", "sys " + tag}));
+        for (const char* turn : {"one", "two"}) {
+            log.write("msg", message_to_json({"user", tag + " " + turn}));
+            log.write("user", {{"text", tag + " " + turn}});
+            std::string reply = tag + (std::string(turn) == "one" ? " first" : " second");
+            log.write("msg", message_to_json({"assistant", reply}));
+            log.write("assistant", {{"text", reply}});
+        }
+        log.write("title", {{"text", tag}});
+    };
+
+    section("compose");
+    {
+        SessionLog a("session-test");
+        two_turns(a, "/w", "a");
+        a.write("usage", {{"input", 1}, {"output", 2}, {"context", 10}, {"time", "2020-01-01T00:00:00+0000"}});
+        std::string a_before = read_whole(a.path());
+        std::string a_id = a.path().stem().string();
+
+        fs::path c = compose_session(a.path(), 6, "the root text", sessions_home("general"));
+        auto recs = records(c);
+        expect(recs[0]["type"] == "start" && recs[0]["workspace"] == "/w" && recs[0]["model"] == "m" && recs[0]["mode"] == "manual",
+               "a composed session starts with the source's workspace, model and mode");
+        expect(recs[1]["type"] == "compose" && recs[1]["id"] == a_id && recs[1]["from"] == 6 && recs[1]["records"] == 5,
+               "the compose record names the source, the cut and how many records were copied");
+        expect(recs[2]["type"] == "msg" && recs[2]["role"] == "system" && recs[2]["content"] == "sys a", "the system prompt from before the cut is kept");
+        expect(recs[3]["type"] == "msg" && recs[3]["role"] == "user" && recs[3]["content"] == "the root text" && recs[4]["type"] == "context" &&
+                   recs[4]["text"].get<std::string>().find("root (composed, not typed)") == 0,
+               "the root is a user message shown as a notice");
+        expect(recs[5]["type"] == "msg" && recs[5]["role"] == "system" && recs[5]["content"].get<std::string>().find("from its record 6") != std::string::npos &&
+                   recs[6]["type"] == "context",
+               "then a note that the earlier part is missing");
+        expect(recs.size() == 12 && recs.back()["type"] == "usage" && recs.back()["time"] == "2020-01-01T00:00:00+0000",
+               "copied records keep their own time; the title is not copied");
+        LoadedSession lc = load_session(c);
+        bool before_cut = false;
+        for (const auto& m : lc.messages) before_cut = before_cut || m.content == "a one" || m.content == "a first";
+        expect(lc.messages.size() == 5 && lc.messages[0].role == "system" && lc.messages.back().content == "a second" && !before_cut,
+               "it loads as system prompt, root, note, then the suffix only");
+        expect(lc.transcript.size() == 4 && lc.transcript[0].type == "notice" && lc.transcript[2].type == "user" && lc.transcript[2].text == "a two",
+               "the transcript shows the two notices and the suffix");
+        auto info = find_session(c.stem().string());
+        expect(info && info->workspace == "/w" && info->turns == 1 && info->kind == "compose" && info->title.empty(), "it lists as a one-turn session in the workspace");
+        bool threw = false;
+        try {
+            compose_session(a.path(), 50, "", sessions_home("general"));
+        } catch (const std::exception& e) {
+            threw = std::string(e.what()).find("nothing after 50") != std::string::npos;
+        }
+        expect(threw, "a cut past the end is refused");
+        expect(read_whole(a.path()) == a_before, "the source is untouched");
+    }
+
+    section("graft");
+    {
+        SessionLog a("session-test");
+        two_turns(a, "/w", "a");
+        SessionLog b("session-test");
+        two_turns(b, "/v", "b");
+        std::string a_before = read_whole(a.path()), b_before = read_whole(b.path());
+        std::string a_id = a.path().stem().string(), b_id = b.path().stem().string();
+
+        fs::path g = graft_session(b.path(), 6, a.path(), sessions_home("general"));
+        auto recs = records(g);
+        expect(recs[0]["type"] == "resumed_from" && recs[0]["id"] == b_id && recs[0]["records"] == 6, "a graft is a fork of the target at the cut");
+        expect(recs[1]["type"] == "graft" && recs[1]["id"] == a_id && recs[1]["messages"] == 4, "the graft record names the grafted session and its message count");
+        expect(recs[2]["type"] == "msg" && recs[2]["role"] == "system" && recs[2]["content"].get<std::string>().find("4 messages were grafted from session " + a_id) == 9 &&
+                   recs[3]["type"] == "context",
+               "a note says where the messages came from");
+        LoadedSession lg = load_session(g);
+        std::vector<std::string> contents;
+        for (const auto& m : lg.messages) contents.push_back(m.content);
+        expect(contents.size() == 8 && contents[0] == "sys b" && contents[2] == "b first" && contents[3].find("grafted") != std::string::npos && contents[4] == "a one" &&
+                   contents[7] == "a second",
+               "it loads as the target's first six records, the note, then the grafted conversation without its system prompt");
+        expect(lg.transcript.size() == 7 && lg.transcript[2].type == "notice" && lg.transcript[3].text == "a one", "the transcript is cut and joined the same way");
+        auto info = find_session(g.stem().string());
+        expect(info && info->parent == b_id && info->parent_records == 6 && info->workspace == "/v" && info->title.empty(), "it lists as a fork of the target");
+
+        SessionLog f = SessionLog::fork(a.path(), 6, "session-test");
+        f.write("msg", message_to_json({"user", "f three"}));
+        f.write("user", {{"text", "f three"}});
+        fs::path g2 = graft_session(b.path(), 10, f.path(), sessions_home("general"));
+        LoadedSession lg2 = load_session(g2);
+        contents.clear();
+        for (const auto& m : lg2.messages) contents.push_back(m.content);
+        expect(contents.size() == 9 && contents[4] == "b second" && contents[6] == "a one" && contents[7] == "a first" && contents[8] == "f three",
+               "grafting a fork copies the conversation it holds: its parent's first records (system prompt aside), then its own");
+        expect(records(g2).size() == 10 && records(g2)[4]["content"] == "a one", "the pointer itself is not copied");
+        auto info2 = find_session(g2.stem().string());
+        expect(info2 && info2->parent == b_id && info2->parent_records == 10, "the listing shows the target as the parent");
+        SessionLog empty("session-test");
+        empty.write("start", {{"workspace", "/w"}, {"model", "m"}, {"mode", "manual"}});
+        bool threw = false;
+        try {
+            graft_session(b.path(), 10, empty.path(), sessions_home("general"));
+        } catch (const std::exception& e) {
+            threw = std::string(e.what()).find("no conversation to graft") != std::string::npos;
+        }
+        expect(threw, "a session with nothing to graft is refused");
+        expect(read_whole(a.path()) == a_before && read_whole(b.path()) == b_before, "neither source is modified");
+    }
+
+    section("inject");
+    {
+        SessionLog a("session-test");
+        two_turns(a, "/w", "a");
+        std::string a_before = read_whole(a.path());
+        fs::path i = inject_note(a.path(), 6, "system", "Remember: ears a third of her height.", sessions_home("general"));
+        auto recs = records(i);
+        expect(recs.size() == 4 && recs[0]["type"] == "resumed_from" && recs[0]["records"] == 6 && recs[1]["type"] == "inject" && recs[1]["role"] == "system",
+               "an injection is a fork at the cut with an inject record");
+        expect(recs[2]["type"] == "msg" && recs[2]["role"] == "system" && recs[2]["content"] == "Remember: ears a third of her height." && recs[3]["type"] == "context" &&
+                   recs[3]["text"].get<std::string>().find("injected system note") == 0,
+               "the note is a system message shown as a notice, not a typed turn");
+        LoadedSession li = load_session(i);
+        expect(li.messages.size() == 4 && li.messages[2].content == "a first" && li.messages[3].role == "system" && li.transcript.size() == 3 && li.transcript[2].type == "notice",
+               "it loads after the parent's first six records");
+        auto info = find_session(i.stem().string());
+        expect(info && info->turns == 0 && info->parent_records == 6 && info->workspace == "/w", "the listing counts no turn for the note");
+        fs::path u = inject_note(a.path(), 10, "user", "and a user note", sessions_home("general"));
+        expect(load_session(u).messages.back().role == "user" && records(u)[1]["role"] == "user", "a user-role note");
+        bool threw = false;
+        try {
+            inject_note(a.path(), 6, "assistant", "I said this", sessions_home("general"));
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw, "an assistant turn cannot be injected");
+        expect(read_whole(a.path()) == a_before, "the parent is untouched");
+    }
+
+    section("state, time and read");
+    {
+        SessionLog s("session-test");
+        auto at = [](const char* t) { return std::string("2026-10-01T10:") + t + "+0000"; };
+        auto w = [&](const char* type, json data, const char* t) {
+            data["time"] = at(t);
+            s.write(type, data);
+        };
+        w("start", {{"workspace", "/w"}, {"model", "m"}, {"mode", "edit"}}, "00:00");
+        w("msg", message_to_json({"system", "sys"}), "00:00");
+        w("msg", message_to_json({"user", "fix the ears"}), "00:01");
+        w("user", {{"text", "fix the ears"}}, "00:01");
+        w("msg", message_to_json({"assistant", "", {{"c1", "read_file", {{"path", "ears.md"}}}}}), "00:05");
+        w("msg", message_to_json({"tool", "text", {}, "read_file", "c1"}), "00:07");
+        w("tool", {{"tool", "read_file"}, {"arguments", {{"path", "ears.md"}}}, {"result", "text"}, {"ok", true}}, "00:07");
+        w("msg", message_to_json({"assistant", "", {{"c2", "edit_file", {{"path", "ears.md"}}}}}), "00:10");
+        w("msg", message_to_json({"tool", "edited", {}, "edit_file", "c2"}), "00:40");
+        w("tool", {{"tool", "edit_file"}, {"arguments", {{"path", "ears.md"}}}, {"result", "edited"}, {"ok", true}}, "00:40");
+        w("msg", message_to_json({"assistant", "done"}), "00:45");
+        w("assistant", {{"text", "done"}}, "00:45");
+        w("usage", {{"input", 100}, {"output", 20}, {"context", 8192}}, "00:45");
+        w("msg", message_to_json({"user", "and the tail"}), "02:00");
+        w("user", {{"text", "and the tail"}}, "02:00");
+        w("msg", message_to_json({"assistant", "", {{"c3", "run_shell", {{"command", "make"}}}}}), "02:03");
+        w("msg", message_to_json({"tool", "boom", {}, "run_shell", "c3", true}), "02:13");
+        w("tool", {{"tool", "run_shell"}, {"arguments", {{"command", "make"}}}, {"result", "boom"}, {"ok", false}}, "02:13");
+        w("compact", {{"stage", "prune"}, {"bytes_before", 10}, {"bytes_after", 5}}, "02:13");
+        w("msg", message_to_json({"assistant", "fixed"}), "02:20");
+        w("assistant", {{"text", "fixed"}}, "02:20");
+        w("usage", {{"input", 150}, {"output", 30}, {"context", 8192}}, "02:20");
+        w("undo", {{"path", "/w/tail.md"}, {"summary", "restored"}}, "02:30");
+
+        SessionStats st = session_stats(s.path());
+        expect(st.records == 23 && st.turns == 2 && st.replies == 2 && st.tool_calls == 3 && st.tool_errors == 1, "records, turns, replies, tool calls and failures");
+        expect(st.tools == std::map<std::string, size_t>{{"read_file", 1}, {"edit_file", 1}, {"run_shell", 1}}, "calls per tool");
+        expect(st.files == std::vector<std::string>{"ears.md", "/w/tail.md"}, "files touched: written and restored paths, reads left out");
+        expect(st.input_tokens == 250 && st.output_tokens == 50 && st.context == 8192, "usage totals and the last window");
+        expect(st.compactions == std::map<std::string, size_t>{{"prune", 1}} && st.undos == 1 && st.clears == 0, "compactions by stage, undos");
+        expect(st.first_time == at("00:00") && st.last_time == at("02:30"), "first and last record times");
+        SessionLog child = SessionLog::fork(s.path(), 13, "session-test");
+        SessionStats cs = session_stats(child.path());
+        expect(cs.turns == 1 && cs.tool_calls == 2 && cs.input_tokens == 100 && cs.records == 1, "a fork's state covers the parent's first records and counts only its own lines");
+
+        SessionTiming t = session_timing(s.path());
+        expect(t.turns.size() == 2 && t.turns[0].seconds == 44 && t.turns[0].tool_calls == 2 && t.turns[0].prompt == "fix the ears",
+               "a turn lasts from its prompt to the last record before the next one");
+        expect(t.turns[1].seconds == 30 && t.turns[1].tool_calls == 1, "the last turn ends at its last record");
+        expect(t.tools.size() == 3 && t.tools[0].seconds == 2 && t.tools[1].seconds == 30 && t.tools[2].seconds == 10 && !t.tools[2].ok,
+               "a tool call lasts from the record before it to its result; its own tool message does not count");
+        expect(t.tools[1].summary == "edit_file ears.md" && t.tools[2].summary == "$ make", "summaries as the transcript shows them");
+        SessionLog z("session-test");
+        z.write("user", {{"text", "zoned"}, {"time", "2026-10-01T12:00:00+0200"}});
+        z.write("assistant", {{"text", "ok"}, {"time", "2026-10-01T10:00:30+0000"}});
+        expect(session_timing(z.path()).turns[0].seconds == 30, "offsets are honoured when records come from different zones");
+
+        LoadedSession ls = load_session(s.path());
+        std::string text = render_text(ls, 2, 2, true);
+        expect(text.find("[user]\nand the tail") == 0 && text.find("[tool] $ make") != std::string::npos && text.find("[result, error]\nboom") != std::string::npos &&
+                   text.find("fix the ears") == std::string::npos,
+               "render_text picks a range of turns and shows tool traffic when asked");
+        std::string plain = render_text(ls);
+        expect(plain.find("[tool]") == std::string::npos && plain.find("[notice] compacted (prune)") != std::string::npos && plain.find("[assistant]\ndone") != std::string::npos,
+               "without tools: turns and notices only");
+    }
+
     fs::remove_all(ws);
     return finish();
 }

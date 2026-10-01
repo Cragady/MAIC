@@ -1210,19 +1210,8 @@ void App::maybe_title(const std::string& first_prompt) {
     try {
         auto [provider, name] = resolve_model(agent_.providers, settings_.title_model);
         if (provider.remote() && !agent_.remote()) return;
-        std::vector<Message> req = {
-            {"system", "Write a title for a conversation that starts with the message below: one line, at most 50 characters, no quotes, "
-                       "keep exact filenames and technical terms, drop articles. Output only the title."},
-            {"user", first_prompt.substr(0, 2000)},
-        };
-        ChatOptions opt{name, false};
-        std::atomic<bool> no{false};
-        Message reply = chat(provider, opt, req, nlohmann::json::array(), [](std::string_view, bool) {}, no);
-        std::string t = reply.content;
-        if (auto p = t.find("</think>"); p != std::string::npos) t = t.substr(p + 8);
-        while (!t.empty() && (t.back() == '\n' || t.back() == ' ' || t.back() == '.' || t.back() == '"')) t.pop_back();
-        while (!t.empty() && (t.front() == '\n' || t.front() == ' ' || t.front() == '"')) t.erase(0, 1);
-        if (t.empty() || t.size() > 80 || t.find('\n') != std::string::npos) return;
+        std::string t = generate_title(provider, name, first_prompt);
+        if (t.empty()) return;
         if (log_) log_->write("title", {{"text", t}});
         post(Kind::Notice, "titled: " + t + "  (:rename changes it)");
     } catch (const std::exception&) {

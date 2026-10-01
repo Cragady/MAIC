@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <stdexcept>
@@ -212,7 +213,17 @@ size_t count_records(const fs::path& path) {
 
 namespace {
 
-void load_into(LoadedSession& out, const fs::path& path, size_t limit, int depth) {
+// The file a `resumed_from` record points at. The parent may have been rehomed since: fall back to its id.
+fs::path pointer_target(const nlohmann::json& j) {
+    fs::path parent = j.value("path", "");
+    std::error_code ec;
+    if (fs::is_regular_file(parent, ec)) return parent;
+    auto found = find_session(j.value("id", parent.stem().string()));
+    if (!found) throw std::runtime_error("the session this one was resumed from is gone: " + parent.string());
+    return found->path;
+}
+
+void walk(const fs::path& path, size_t limit, int depth, const std::function<void(const nlohmann::json&)>& fn, size_t& top) {
     if (depth > 32) throw std::runtime_error("session fork chain too deep at " + path.string());
     std::ifstream in(path);
     if (!in) throw std::runtime_error("can't read " + path.string());
@@ -220,18 +231,44 @@ void load_into(LoadedSession& out, const fs::path& path, size_t limit, int depth
     for (std::string line; std::getline(in, line) && n < limit; ++n) {
         auto j = nlohmann::json::parse(line, nullptr, false);
         if (!j.is_object()) continue;
+        if (j.value("type", "") != "resumed_from") fn(j);
+        else walk(pointer_target(j), j.value("records", size_t(0)), depth + 1, fn, top);
+    }
+    if (depth == 0) top = n;
+}
+
+std::string tool_summary(const nlohmann::json& j) {
+    std::string name = j.value("tool", "");
+    auto args = j.value("arguments", nlohmann::json::object());
+    return name == "run_shell" ? "$ " + args.value("command", "") : name + " " + args.value("path", "");
+}
+
+// Seconds since the epoch from a record's `time` (local ISO 8601 with the offset); -1 when it does not parse.
+long record_time(const nlohmann::json& j) {
+    std::string t = j.value("time", "");
+    std::tm tm{};
+    const char* rest = strptime(t.c_str(), "%Y-%m-%dT%H:%M:%S", &tm);
+    if (!rest) return -1;
+    long offset = 0;
+    if ((rest[0] == '+' || rest[0] == '-') && std::strlen(rest) >= 5) {
+        offset = (std::atoi(std::string(rest + 1, 2).c_str()) * 3600 + std::atoi(std::string(rest + 3, 2).c_str()) * 60) * (rest[0] == '-' ? -1 : 1);
+    }
+    return static_cast<long>(timegm(&tm)) - offset;
+}
+
+}  // namespace
+
+size_t walk_records(const fs::path& path, size_t limit, const std::function<void(const nlohmann::json&)>& fn) {
+    size_t top = 0;
+    walk(path, limit, 0, fn, top);
+    return top;
+}
+
+LoadedSession load_session(const fs::path& path, size_t records) {
+    LoadedSession out;
+    out.records = walk_records(path, records, [&](const nlohmann::json& j) {
         std::string type = j.value("type", "");
-        if (type == "resumed_from") {
-            // The parent may have been rehomed since: fall back to finding it by id.
-            fs::path parent = j.value("path", "");
-            std::error_code ec;
-            if (!fs::is_regular_file(parent, ec)) {
-                auto found = find_session(j.value("id", parent.stem().string()));
-                if (!found) throw std::runtime_error("the session this one was resumed from is gone: " + parent.string());
-                parent = found->path;
-            }
-            load_into(out, parent, j.value("records", size_t(0)), depth + 1);
-        } else if (type == "start") {
+        if (type == "start") {
             out.model = j.value("model", out.model);
             out.mode = j.value("mode", out.mode);
         } else if (type == "msg") {
@@ -250,24 +287,170 @@ void load_into(LoadedSession& out, const fs::path& path, size_t limit, int depth
         } else if (type == "assistant") {
             out.transcript.push_back({"assistant", j.value("text", "")});
         } else if (type == "tool") {
-            std::string name = j.value("tool", "");
-            auto args = j.value("arguments", nlohmann::json::object());
-            std::string summary = name == "run_shell" ? "$ " + args.value("command", "") : name + " " + args.value("path", "");
-            out.transcript.push_back({"tool_call", summary});
+            out.transcript.push_back({"tool_call", tool_summary(j)});
             out.transcript.push_back({"tool_result", j.value("result", ""), j.value("ok", true)});
         } else if (type == "context") {
             out.transcript.push_back({"notice", j.value("text", "")});
         }
+    });
+    return out;
+}
+
+SessionStats session_stats(const fs::path& path) {
+    SessionStats s;
+    auto touched = [&](const std::string& p) {
+        if (!p.empty() && std::find(s.files.begin(), s.files.end(), p) == s.files.end()) s.files.push_back(p);
+    };
+    s.records = walk_records(path, ~size_t(0), [&](const nlohmann::json& j) {
+        std::string type = j.value("type", "");
+        if (s.first_time.empty()) s.first_time = j.value("time", "");
+        s.last_time = j.value("time", s.last_time);
+        if (type == "user") ++s.turns;
+        else if (type == "assistant") ++s.replies;
+        else if (type == "tool") {
+            ++s.tool_calls;
+            if (!j.value("ok", true)) ++s.tool_errors;
+            std::string name = j.value("tool", "");
+            ++s.tools[name];
+            for (const char* writer : {"write_file", "edit_file", "multi_edit", "apply_patch", "move_file", "copy_file", "delete_file", "make_dir"}) {
+                if (name != writer) continue;
+                auto args = j.value("arguments", nlohmann::json::object());
+                touched(args.value("path", ""));
+                touched(args.value("to", ""));
+            }
+        } else if (type == "usage") {
+            s.input_tokens += j.value("input", 0);
+            s.output_tokens += j.value("output", 0);
+            s.context = j.value("context", s.context);
+        } else if (type == "compact") ++s.compactions[j.value("stage", "?")];
+        else if (type == "clear") ++s.clears;
+        else if (type == "undo") {
+            ++s.undos;
+            touched(j.value("path", ""));
+        }
+    });
+    return s;
+}
+
+SessionTiming session_timing(const fs::path& path) {
+    SessionTiming t;
+    long turn_start = -1, previous = -1, last = -1;
+    auto close_turn = [&] {
+        if (!t.turns.empty() && turn_start >= 0 && last > turn_start) t.turns.back().seconds = last - turn_start;
+    };
+    walk_records(path, ~size_t(0), [&](const nlohmann::json& j) {
+        std::string type = j.value("type", "");
+        long at = record_time(j);
+        if (type == "user") {
+            close_turn();
+            t.turns.push_back({preview(j.value("text", "")), 0, 0});
+            turn_start = at;
+        } else if (type == "tool") {
+            if (!t.turns.empty()) ++t.turns.back().tool_calls;
+            t.tools.push_back({preview(tool_summary(j)), previous >= 0 && at > previous ? at - previous : 0, j.value("ok", true)});
+        }
+        if (at < 0) return;
+        std::string role = type == "msg" ? j.value("role", "") : "";
+        if (role == "user") return;  // the prompt's own message record: the next turn, not the end of this one
+        last = at;
+        // The tool message is written with the tool record, so it is not where the call started.
+        if (role != "tool") previous = at;
+    });
+    close_turn();
+    return t;
+}
+
+namespace {
+
+// The records of `path` from line `first` on (up to `limit`) that belong to the conversation: everything but the
+// file's own identity (start, title, imported_from) and system prompts, which a new session gets from its own
+// head. A pointer is replaced by the parent's records, so a fork is copied as the whole conversation it holds.
+std::vector<nlohmann::json> conversation_records(const fs::path& path, size_t first, size_t limit = ~size_t(0)) {
+    std::ifstream in(path);
+    if (!in) throw std::runtime_error("can't read " + path.string());
+    std::vector<nlohmann::json> out;
+    size_t n = 0;
+    for (std::string line; std::getline(in, line) && n < limit; ++n) {
+        if (n < first) continue;
+        auto j = nlohmann::json::parse(line, nullptr, false);
+        if (!j.is_object()) continue;
+        std::string type = j.value("type", "");
+        if (type == "resumed_from") {
+            auto parent = conversation_records(pointer_target(j), 0, j.value("records", size_t(0)));
+            out.insert(out.end(), parent.begin(), parent.end());
+            continue;
+        }
+        if (type == "start" || type == "title" || type == "imported_from") continue;
+        if (type == "msg" && j.value("role", "") == "system") continue;
+        out.push_back(std::move(j));
     }
-    if (depth == 0) out.records = n;
+    return out;
+}
+
+void append_records(SessionLog& log, std::vector<nlohmann::json> records) {
+    for (auto& j : records) {
+        std::string type = j["type"];
+        j.erase("type");
+        log.write(type, std::move(j));
+    }
+}
+
+// A note the model reads as a system message and the transcript shows as a notice.
+void note(SessionLog& log, const std::string& text) {
+    log.write("msg", message_to_json({"system", text}));
+    log.write("context", {{"text", text}});
 }
 
 }  // namespace
 
-LoadedSession load_session(const fs::path& path, size_t records) {
-    LoadedSession out;
-    load_into(out, path, records, 0);
-    return out;
+fs::path inject_note(const fs::path& parent, size_t records, const std::string& role, const std::string& text, const fs::path& home) {
+    if (role != "user" && role != "system") throw std::runtime_error("an injected note is a user or a system message, not '" + role + "'");
+    if (text.empty()) throw std::runtime_error("nothing to inject");
+    SessionLog log = SessionLog::fork(parent, records, "inject", home);
+    log.write("inject", {{"role", role}});
+    log.write("msg", message_to_json({role, text}));
+    log.write("context", {{"text", "injected " + role + " note (" + now("%Y-%m-%d") + "):\n" + text}});
+    return log.path();
+}
+
+fs::path graft_session(const fs::path& onto, size_t records, const fs::path& graft, const fs::path& home) {
+    if (!fs::is_regular_file(graft)) throw std::runtime_error("no session at " + graft.string());
+    size_t messages = 0;
+    for (const auto& m : load_session(graft).messages) messages += m.role != "system";
+    if (messages == 0) throw std::runtime_error(graft.stem().string() + " has no conversation to graft");
+    std::vector<nlohmann::json> copied = conversation_records(graft, 0);
+    SessionLog log = SessionLog::fork(onto, records, "graft", home);
+    log.write("graft", {{"id", graft.stem().string()}, {"path", fs::weakly_canonical(graft).string()}, {"messages", messages}});
+    note(log, "The next " + std::to_string(messages) + " messages were grafted from session " + graft.stem().string() + " on " + now("%Y-%m-%d") +
+                  ": they took place separately and are not this conversation's own history.");
+    append_records(log, std::move(copied));
+    return log.path();
+}
+
+fs::path compose_session(const fs::path& source, size_t first, const std::string& root, const fs::path& home) {
+    if (!fs::is_regular_file(source)) throw std::runtime_error("no session at " + source.string());
+    std::vector<nlohmann::json> suffix = conversation_records(source, first);
+    if (suffix.empty()) throw std::runtime_error(source.stem().string() + " has " + std::to_string(count_records(source)) + " records; nothing after " + std::to_string(first));
+    LoadedSession head = load_session(source, first);
+    SessionInfo info = read_session_info(source);
+    SessionLog log("compose", home);
+    char host[256] = "";
+    gethostname(host, sizeof(host) - 1);
+    log.write("start", {{"workspace", info.workspace}, {"model", head.model}, {"mode", head.mode.empty() ? "manual" : head.mode}, {"host", host}, {"pid", getpid()}});
+    log.write("compose", {{"id", source.stem().string()}, {"path", fs::weakly_canonical(source).string()}, {"from", first}, {"records", suffix.size()}});
+    for (const auto& m : head.messages) {
+        if (m.role != "system") continue;
+        log.write("msg", message_to_json(m));
+        break;
+    }
+    if (!root.empty()) {
+        log.write("msg", message_to_json({"user", root}));
+        log.write("context", {{"text", "root (composed, not typed):\n" + root}});
+    }
+    note(log, "This conversation continues session " + source.stem().string() + " from its record " + std::to_string(first) + " on, composed on " +
+                  now("%Y-%m-%d") + "; what came before the cut is not present. Do not infer what the missing context said.");
+    append_records(log, std::move(suffix));
+    return log.path();
 }
 
 bool session_running(const SessionInfo& info) {
@@ -303,9 +486,24 @@ std::string export_markdown(const SessionInfo& info, const LoadedSession& sessio
     return out;
 }
 
+std::string render_text(const LoadedSession& session, size_t from, size_t to, bool tools) {
+    std::string out;
+    size_t turn = 0;
+    for (const auto& t : session.transcript) {
+        if (t.type == "user") ++turn;
+        if (turn < from || (to && turn > to)) continue;
+        if (t.type == "user") out += "[user]\n" + t.text + "\n\n";
+        else if (t.type == "assistant") out += "[assistant]\n" + t.text + "\n\n";
+        else if (t.type == "notice") out += "[notice] " + t.text + "\n\n";
+        else if (tools && t.type == "tool_call") out += "[tool] " + t.text + "\n";
+        else if (tools && t.type == "tool_result") out += std::string(t.ok ? "[result]\n" : "[result, error]\n") + t.text + "\n\n";
+    }
+    return out;
+}
+
 void SessionLog::write(const std::string& type, nlohmann::json data) {
     data["type"] = type;
-    data["time"] = now("%Y-%m-%dT%H:%M:%S%z");
+    if (!data.contains("time")) data["time"] = now("%Y-%m-%dT%H:%M:%S%z");
     std::lock_guard lock(mu_);
     out_ << data.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
     out_.flush();

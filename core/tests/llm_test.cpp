@@ -276,6 +276,28 @@ int main() {
         expect(other.raw_kind.empty() && other.raw.is_null(), "other models' reasoning is streamed, not stored");
     }
 
+    section("title generation");
+    {
+        Fake f;
+        f.serve("/v1/chat/completions", {
+            "data: " + json{{"choices", {{{"delta", {{"content", "<think>short</think>\"Fennec ear sizing.\"\n"}}}}}}}.dump() + "\n\n",
+            "data: [DONE]\n\n",
+        });
+        f.start();
+        Provider p{"local", "openai", f.url() + "/v1", "", "", json::object()};
+        expect(generate_title(p, "tiny", "How big should the ears be?") == "Fennec ear sizing", "thinking, quotes, a trailing stop and newline are stripped");
+        auto b = json::parse(f.last_body);
+        expect(b["model"] == "tiny" && b["messages"][0]["role"] == "system" && b["messages"][1]["content"] == "How big should the ears be?",
+               "the first prompt goes as the user message under a titling instruction");
+    }
+    {
+        Fake f;
+        f.serve("/v1/chat/completions", {"data: " + json{{"choices", {{{"delta", {{"content", "one\ntwo"}}}}}}}.dump() + "\n\n", "data: [DONE]\n\n"});
+        f.start();
+        Provider p{"local", "openai", f.url() + "/v1", "", "", json::object()};
+        expect(generate_title(p, "tiny", "x").empty(), "a reply over several lines is not a title");
+    }
+
     section("retry with backoff");
     {
         Fake f;

@@ -6,6 +6,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -41,6 +43,7 @@ public:
     }
 
     const std::filesystem::path& path() const { return path_; }
+    // Stamps `type` and, unless the record already carries one (a record copied from another session), `time`.
     void write(const std::string& type, nlohmann::json data);
 
     // Tag constructors behind reopen() and fork(), public so a SessionLog can be made with make_unique.
@@ -102,9 +105,68 @@ struct LoadedSession {
     size_t records = 0;  // lines in this file (what a fork of it would point at)
 };
 
+// Every record of a session in order: the parent a `resumed_from` pointer names first (its first `records`
+// lines, recursively), then the file's own lines up to `limit`. Returns how many lines of the file itself were
+// read. load_session and the summaries below are built on it.
+size_t walk_records(const std::filesystem::path& path, size_t limit, const std::function<void(const nlohmann::json&)>& fn);
+
 // Follows `resumed_from` pointers, so a forked session loads its parent's history first. `records` stops
 // after that many lines of the file itself (what `--fork-at N` forks from).
 LoadedSession load_session(const std::filesystem::path& path, size_t records = ~size_t(0));
+
+// What `maic sessions state` shows, over the whole history (parents included).
+struct SessionStats {
+    size_t records = 0;  // lines in this file
+    size_t turns = 0;    // user records
+    size_t replies = 0;  // assistant records
+    size_t tool_calls = 0;
+    size_t tool_errors = 0;
+    std::map<std::string, size_t> tools;  // calls per tool
+    std::vector<std::string> files;       // paths written, edited, moved, copied, deleted or restored, first seen first
+    long input_tokens = 0;                // usage totals
+    long output_tokens = 0;
+    int context = 0;  // the last window the provider reported
+    std::map<std::string, size_t> compactions;  // by stage
+    size_t clears = 0;
+    size_t undos = 0;
+    std::string first_time;  // of the first and the last record
+    std::string last_time;
+};
+SessionStats session_stats(const std::filesystem::path& path);
+
+// What `maic sessions time` shows: each turn from its prompt to the last record before the next prompt, and each
+// tool call from the record before it to its result, in whole seconds (records are stamped to the second).
+struct TurnTiming {
+    std::string prompt;  // a preview
+    long seconds = 0;
+    size_t tool_calls = 0;
+};
+struct ToolTiming {
+    std::string summary;
+    long seconds = 0;
+    bool ok = true;
+};
+struct SessionTiming {
+    std::vector<TurnTiming> turns;
+    std::vector<ToolTiming> tools;  // in order; sort by seconds for the slowest
+};
+SessionTiming session_timing(const std::filesystem::path& path);
+
+// New sessions built from old ones. No source file is modified; each result is an ordinary session in `home`.
+//
+// inject: continues `parent`'s first `records` (a fork pointer) and adds one note to the conversation: a message
+// of `role` (user or system), marked by an `inject` record and shown as a notice, never as a typed turn.
+std::filesystem::path inject_note(const std::filesystem::path& parent, size_t records, const std::string& role, const std::string& text,
+                                  const std::filesystem::path& home);
+// graft: continues `onto`'s first `records` and then holds `graft`'s whole conversation, copied (its system prompt,
+// start and title records left out), after a `graft` record and a note saying where the messages came from.
+std::filesystem::path graft_session(const std::filesystem::path& onto, size_t records, const std::filesystem::path& graft,
+                                    const std::filesystem::path& home);
+// compose: `source`'s records from line `first` on, copied, with the system prompt from before the cut kept, after
+// a `compose` record, the optional `root` text (a user message shown as a notice) and a note that the earlier part
+// of the conversation is not present.
+std::filesystem::path compose_session(const std::filesystem::path& source, size_t first, const std::string& root,
+                                      const std::filesystem::path& home);
 
 // True when the session's last process is still alive on this host (a maic process with that pid).
 bool session_running(const SessionInfo& info);
@@ -117,5 +179,9 @@ size_t count_records(const std::filesystem::path& path);
 // The transcript as markdown: a title line, the session id, ## User / ## Assistant sections, tool calls and
 // results in fenced blocks when `tool_details`.
 std::string export_markdown(const SessionInfo& info, const LoadedSession& session, bool tool_details = true);
+
+// The transcript as plain text for reading or piping: `[user]` and `[assistant]` blocks for user turns `from` to
+// `to` (1-based, inclusive; 0 means no bound), notices, and tool calls and results as `[tool]` / `[result]` when `tools`.
+std::string render_text(const LoadedSession& session, size_t from = 0, size_t to = 0, bool tools = false);
 
 }  // namespace maic
