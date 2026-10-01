@@ -36,7 +36,7 @@ struct VendorStatus {
     bool installed = false;  // the install script's `check` passes (or, without a script, the link resolves)
     std::string target;      // where the link points
     std::string note;
-    std::string model;       // llamacpp: the GGUF current-model.gguf points at; empty until `vendor use`
+    std::string model;       // llamacpp: the GGUF current-model.gguf points at; whisper: the file current.bin points at; empty until `vendor use`
 };
 VendorStatus vendor_status(const VendorEntry& e);
 
@@ -59,8 +59,11 @@ void vendor_add(const VendorEntry& e);
 void vendor_unlink(const VendorEntry& e);
 
 // <state>/vendor/llamacpp/current-model.gguf: the symlink services/llamacpp.json loads. `vendor use` points it
-// at a GGUF (by suffix, or by the GGUF magic when the file has none); nothing is copied.
+// at a GGUF (by suffix, or by the GGUF magic when the file has none); nothing is copied. For whisper it is
+// <models_dir>/whisper/current.bin, the ggml file services/whisper.json loads.
 std::filesystem::path vendor_model_link(const VendorEntry& e);
+// <models_dir>/whisper: the ggml speech models, and the current.bin link whisper-server loads.
+std::filesystem::path whisper_models_root();
 // <models_dir>/llamacpp: what the router serves. Every GGUF there (or a subdirectory holding one plus an
 // mmproj) is a model whose id is the file's stem.
 std::filesystem::path llamacpp_models_root();
@@ -72,7 +75,7 @@ std::string resolve_model_alias(const std::string& model);
 std::vector<std::string> llamacpp_model_ids();
 void vendor_use(const VendorEntry& e, const std::filesystem::path& model);
 
-// Downloads a GGUF with curl into `into` (default: <models_dir>/llamacpp, else <state>/vendor/llamacpp/models),
+// Downloads a GGUF with curl into `into` (default: <models_dir>/llamacpp; for whisper a ggml .bin into <models_dir>/whisper),
 // refuses to keep it unless its SHA-256 matches `sha256`, then links it as the current model. The only
 // network access in MAIC besides `vendor add`, and only because the user typed it.
 std::filesystem::path vendor_model(const VendorEntry& e, const std::string& url, const std::string& sha256, const std::filesystem::path& into = {});

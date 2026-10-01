@@ -1,0 +1,3 @@
+# The one dependency outside the standard library: WebRTC VAD for splitting the mic on pauses. diction runs itself
+# under `uv run --with-requirements` this file when python3 lacks it (diction/cli.py, run_under_uv).
+webrtcvad-wheels==2.0.14

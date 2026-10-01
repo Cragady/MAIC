@@ -47,6 +47,10 @@ add_test(NAME danbooru_tags COMMAND python3 -m unittest -q test_danbooru_tags
          WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/tools/comfyui)
 add_test(NAME panel_check COMMAND python3 -m unittest -q test_panel_check
          WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/tools/comfyui)
+# diction against a fake whisper-server and a fake scribe, from WAV files instead of the mic; MAIC_BIN for the two
+# cases that run maic itself (model resolve, the diction pass-through).
+add_test(NAME diction COMMAND python3 -m unittest -q diction.test_diction WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+set_tests_properties(diction PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;MAIC_BIN=$<TARGET_FILE:maic>")
 set_tests_properties(comfy_node workflow_edit storyboard danbooru_tags panel_check PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
 
 install(TARGETS maic maic-server maic-relay RUNTIME DESTINATION bin)
@@ -54,7 +58,13 @@ install(PROGRAMS tools/comfyui/workflow_edit.py DESTINATION bin RENAME maic-work
 install(PROGRAMS tools/comfyui/storyboard.py DESTINATION bin RENAME maic-storyboard)
 install(PROGRAMS tools/comfyui/danbooru_tags.py DESTINATION bin RENAME maic-danbooru-tags)
 install(PROGRAMS tools/comfyui/panel_check.py DESTINATION bin RENAME maic-panel-check)
+# diction: the package under share/maic (its launcher finds it there), the launcher beside maic, and the version it
+# reports as its stable build.
+install(DIRECTORY diction/ DESTINATION share/maic/diction PATTERN "test_*" EXCLUDE PATTERN "__pycache__" EXCLUDE PATTERN "maic-diction" EXCLUDE)
+install(PROGRAMS diction/maic-diction DESTINATION bin)
+file(WRITE ${CMAKE_BINARY_DIR}/diction-VERSION "${MAIC_GIT_VERSION}\n")
+install(FILES ${CMAKE_BINARY_DIR}/diction-VERSION DESTINATION share/maic/diction RENAME VERSION)
 install(DIRECTORY server/web/ DESTINATION share/maic/server/web)
 install(DIRECTORY services/ DESTINATION share/maic/services)
 # Fallback root for a copy installed without the repository: the vendor ledger and scripts, not the checkouts.
-install(FILES vendor/manifest.json vendor/comfyui.sh vendor/llamacpp.sh vendor/VENDORING DESTINATION share/maic/vendor)
+install(FILES vendor/manifest.json vendor/comfyui.sh vendor/llamacpp.sh vendor/whispercpp.sh vendor/VENDORING DESTINATION share/maic/vendor)

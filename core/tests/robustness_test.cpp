@@ -682,6 +682,34 @@ int main() {
             threw = true;
         }
         expect(threw, "vendor use is refused for a service that takes no model");
+        // whisper: a ggml .bin, linked as <models_dir>/whisper/current.bin, which services/whisper.json loads.
+        auto wh = find_vendor("whisper");
+        expect(wh && wh->path == "vendor/whisper.cpp" && wh->ref.rfind("v1.", 0) == 0 && wh->install == "vendor/whispercpp.sh", "whisper is a submodule pinned to a release tag");
+        VendorEntry w = *wh;
+        w.install.clear();
+        fs::path wroot = state / "maic" / "models" / "whisper";
+        write_file(wroot / "ggml-tiny.bin", "lmggxxxx");
+        write_file(wroot / "speech", "lmggxxxx");  // suffixless: the ggml magic
+        write_file(wroot / "ggml-silero-v6.2.0.bin", "lmggxxxx");
+        vendor_use(w, wroot / "ggml-tiny.bin");
+        expect(vendor_model_link(w) == wroot / "current.bin" && fs::read_symlink(wroot / "current.bin") == fs::weakly_canonical(wroot / "ggml-tiny.bin"),
+               "vendor use whisper links current.bin in the models directory");
+        vendor_use(w, wroot / "speech");
+        expect(fs::read_symlink(wroot / "current.bin").filename() == "speech" && vendor_status(w).model.find("speech") != std::string::npos, "a suffixless ggml file is accepted by its magic");
+        threw = false;
+        try {
+            vendor_use(w, root / "tiny.gguf");
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw, "a GGUF is not a whisper model");
+        threw = false;
+        try {
+            vendor_use(w, wroot / "ggml-silero-v6.2.0.bin");
+        } catch (const std::exception& e) {
+            threw = std::string(e.what()).find("VAD") != std::string::npos;
+        }
+        expect(threw && fs::read_symlink(wroot / "current.bin").filename() == "speech", "the VAD model is never linked as the speech model");
         unsetenv("XDG_CONFIG_HOME");
         expect(expand_vars("${MAIC_VENDOR}/x") == (state / "maic" / "vendor" / "x").string() && expand_vars("${MAIC_STATE}") == (state / "maic").string(),
                "service files can use ${MAIC_VENDOR} and ${MAIC_STATE}");
@@ -729,6 +757,21 @@ int main() {
             expect(side && spair("--ctx-size", std::getenv("MAIC_CONTEXT_2") ? std::getenv("MAIC_CONTEXT_2") : "8192"), "the side server takes its context size from ${MAIC_CONTEXT_2}, 8192 by default");
             expect(side && side->requires_paths.size() == 1 && side->requires_paths[0] == root, "the side server requires the same models root");
             expect(is_llama_server("llamacpp") && is_llama_server("llamacpp-2") && !is_llama_server("comfyui"), "both are llama servers, ComfyUI is not");
+            const ServiceDef* wsvc = nullptr;
+            for (const auto& s : services) {
+                if (s.name == "whisper") wsvc = &s;
+            }
+            auto wpair = [&](const std::string& a, const std::string& b) {
+                for (size_t i = 0; wsvc && i + 1 < wsvc->command.size(); ++i) {
+                    if (wsvc->command[i] == a && wsvc->command[i + 1] == b) return true;
+                }
+                return false;
+            };
+            fs::path wmodels = root.parent_path() / "whisper";
+            expect(wsvc && wsvc->port == 8083 && wpair("--host", "127.0.0.1") && wpair("--port", "8083") && wpair("--model", (wmodels / "current.bin").string()) &&
+                       wpair("--vad-model", (wmodels / "ggml-silero-v6.2.0.bin").string()) && wsvc->needs_gpu && !is_llama_server("whisper") &&
+                       std::find(wsvc->command.begin(), wsvc->command.end(), "--convert") == wsvc->command.end() && wsvc->requires_paths.size() == 2 && !wsvc->ready_pattern.empty(),
+                   "services/whisper.json: loopback on 8083, the current.bin link and the VAD model, needs_gpu, no --convert");
             unsetenv("MAIC_CONTEXT_2");
             expect(expand_vars("${MAIC_CONTEXT_2}") == "8192", "${MAIC_CONTEXT_2} expands to 8192 when nothing sets it");
             setenv("MAIC_CONTEXT_2", "4096", 1);
@@ -1188,6 +1231,8 @@ int main() {
         fit = budget_sentence({{"Qwen3.5-4B-Q4_K_M", 8192}}, mroot, -1, false, -1);
         expect(fit.find("= 3.5 GB estimated; the card's size is unknown") != std::string::npos, "no card figure: the estimate alone, labelled: " + fit);
         expect(budget_sentence({{"nope", 8192}}, mroot, 8L << 30, false, -1).empty(), "nothing to say about models that are not there");
+        fit = budget_sentence({{"Qwen3.5-4B-Q4_K_M", 16384}, {"", 0, "whisper distil-large-v3", (1449L << 20) + (300L << 20)}}, mroot, 8L << 30, false, -1);
+        expect(fit == "4B at 16k (4.0 GB est.) + whisper distil-large-v3 (1.7 GB est.) = 5.7 GB of 8.0 GB: fits with ComfyUI stopped", "the whisper server's model counts: " + fit);
         fs::remove_all(mroot);
 
         // The story-chat workflow's deep pass points at the side server.

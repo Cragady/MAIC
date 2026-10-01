@@ -37,6 +37,18 @@ branch head. vendor/manifest.json is the ledger `maic vendor` reads.
         <state>/vendor/llamacpp/current-model.gguf (`maic vendor use llamacpp PATH`).
         Tags are b<build number>; bump to the newest one, never a branch head.
 
+    vendor/whisper.cpp
+        https://github.com/ggml-org/whisper.cpp
+        pinned at v1.9.4  (927cfce34f31707e17f2bff35c349632fb9e2c3a)
+        whisper.cpp is MIT. Nothing from it is copied into MAIC; the submodule is
+        the only source. Built by vendor/whispercpp.sh OUT OF TREE into
+        <state>/vendor/whisper.cpp-build (Release, GGML_CUDA when nvcc is found,
+        WHISPER_CURL off so nothing in it downloads a model, no ffmpeg, no SDL2):
+        whisper-server and whisper-cli, linked in as <state>/vendor/whisper/bin.
+        The model whisper-server loads is the link <models_dir>/whisper/current.bin
+        (`maic vendor use whisper FILE`). diction is its client (docs/diction.md).
+        Tags are vX.Y.Z; bump to the newest one, never a branch head.
+
 WHY SUBMODULES AND NOT COPIES. A copy can be incomplete without anyone noticing
 (a .gitignore written from a guess once dropped thirteen real source files from a
 LuaJIT copy elsewhere; only a fresh clone would have shown it). A submodule's

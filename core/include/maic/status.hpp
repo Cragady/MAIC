@@ -74,6 +74,11 @@ struct GpuReport {
     long comfyui_vram_used = -1;   // bytes, from ComfyUI's /system_stats; -1 when unknown
     long comfyui_vram_total = -1;
     long card_total = -1;          // bytes: ComfyUI's figure, else nvidia-smi's, else -1
+    // The whisper server (services/whisper.json), when there is one: it loads its model at start and keeps it.
+    bool has_whisper = false;
+    bool whisper_running = false;
+    std::string whisper_model;     // the file <models_dir>/whisper/current.bin points at; "" when none is linked
+    long whisper_bytes = -1;       // its size on disk
     std::string text() const;      // a few lines for a person
 };
 GpuReport gpu_report(const std::vector<ServiceDef>& services);
@@ -85,6 +90,8 @@ std::string gpu_free(const std::vector<ServiceDef>& services, const std::string&
 struct ModelPlan {
     std::string id;   // the router id (file stem or folder name)
     int context = 0;  // tokens
+    std::string label;      // set with `bytes` for a model that is not a GGUF under the root (whisper's)
+    long bytes = -1;        // its footprint as given, instead of one computed from `id` and `context`
 };
 // What a plan takes on the card: the GGUF's size on disk (an mmproj beside it counts) plus a rough KV cache
 // estimate from the context and the parameter count in the name (65 MB per 1k tokens for a 4B, 130 for a
@@ -94,7 +101,8 @@ long model_footprint(const ModelPlan& plan, const std::filesystem::path& models_
 // stopped". `card_total` and `comfyui_used` in bytes, -1 when unknown. "" when no plan has a file.
 std::string budget_sentence(const std::vector<ModelPlan>& plans, const std::filesystem::path& models_root, long card_total, bool comfyui_running, long comfyui_used);
 // The sentence for this machine: each llama server's resident model, else the one settings would send it
-// (`model` and `context` for llamacpp; `reviewer_model` on llamacpp-2, else the same model, with `context_2`).
+// (`model` and `context` for llamacpp; `reviewer_model` on llamacpp-2, else the same model, with `context_2`),
+// and the whisper server's model when one is linked (its file plus an estimate for its buffers).
 std::string gpu_budget(const GpuReport& report, const Settings& settings, long card_total_fallback = -1);
 
 // Why a service died, from the tail of its log: a CUDA out of memory, a missing module, a port in use, and
