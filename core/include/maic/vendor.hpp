@@ -71,6 +71,12 @@ std::filesystem::path llamacpp_models_root();
 std::string llamacpp_current_id();
 // "llamacpp/current" -> "llamacpp/<id of the linked GGUF>"; anything else unchanged. "" id leaves it as is.
 std::string resolve_model_alias(const std::string& model);
+// <models_dir>/fim: the code completion models services/llamacpp-fim.json serves, each in a folder, and
+// current.gguf, a relative link to the one `maic models install ID --link` chose (the router's model "current").
+std::filesystem::path fim_models_root();
+std::filesystem::path fim_model_link();
+// The folder current.gguf points into, "" when none is linked.
+std::string fim_current_id();
 // Router ids of the GGUFs under the models root, sorted.
 std::vector<std::string> llamacpp_model_ids();
 void vendor_use(const VendorEntry& e, const std::filesystem::path& model);
@@ -79,5 +85,10 @@ void vendor_use(const VendorEntry& e, const std::filesystem::path& model);
 // refuses to keep it unless its SHA-256 matches `sha256`, then links it as the current model. The only
 // network access in MAIC besides `vendor add`, and only because the user typed it.
 std::filesystem::path vendor_model(const VendorEntry& e, const std::string& url, const std::string& sha256, const std::filesystem::path& into = {});
+// The checked download under both: curl into <dir>/<name>.part, kept as <dir>/<name> only when its SHA-256 is
+// `sha256`, else discarded. `name` "" takes it from the URL. Refuses an existing file; links nothing.
+std::filesystem::path download_verified(const std::string& url, const std::string& sha256, const std::filesystem::path& dir, std::string name = "");
+// sha256sum's hex digest of a file (through a link), "" when it cannot be read.
+std::string file_sha256(const std::filesystem::path& p);
 
 }  // namespace maic

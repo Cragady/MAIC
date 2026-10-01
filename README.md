@@ -94,6 +94,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [cai.md](docs/cai.md): cai-tools, all of it, as `cai TOOL` and `maic cai TOOL`: trans-fairy, redact, read, fabricate and the rest, on MAIC sessions as on Claude Code transcripts; `trans-fairy-write`'s backups.
 * [llamacpp.md](docs/llamacpp.md): llama.cpp, the local server: every sampler (XTC, DRY, top-n-sigma), logit bias, grammars, the models directory and `maic vendor model`.
 * [vendor.md](docs/vendor.md): the services MAIC installs for itself (llama.cpp, whisper.cpp, ComfyUI) at pinned versions, and the artifact tree.
+* [models.md](docs/models.md): the model catalog, `maic models`: every model MAIC installs, pinned and hashed, what each is for, what fits an 8 GB card, and code completion in neovim with llama.vim and Qwen2.5-Coder.
 * [diction.md](docs/diction.md): `maic diction`, narrating out loud into a markdown document: whisper-server for the speech, a local scribe on llama-server, nothing leaving the machine.
 * [bans.md](docs/bans.md) — string, regex and token bans, XTC, and why MAIC bans after the fact rather than by constrained decoding.
 * [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.

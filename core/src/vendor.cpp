@@ -269,12 +269,23 @@ fs::path whisper_models_root() {
     return (s.models_dir.empty() ? state_dir() / "models" : fs::path(s.models_dir)) / "whisper";
 }
 
+fs::path fim_models_root() {
+    Settings s = load_settings();
+    return (s.models_dir.empty() ? state_dir() / "models" : fs::path(s.models_dir)) / "fim";
+}
+
+fs::path fim_model_link() {
+    return fim_models_root() / "current.gguf";
+}
+
 namespace {
 
-// A GGUF's router id: the subdirectory's name when it sits in one (the multimodal layout), else its stem.
+// A GGUF's router id: the subdirectory's name when it sits in one (the multimodal layout), else its stem. The
+// file itself is not resolved: Qwen3.5-9B-Q4_K_M-text/x.gguf is a link into another folder and keeps its own id.
 std::string router_id(const fs::path& gguf, const fs::path& root) {
     std::error_code ec;
-    fs::path rel = fs::weakly_canonical(gguf, ec).lexically_relative(fs::weakly_canonical(root, ec));
+    fs::path abs = fs::absolute(gguf, ec);
+    fs::path rel = (fs::weakly_canonical(abs.parent_path(), ec) / abs.filename()).lexically_relative(fs::weakly_canonical(root, ec));
     if (rel.empty() || *rel.begin() == "..") return "";
     if (rel.has_parent_path() && !rel.parent_path().empty()) return rel.begin()->string();
     return gguf.stem().string();
@@ -289,6 +300,14 @@ std::string llamacpp_current_id() {
     fs::path link = vendor_model_link(*e);
     if (!fs::is_symlink(link, ec)) return "";
     return router_id(fs::read_symlink(link, ec), llamacpp_models_root());
+}
+
+std::string fim_current_id() {
+    std::error_code ec;
+    fs::path link = fim_model_link();
+    if (!fs::is_symlink(link, ec)) return "";
+    fs::path target = fs::read_symlink(link, ec);
+    return router_id(target.is_absolute() ? target : link.parent_path() / target, fim_models_root());
 }
 
 std::string resolve_model_alias(const std::string& model) {
@@ -321,7 +340,9 @@ std::vector<std::string> llamacpp_model_ids() {
 void vendor_use(const VendorEntry& e, const fs::path& model) {
     if (e.name != "llamacpp" && e.name != "whisper") throw std::runtime_error("maic vendor use picks the model for llamacpp or whisper; " + e.name + " takes no model");
     std::error_code ec;
-    fs::path target = fs::weakly_canonical(model, ec);
+    // The folder is resolved, the file is not: a link such as the text-only 9B's stays the model it names.
+    fs::path abs = fs::absolute(model, ec);
+    fs::path target = fs::weakly_canonical(abs.parent_path(), ec) / abs.filename();
     if (!fs::is_regular_file(target, ec)) throw std::runtime_error("not a file: " + model.string());
     if (e.name == "whisper") {
         if (!is_ggml(target)) throw std::runtime_error(model.string() + " is not a whisper.cpp model (no .bin suffix and no ggml header)");
@@ -342,36 +363,10 @@ void vendor_use(const VendorEntry& e, const fs::path& model) {
 
 fs::path vendor_model(const VendorEntry& e, const std::string& url, const std::string& sha256, const fs::path& into) {
     if (e.name != "llamacpp" && e.name != "whisper") throw std::runtime_error("maic vendor model fetches a model for llamacpp or whisper; " + e.name + " takes no model");
-    require_armed("download a model");
-    if (sha256.size() != 64 || sha256.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
-        throw std::runtime_error("the SHA-256 is required (64 hex characters; Hugging Face shows it under the file's LFS details), so a bad download is never linked");
-    }
     fs::path dir = into;
     if (dir.empty()) dir = e.name == "whisper" ? whisper_models_root() : llamacpp_models_root();
-    fs::create_directories(dir);
-    std::string name = url.substr(url.find_last_of('/') + 1);
-    if (auto q = name.find('?'); q != std::string::npos) name = name.substr(0, q);
-    if (name.empty() || name.find("..") != std::string::npos) throw std::runtime_error("cannot take a file name from " + url);
-    fs::path part = dir / (name + ".part"), final = dir / name;
-    std::error_code ec;
-    if (fs::exists(final, ec)) throw std::runtime_error(final.string() + " already exists; maic vendor use " + e.name + " " + final.string() + " links it");
-    std::cout << "downloading " << name << " ...\n";
-    run_or_throw("curl -fL --retry 3 --progress-bar -o " + sh(part.string()) + " " + sh(url), "download");
-    std::string want = sha256;
-    for (auto& c : want) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    std::string have;
-    {
-        FILE* p = popen(("sha256sum " + sh(part.string())).c_str(), "r");
-        char buf[128] = "";
-        if (p && fgets(buf, sizeof(buf), p)) have = std::string(buf).substr(0, 64);
-        if (p) pclose(p);
-    }
-    if (have != want) {
-        fs::remove(part, ec);
-        throw std::runtime_error("SHA-256 mismatch for " + name + ": expected " + want + ", got " + (have.empty() ? "nothing" : have) + "; the file was discarded");
-    }
-    fs::rename(part, final);
-    std::cout << "sha256 ok: " << final.string() << "\n";
+    fs::path final = download_verified(url, sha256, dir);
+    std::string name = final.filename().string();
     if (e.name == "whisper" && name.rfind("ggml-silero", 0) == 0) {
         std::cout << "the VAD model: services/whisper.json loads it by this name; the current speech model is unchanged\n";
     } else if (e.name == "whisper") {
@@ -383,6 +378,43 @@ fs::path vendor_model(const VendorEntry& e, const std::string& url, const std::s
     } else {
         vendor_use(e, final);
     }
+    return final;
+}
+
+std::string file_sha256(const fs::path& p) {
+    std::string have;
+    FILE* f = popen(("sha256sum " + sh(p.string()) + " 2>/dev/null").c_str(), "r");
+    char buf[128] = "";
+    if (f && fgets(buf, sizeof(buf), f) && std::string(buf).size() >= 64) have = std::string(buf).substr(0, 64);
+    if (f) pclose(f);
+    return have;
+}
+
+fs::path download_verified(const std::string& url, const std::string& sha256, const fs::path& dir, std::string name) {
+    require_armed("download a model");
+    if (sha256.size() != 64 || sha256.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
+        throw std::runtime_error("the SHA-256 is required (64 hex characters; Hugging Face shows it under the file's LFS details), so a bad download is never linked");
+    }
+    if (name.empty()) {
+        name = url.substr(url.find_last_of('/') + 1);
+        if (auto q = name.find('?'); q != std::string::npos) name = name.substr(0, q);
+    }
+    if (name.empty() || name.find("..") != std::string::npos || name.find('/') != std::string::npos) throw std::runtime_error("cannot take a file name from " + url);
+    fs::create_directories(dir);
+    fs::path part = dir / (name + ".part"), final = dir / name;
+    std::error_code ec;
+    if (fs::exists(final, ec) || fs::is_symlink(final, ec)) throw std::runtime_error(final.string() + " already exists; maic vendor use links a file that is there");
+    std::cout << "downloading " << name << " ...\n";
+    run_or_throw("curl -fL --retry 3 --progress-bar -o " + sh(part.string()) + " " + sh(url), "download");
+    std::string want = sha256;
+    for (auto& c : want) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    std::string have = file_sha256(part);
+    if (have != want) {
+        fs::remove(part, ec);
+        throw std::runtime_error("SHA-256 mismatch for " + name + ": expected " + want + ", got " + (have.empty() ? "nothing" : have) + "; the file was discarded");
+    }
+    fs::rename(part, final);
+    std::cout << "sha256 ok: " << final.string() << "\n";
     return final;
 }
 

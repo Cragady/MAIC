@@ -17,6 +17,7 @@
 #include "maic/lua.hpp"
 #include "maic/places.hpp"
 #include "maic/lua_tools.hpp"
+#include "maic/models.hpp"
 #include "maic/script_tools.hpp"
 #include "maic/vendor.hpp"
 #include "server.hpp"
@@ -30,6 +31,7 @@
 #include <sstream>
 #include <cctype>
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -86,6 +88,12 @@ void usage(std::ostream& out = std::cerr) {
                  "                             from models_dir (no network; add and adopt do this too)\n"
                  "  vendor unlink NAME         stop using it (nothing is deleted)\n"
                  "  model resolve NAME         a preset name or provider/model as JSON: provider, kind, base_url, model, context\n"
+                 "  models                     the model catalog: id, role, size, installed, current, presets (maic help models)\n"
+                 "  models info ID             what it is good and bad at, its license, files, hashes and VRAM estimate\n"
+                 "  models install ID [--link] download its files checked by SHA-256 (present ones are kept), --link: make it\n"
+                 "                             the current model of its server (llamacpp, whisper, or llamacpp-fim)\n"
+                 "  models verify ID | remove ID [--yes] | check   hash what is there; delete it (never shared weights);\n"
+                 "                             validate the catalog offline\n"
                  "  diction [ARGS...]          narrate out loud into a markdown document: mic, whisper-server, a local scribe\n"
                  "                             (maic help diction is its own --help; docs/diction.md)\n"
                  "  lua [FILE [args...] | -e CODE]   Lua (vendored LuaJIT) here, with the maic table; no arguments: a REPL (maic help lua)\n"
@@ -103,7 +111,7 @@ void usage(std::ostream& out = std::cerr) {
                  "  up <service...|all>        start services\n"
                  "  down <service...|all>      stop services MAIC started\n"
                  "  logs <service> [lines]     the end of a service's log (default 40 lines; docker logs for a container)\n"
-                 "  gpu [free [all|llamacpp|llamacpp-2|comfyui]]   who holds the card (each llama server's resident model, ComfyUI's\n"
+                 "  gpu [free [all|llamacpp|llamacpp-2|llamacpp-fim|comfyui]]   who holds the card (each llama server's resident model, ComfyUI's\n"
                  "                             VRAM) and whether two models fit it; free unloads models without stopping anything\n"
                  "  path [NAME] [--copy]       every place maic knows (workspace, sessions, models, workflows, ...) or one path;\n"
                  "                             --copy puts it on the clipboard; a unique prefix is enough\n"
@@ -249,14 +257,116 @@ int cmd_gpu(const std::vector<std::string>& args) {
         maic::GpuReport report = maic::gpu_report(services);
         std::cout << report.text();
         if (std::string fit = maic::gpu_budget(report, maic::load_settings()); !fit.empty()) std::cout << fit << "\n";
-        std::cout << "maic gpu free [all|llamacpp|llamacpp-2|comfyui] releases memory without stopping anything\n";
+        std::cout << "maic gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|comfyui] releases memory without stopping anything\n";
         return 0;
     }
     if (args[0] == "free") {
         std::cout << maic::gpu_free(services, args.size() > 1 ? args[1] : "all");
         return 0;
     }
-    throw std::runtime_error("maic gpu [show | free [all|llamacpp|llamacpp-2|comfyui]]");
+    throw std::runtime_error("maic gpu [show | free [all|llamacpp|llamacpp-2|llamacpp-fim|comfyui]]");
+}
+
+std::string human_bytes(uintmax_t b);
+
+// `maic models`: the catalog (models/catalog.json plus ~/.config/maic/models.json), what is installed, and
+// installing, verifying and removing by id. docs/models.md
+int cmd_models(const std::vector<std::string>& args) {
+    const std::string sub = args.empty() ? "list" : args[0];
+    if (sub == "check") {
+        std::ifstream in(maic::catalog_path());
+        if (!in) throw std::runtime_error("no model catalog at " + maic::catalog_path().string());
+        nlohmann::json shipped = nlohmann::json::parse(in, nullptr, false, true), user = nlohmann::json::object();
+        if (shipped.is_discarded()) throw std::runtime_error(maic::catalog_path().string() + " is not valid JSON");
+        std::error_code ec;
+        if (std::filesystem::exists(maic::user_catalog_path(), ec)) {
+            std::ifstream uin(maic::user_catalog_path());
+            user = nlohmann::json::parse(uin, nullptr, false, true);
+            if (user.is_discarded()) throw std::runtime_error(maic::user_catalog_path().string() + " is not valid JSON");
+        }
+        auto problems = maic::check_catalog(shipped, user);
+        for (const auto& p : problems) std::cout << "FAIL  " << p << "\n";
+        size_t n = maic::parse_catalog(maic::merge_catalog(shipped, user)).size();
+        std::cout << n << " entries (" << maic::catalog_path().string() << (user.empty() ? "" : " and " + maic::user_catalog_path().string()) << "), "
+                  << problems.size() << " problem" << (problems.size() == 1 ? "" : "s") << "\n";
+        return problems.empty() ? 0 : 1;
+    }
+    auto all = maic::load_catalog();
+    if (sub == "list") {
+        std::vector<std::pair<std::string, std::string>> presets;
+        for (const auto& p : maic::load_settings().presets) presets.emplace_back(p.name, p.model);
+        std::printf("%-28s %-10s %-9s %-10s %-9s %s\n", "id", "role", "size", "installed", "current", "presets");
+        for (const auto& e : all) {
+            long bytes = 0;
+            for (const auto& f : e.files) bytes += f.size;
+            std::string size = e.shares_entry.empty() ? human_bytes(static_cast<uintmax_t>(bytes)) : "link";
+            bool installed = maic::entry_installed(e, all);
+            bool some = false;
+            for (const auto& f : e.files) some = some || std::filesystem::exists(maic::entry_dir(e) / f.name);
+            std::string names;
+            for (const auto& p : maic::entry_presets(e, presets)) names += (names.empty() ? "" : ", ") + p;
+            std::printf("%-28s %-10s %-9s %-10s %-9s %s\n", e.id.c_str(), e.role.c_str(), size.c_str(), installed ? "yes" : some ? "partial" : "no",
+                        maic::entry_current(e) ? e.root.c_str() : "", names.c_str());
+        }
+        std::cout << "models_dir: " << maic::models_root("llamacpp").parent_path().string() << " (llamacpp/, whisper/, fim/)\n"
+                  << "maic models info ID · install ID [--link] · verify ID · remove ID · check (docs/models.md)\n";
+        return 0;
+    }
+    if (args.size() < 2) throw std::runtime_error("usage: maic models [list | info ID | install ID [--link] | verify ID | remove ID [--yes] | check]");
+    const maic::CatalogEntry* e = maic::find_entry(all, args[1]);
+    if (!e) throw std::runtime_error("no model '" + args[1] + "' in the catalog (maic models lists them)");
+    bool link = false, yes = false;
+    for (size_t i = 2; i < args.size(); ++i) {
+        if (args[i] == "--link") link = true;
+        else if (args[i] == "--yes" || args[i] == "-y") yes = true;
+        else throw std::runtime_error("unknown option " + args[i]);
+    }
+    if (sub == "info") {
+        std::vector<std::pair<std::string, std::string>> presets;
+        for (const auto& p : maic::load_settings().presets) presets.emplace_back(p.name, p.model);
+        std::cout << e->id << ": " << e->name << "\n\n" << e->brief << "\n\n";
+        std::cout << "role:      " << e->role << "\n";
+        std::cout << "license:   " << e->license << (e->license_url.empty() ? "" : "  " + e->license_url) << "\n";
+        std::cout << "source:    " << e->repo << " at " << e->revision << "\n";
+        std::cout << "installs:  " << maic::entry_dir(*e).string() << (maic::entry_installed(*e, all) ? "  (installed" : "  (not installed") << (maic::entry_current(*e) ? ", current " + e->root + " model)" : ")") << "\n";
+        if (!e->shares_entry.empty()) std::cout << "shares:    " << e->shares_entry << "'s " << e->shares_file << " through a relative link; nothing is copied\n";
+        for (const auto& f : e->files) {
+            std::cout << "file:      " << f.name << "  " << f.kind << "  " << human_bytes(static_cast<uintmax_t>(f.size)) << "  sha256 " << f.sha256 << "\n"
+                      << "           " << f.url << "\n";
+        }
+        if (std::string v = maic::vram_line(*e); !v.empty()) std::cout << "vram:      " << v << "\n";
+        if (e->context) std::cout << "context:   " << e->context << " tokens recommended\n";
+        std::string names;
+        for (const auto& p : maic::entry_presets(*e, presets)) names += (names.empty() ? "" : ", ") + p;
+        std::cout << "presets:   " << (names.empty() ? "none" : names) << "\n";
+        auto deps = maic::dependents(*e, all);
+        for (const auto& d : deps) std::cout << "needed by: " << d << " (installed; it links this entry's weights)\n";
+        if (!e->notes.empty()) std::cout << "notes:     " << e->notes << "\n";
+        return 0;
+    }
+    if (sub == "install") {
+        maic::install_entry(*e, all, link, std::cout);
+        return 0;
+    }
+    if (sub == "verify") return maic::verify_entry(*e, std::cout) ? 0 : 1;
+    if (sub == "remove") {
+        if (std::string why = maic::remove_blocker(*e, all); !why.empty()) throw std::runtime_error("refusing to remove " + e->id + ": " + why);
+        if (!yes) {
+            if (!isatty(STDIN_FILENO)) {
+                std::cerr << "maic: removing deletes files; off a terminal it needs --yes (maic models remove " << e->id << " --yes)\n";
+                return 2;
+            }
+            std::cout << "Remove " << e->id << " from " << maic::entry_dir(*e).string() << (e->shares_entry.empty() ? "" : " (its link only)") << "? [y/N] " << std::flush;
+            std::string line;
+            if (!std::getline(std::cin, line) || (line != "y" && line != "Y" && line != "yes")) {
+                std::cout << "nothing removed\n";
+                return 0;
+            }
+        }
+        maic::remove_entry(*e, all, std::cout);
+        return 0;
+    }
+    throw std::runtime_error("usage: maic models [list | info ID | install ID [--link] | verify ID | remove ID [--yes] | check]");
 }
 
 int cmd_down(const std::vector<maic::ServiceDef>& services) {
@@ -1360,6 +1470,7 @@ int main(int argc, char** argv) {
         if (cmd == "open") return cmd_open(cargs);
         if (cmd == "cd") return cmd_cd(cargs);
         if (cmd == "gpu" || cmd == "vram") return cmd_gpu(cargs);
+        if (cmd == "models") return cmd_models(cargs);
         if (cmd == "shell-init") {
             std::string shell = cargs.empty() ? "" : cargs[0];
             if (shell.empty()) {

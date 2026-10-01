@@ -1,8 +1,9 @@
 // `maic setup`: the first run, step by step, out of the pieces that exist (doctor's checks, settings init,
-// vendor add, vendor model, the tripwire installer), each behind a question.
+// vendor add, the model catalog, the tripwire installer), each behind a question.
 #include "setup.hpp"
 
 #include "doctor.hpp"
+#include "maic/models.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
@@ -11,6 +12,7 @@
 
 #include <unistd.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -24,39 +26,12 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// The GGUFs `maic vendor model` can fetch without a hash lookup: upstream unsloth files, hashes from Hugging
-// Face's LFS details (docs/llamacpp.md). A model with a projector lives in a folder named after it.
-struct KnownModel {
-    const char* id;
-    const char* repo;
-    const char* sha256;
-    const char* mmproj;  // nullptr: text only
-    const char* mmproj_sha256;
-    const char* size;
-};
-const KnownModel KNOWN[] = {
-    {"Qwen3.5-4B-Q4_K_M", "unsloth/Qwen3.5-4B-GGUF", "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4", "mmproj-F16.gguf",
-     "cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864", "2.5 GB plus a 0.8 GB vision projector"},
-    {"Qwen3.5-9B-Q4_K_M", "unsloth/Qwen3.5-9B-GGUF", "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8", nullptr, nullptr, "5.3 GB"},
-};
-
-std::string hf_url(const KnownModel& m, const std::string& file) {
-    return std::string("https://huggingface.co/") + m.repo + "/resolve/main/" + file;
-}
-
 long meminfo_gb() {
     std::ifstream in("/proc/meminfo");
     for (std::string line; std::getline(in, line);) {
         if (line.rfind("MemTotal:", 0) == 0) return std::atol(line.c_str() + 9) / 1024 / 1024;
     }
     return 0;
-}
-
-bool have_model(const std::string& id) {
-    for (const auto& m : llamacpp_model_ids()) {
-        if (m == id) return true;
-    }
-    return false;
 }
 
 }  // namespace
@@ -127,9 +102,9 @@ int run_setup() {
         if (ask(what)) step(std::string("vendor add ") + name, [&] { vendor_add(*e); });
     }
 
-    // A model: the recommendation for this card, the other known one offered too.
+    // A model from the catalog (models/catalog.json, docs/models.md): the agent and vision GGUFs, the
+    // recommendation for this card marked. Each install checks every file's SHA-256 and keeps what is there.
     Recommendation rec = recommend(detect_gpu(), meminfo_gb());
-    auto lc = find_vendor("llamacpp");
     std::cout << "models under " << llamacpp_models_root().string() << ": ";
     auto ids = llamacpp_model_ids();
     if (ids.empty()) std::cout << "none\n";
@@ -138,17 +113,22 @@ int run_setup() {
         std::cout << "\n";
     }
     std::cout << "  this machine: " << rec.why << " (quick " << rec.quick << ", deep " << rec.deep << ")\n";
-    for (const auto& m : KNOWN) {
-        if (have_model(m.id)) continue;
-        std::string id = m.id;
-        std::string role = id.rfind(rec.quick, 0) == 0 ? ", the recommended quick model" : id.rfind(rec.deep, 0) == 0 ? ", the recommended deep model" : "";
-        std::string q = "Fetch " + id + " (" + m.size + ", checked by SHA-256" + role + ")?";
-        if (!lc || !ask(q)) continue;
-        step(std::string("vendor model ") + m.id, [&] {
-            fs::path into = m.mmproj ? llamacpp_models_root() / m.id : llamacpp_models_root();
-            vendor_model(*lc, hf_url(m, std::string(m.id) + ".gguf"), m.sha256, into);
-            if (m.mmproj) vendor_model(*lc, hf_url(m, m.mmproj), m.mmproj_sha256, into);
-        });
+    std::vector<CatalogEntry> catalog;
+    try {
+        catalog = load_catalog();
+    } catch (const std::exception& e) {
+        std::cerr << "maic: model catalog: " << e.what() << "\n";
+    }
+    for (const auto& m : catalog) {
+        if (m.root != "llamacpp" || (m.role != "agent" && m.role != "vision") || entry_installed(m, catalog)) continue;
+        long bytes = 0;
+        for (const auto& f : m.files) bytes += m.shares_entry.empty() ? f.size : 0;
+        char size[32];
+        snprintf(size, sizeof(size), "%.1f GB", static_cast<double>(bytes) / (1024.0 * 1024 * 1024));
+        std::string what = m.shares_entry.empty() ? std::string(size) : "a link to " + m.shares_entry + "'s weights";
+        std::string role = m.dir.rfind(rec.quick + "-", 0) == 0 ? ", the recommended quick model" : m.dir.rfind(rec.deep + "-", 0) == 0 ? ", the recommended deep model" : "";
+        if (!ask("Fetch " + m.id + " (" + what + ", " + m.role + ", checked by SHA-256" + role + "; maic models info " + m.id + ")?")) continue;
+        step("models install " + m.id, [&] { install_entry(m, catalog, llamacpp_current_id().empty(), std::cout); });
     }
 
     if (!fs::exists("/usr/local/sbin/maic-lock")) {
