@@ -95,6 +95,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.
 * [opencode-quick-wins.md](docs/opencode-quick-wins.md) — 23 small, ranked improvements to take from opencode, with file pointers.
 * [cleanroom.md](docs/cleanroom.md) — what may go into MAIC, where the design came from, third-party licenses.
+* [testing.md](docs/testing.md): how to run every suite, the build gate (`scripts/check.sh`, the pre-push hook), the flake rules, the pty harness for the TUI, the fuzzer, the asan preset.
 * [remote.md](docs/remote.md): remote access: `maic-server`, the phone web client, tokens and TLS, the API, the relay design, why the tripwire cannot be reset remotely.
 * [roadmap.md](docs/roadmap.md): everything MAIC should still become: the relay and a native phone client, the harness layers, cai-tools, tools, editor, services.
 * [comfyui-setup.md](docs/comfyui-setup.md) — ComfyUI in its own venv, models on the external drive.
@@ -140,7 +141,7 @@ Build (needs `VCPKG_ROOT` set, which your shell does; vcpkg fetches nlohmann-jso
 cd ~/dev2/MAIC
 cmake --preset default
 cmake --build --preset default
-ctest --test-dir build                           # harness + sandbox tests
+ctest --preset default                           # every suite; scripts/check.sh does all three and gates on each (docs/testing.md)
 ln -s ~/dev2/MAIC/build/cli/maic ~/bin/maic      # once
 sudo ./harness/install-tripwire.sh               # once, see docs/harness.md
 ```

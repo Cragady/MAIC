@@ -12,7 +12,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
+#include <mutex>
 #include <thread>
 
 using namespace maic;
@@ -21,16 +23,23 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// An OpenAI-compatible /v1/chat/completions that answers every chat with a slow SSE stream of the last user
+// An OpenAI-compatible /v1/chat/completions that answers every chat with an SSE stream of the last user
 // message's text, echoed four characters at a time. mid_system keeps later system messages as system turns, so
 // the tests can look for them; context_window matches the shipped llamacpp provider.
+//
+// Tests that act in the middle of a reply (cancel, deliver-now) never time their move against the stream:
+// with hold_left > 0 the next reply writes its first chunk and then idles, sending empty keepalive chunks
+// until the agent hangs up (the write fails) or ten seconds pass, so a broken cancel fails instead of hanging.
+// wait_streaming(n) blocks until the n-th reply has written its first chunk.
 struct FakeServer {
     httplib::Server srv;
     int port = 0;
     std::thread thread;
     std::vector<json> requests;
     std::mutex mu;
-    int delay_ms = 100;
+    std::condition_variable cv;
+    int hold_left = 0;
+    int streaming = 0;
     int usage_input = 0;  // reported as prompt_tokens in the final usage chunk when set
     json tool_call;       // when set and calls_left > 0, the reply is this one tool call ({"name", "arguments"})
     int calls_left = 0;
@@ -51,13 +60,23 @@ struct FakeServer {
     }
     static std::string event(const json& j) { return "data: " + j.dump() + "\n\n"; }
 
+    void wait_streaming(int n) {
+        std::unique_lock lock(mu);
+        cv.wait(lock, [&] { return streaming >= n; });
+    }
+
     FakeServer() {
         port = srv.bind_to_any_port("127.0.0.1");
         srv.Post("/v1/chat/completions", [this](const httplib::Request& req, httplib::Response& res) {
             json body = json::parse(req.body);
+            bool hold = false;
             {
                 std::lock_guard lock(mu);
                 requests.push_back(body);
+                if (hold_left > 0) {
+                    --hold_left;
+                    hold = true;
+                }
             }
             std::string last;
             for (const auto& m : body["messages"]) {
@@ -74,7 +93,6 @@ struct FakeServer {
                 std::string r = reply(body);
                 if (!r.empty()) echo = r;
             }
-            int delay = delay_ms;
             int usage = usage_input;
             bool call_usage = usage_on_calls;
             json call;
@@ -84,12 +102,26 @@ struct FakeServer {
                 --calls_left;
                 call = tool_call;
             }
-            res.set_chunked_content_provider("text/event-stream", [echo, delay, usage, call, call_usage](size_t, httplib::DataSink& sink) {
+            res.set_chunked_content_provider("text/event-stream", [this, echo, hold, usage, call, call_usage](size_t, httplib::DataSink& sink) {
                 auto write = [&](const std::string& s) { return sink.write(s.data(), s.size()); };
+                // The first chunk is out: tell a waiting test, and idle here while held.
+                auto started = [&] {
+                    std::unique_lock lock(mu);
+                    ++streaming;
+                    cv.notify_all();
+                    if (!hold) return true;
+                    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+                    while (std::chrono::steady_clock::now() < deadline) {
+                        cv.wait_for(lock, std::chrono::milliseconds(20));
+                        if (!write(event({{"choices", {{{"index", 0}, {"delta", json::object()}}}}}))) return false;
+                    }
+                    return true;
+                };
                 if (!call.is_null()) {
                     json tc = {{"index", 0}, {"id", "call_1"}, {"type", "function"},
                                {"function", {{"name", call["name"]}, {"arguments", call["arguments"].dump()}}}};
                     write(event({{"choices", {{{"index", 0}, {"delta", {{"content", ""}, {"tool_calls", {tc}}}}}}}}));
+                    if (!started()) return false;
                     json done = {{"choices", {{{"index", 0}, {"delta", json::object()}, {"finish_reason", "tool_calls"}}}}};
                     if (usage && call_usage) done["usage"] = {{"prompt_tokens", usage}, {"completion_tokens", 5}};
                     write(event(done));
@@ -99,7 +131,7 @@ struct FakeServer {
                 }
                 for (size_t i = 0; i < echo.size(); i += 4) {
                     if (!write(event({{"choices", {{{"index", 0}, {"delta", {{"content", echo.substr(i, 4)}}}}}}}))) return false;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+                    if (i == 0 && !started()) return false;
                 }
                 json done = {{"choices", {{{"index", 0}, {"delta", json::object()}, {"finish_reason", "stop"}}}}};
                 if (usage) done["usage"] = {{"prompt_tokens", usage}, {"completion_tokens", 5}};
@@ -189,9 +221,12 @@ bool offers_tool(const json& body, const std::string& name) {
 
 int main() {
     setenv("MAIC_TRIPWIRE_FILE", ("/tmp/maic-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);  // never the machine's lock
-    fs::path ws = fs::temp_directory_path() / "maic-agent-test";
+    // Everything this run touches is its own: the workspace and the sessions under it carry the pid, so two
+    // runs at once (another worktree's ctest) never see each other's files, and ~/.local/state/maic stays as it is.
+    fs::path ws = fs::temp_directory_path() / ("maic-agent-test-" + std::to_string(getpid()));
     fs::remove_all(ws);
     fs::create_directories(ws);
+    setenv("XDG_STATE_HOME", (ws / "state").c_str(), 1);
     std::atomic<bool> no_cancel{false};
 
     section("plain turn");
@@ -212,7 +247,6 @@ int main() {
     section("mode change is appended, not rewritten");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         Recorder r;
@@ -231,12 +265,12 @@ int main() {
     section("mid-turn messages");
     {
         FakeServer fake;
-        fake.delay_ms = 150;
+        fake.hold_left = 1;  // the first reply stays open until the agent hangs up on it
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         Recorder r;
         std::thread poster([&] {
-            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            fake.wait_streaming(1);
             agent.post_message("interjection");
             agent.deliver_now();
         });
@@ -258,7 +292,6 @@ int main() {
     }
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         Recorder r;
@@ -273,7 +306,6 @@ int main() {
     section("compaction");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         fs::path path;
         std::string big(3000, 'x');
         {
@@ -337,7 +369,6 @@ int main() {
             hist.push_back({"assistant", "r" + std::to_string(i)});
         }
         agent.restore(hist);
-        fake.delay_ms = 1;
         Recorder r1;
         agent.submit("go", Origin::Local, r1, no_cancel);  // fake reports no usage: nothing happens
         expect(!has_notice(r1, "compacting"), "no usage report, no auto-compaction");
@@ -352,7 +383,6 @@ int main() {
     section("denial with feedback");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", "note.txt"}, {"content", "hello"}}}};
         fake.calls_left = 1;
         Agent agent(ws, "test");
@@ -376,7 +406,6 @@ int main() {
     section("undo points and nested instructions");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         fs::create_directories(ws / "svc");
         std::ofstream(ws / "svc" / "AGENTS.md") << "svc rules: use tabs";
         std::ofstream(ws / "svc" / "a.txt") << "old\n";
@@ -431,13 +460,14 @@ int main() {
         expect(fs::exists(ws / "svc" / "gone.txt") && !fs::exists(ws / "svc" / "deep" / "moved.txt") && report.find("moved ") == 0 && report.find("back to") != std::string::npos,
                "undo of a move moves the file back: " + report);
         // A move whose destination is outside the workspace asks; No leaves both ends untouched and no undo point.
-        fake.tool_call = json{{"name", "move_file"}, {"arguments", {{"from", "svc/gone.txt"}, {"to", (fs::temp_directory_path() / "maic-agent-test-out.txt").string()}}}};
+        fs::path out_of_ws = ws.string() + "-out.txt";
+        fake.tool_call = json{{"name", "move_file"}, {"arguments", {{"from", "svc/gone.txt"}, {"to", out_of_ws.string()}}}};
         fake.calls_left = 1;
         r.asked.clear();
         r.results.clear();
         agent.submit("move out", Origin::Local, r, no_cancel);
         expect(r.asked.size() == 1 && r.asked[0].reason == "outside the workspace" && r.asked[0].summary.find("move_file svc/gone.txt -> ") == 0 && fs::exists(ws / "svc" / "gone.txt") &&
-                   !fs::exists(fs::temp_directory_path() / "maic-agent-test-out.txt") && r.results.size() == 1 && r.results[0].find("DENIED") == 0 && agent.undo_points().empty(),
+                   !fs::exists(out_of_ws) && r.results.size() == 1 && r.results[0].find("DENIED") == 0 && agent.undo_points().empty(),
                "a move out of the workspace asks on its destination; No moves nothing and saves nothing");
         // A patch touching /etc trips at that file before any file is written; the workspace file in the same patch stays as it was.
         std::ofstream(ws / "svc" / "ok.txt") << "same\n";
@@ -455,7 +485,6 @@ int main() {
     section("repeated calls and budgets");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         std::ofstream(ws / "same.txt") << "x";
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
@@ -495,7 +524,6 @@ int main() {
     section("question and todo");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         Recorder r;
@@ -538,7 +566,6 @@ int main() {
     section("subagents");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         fake.usage_input = 10;
         std::ofstream(ws / "facts.txt") << "the river is wide\n";
         auto delegate_call = [](const char* profile, const char* task) {
@@ -705,7 +732,6 @@ int main() {
                                                                  "}\n";
         std::ofstream(ws / "note.txt") << "the note says heron\n";
         FakeServer fake;
-        fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         agent.mode = Mode::Auto;
@@ -720,7 +746,7 @@ int main() {
         std::string sys = fake.requests[0]["messages"][0]["content"];
         expect(listed && sys.find("read_note") != std::string::npos, "the model is offered the Lua tool beside the built-ins and the briefing names it");
 
-        fs::path outside = fs::temp_directory_path() / "maic-agent-test-escape.txt";
+        fs::path outside = ws.string() + "-escape.txt";
         fs::remove(outside);
         r.reply = {Approval::No, "keep it in the workspace"};
         r.results.clear();
@@ -741,7 +767,6 @@ int main() {
     section("operator instructions set mid-conversation");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         Recorder r;
@@ -761,7 +786,6 @@ int main() {
     section("rules");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         agent.rules = {"answer in French", "be brief"};
@@ -783,7 +807,6 @@ int main() {
     section("the harness protects itself");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         auto attempt = [&](bool smart, const std::string& path) {
             fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", path}, {"content", "return { harness = 'dumb' }"}}}};
             fake.calls_left = 1;
@@ -812,7 +835,6 @@ int main() {
     section("forbidden terms halt a call under any harness");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         auto attempt = [&](bool smart, const json& call) {
             fake.tool_call = call;
             fake.calls_left = 1;
@@ -842,7 +864,6 @@ int main() {
     section("images on a user turn");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         fs::path png = ws / "pic.png";
         std::ofstream(png, std::ios::binary) << std::string("\x89PNG\r\n\x1a\n", 8) << "rest";
         Agent agent(ws, "test");
@@ -876,7 +897,6 @@ int main() {
     section("prefill");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         agent.prefill = "hellooooo ";
@@ -902,7 +922,6 @@ int main() {
     section("operator prompt and instruction switch");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         std::ofstream(ws / "MAIC.md") << "project rule: always say pelican";
         fs::create_directories(ws / "deep");
         std::ofstream(ws / "deep" / "AGENTS.md") << "deep rule";
@@ -943,7 +962,6 @@ int main() {
     section("a request over the context window");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         std::string big(30000, 'x');
         // History far past a 16k window with no usage report yet: the byte estimate compacts before sending.
         Agent agent(ws, "test");
@@ -987,7 +1005,6 @@ int main() {
     section("string and token bans");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         agent.bans.strings = {"pelican"};
@@ -1018,7 +1035,6 @@ int main() {
     section("the reviewer (smart harness) and the dumb harness");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         auto is_review = [](const json& b) { return b["messages"][0]["role"] == "system" && b["messages"][0]["content"].get<std::string>().rfind("You review one action", 0) == 0; };
         auto reviews = [&] {
             int n = 0;
@@ -1076,7 +1092,6 @@ int main() {
         // the model on llamacpp, a llamacpp-2 that answers gets the review with the same model name; a closed
         // port falls back to the main server.
         FakeServer side;
-        side.delay_ms = 1;
         auto side_run = [&](const std::string& side_url, const std::string& path) {
             fake.reply = [&](const json& b) { return is_review(b) ? std::string("ALLOW: fine") : std::string(); };
             side.reply = fake.reply;
@@ -1110,7 +1125,6 @@ int main() {
     section("context files");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         std::ofstream(ws / "ctx.txt") << "the word is heron\n";
@@ -1135,21 +1149,20 @@ int main() {
     section("cancel");
     {
         FakeServer fake;
-        fake.delay_ms = 200;
+        fake.hold_left = 1;  // the reply never ends on its own: only the cancel can bring submit back
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         Recorder r;
         std::atomic<bool> cancel{false};
         std::thread canceller([&] {
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            fake.wait_streaming(1);
             cancel = true;
         });
         auto t0 = std::chrono::steady_clock::now();
         agent.submit("slow", Origin::Local, r, cancel);
         canceller.join();
-        expect(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(2) && has_notice(r, "interrupted"), "Ctrl-C stops the turn quickly");
+        expect(has_notice(r, "interrupted") && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5), "Ctrl-C stops the turn without waiting for the stream");
         cancel = false;
-        fake.delay_ms = 1;
         agent.submit("after", Origin::Local, r, cancel);
         bool marker = false;
         for (const auto& m : fake.requests.back()["messages"]) {
@@ -1161,7 +1174,6 @@ int main() {
     section("session log and resume");
     {
         FakeServer fake;
-        fake.delay_ms = 1;
         fs::path path;
         {
             SessionLog log("agent-test");

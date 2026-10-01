@@ -47,5 +47,6 @@ Where an outside approach and MAIC's rules cannot both hold, MAIC's rules win an
 | OpenSSL 3 (through vcpkg) | Apache-2.0 | HTTPS to remote providers; the server's TLS, self-signed certificate, token hashing and random tokens |
 | bubblewrap (system package, called as a program) | LGPL-2.0+ | the command sandbox; not linked, only executed |
 | glibc regex (`regcomp`) | LGPL, system library | `search_files` |
+| pyte (fetched by `uv run --with pyte`, tests only) | LGPL-3.0 | the terminal emulator behind `tests/tui_driver.py`; not linked, not shipped |
 
 No code has been copied from another project into MAIC's sources.

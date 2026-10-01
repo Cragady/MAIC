@@ -825,6 +825,33 @@ int main() {
         std::string o6 = ph.feed("Certainly! Yes. certainly, as an AI here");
         o6 += ph.flush();
         expect(o6 == "Certainly! Yes. [banned] as an AI here" && !ph.triggered(), "replace mode swaps regex matches, case-sensitively by default: [" + o6 + "]");
+        // Found by the fuzzer: a literal ban after a regex cut in the same chunk used to be the one reported.
+        Bans fzb = rx;
+        fzb.strings = {"here"};
+        BanFilter fz1(fzb);
+        std::string z7 = fz1.feed("Okay, as an assistant I am here");
+        expect(fz1.triggered() && fz1.hit() == "as an assistant" && z7 == "Okay, ", "when a regex cut comes before a literal ban in the same text, the regex hit is reported: " + fz1.hit());
+        // Also from the fuzzer: ^ and $ are the reply's edges, not the edges of what the filter happens to hold.
+        Bans anchored;
+        anchored.patterns = {"^the", "end$"};
+        anchored.window = 8;
+        BanFilter fz2(anchored);
+        std::string z8 = fz2.feed("not at the start, the end");
+        z8 += fz2.feed(" goes on");
+        z8 += fz2.flush();
+        expect(!fz2.triggered() && z8 == "not at the start, the end goes on", "^ and $ do not match in the middle of a reply: [" + z8 + "]");
+        BanFilter fz3(anchored);
+        std::string z9 = fz3.feed("the start");
+        expect(fz3.triggered() && fz3.hit() == "the", "^ matches at the very start");
+        BanFilter fz4(anchored);
+        std::string z10 = fz4.feed("at the end");
+        z10 += fz4.flush();
+        expect(fz4.triggered() && fz4.hit() == "end" && z10 == "at the ", "$ matches at the very end, on flush");
+        Bans mixed = anchored;
+        mixed.strings = {"stop"};
+        BanFilter fz5(mixed);
+        std::string z11 = fz5.feed("at the endstop here");
+        expect(fz5.triggered() && fz5.hit() == "stop" && z11 == "at the end", "a literal cut is not the end of the reply, so $ does not match just before it: hit " + fz5.hit() + " [" + z11 + "]");
         Bans rx2 = rx;
         rx2.ignore_case = true;
         BanFilter pi(rx2, true);
