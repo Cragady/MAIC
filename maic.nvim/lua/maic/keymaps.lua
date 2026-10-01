@@ -68,7 +68,12 @@ function K.describe(h)
   local where
   if m.sid and m.sid > 0 then
     local ok, info = pcall(vim.fn.getscriptinfo, { sid = m.sid })
-    if ok and info[1] then where = vim.fn.fnamemodify(info[1].name, ":~") .. ((m.lnum or 0) > 0 and (":" .. m.lnum) or "") end
+    if ok and info[1] then
+      -- nvim's own Lua (vim/_core/defaults.lua) is named relative to its runtime; a user's file is absolute.
+      local name = info[1].name
+      if name:sub(1, 1) == "/" then name = vim.fn.fnamemodify(name, ":~") else name = "nvim's " .. name end
+      where = name .. ((m.lnum or 0) > 0 and (":" .. m.lnum) or "")
+    end
   elseif m.sid == -8 then
     where = "Lua"
   end

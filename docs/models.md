@@ -118,10 +118,16 @@ The llama.vim spec for lazy.nvim:
         vim.g.llama_config = {
             endpoint_fim = 'http://127.0.0.1:8084/infill',
             model_fim = 'current',  -- the coder `maic models install ID --link` chose
+            keymap_fim_trigger = '<M-f>',      -- off the leader in insert mode (below)
+            keymap_fim_accept_word = '<M-]>',
         }
     end,
 }
 ```
+
+**The keys, and why two of them move.** llama.vim's defaults put two insert-mode keys under the leader: `<leader>llf` asks for a suggestion and `<leader>ll]` accepts its first word. With a Space leader those are insert-mode mappings that start with a space, so every space typed in insert mode waits `timeoutlen` (or the next key) before it appears, and typing " ll" waits again; the trigger is mapped in every buffer on `InsertEnter`. `<M-f>` and `<M-]>` are chords that type nothing. `maic nvim keymaps` (`:checkhealth maic` in nvim) checks llama.vim's keys against your mappings; against `nvim -u NONE` with this spec and llama.vim (master, e1ca1cc) loaded with a Space leader, it finds both free in nvim 0.12 in insert mode and reports the defaults as the typing delay above. Without a mapping nvim treats an Alt chord in insert mode as Esc followed by the key, so `<M-]>` does that when no suggestion shows.
+
+`<Tab>` and `<S-Tab>` stay. llama.vim maps them (with `<M-]>`, `<C-L>` and `<C-H>`) buffer-local in insert mode only while a suggestion shows, and removes them with `iunmap <buffer>` when it hides the suggestion (`fim_render` and `fim_hide` in `autoload/llama.vim`). The rest of the time nvim 0.12's own insert-mode `<Tab>` / `<S-Tab>` (jump to the next or previous snippet field when a snippet is active, else the key itself) work as before; while a suggestion is showing inside an active snippet, `<Tab>` accepts the suggestion instead of jumping. The `iunmap <buffer>` also removes a buffer-local insert-mode `<Tab>` of another plugin, which the check reports. In normal mode llama.vim maps `<Tab>` (accept an instruction's result, otherwise it feeds `<Tab>`, the jump forward that is also Ctrl-I) and `<Esc>` (cancel an instruction, otherwise nothing) globally for as long as it is enabled, not only while an instruction runs; a normal-mode `<Esc>` of your own (`:nohlsearch`, say) and llama.vim's replace each other in load order, so set `keymap_inst_cancel = ''` to keep yours.
 
 `model_fim` needs a llama.vim recent enough to have it (it is in the current README). Keep it `current`: the server loads only the model MAIC asks for, so another folder's name is refused ("model is not loaded").
 
