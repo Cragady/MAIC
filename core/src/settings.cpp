@@ -14,6 +14,45 @@
 
 namespace maic {
 
+std::vector<ModelPreset> default_presets() {
+    // Context sizes are the figures Micaiah gave or the provider's documented ones; a settings `models` entry
+    // overrides any of them. Anthropic's reviewer is Sonnet 5 rather than the model itself: a cheaper second
+    // reader is what Anthropic recommends for a review step, and the harness never needs the biggest model.
+    return {
+        {"opus-5.5", "anthropic/claude-opus-5-5", 1000000, "anthropic/claude-sonnet-5", 1},
+        {"fable-5.1", "anthropic/claude-fable-5-1", 1000000, "anthropic/claude-sonnet-5", 1},
+        {"sonnet-5", "anthropic/claude-sonnet-5", 1000000, "same", 1},
+        {"haiku-4.5", "anthropic/claude-haiku-4-5-20251001", 200000, "same", 0},
+        {"qwen-4b", "llamacpp/Qwen3.5-4B-Q4_K_M", 16384, "same", 0},
+        {"qwen-9b", "llamacpp/Qwen3.5-9B-Q4_K_M", 8192, "same", 0},
+    };
+}
+
+namespace {
+std::string preset_key(std::string q) {
+    for (auto& c : q) c = (c == ' ' || c == '_' || c == '.') ? '-' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (q.rfind("claude-", 0) == 0) q = q.substr(7);
+    return q;
+}
+}  // namespace
+
+std::optional<ModelPreset> find_preset(const std::vector<ModelPreset>& presets, const std::string& query) {
+    std::string k = preset_key(query);
+    for (const auto& p : presets) {
+        if (preset_key(p.name) == k) return p;
+    }
+    // "opus-5-5" written with a hyphen for the dot, or "opus 5.5" with a space, both land above; also accept a
+    // version written without its dot ("opus55").
+    std::string compact;
+    for (char c : k) if (c != '-') compact += c;
+    for (const auto& p : presets) {
+        std::string pc;
+        for (char c : preset_key(p.name)) if (c != '-') pc += c;
+        if (pc == compact) return p;
+    }
+    return std::nullopt;
+}
+
 namespace fs = std::filesystem;
 using nlohmann::json;
 
@@ -211,6 +250,17 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         }
         if (server.contains("cert")) s.server.cert = expand_vars(server["cert"].get<std::string>());
         if (server.contains("key")) s.server.key = expand_vars(server["key"].get<std::string>());
+        json preset_table = j.value("models", json::object());  // a named copy: iterating a temporary dangles
+        for (const auto& [name, pj] : preset_table.items()) {
+            if (!pj.is_object()) continue;
+            ModelPreset mp{name, pj.value("model", ""), pj.value("context", 0), pj.value("reviewer", "same"), pj.contains("think") ? (pj["think"].get<bool>() ? 1 : 0) : -1};
+            if (mp.model.empty()) throw std::runtime_error(path.string() + ": models." + name + " needs a model");
+            bool replaced = false;
+            for (auto& existing : s.presets) {
+                if (existing.name == name) existing = mp, replaced = true;
+            }
+            if (!replaced) s.presets.push_back(mp);
+        }
         json providers = j.value("providers", json::object());
         for (const auto& [name, pj] : providers.items()) {
             Provider* p = nullptr;
@@ -386,6 +436,8 @@ void write_default_settings(bool as_json) {
         {"//server", "maic server: listen ADDR:PORT (TLS is required off loopback), workspaces remote sessions may open, cert/key (empty: self-signed)."},
         {"server", {{"listen", d.server.listen}, {"workspaces", json::array()}, {"cert", ""}, {"key", ""}}},
         {"providers", providers},
+        {"models", json::object()},
+        {"//models", "presets by short name, adding to or overriding the built-in ones (opus-5.5, sonnet-5, haiku-4.5, fable-5.1, qwen-4b, qwen-9b): models = { [\"opus-5.5\"] = { model = \"anthropic/claude-opus-5-5\", context = 1000000, reviewer = \"anthropic/claude-sonnet-5\", think = true } }. reviewer \"same\" means the model reviews itself; context sizes are your plan's figures"},
         {"style", styles},
     };
     std::ofstream out(p);

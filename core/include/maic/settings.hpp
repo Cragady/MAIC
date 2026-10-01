@@ -40,6 +40,20 @@ struct ServerSettings {
     std::filesystem::path key;
 };
 
+// A model preset: one short name that sets the model, its context window, the reviewer the smart harness
+// uses with it, and whether to think. `maic --model opus-5.5`, `:model opus-5.5`. Built-in ones can be
+// overridden and new ones added under `models` in settings.
+struct ModelPreset {
+    std::string name;      // "opus-5.5"
+    std::string model;     // "anthropic/claude-opus-5-5"
+    int context = 0;       // tokens; 0 = the provider's own figure
+    std::string reviewer;  // "same", "" (unchanged), or a provider/model
+    int think = -1;        // -1 unchanged, 0 off, 1 on
+};
+std::vector<ModelPreset> default_presets();
+// Finds a preset by name, ignoring case and treating spaces, dots and underscores like hyphens ("Opus 5.5").
+std::optional<ModelPreset> find_preset(const std::vector<ModelPreset>& presets, const std::string& query);
+
 struct Settings {
     std::string model = "llamacpp/current";  // the vendored llama-server serves the linked GGUF as `current`
     std::string mode = "manual";
@@ -61,6 +75,7 @@ struct Settings {
     int compact_keep_results = 4;  // tool results that never get pruned (the most recent)
     std::vector<std::filesystem::path> sources;  // the files that were read, in order
     std::vector<Provider> providers = default_providers();
+    std::vector<ModelPreset> presets = default_presets();  // `models` in settings adds or overrides by name
     std::map<std::string, Style> styles;  // by role, see docs/settings.md; defaults are filled in
     std::vector<std::string> instruction_files = {"MAIC.md", "AGENTS.md"};
     bool load_instructions = true;  // false: no MAIC.md / AGENTS.md anywhere

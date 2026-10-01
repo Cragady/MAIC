@@ -19,6 +19,7 @@ cat prompt.txt | maic -pi -        # short flags cluster (-p -i); a value-taking
 maic --system @~/prompts/reviewer.md --no-instructions   # front-load behaviour; ignore every MAIC.md / AGENTS.md
 maic --prefix "Sure thing! "                              # every reply starts with these words, guaranteed (:h prefix)
 maic --rule "Always answer in French"                      # a standing instruction, reminded every turn (:h rule)
+maic --model opus-5.5                                      # a preset: model, 1M context, Sonnet 5 as the reviewer, thinking on
 maic --xtc 0.5,0.1 --sampling min_p=0.05 --ban-pattern @~/bans/tics.re   # samplers and bans for one run
 maic help headless                 # the verbose page for all of the above (same as :h headless in a session)
 maic help | grep vendor            # help goes to stdout, so it pipes; maic help topics lists every page

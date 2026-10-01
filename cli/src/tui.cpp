@@ -923,8 +923,7 @@ bool App::handle(Event e) {
         auto& m = e.mouse();
         if (m.button == Mouse::WheelUp || m.button == Mouse::WheelDown) {
             int dir = m.button == Mouse::WheelUp ? 1 : -1;
-            if (focus_ == Focus::Input && editor_.mode() == Editor::Mode::Insert) editor_.history_step(-dir);
-            else view_.scroll_by(dir * 3);
+            view_.scroll_by(dir * 3);  // the wheel only scrolls the conversation; history is Ctrl-P / the arrows
         } else if (m.button == Mouse::Left && m.motion == Mouse::Pressed) {
             // A click on a tool call or result in the conversation window folds or unfolds it (like za).
             int top = focus_ == Focus::Conversation ? 1 : 0;  // the focus border takes a row
@@ -1305,11 +1304,28 @@ void App::run_lua(const std::string& code, bool from_file) {
 }
 
 void App::set_model(const std::string& model_in) {
-    std::string model = resolve_model_alias(model_in);
+    std::string preset = apply_preset(settings_, model_in);
+    std::string model = resolve_model_alias(preset.empty() ? model_in : settings_.model);
     auto [provider, name] = resolve_model(agent_.providers, model);
     agent_.model = model;
+    if (!preset.empty()) {
+        agent_.providers = settings_.providers;
+        agent_.reviewer_model = settings_.reviewer_model;
+        agent_.think = settings_.think;
+        set_context(agent_.providers, settings_.context);
+        if (provider.name == "llamacpp") {
+            try {
+                std::string r = restart_llamacpp_if_changed();
+                if (!r.empty()) post(Kind::Notice, r);
+            } catch (const std::exception& e) {
+                post(Kind::Error, e.what());
+            }
+        }
+    }
     apply_sampling();
-    std::string note = "model: " + model + " (" + provider.name + ", " + provider.kind + ")";
+    std::string note = "model: " + model + " (" + provider.name + ", " + provider.kind + ")" +
+                       (preset.empty() ? "" : "  preset " + preset + ": context " + std::to_string(settings_.providers.empty() ? 0 : provider.options.value("context_window", 0)) +
+                                                  ", reviewer " + (agent_.reviewer_model.empty() ? model : agent_.reviewer_model) + ", thinking " + (agent_.think ? "on" : "off"));
     if (provider.remote()) {
         post(Kind::Error, note + "\nREMOTE: prompts, files the agent reads and command output will be sent to " + provider.base_url);
     } else {
@@ -1377,7 +1393,9 @@ void App::run_command(const std::string& line) {
             }
         } else if (cmd == "model") {
             if (arg.empty()) {
-                std::string list = "model: " + agent_.model + "\nproviders:";
+                std::string list = "model: " + agent_.model + "\npresets (:model NAME):";
+                for (const auto& p : settings_.presets) list += "\n  " + p.name + "  " + p.model + "  context " + std::to_string(p.context) + ", reviewer " + (p.reviewer == "same" ? "itself" : p.reviewer);
+                list += "\nproviders:";
                 for (const auto& p : agent_.providers) list += "\n  " + p.name + "/<model>  (" + p.kind + ", " + p.base_url + (p.remote() ? ", REMOTE)" : ")");
                 post(Kind::Notice, list);
             } else if (idle()) {
@@ -1954,6 +1972,7 @@ void App::shutdown() {
 int run_tui(const TuiOptions& options) {
     Settings settings = load_settings();
     if (options.model) settings.model = *options.model;
+    apply_preset(settings, settings.model);
     settings.model = resolve_model_alias(settings.model);
     if (options.mode) settings.mode = *options.mode;
     if (options.record) settings.record = *options.record;

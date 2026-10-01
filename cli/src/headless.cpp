@@ -116,6 +116,7 @@ private:
 int run_headless(const HeadlessOptions& options) {
     Settings settings = load_settings();
     if (options.model) settings.model = *options.model;
+    apply_preset(settings, settings.model);
     settings.model = resolve_model_alias(settings.model);
     if (options.mode) settings.mode = *options.mode;
     if (options.system) settings.system_prompt = *options.system;

@@ -1007,6 +1007,31 @@ int main() {
         expect(t.find("holds Big") != std::string::npos && t.find("3.0 GB used of 8.0 GB") != std::string::npos, "the report names the holder and the figures: " + t);
     }
 
+    section("model presets");
+    {
+        Settings d;
+        auto op = find_preset(d.presets, "Opus 5.5");
+        expect(op && op->model == "anthropic/claude-opus-5-5" && op->context == 1000000 && op->reviewer == "anthropic/claude-sonnet-5" && op->think == 1, "the Opus 5.5 preset resolves from a loose spelling");
+        expect(find_preset(d.presets, "opus55") && find_preset(d.presets, "claude-opus-5-5") && find_preset(d.presets, "OPUS_5.5"), "hyphens, dots, spaces, underscores and a claude- prefix all match");
+        expect(!find_preset(d.presets, "gpt-9"), "an unknown name is no preset");
+        auto q9 = find_preset(d.presets, "qwen-9b");
+        expect(q9 && q9->model == "llamacpp/Qwen3.5-9B-Q4_K_M" && q9->context == 8192 && q9->reviewer == "same", "the local 9B preset keeps the vision-sized context");
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { models = { ['opus-5.5'] = { model = 'anthropic/claude-opus-5-5', context = 500000, reviewer = 'same' }, mine = { model = 'llamacpp/Other', context = 4096 } } }");
+        Settings sp = load_settings(ws / "proj");
+        auto over = find_preset(sp.presets, "opus-5.5");
+        expect(over && over->context == 500000 && over->reviewer == "same" && over->think == -1, "settings override a built-in preset by name");
+        expect(find_preset(sp.presets, "mine") && find_preset(sp.presets, "mine")->model == "llamacpp/Other", "and add new ones");
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { models = { bad = { context = 1 } } }");
+        bool threw = false;
+        try {
+            load_settings(ws / "proj");
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw, "a preset without a model is an error");
+        fs::remove(ws / "proj" / ".maic" / "settings.lua");
+    }
+
     section("tripwire scope");
     {
         fs::path session_lock = ws / "t.jsonl.tripped";

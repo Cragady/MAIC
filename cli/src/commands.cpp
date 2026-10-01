@@ -191,7 +191,7 @@ const std::vector<CommandInfo>& commands() {
         {"mode", {}, "NAME", "set the agent mode",
          "*:mode*\n`:mode manual|auto-read|edit|auto|plan`. Shift-Tab cycles them. See `:h modes`."},
         {"model", {}, "[NAME]", "switch model, or list providers",
-         "*:model*\n`:model NAME` switches (when the agent is idle): any GGUF under the models directory by name (`llamacpp/Qwen3.5-9B-Q4_K_M`; the server loads it on demand and unloads the previous one), `llamacpp/current` (the one `maic vendor use` linked), `ollama/qwen3.5:9b`, `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists the providers. Switching to a remote provider prints what will leave this machine. See `:h providers`."},
+         "*:model* *presets*\n`:model NAME` switches (when the agent is idle). NAME can be a **preset**: one short name that sets the model, its context window, the reviewer the smart harness uses with it, and thinking: `opus-5.5` (Opus 5.5, 1M context, reviewed by Sonnet 5, thinking on), `fable-5.1`, `sonnet-5`, `haiku-4.5`, `qwen-4b`, `qwen-9b`; written loosely (`Opus 5.5`, `opus55`) is fine. `models = { ... }` in settings adds presets or changes these (see docs/settings.md). Or a plain model: any GGUF under the models directory by name (`llamacpp/Qwen3.5-9B-Q4_K_M`; the server loads it on demand and unloads the previous one), `llamacpp/current` (the one `maic vendor use` linked), `ollama/qwen3.5:9b`, `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists the providers. Switching to a remote provider prints what will leave this machine. See `:h providers`."},
         {"models", {}, "", "models the Ollama server has", "*:models*\nLists the models on the current Ollama provider (`ollama list`). llama.cpp serves one GGUF at a time, the one `maic vendor` shows; `maic vendor use llamacpp PATH` changes it."},
         {"think", {}, "on|off", "let the model reason first", "*:think*\n`:think on` asks the model to reason before answering: slower, better on hard problems. Anthropic models then use the provider's `think_effort`."},
         {"set", {}, "markdown|mouse on|off", "rendering and mouse toggles",
@@ -443,6 +443,23 @@ std::pair<std::string, std::string> open_command(const std::string& name, const 
     std::error_code ec;
     if (!std::filesystem::exists(p.path, ec)) throw std::runtime_error(p.path.string() + " does not exist yet");
     return {"xdg-open '" + p.path.string() + "' >/dev/null 2>&1 &", p.name + " (" + p.path.string() + ")"};
+}
+
+std::string apply_preset(Settings& settings, const std::string& query) {
+    auto p = find_preset(settings.presets, query);
+    if (!p) return "";
+    settings.model = p->model;
+    if (p->reviewer == "same") settings.reviewer_model = p->model;
+    else if (!p->reviewer.empty()) settings.reviewer_model = p->reviewer;
+    if (p->think >= 0) settings.think = p->think == 1;
+    if (p->context > 0) {
+        auto [provider, name] = resolve_model(settings.providers, p->model);
+        for (auto& pr : settings.providers) {
+            if (pr.name == provider.name) pr.options["context_window"] = p->context;
+        }
+        if (provider.name == "llamacpp") settings.context = p->context;
+    }
+    return p->name;
 }
 
 void set_context(std::vector<Provider>& providers, int tokens) {

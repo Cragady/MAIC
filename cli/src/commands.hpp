@@ -49,6 +49,10 @@ std::string failure_text(const Agent& agent, const std::exception& e);
 // different --ctx-size, restarts it (a notice is returned; "" when nothing had to happen).
 void set_context(std::vector<Provider>& providers, int tokens);
 
+// When `query` names a preset: sets settings.model, the reviewer, thinking, the provider's context_window and,
+// for a local llama.cpp model, settings.context. Returns the preset's name, "" when none matched.
+std::string apply_preset(Settings& settings, const std::string& query);
+
 // What `maic open NAME` / `:open NAME` should run: a service opens its URL in the chosen browser (the remote
 // maic-server's copy when `remote` is set and answers), anything else opens the place's path with xdg-open.
 // With `folder`, the containing directory is opened in the file manager instead: a file place's parent, a

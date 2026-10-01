@@ -708,6 +708,19 @@ int main() {
         expect(help_text("mod").find("several") != std::string::npos, "an ambiguous prefix lists the candidates");
         expect(help_text("harn").find("*harness*") == 0, "a unique prefix resolves");
         {
+            Settings sp;
+            std::string name = apply_preset(sp, "Opus 5.5");
+            bool ctx = false;
+            for (const auto& p : sp.providers) ctx = ctx || (p.name == "anthropic" && p.options.value("context_window", 0) == 1000000);
+            expect(name == "opus-5.5" && sp.model == "anthropic/claude-opus-5-5" && sp.reviewer_model == "anthropic/claude-sonnet-5" && sp.think && ctx,
+                   "applying the Opus preset sets the model, the reviewer, thinking and the context window");
+            Settings sl;
+            apply_preset(sl, "qwen-9b");
+            expect(sl.model == "llamacpp/Qwen3.5-9B-Q4_K_M" && sl.reviewer_model == "llamacpp/Qwen3.5-9B-Q4_K_M" && sl.context == 8192, "a local preset also sets the server's context size and reviews with itself");
+            Settings sn;
+            expect(apply_preset(sn, "llamacpp/current").empty() && sn.model == Settings{}.model, "a plain model name is not a preset and changes nothing");
+        }
+        {
             // :open NAME folder / maic open --folder: a file place opens its parent, a directory itself.
             Settings so;
             fs::path ws = fs::temp_directory_path() / "maic-editor-open-test";
