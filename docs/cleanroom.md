@@ -26,6 +26,7 @@ Not allowed:
 | opencode (MIT, `~/dev2/tools-and-things/opencode`) | open source, read only | Feature comparison in [opencode-comparison.md](opencode-comparison.md). No code copied. |
 | A generated "cleanroom harness spec" (Google) | design | Two ideas kept for the plan: per-role permission profiles (sandbox paths, network, budgets per agent role), and a forkable transcript tree. Its SQL and JSON schema were not adopted; see below. |
 | Anthropic and OpenAI API references | public docs | The provider clients in `core/src/anthropic.cpp` and `openai.cpp`. |
+| nvim's API documentation (`:h api`, `:h treesitter`) and the msgpack format specification | public docs | The optional input highlighter (`cli/src/highlight.cpp`) runs the user's own nvim as `nvim --embed --headless` and talks msgpack-rpc to it; `cli/src/msgpack.cpp` is MAIC's own small codec written from the format description. nvim is executed as a program, never linked; no code was copied from it. |
 
 ### How the spec's ideas map onto MAIC
 
@@ -46,6 +47,7 @@ Where an outside approach and MAIC's rules cannot both hold, MAIC's rules win an
 | nlohmann-json 3.11 | MIT | JSON |
 | OpenSSL 3 (through vcpkg) | Apache-2.0 | HTTPS to remote providers; the server's TLS, self-signed certificate, token hashing and random tokens |
 | bubblewrap (system package, called as a program) | LGPL-2.0+ | the command sandbox; not linked, only executed |
+| nvim (the user's own install, optional, called as a program) | Apache-2.0 and the Vim license | `highlight = "nvim"`, the input highlighter, and `:e`; not linked, only executed |
 | glibc regex (`regcomp`) | LGPL, system library | `search_files` |
 
 No code has been copied from another project into MAIC's sources.

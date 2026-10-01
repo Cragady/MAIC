@@ -77,6 +77,8 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 | `title_model` | A model that names the session after its first turn, for `maic sessions` (default off). A remote model is never used for a local session. |
 | `timestamps` | Show a time beside each conversation entry (default `false`; `:set timestamps on`). |
 | `leader` | The vim leader key for normal and visual modes: `"space"` (default) or a single character. `<leader>y` yanks to the system clipboard, `<leader>p` pastes from it. |
+| `highlight` | The input's highlighter: `"builtin"` (default, MAIC's markdown renderer) or `"nvim"`: one `nvim --embed --headless` is started on the first keystroke and asked over msgpack-rpc for treesitter's highlight captures of the text as markdown (headings, code, emphasis, links, lists, and inside fenced blocks the keywords, strings and comments of the languages nvim has parsers for). It gets 50 ms per keystroke; when nvim is missing or fails, a notice says so and the built-in one is used. `:set highlight nvim\|builtin` for a session. See `:h highlight`. |
+| `enter_sends` | `true`: in insert mode Enter sends a one-line input, Shift+Enter or Alt+Enter inserts the line break, and an input that already has several lines keeps Enter as a line break. Default `false`, the vim-like behaviour: Enter is always a line break and Alt+Enter or `:w` sends. `:set enter_sends on\|off` for a session. |
 | `server` | `maic server`: `listen` (default `127.0.0.1:7373`; any other address turns TLS on), `workspaces` (directories a remote session may open; default `~/dev2`, else the current directory), `cert` and `key` (a PEM pair; empty makes a self-signed one under `~/.local/state/maic/server/`). See [remote.md](remote.md). |
 | `sessions_home` | Where new transcripts go. `auto` (default): under `sessions/projects/<encoded workspace>/` when the workspace has a `MAIC.md` (or one is in effect from a parent directory), else `sessions/general/`. Or force it: `general`, `project`, or any name (`sessions/<name>/`). A project can set this in its `.maic/settings.json`; `maic sessions rehome` moves existing transcripts. |
 
@@ -128,6 +130,8 @@ Anthropic models get thinking on by default with `effort` controlling depth, str
 | :--- | :--- |
 | `user`, `assistant`, `thinking`, `tool`, `tool_ok`, `tool_err`, `notice`, `error`, `shell` | conversation entries by kind |
 | `md_heading`, `md_bold`, `md_italic`, `md_code`, `md_code_block`, `md_link`, `md_url`, `md_quote`, `md_bullet`, `md_rule` | markdown, layered over the entry's style |
+| `hl_heading`, `hl_code`, `hl_keyword`, `hl_string`, `hl_comment` | what the nvim highlighter's captures paint in the input (`highlight = "nvim"`); its emphasis, links, lists and quotes use the `md_*` styles |
+| `diff_added`, `diff_removed`, `diff_hunk` | added and removed lines, and `@@` or file headers, in the approval preview of an edit and in tool output that is a diff (defaults green, red, dim) |
 | `input`, `input_prompt_insert`, `input_prompt_normal` | the input box and its prompt character |
 | `separator`, `focus`, `visual`, `search`, `cursor_line` | the line above the input, the border of the focused conversation window, selections, search hits, the cursor line |
 | `status`, `status_insert`, `status_normal`, `status_visual`, `status_dim` | the status lines |

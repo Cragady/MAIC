@@ -18,6 +18,16 @@ enum MdFlag : unsigned {
     MdQuote = 1u << 7,
     MdBullet = 1u << 8,     // list marker
     MdRule = 1u << 9,
+    // from the nvim highlighter (cli/src/highlight.cpp): treesitter captures mapped to the hl_* styles
+    HlKeyword = 1u << 10,
+    HlString = 1u << 11,
+    HlComment = 1u << 12,
+    HlHeading = 1u << 13,
+    HlCode = 1u << 14,
+    // a diff shown in the conversation window or the approval box
+    DiffAdd = 1u << 15,
+    DiffDel = 1u << 16,
+    DiffHunk = 1u << 17,    // @@ lines and file headers
 };
 
 struct Span {

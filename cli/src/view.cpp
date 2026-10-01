@@ -78,7 +78,44 @@ std::string lower(std::string s) {
     return s;
 }
 
+bool is_tool(Kind k) {
+    return k == Kind::Tool || attached(k);
+}
+
 }  // namespace
+
+unsigned diff_flags(const std::string& line) {
+    if (line.rfind("@@", 0) == 0 || line.rfind("+++ ", 0) == 0 || line.rfind("--- ", 0) == 0 || line.rfind("diff --git ", 0) == 0 || line.rfind("index ", 0) == 0) return DiffHunk;
+    if (!line.empty() && line[0] == '+') return DiffAdd;
+    if (!line.empty() && line[0] == '-') return DiffDel;
+    return MdNone;
+}
+
+// A hunk header or a pair of file headers settles it; otherwise both an added and a removed line are needed, so
+// a listing with `- ` bullets is not taken for one.
+bool looks_like_diff(const std::string& text) {
+    bool added = false, removed = false;
+    for (size_t start = 0; start < text.size();) {
+        size_t nl = text.find('\n', start);
+        std::string line = text.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+        unsigned f = diff_flags(line);
+        if (f == DiffHunk && (line.rfind("@@", 0) == 0 || line.rfind("diff --git ", 0) == 0)) return true;
+        added = added || f == DiffAdd || line.rfind("+++ ", 0) == 0;
+        removed = removed || f == DiffDel || line.rfind("--- ", 0) == 0;
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    return added && removed;
+}
+
+std::vector<StyledLine> diff_lines(const std::string& text) {
+    auto lines = plain_lines(text);
+    for (auto& l : lines) {
+        unsigned f = diff_flags(line_text(l));
+        for (auto& sp : l) sp.flags |= f;
+    }
+    return lines;
+}
 
 void View::append(Kind kind, std::string text) {
     std::lock_guard lock(mu_);
@@ -164,8 +201,9 @@ void View::layout(size_t width) {
         size_t pre = utf8_len(marker(entry)) + (timestamps_ ? 6 : 0);
         bool use_md = markdown_ && (entry.kind == Kind::Assistant || entry.kind == Kind::User || entry.kind == Kind::Notice);
         std::string shown_text = entry.collapsed ? preview(entry.text) : entry.text;
+        bool diff = markdown_ && is_tool(entry.kind) && looks_like_diff(shown_text);
         // Tool output and shell output keep tabs; the renderer drops them, so expand.
-        auto source = use_md ? markdown_lines(shown_text) : plain_lines(shown_text);
+        auto source = use_md ? markdown_lines(shown_text) : diff ? diff_lines(shown_text) : plain_lines(shown_text);
         size_t offset = 0;
         bool first = true;
         for (const auto& src : source) {
@@ -477,7 +515,28 @@ std::string View::handle(const Event& e, int height) {
     else if (k == "\x05") scroll_by(-n), (void)0;
     else if (k == "\x19") scroll_by(n), (void)0;
     else if (k == "G") move_cursor_line(static_cast<int>(lines_.size()));
-    else if (k == "f" || k == "F" || k == "t" || k == "T") pending_ = k;
+    else if (k == "H" || k == "M" || k == "L") {  // top, middle, bottom of the window; a count moves in from the edge
+        int total = static_cast<int>(lines_.size());
+        int bottom = total - scroll_, top = std::max(0, bottom - height);
+        if (total > 0) {
+            int line = k == "H" ? std::min(top + n - 1, bottom - 1) : k == "L" ? std::max(bottom - n, top) : top + (bottom - top) / 2;
+            cur_line_ = static_cast<size_t>(std::clamp(line, 0, total - 1));
+            cur_col_ = 0;
+        }
+    } else if (k == "*" || k == "#") {  // search for the keyword under or after the cursor
+        if (lines_.empty()) return "";
+        std::string t = line_text(lines_[cur_line_].spans);
+        size_t p = utf8_offset(t, cur_col_);
+        while (p < t.size() && char_class(t[p]) != 1) p = utf8_next(t, p);
+        if (p >= t.size()) return "no word under the cursor";
+        size_t from = p, to = p;
+        while (from > 0 && char_class(t[utf8_prev(t, from)]) == 1) from = utf8_prev(t, from);
+        while (to < t.size() && char_class(t[to]) == 1) to = utf8_next(t, to);
+        search(t.substr(from, to - from));
+        std::string msg = search_next(k == "*" ? 1 : -1);
+        ensure_cursor_visible(height);
+        return msg;
+    } else if (k == "f" || k == "F" || k == "t" || k == "T") pending_ = k;
     else if ((k == ";" || k == ",") && !last_find_kind_.empty()) {
         std::string kind = last_find_kind_;
         if (k == ",") kind = kind == "f" ? "F" : kind == "F" ? "f" : kind == "t" ? "T" : "t";

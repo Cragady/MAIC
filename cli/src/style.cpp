@@ -52,6 +52,14 @@ Style span_style(const Settings& settings, const Style& base, unsigned f) {
     if (f & MdLink) s = settings.style("md_link").merged_over(s);
     if (f & MdCode) s = settings.style("md_code").merged_over(s);
     if (f & MdUrl) s = settings.style("md_url").merged_over(s);
+    if (f & HlKeyword) s = settings.style("hl_keyword").merged_over(s);
+    if (f & HlString) s = settings.style("hl_string").merged_over(s);
+    if (f & HlComment) s = settings.style("hl_comment").merged_over(s);
+    if (f & HlHeading) s = settings.style("hl_heading").merged_over(s);
+    if (f & HlCode) s = settings.style("hl_code").merged_over(s);
+    if (f & DiffAdd) s = settings.style("diff_added").merged_over(s);
+    if (f & DiffDel) s = settings.style("diff_removed").merged_over(s);
+    if (f & DiffHunk) s = settings.style("diff_hunk").merged_over(s);
     return s;
 }
 

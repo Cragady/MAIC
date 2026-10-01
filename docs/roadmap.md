@@ -44,13 +44,7 @@ Measured on 2026-09-30 with qwen3.5:4b: under Ollama and under llama.cpp alike, 
 
 The tripwire design for Windows is in [harness.md](harness.md); the rest needs a port of the sandbox (AppContainer), the service manager (job objects with kill-on-close, junctions instead of symlinks, portable git on PATH, `%LOCALAPPDATA%\maic` for state and the uv cache), the runtime directory for temporary transcripts, and the terminal layer.
 
-### 8. Editor and UI
-
-* nvim as the highlighter for the input (an embedded `nvim --embed` over msgpack-rpc, one instance kept alive) for people who have it; the built-in highlighter stays the default.
-* Macros, `W B E` and `%` in the input; diff rendering for edits in the conversation window.
-* A settings key to make Enter send on one-line inputs, if it ever turns out to matter.
-
-### 9. Tests and tooling
+### 8. Tests and tooling
 
 * Make the timing-sensitive agent tests (cancel, mid-turn delivery) robust under load; they have flaked once under a parallel build.
 * A UI test harness that drives the TUI through a pty in CI, like the ad-hoc driver used during development.
@@ -74,6 +68,7 @@ Built, in the order it landed, so the list above is only what is left.
 * **Harness**: modes, tripwire (machine-wide, session-scoped, or isolated opt-out gated by `allow_isolated`), read-only classifier, sandbox, approvals with reasons and diffs, undo points, repeated-call guard that trips only for writes, the model reviewer (smart) or rules only (dumb, with the auto warning), the allow list, self-protection of MAIC's own files and locks, budgets, `workdir`, nested AGENTS.md on read, operator instructions (`--system`, `:rule`, `--no-instructions`), prefill, bans (string, regex, token) and sampling passthrough with XTC.
 * **Tools**: read, list (tree), glob, search, write, edit, multi_edit, apply_patch, move, copy, delete, make_dir, run_shell, question, todo; user-defined Lua tools behind the harness; `maic-workflow-edit`, `maic-storyboard` and `maic-danbooru-tags` for ComfyUI.
 * **Services and vendoring**: pinned submodules, `maic vendor add|adopt|use|model`, ComfyUI with MAIC's own llama.cpp node (the Ollama node retired), the artifact tree with workflows and templates, `maic path`/`open`/`shell-init` (`mcd`), menus for `up`, `down`, `unlock`, `open`, browser choice and a subscribed remote.
+* **Editor and UI (2026-10-01)**: macros (`q{a-z}`, `@{a-z}`, `@@`, counts, a failed motion stops the replay); `W B E gE` and `%` in the input, `H M L` in the conversation window, `*` / `#` in both; diff colouring of the approval preview and of tool output that is a diff (`diff_added`, `diff_removed`, `diff_hunk`); `highlight = "nvim"`: an embedded `nvim --embed --headless` over msgpack-rpc (MAIC's own small codec) highlighting the input with treesitter, the built-in renderer the default and the fallback; `enter_sends` for Enter sending one-line inputs, Shift+Enter or Alt+Enter for the line break.
 * **Two models at once (2026-10-01)**: a second llama-server, `llamacpp-2` on port 8082 over the same GGUFs with its own `context_2`; the `llamacpp-2` provider; `--ctx2` / `:ctx2`; `maic gpu` and `maic doctor` say whether the two models fit the card; the smart harness reviews on the side server when it is up, so the main model is never evicted; the Story chat deep pass points at it.
 * **Services: Docker, setup, health (2026-10-01)**: `"runtime": "docker"` in a service file (image, volumes under MAIC's trees, env, `--gpus all`), loopback only, shown as `[docker]` with its container, started, inspected, logged and stopped through docker, `services/comfyui-docker.json.example` as the shape; `maic setup`, the first run as yes/no questions over prerequisites, settings (asks `models_dir`), llama.cpp, ComfyUI, a checked Qwen3.5 GGUF and the tripwire, the plan alone off a terminal; health beyond the port: the resident model, ComfyUI's VRAM and queue under `maic status`, `ready_pattern` in the service files, the torch-versus-driver CUDA check in `maic doctor`; from the Stability Matrix assessment: `maic vendor wire comfyui` regenerating the `maic:` block of `extra_model_paths.yaml` from the manifest's models map, `maic-workflow-edit check` for node types nobody provides (offline), adopt reading the git remote and ref.
 * **Remote access, first slice**: `maic-server` with per-device tokens, TLS off loopback, audit log, SSE streaming, approvals over the API, a one-file phone-friendly web client; `Origin::Remote` always asked.

@@ -4,10 +4,19 @@
 #include "commands.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
+#include <fstream>
+#include <unistd.h>
 #include "editor.hpp"
+#include "highlight.hpp"
+#include "msgpack.hpp"
+#include "style.hpp"
 #include "view.hpp"
 #include "maic/markdown.hpp"
+
+#include <ftxui/dom/node.hpp>
+#include <ftxui/screen/screen.hpp>
 
 namespace fs = std::filesystem;
 using namespace maic;
@@ -224,6 +233,133 @@ int main() {
     check("", "<esc>2ofoo<esc>", "\nfoo\nfoo", "a count on o opens that many lines");
     check("123456", "<esc>02Rab<esc>", "abab56", "a count on R repeats the replacement");
     check("", "<esc>3ix<esc>.", "xxxxxx", ". repeats a counted insert with its count");
+
+    section("macros");
+    {
+        Editor ed = fresh("a b c d e");
+        keys(ed, "<esc>0qa");
+        expect(ed.recording() == 'a', "qa starts recording into a");
+        keys(ed, "dwq");
+        expect(ed.recording() == 0 && ed.text() == "b c d e", "q stops; the keys ran while recording");
+        expect(ed.registers().count('a') && ed.registers().at('a').text == "dw", "the macro is register a's text, without the closing q");
+        keys(ed, "@a");
+        expect(ed.text() == "c d e", "@a replays it");
+        keys(ed, "@@");
+        expect(ed.text() == "d e", "@@ repeats the last macro");
+        keys(ed, "2@a");
+        expect(ed.text() == "", "a count replays that many times -> \"" + ed.text() + "\"");
+        Editor lines = fresh("1\n2\n3\n4\n5");
+        keys(lines, "<esc>ggqaA!<esc>jq");
+        expect(lines.text() == "1!\n2\n3\n4\n5", "a macro with an insert session and Esc");
+        keys(lines, "3@a");
+        expect(lines.text() == "1!\n2!\n3!\n4!\n5", "3@a appends on three more lines -> \"" + lines.text() + "\"");
+        keys(lines, "9@a");
+        expect(lines.text() == "1!\n2!\n3!\n4!\n5!", "a failed motion (j on the last line) stops the replay -> \"" + lines.text() + "\"");
+        Editor dot = fresh("a b c d e");
+        keys(dot, "<esc>0qadwdwq.");
+        expect(dot.text() == "d e", ". after a macro repeats the last change inside it, not the macro");
+        Editor cmd = fresh("draft");
+        keys(cmd, "<esc>qa:w<cr>q");
+        auto r = keys(cmd, "@a");
+        expect(r.action == Editor::Action::Command && r.text == "w", "a macro that ends in a command line hands the command out");
+        Editor rec = fresh("x");
+        keys(rec, "<esc>qbqqaq");
+        expect(rec.registers().at('b').text == "" && rec.registers().at('a').text == "" && rec.recording() == 0, "qb q records nothing; qa q starts and stops again");
+        Editor cr = fresh("one\ntwo");
+        keys(cr, "<esc>ggqcIhi <esc>jq@c");
+        expect(cr.text() == "hi one\nhi two", "a macro replays I and the typed text -> \"" + cr.text() + "\"");
+        Editor none = fresh("abc");
+        keys(none, "<esc>@z");
+        expect(none.text() == "abc", "an empty register runs nothing");
+        Editor paste = fresh("abc");
+        keys(paste, "<esc>0\"myl");  // register m = "a": as a macro, `a` appends
+        paste.set_text("xyz");
+        keys(paste, "<esc>0@mQ<esc>");
+        expect(paste.text() == "xQyz", "a yanked register runs as a macro too (its text is a: append)");
+    }
+
+    section("W B E gE % * #");
+    {
+        Editor ed = fresh("foo-bar baz.qux end");
+        keys(ed, "<esc>0W");
+        expect(ed.cursor() == 8, "W skips a WORD with punctuation: " + std::to_string(ed.cursor()));
+        keys(ed, "W");
+        expect(ed.cursor() == 16, "W again");
+        keys(ed, "B");
+        expect(ed.cursor() == 8, "B goes back a WORD");
+        keys(ed, "0E");
+        expect(ed.cursor() == 6, "E goes to the end of the WORD: " + std::to_string(ed.cursor()));
+        keys(ed, "$gE");
+        expect(ed.cursor() == 14, "gE goes back to the end of the previous WORD: " + std::to_string(ed.cursor()));
+        keys(ed, "0w");
+        expect(ed.cursor() == 3, "w still stops at punctuation");
+    }
+    check("foo-bar baz.qux end", "<esc>0dW", "baz.qux end", "dW deletes the WORD and its space");
+    check("foo-bar baz.qux end", "<esc>0cWX<esc>", "X baz.qux end", "cW changes to the end of the WORD");
+    check("foo-bar baz.qux end", "<esc>02dW", "end", "2dW");
+    check("foo-bar baz.qux end", "<esc>$dB", "foo-bar baz.qux d", "dB deletes back to the WORD start");
+    check("foo-bar baz", "<esc>0dE", " baz", "dE is inclusive");
+    check("a b c d", "<esc>0vEEy", "a b c d", "E extends a selection");
+    expect(reg == "a b c", "vEEy yanked through the third word");
+    {
+        Editor ed = fresh("f(a, [b]) x");
+        keys(ed, "<esc>0%");
+        expect(ed.cursor() == 8, "% from before a bracket goes to the match of the first one on the line: " + std::to_string(ed.cursor()));
+        keys(ed, "%");
+        expect(ed.cursor() == 1, "% on a closing bracket goes back to the opening one");
+        keys(ed, "f[%");
+        expect(ed.cursor() == 7, "% matches brackets of the same kind: " + std::to_string(ed.cursor()));
+        keys(ed, "$%");
+        expect(ed.cursor() == 10, "% with no bracket after the cursor does not move");
+        keys(ed, "0%``");
+        expect(ed.cursor() == 0, "% is a jump");
+        Editor multi = fresh("{\n  a\n}");
+        keys(multi, "<esc>gg%");
+        expect(multi.cursor() == 6, "% crosses lines: " + std::to_string(multi.cursor()));
+    }
+    check("f(a, (b)) x", "<esc>0ld%", "f x", "d% deletes through the matching bracket, nesting counted");
+    check("f(a) x", "<esc>0y%$p", "f(a) xf(a)", "y% yanks both brackets");
+    {
+        Editor ed = fresh("hello world");
+        auto r = keys(ed, "<esc>0*");
+        expect(r.action == Editor::Action::Search && r.text == "hello", "* asks for a search for the word under the cursor");
+        r = keys(ed, "w#");
+        expect(r.action == Editor::Action::SearchBack && r.text == "world", "# searches backward");
+        Editor gap = fresh("a  b");
+        r = keys(gap, "<esc>0l*");
+        expect(r.action == Editor::Action::Search && r.text == "b", "on white space * takes the next word");
+        Editor punct = fresh("x = (y)");
+        r = keys(punct, "<esc>0ll*");
+        expect(r.action == Editor::Action::Search && r.text == "y", "* skips punctuation to a keyword");
+        Editor none = fresh("...");
+        r = keys(none, "<esc>0*");
+        expect(r.action == Editor::Action::None, "* with no word does nothing");
+    }
+
+    section("enter_sends");
+    {
+        Editor ed(&reg);
+        ed.set_enter_sends(true);
+        keys(ed, "ihello");
+        auto r = keys(ed, "<cr>");
+        expect(r.action == Editor::Action::Send && r.text == "hello" && ed.text() == "hello", "Enter on a one-line input sends it");
+        ed.newline();
+        keys(ed, "world");
+        r = keys(ed, "<cr>");
+        expect(r.action == Editor::Action::None && ed.text() == "hello\nworld\n", "after a line break Enter is a line break again -> \"" + ed.text() + "\"");
+        Editor off(&reg);
+        r = keys(off, "ia<cr>");
+        expect(r.action == Editor::Action::None && off.text() == "a\n", "off by default: Enter is a line break");
+        Editor n(&reg);
+        n.set_enter_sends(true);
+        keys(n, "<esc>");
+        n.newline();
+        expect(n.text().empty(), "newline() does nothing outside insert mode");
+        Editor rep_(&reg);
+        rep_.set_enter_sends(true);
+        keys(rep_, "<esc>3ia<cr>");
+        expect(rep_.text() == "a" && rep_.mode() == Editor::Mode::Insert, "a Send does not count as typed text for the insert repeat");
+    }
 
     section("marks");
     {
@@ -763,6 +899,13 @@ int main() {
                    help_text("gq").find("*gq*") == 0 && help_text("gU") == help_text("gq") && help_text("J").find("*J*") == 0 && help_text("r").find("*r*") == 0 &&
                    help_text("R") == help_text("r") && help_text("shift").find("*>*") == 0,
                "the key topics f . m gq J r R and shift resolve");
+        expect(help_text("macros").find("*macros*") == 0 && help_text("@") == help_text("macros") && help_text("q") == help_text("macros") &&
+                   help_text("motions").find("*motions*") == 0 && help_text("%") == help_text("motions") && help_text("*") == help_text("motions") &&
+                   help_text("diff").find("*diff*") == 0 && help_text("highlight").find("*highlight*") == 0 && help_text("enter_sends") == help_text("enter") &&
+                   help_text("w").find("*:w*") == 0 && help_text("keys").find("macro") != std::string::npos,
+               "the macros, motions, diff and highlight topics resolve and :h w is still the command");
+        auto sets = complete_argument("set", "", CompletionContext{});
+        expect(std::find(sets.begin(), sets.end(), "highlight") != sets.end() && std::find(sets.begin(), sets.end(), "enter_sends") != sets.end(), ":set completes highlight and enter_sends");
     }
 
     section("conversation window folds");
@@ -792,6 +935,205 @@ int main() {
         v.set_collapse_default(false);
         v.append(Kind::ToolOk, big);
         expect(std::stoul(rendered_lines().substr(rendered_lines().find('/') + 1)) > 30, "with tooldetails on, new results arrive unfolded");
+    }
+
+    section("conversation window H M L * #");
+    {
+        std::string r2;
+        View v(&r2);
+        for (int i = 1; i <= 30; ++i) v.append(Kind::User, "line " + std::to_string(i) + (i % 7 == 0 ? " seven" : ""));
+        Settings s;
+        v.set_timestamps(false);
+        v.render(s, 80, 10);
+        v.set_focused(true);
+        auto at = [&](const std::string& key) {
+            std::string msg = v.handle(Event::Character(key), 10);
+            v.render(s, 80, 10);
+            return v.status_hint();
+        };
+        // every user entry is a blank separator line plus its text: 59 lines, the window shows the last 10
+        std::string total = at("L");
+        expect(total == "59/59", "L goes to the bottom line of the window (" + total + ")");
+        expect(at("H") == "50/59", "H goes to the top line of the window");
+        expect(at("M") == "55/59", "M goes to the middle");
+        v.handle(Event::Character("3"), 10);
+        expect(at("H") == "52/59", "3H is the third line from the top");
+        v.handle(Event::Character("2"), 10);
+        expect(at("L") == "58/59", "2L is the second line from the bottom");
+        // "line 28 seven" is four lines up from the last one (blank separators between entries); search for its last word
+        at("G");
+        for (int i = 0; i < 4; ++i) v.handle(Event::Character("k"), 10);
+        v.handle(Event::Character("$"), 10);
+        std::string msg = v.handle(Event::Character("*"), 10);
+        expect(msg.find("match") == 0 && v.match_count() == 4, "* searches for the word under the cursor (" + msg + ", " + std::to_string(v.match_count()) + " matches)");
+        expect(v.status_hint() == "13/59", "* lands on the next match, wrapping to the first (" + v.status_hint() + ")");
+        msg = v.handle(Event::Character("#"), 10);
+        expect(v.status_hint() == "55/59", "# goes to the previous match, wrapping (" + v.status_hint() + ")");
+        v.handle(Event::Character("0"), 10);
+        msg = v.handle(Event::Character("*"), 10);
+        expect(msg.find("match") == 0 && v.match_count() > 4, "* on a word that is everywhere finds every line with it");
+    }
+
+    section("diff rendering");
+    {
+        expect(looks_like_diff("- old line\n+ new line\n"), "an edit preview is a diff");
+        expect(looks_like_diff("exit code 0\ndiff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b"), "git diff output is a diff");
+        expect(looks_like_diff("@@ -1,2 +1,2 @@\n a\n-b\n+c"), "a hunk header alone settles it");
+        expect(!looks_like_diff("- item one\n- item two\n"), "a bulleted list is not a diff");
+        expect(!looks_like_diff("+ only additions\n+ more\n"), "additions alone are not a diff");
+        expect(looks_like_diff("new file, 2 lines:\n--- /dev/null\n+++ b/new\n+ a\n+ b"), "a new file with headers is");
+        expect(diff_flags("+ added") == DiffAdd && diff_flags("-removed") == DiffDel && diff_flags("@@ -1 +1 @@") == DiffHunk &&
+                   diff_flags("+++ b/x") == DiffHunk && diff_flags("--- a/x") == DiffHunk && diff_flags(" context") == MdNone && diff_flags("  … more") == MdNone,
+               "line kinds: added, removed, headers, context");
+        auto lines = diff_lines("- a\n+ b\n  … more");
+        expect(lines.size() == 3 && lines[0][0].flags == DiffDel && lines[1][0].flags == DiffAdd && lines[2][0].flags == MdNone, "diff_lines tags every line");
+        std::string r3;
+        View v(&r3);
+        v.set_collapse_default(false);
+        v.append(Kind::Tool, "$ git diff");
+        v.append(Kind::ToolOk, "exit code 0\n@@ -1 +1 @@\n-old\n+new");
+        Settings s;  // a bare Settings has no styles (load_settings fills the defaults in), so name the ones looked at
+        s.styles["tool_ok"] = Style{"gray_dark"};
+        s.styles["diff_added"] = Style{"green"};
+        s.styles["diff_removed"] = Style{"red"};
+        s.styles["diff_hunk"] = Style{std::nullopt, std::nullopt, false, true};
+        ftxui::Element e = v.render(s, 80, 10);
+        ftxui::Screen screen(80, 10);
+        ftxui::Render(screen, e);
+        auto fg = [&](int y, int x) { return screen.PixelAt(x, y).foreground_color; };
+        // the entries occupy the bottom rows: "▸ $ git diff", "  ⎿ exit code 0", "@@", "-old", "+new"
+        expect(fg(8, 4) == parse_color("red") && fg(9, 4) == parse_color("green"), "removed lines are red and added lines green in a tool result");
+        expect(fg(6, 4) == parse_color("gray_dark") && screen.PixelAt(4, 7).dim, "the result's own style stays on plain lines and the hunk header is dim");
+        v.set_markdown(false);
+        ftxui::Screen plain(80, 10);
+        ftxui::Render(plain, v.render(s, 80, 10));
+        expect(plain.PixelAt(4, 8).foreground_color == parse_color("gray_dark") && plain.PixelAt(4, 9).foreground_color == parse_color("gray_dark"), "with markdown off the diff is plain text");
+    }
+
+    section("msgpack");
+    {
+        using namespace maic::msgpack;
+        Value m;
+        m.kind = Value::Kind::Map;
+        m.map.push_back({Value::str("k"), Value::boolean(true)});
+        std::vector<Value> many;
+        for (int i = 0; i < 20; ++i) many.push_back(Value::integer(i * 1000));
+        Value v = Value::arr({Value::nil(), Value::integer(-1), Value::integer(-200), Value::integer(300), Value::integer(70000), Value::integer(-70000),
+                              Value::integer(5000000000LL), Value::str(std::string(40, 'x')), Value::arr(std::move(many)), m});
+        std::string bytes = encode(v);
+        expect(bytes[0] == '\x9a' && bytes[1] == '\xc0' && bytes[2] == '\xff' && static_cast<unsigned char>(bytes[3]) == 0xd1, "fixarray, nil, negative fixint, int16");
+        Value back;
+        size_t pos = 0;
+        bool ok = decode(bytes, pos, back);
+        expect(ok && pos == bytes.size() && back.is_array() && back.array.size() == 10, "a round trip decodes the whole value");
+        expect(back.array[1].i == -1 && back.array[2].i == -200 && back.array[3].i == 300 && back.array[4].i == 70000 && back.array[5].i == -70000 && back.array[6].i == 5000000000LL,
+               "integers of every width survive");
+        expect(back.array[7].is_str() && back.array[7].s.size() == 40 && back.array[8].array.size() == 20 && back.array[8].array[19].i == 19000, "str8 and array16");
+        expect(back.array[9].kind == Value::Kind::Map && back.array[9].map.size() == 1 && back.array[9].map[0].first.s == "k" && back.array[9].map[0].second.b, "a map");
+        pos = 0;
+        Value partial;
+        expect(!decode(bytes.substr(0, bytes.size() - 3), pos, partial) && pos == 0, "incomplete bytes: not yet, position untouched");
+        std::string two = encode(Value::integer(1)) + encode(Value::str("ab"));
+        pos = 0;
+        Value a, b;
+        expect(decode(two, pos, a) && decode(two, pos, b) && a.i == 1 && b.s == "ab" && pos == two.size(), "two values back to back");
+        // nvim's Buffer handle: fixext 1, type 0, payload 7
+        pos = 0;
+        Value ext;
+        expect(decode(std::string("\xd4\x00\x07", 3), pos, ext) && ext.kind == Value::Kind::Ext && ext.ext_type == 0 && ext.i == 7, "an ext handle decodes to its integer");
+        pos = 0;
+        Value f;
+        expect(decode(encode([] { Value x; x.kind = Value::Kind::Float; x.f = 2.5; return x; }()), pos, f) && f.kind == Value::Kind::Float && f.f == 2.5, "float64");
+        bool threw = false;
+        try {
+            pos = 0;
+            Value bad;
+            decode("\xc1", pos, bad);
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw, "a byte that is not msgpack throws");
+    }
+
+    section("nvim highlighter");
+    {
+        expect(capture_flags("markup.heading.1") == HlHeading && capture_flags("markup.raw.block") == HlCode && capture_flags("keyword.function") == HlKeyword &&
+                   capture_flags("string") == HlString && capture_flags("comment.documentation") == HlComment && capture_flags("markup.strong") == MdBold &&
+                   capture_flags("markup.link.url") == MdLink && capture_flags("punctuation.special") == MdNone,
+               "capture names map to the hl_* and md_* flags");
+        fs::path dir = fs::temp_directory_path() / ("maic-editor-nvim-" + std::to_string(getpid()));
+        fs::create_directories(dir);
+        // A stand-in nvim: answers request 1 with [1, 1, nil, [[1, 1, 6, "keyword"]]] and then waits for the channel to close.
+        fs::path fake = dir / "nvim";
+        std::ofstream(fake) << "#!/bin/sh\nprintf '\\224\\001\\001\\300\\221\\224\\001\\001\\006\\247keyword'\ncat >/dev/null\n";
+        fs::permissions(fake, fs::perms::owner_all);
+        {
+            NvimHighlighter hl(fake.string());
+            auto lines = hl.highlight("x\n hello world", std::chrono::milliseconds(3000));
+            expect(hl.alive() && lines.has_value(), "the fake nvim answers (" + hl.error() + ")");
+            if (lines) {
+                expect(lines->size() == 2 && (*lines)[1].size() == 3 && (*lines)[1][1].text == "hello" && (*lines)[1][1].flags == HlKeyword && (*lines)[1][0].flags == MdNone &&
+                           (*lines)[1][2].text == " world",
+                       "the capture becomes a keyword span on its row, the rest plain");
+                auto again = hl.highlight("x\n hello world", std::chrono::milliseconds(0));
+                expect(again.has_value() && again->size() == 2 && (*again)[1].size() == 3 && (*again)[1][1].flags == HlKeyword, "the same text is answered from the last reply");
+                auto other = hl.highlight("changed", std::chrono::milliseconds(20));
+                expect(!other.has_value() && hl.alive(), "a new text with no reply inside the budget is skipped, nvim stays");
+            }
+        }
+        {
+            NvimHighlighter missing((dir / "no-such-nvim").string());
+            auto lines = missing.highlight("hello", std::chrono::milliseconds(500));
+            expect(!lines.has_value() && !missing.alive() && missing.error().find("No such file") != std::string::npos, "a missing nvim: not alive, with the reason (" + missing.error() + ")");
+        }
+        fs::path failing = dir / "nvim-fail";
+        std::ofstream(failing) << "#!/bin/sh\nprintf '\\224\\001\\001\\244boom\\300'\ncat >/dev/null\n";
+        fs::permissions(failing, fs::perms::owner_all);
+        {
+            NvimHighlighter bad(failing.string());
+            auto lines = bad.highlight("hello", std::chrono::milliseconds(3000));
+            expect(!lines.has_value() && !bad.alive() && bad.error() == "nvim: boom", "an error reply turns the highlighter off with nvim's message (" + bad.error() + ")");
+        }
+        fs::path quitter = dir / "nvim-quit";
+        std::ofstream(quitter) << "#!/bin/sh\nexit 3\n";
+        fs::permissions(quitter, fs::perms::owner_all);
+        {
+            NvimHighlighter gone(quitter.string());
+            auto lines = gone.highlight("hello", std::chrono::milliseconds(3000));
+            expect(!lines.has_value() && !gone.alive() && gone.error() == "nvim exited", "an nvim that exits is reported (" + gone.error() + ")");
+        }
+        fs::remove_all(dir);
+        bool have_nvim = false;
+        if (const char* path = std::getenv("PATH")) {
+            std::string p = path;
+            for (size_t start = 0; start <= p.size() && !have_nvim;) {
+                size_t colon = p.find(':', start);
+                std::string d = p.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
+                have_nvim = !d.empty() && access((d + "/nvim").c_str(), X_OK) == 0;
+                if (colon == std::string::npos) break;
+                start = colon + 1;
+            }
+        }
+        if (!have_nvim) {
+            expect(true, "real nvim: skipped, nvim is not on PATH");
+        } else {
+            NvimHighlighter hl("nvim");
+            std::string text = "# Title\n\n`code` and **bold**\n\n```lua\nlocal x = 'str' -- note\n```";
+            std::optional<std::vector<StyledLine>> lines;
+            for (int i = 0; i < 20 && !lines; ++i) lines = hl.highlight(text, std::chrono::milliseconds(1000));
+            expect(hl.alive() && lines.has_value(), "real nvim answers (" + hl.error() + ")");
+            if (lines) {
+                auto has = [&](size_t row, unsigned flag, const std::string& piece) {
+                    if (row >= lines->size()) return false;
+                    for (const auto& sp : (*lines)[row]) if ((sp.flags & flag) && sp.text.find(piece) != std::string::npos) return true;
+                    return false;
+                };
+                expect(lines->size() == 7, "one line per source line");
+                expect(has(0, HlHeading, "Title"), "the heading is a heading");
+                expect(has(2, HlCode, "code") && has(2, MdBold, "bold"), "inline code and bold from markdown_inline");
+                expect(has(5, HlKeyword, "local") && has(5, HlString, "str") && has(5, HlComment, "note"), "a fenced lua block gets keyword, string and comment");
+            }
+        }
     }
 
     section("wrapping");

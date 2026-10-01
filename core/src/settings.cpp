@@ -84,6 +84,16 @@ const std::map<std::string, Style>& default_styles() {
         {"md_quote", {"gray", std::nullopt, false, false, true}},
         {"md_bullet", {"cyan"}},
         {"md_rule", {"gray_dark"}},
+        // the nvim highlighter's captures (highlight = "nvim"), applied like the markdown styles
+        {"hl_keyword", {"blue_light", std::nullopt, true}},
+        {"hl_string", {"green"}},
+        {"hl_comment", {"gray", std::nullopt, false, false, true}},
+        {"hl_heading", {"magenta", std::nullopt, true}},
+        {"hl_code", {"yellow_light"}},
+        // diffs: the approval preview and tool output that is a diff
+        {"diff_added", {"green"}},
+        {"diff_removed", {"red"}},
+        {"diff_hunk", {std::nullopt, std::nullopt, false, true}},
         // chrome
         {"input", {}},
         {"input_prompt_insert", {"green"}},
@@ -199,6 +209,8 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.sound = j.value("sound", s.sound);
         s.sessions_home = j.value("sessions_home", s.sessions_home);
         s.leader = j.value("leader", s.leader);
+        s.highlight = j.value("highlight", s.highlight);
+        s.enter_sends = j.value("enter_sends", s.enter_sends);
         s.record = j.value("record", s.record);
         s.models_dir = j.value("models_dir", s.models_dir);
         s.context = std::max(1024, j.value("context", s.context));
@@ -464,6 +476,10 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"mouse", d.mouse},
         {"sessions_home", d.sessions_home},
         {"leader", "space"},
+        {"highlight", d.highlight},
+        {"//highlight", "builtin, or nvim: an embedded nvim --embed highlights the input (markdown with treesitter); falls back to builtin when nvim is missing"},
+        {"enter_sends", d.enter_sends},
+        {"//enter_sends", "true: Enter sends a one-line input in insert mode, Shift+Enter or Alt+Enter insert a newline; false (vim-like): Enter is always a newline, Alt+Enter or :w sends"},
         {"record", d.record},
         {"models_dir", models_dir.empty() ? d.models_dir : models_dir},
         {"context", d.context},
