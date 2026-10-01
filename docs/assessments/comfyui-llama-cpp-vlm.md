@@ -1,5 +1,7 @@
 # Assessment: ComfyUI-llama-cpp_vlm as a replacement for comfyui-ollama
 
+> Note (2026-10-01): Ollama was removed from MAIC in favour of llama.cpp (docs/llamacpp.md). The Ollama references below are history.
+
 **Done (2026-09-30):** the section 7 alternative is built as `vendor/comfyui-maic-llamacpp` (nodes `MaicLlmServer`, `MaicLlmChat`), `comfyui-ollama` and its patch are gone, and `example_workflows/story-chat-llamacpp.json` is the rewritten workflow.
 
 Date: 2026-09-30. Read-only review of `~/dev2/tools-and-things/ComfyUI-llama-cpp_vlm` (upstream `lihaoyun6/ComfyUI-llama-cpp_vlm`, HEAD `f2209cc`, 2026-08-17) against the vendored `~/dev2/tools-and-things/comfyui-ollama` (`stavsap/comfyui-ollama` at `6db7560` plus `vendor/patches/comfyui-ollama-think.patch`). Question: can it replace the Ollama nodes in Micaiah's ComfyUI workflows so ComfyUI no longer needs Ollama at all.

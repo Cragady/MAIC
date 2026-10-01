@@ -1,5 +1,7 @@
 # opencode vs MAIC
 
+> Note (2026-10-01): Ollama was removed from MAIC in favour of llama.cpp (docs/llamacpp.md). The Ollama references below are history.
+
 Read-only comparison of `anomalyco/opencode` against MAIC, written for Micaiah as input to MAIC's roadmap. opencode was read at commit `2fa3363c924c5c3e367b84a87ae478296a0ed59b` (2026-09-29, "docs(web): correct GPT 6.1 Sol cache pricing"), checked out at `~/dev2/tools-and-things/opencode`. MAIC was read at commit `4477370b` ("Add C++ core, agent CLI, harness and service control"). Paths below are relative to each repo root unless absolute.
 
 MAIC's own design principles take precedence over anything here: a root-owned tripwire that any process can trip but only a sudo password can reset, with the session surviving a trip; a bubblewrap sandbox for every model-run command; the manual / auto-read / edit / auto / plan modes; requests from a remote origin always asked; secrets never readable; JSONL session transcripts. Where opencode does something differently, the question is only whether the idea can be adopted *inside* those constraints.

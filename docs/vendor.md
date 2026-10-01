@@ -1,6 +1,6 @@
 # Vendored services
 
-MAIC can install the services it drives (llama.cpp, the default model server; ComfyUI; Ollama, the optional second backend), so nothing has to live in `~/program-files` or a random clone. Everything sits in one tree:
+MAIC can install the services it drives (llama.cpp, the model server; ComfyUI), so nothing has to live in `~/program-files` or a random clone. Everything sits in one tree:
 
 ```
 ~/.local/state/maic/
@@ -11,10 +11,6 @@ MAIC can install the services it drives (llama.cpp, the default model server; Co
 │   ├── llamacpp/
 │   │   ├── bin                -> ../llama.cpp-build/bin
 │   │   └── current-model.gguf -> the GGUF llama-server loads (maic vendor use llamacpp PATH)
-│   └── ollama/
-│       ├── v0.35.0/     the verified release (bin/ollama + CUDA libs)
-│       ├── current      -> v0.35.0
-│       └── cli-history  -> ~/.ollama/history
 ├── workflows/comfyui/   your saved ComfyUI workflows, editable (ComfyUI's own folder points here)
 ├── templates/comfyui/   your own templates: originals, shown in ComfyUI's template browser, opened as copies
 ├── sessions/            transcripts
@@ -26,45 +22,40 @@ MAIC can install the services it drives (llama.cpp, the default model server; Co
 ```
 comfyui/outputs       14.4 MB    12     ~/.local/state/maic/vendor/ComfyUI/output -> ~/dev2/tools-and-things/ComfyUI/output
 comfyui/workflows     52.1 KB    5      ~/.local/state/maic/workflows/comfyui
-ollama/cli-history    0 B        0      ~/.local/state/maic/vendor/ollama/cli-history -> ~/.ollama/history
 ```
 
 ## What is pinned
 
-`vendor/manifest.json` is the single source of truth. Submodules are checked into the MAIC repo at a tag or commit; releases are binary downloads verified against the checksum file published with the release. Nothing tracks a branch head.
+`vendor/manifest.json` is the single source of truth. Each service is a submodule checked into the MAIC repo at a tag or commit. Nothing tracks a branch head.
 
-| Service | Kind | Pinned | Install |
+| Service | Submodule | Pinned | Install |
 | :--- | :--- | :--- | :--- |
-| `comfyui` | submodule `vendor/ComfyUI` | `v0.38.0` | `vendor/comfyui.sh`: uv venv with Python 3.13 (system Python untouched), CUDA 13 torch, requirements, MAIC's custom nodes linked in (`vendor/comfyui-maic-llamacpp`, the chat nodes for llama-server; `vendor/comfyui-maic-templates`, the template shelf), `extra_model_paths.yaml` from `models_dir`, workflows moved into the artifact tree |
-| `llamacpp` | submodule `vendor/llama.cpp` | `b11284` | `vendor/llamacpp.sh`: CMake out of tree into `llama.cpp-build/`, Release, CUDA when `nvcc` is found, no TLS (the binaries cannot download models), targets `llama-server llama-cli llama-quantize llama-gguf-split`, `llamacpp/bin` link. See [llamacpp.md](llamacpp.md) |
-| `ollama` | release | `v0.35.0` | `vendor/ollama.sh`: download, sha256 against the release's `sha256sum.txt` (a mismatch aborts), unpack, `current` link |
+| `comfyui` | `vendor/ComfyUI` | `v0.38.0` | `vendor/comfyui.sh`: uv venv with Python 3.13 (system Python untouched), CUDA 13 torch, requirements, MAIC's custom nodes linked in (`vendor/comfyui-maic-llamacpp`, the chat nodes for llama-server; `vendor/comfyui-maic-templates`, the template shelf), `extra_model_paths.yaml` from `models_dir`, workflows moved into the artifact tree |
+| `llamacpp` | `vendor/llama.cpp` | `b11284` | `vendor/llamacpp.sh`: CMake out of tree into `llama.cpp-build/`, Release, CUDA when `nvcc` is found, no TLS (the binaries cannot download models), targets `llama-server llama-cli llama-quantize llama-gguf-split`, `llamacpp/bin` link. See [llamacpp.md](llamacpp.md) |
 
-Privacy is the same as the hand-built setup: ComfyUI runs with `--disable-api-nodes --disable-auto-launch --listen 127.0.0.1`; Ollama runs with `OLLAMA_NO_CLOUD=1`, `OLLAMA_REMOTES=none.invalid`, loopback only, models on the external drive; llama-server runs with `--host 127.0.0.1` from a build without TLS. Those are in `services/*.json`, not in the vendored code.
+Privacy is the same as the hand-built setup: ComfyUI runs with `--disable-api-nodes --disable-auto-launch --listen 127.0.0.1`; llama-server runs with `--host 127.0.0.1` from a build without TLS, models on the external drive. Those are in `services/*.json`, not in the vendored code.
 
 ## Commands
 
 ```sh
 maic vendor                      # each service: pinned version, installed / linked / missing, where it points
 maic vendor add comfyui          # fetch the submodule, apply patches, run the install script (network)
-maic vendor add ollama           # download the release, verify, unpack, link current
 maic vendor adopt comfyui ~/dev2/tools-and-things/ComfyUI     # use an install you already have
-maic vendor adopt ollama ~/program-files/ollama/v0.35.0        # the directory that holds bin/ollama
 maic vendor add llamacpp         # build the submodule out of tree (about ten minutes, no download)
-maic vendor use llamacpp /path/to/model.gguf   # the GGUF llama-server loads; an Ollama blob works too (llamacpp.md)
-maic vendor unlink ollama        # stop using it; nothing is deleted
+maic vendor use llamacpp /path/to/model.gguf   # the GGUF llama-server loads (llamacpp.md)
+maic vendor unlink comfyui       # stop using it; nothing is deleted
 ```
 
-`add` is the only thing in MAIC that reaches the internet, and only because you typed it. It refuses while the harness is tripped. `adopt` moves nothing: it creates the link and runs the install script's wiring steps (custom node link, workflows folder, venv check), which are idempotent.
+`add` and `vendor model` are the only things in MAIC that reach the internet, and only because you typed them. It refuses while the harness is tripped. `adopt` moves nothing: it creates the link and runs the install script's wiring steps (custom node link, workflows folder, venv check), which are idempotent.
 
 ## Updating a pinned version
 
-1. Change `ref` (or `version`) in `vendor/manifest.json`; for a submodule also `git -C vendor/ComfyUI checkout <tag>` (or `vendor/llama.cpp`, whose tags are `b<build>`) and commit the submodule pointer.
+1. Change `ref` in `vendor/manifest.json`, `git -C vendor/ComfyUI checkout <tag>` (or `vendor/llama.cpp`, whose tags are `b<build>`) and commit the submodule pointer.
 2. `maic vendor add NAME` again: it checks out the new ref, re-applies patches (already-applied ones are skipped), and re-runs the install script, which updates packages in place.
-3. For Ollama the old version directory stays until you delete it; `current` moves.
 
 ## Settings
 
-`models_dir` in `settings.json` is where model files live (the ComfyUI folders `checkpoints/ diffusion_models/ loras/ text_encoders/ vae/` and the Ollama store `ollama/`). `vendor/comfyui.sh` writes `extra_model_paths.yaml` from it on a fresh install; an adopted install keeps the file it has.
+`models_dir` in `settings.json` is where model files live (`llamacpp/` for the GGUFs, and the ComfyUI folders `checkpoints/ diffusion_models/ loras/ text_encoders/ vae/`). `vendor/comfyui.sh` writes `extra_model_paths.yaml` from it on a fresh install; an adopted install keeps the file it has.
 
 ## Workflows and templates
 

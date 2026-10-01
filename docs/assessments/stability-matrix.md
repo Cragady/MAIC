@@ -1,5 +1,7 @@
 # Stability Matrix: what MAIC can take from it
 
+> Note (2026-10-01): Ollama was removed from MAIC in favour of llama.cpp (docs/llamacpp.md). The Ollama references below are history.
+
 Assessed 2026-09-30 against the checkout at `~/dev2/tools-and-things/StabilityMatrix` (upstream LykosAI/StabilityMatrix, head `fcfab8b7`, tagged `v2.16.4` plus one merge). Read-only; nothing was built or run. File references are relative to that checkout unless they start with `MAIC/`.
 
 **Short answer:** nothing to run next to MAIC, a dozen design ideas worth taking into the vendor and service layers, and a clear list of things not to copy. The recommendation and the roadmap-ready items are in section 6.

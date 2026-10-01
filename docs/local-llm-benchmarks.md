@@ -1,5 +1,7 @@
 # Local LLM Benchmarks
 
+> Note (2026-10-01): Ollama was removed from MAIC in favour of llama.cpp (docs/llamacpp.md). The Ollama references below are history.
+
 Measured throughput for local LLMs on this machine. Add a row per run.
 
 ## Hardware

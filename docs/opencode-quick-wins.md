@@ -1,5 +1,7 @@
 # opencode quick wins for MAIC
 
+> Note (2026-10-01): Ollama was removed from MAIC in favour of llama.cpp (docs/llamacpp.md). The Ollama references below are history.
+
 Read-only audit for Micaiah, a follow-up to [opencode-comparison.md](opencode-comparison.md). That page compared the two designs and picked ten large items (resume, compaction, arity keys, reject with feedback, doom loop, a `permission` block, diff at the approval prompt, snapshots, `question` and `glob`, custom commands). None of those is repeated here. This page is finer-grained: small, concrete things opencode does that one person can put into MAIC in well under a day each, ranked by value for the effort.
 
 opencode was read at commit `2fa3363c` (2026-09-29) in `~/dev2/tools-and-things/opencode`; paths below are relative to `packages/` in that repo (`opencode/src/...` and `tui/src/...`). MAIC paths are relative to `~/dev2/MAIC`, at the tree as of 2026-09-30 (resume, `-c` / `-r`, forks and the help system already exist).

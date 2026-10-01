@@ -9,7 +9,7 @@ Three tools, which combine. All of them are configured in `settings.lua` under `
 | Token bans (`bans.tokens`, `:ban token`) | OpenAI-compatible servers (llama.cpp, vLLM, LM Studio, ...) | `logit_bias` at minus infinity: the token can never be chosen, so the model takes another path |
 | XTC (`sampling.xtc_probability`, `:sampling xtc`) | llama.cpp-based servers | a sampler that throws away the top choices, so stock phrases lose their head start |
 
-The vendored llama.cpp (`maic vendor add llamacpp`, [llamacpp.md](llamacpp.md)) is the local server that takes all four; Ollama takes the first two.
+The vendored llama.cpp (`maic vendor add llamacpp`, [llamacpp.md](llamacpp.md)) is the local server that takes all four.
 
 ## Files
 

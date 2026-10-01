@@ -21,7 +21,7 @@ The rules that shaped it, from [harness.md](harness.md) and [roadmap.md](roadmap
   maic_core: harness, tools, sandbox, session log     (core/)
      |
      v
-  Ollama on the same machine, or a remote provider from settings
+  llama-server on the same machine, or a remote provider from settings
 ```
 
 `maic-server` (also `maic server start`) is one process on the workstation. It owns agent sessions: one `Agent` per session id, each with its own `SessionLog` written to the normal sessions tree with kind `server`, so `maic sessions` lists them and `maic -r ID` can continue one at the terminal later. The model, mode, providers and compaction settings come from the same settings files the CLI reads; `--model` and `--mode` override the defaults for new sessions.
@@ -163,4 +163,4 @@ The API would not change for any of this; it is the same one the browser uses.
 
 ## Tests
 
-`build/server/server_test` (`ctest --test-dir build -R server`) starts the server on a random port against a fake Ollama and covers: token creation, verification, revocation and file permissions; the rate limit; 401 with no token and with a wrong one; the audit line for both; 403 for a workspace outside the roots; session creation, streaming, the folded transcript and replay from any `seq`; an approval round trip in auto mode where the call is still asked about because the origin is remote; a denial with feedback reaching the model; interrupt of a running turn and of a pending approval; per-session mode changes; the self-signed certificate and a pinned HTTPS client; and that no reset route exists.
+`build/server/server_test` (`ctest --test-dir build -R server`) starts the server on a random port against a fake OpenAI-compatible server and covers: token creation, verification, revocation and file permissions; the rate limit; 401 with no token and with a wrong one; the audit line for both; 403 for a workspace outside the roots; session creation, streaming, the folded transcript and replay from any `seq`; an approval round trip in auto mode where the call is still asked about because the origin is remote; a denial with feedback reaching the model; interrupt of a running turn and of a pending approval; per-session mode changes; the self-signed certificate and a pinned HTTPS client; and that no reset route exists.

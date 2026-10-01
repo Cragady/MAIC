@@ -6,7 +6,7 @@ The `maic` command. With no arguments it starts the agent in the current directo
 maic vendor add llamacpp           # once: build llama.cpp (docs/llamacpp.md)
 maic vendor use llamacpp /path/to/model.gguf   # once per model: the GGUF it serves
 cd ~/some/project
-maic up llamacpp                   # once per boot (maic up ollama for the optional Ollama backend)
+maic up llamacpp                   # once per boot
 maic                               # the agent, on llamacpp/current
 maic --model anthropic/claude-opus-5-5 --mode auto-read
 maic -c                            # continue the last session started in this directory
@@ -70,8 +70,8 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:w` | send the input (same as Alt+Enter). `:w now` or `:ww` sends immediately even while the agent is working (see below) |
 | `:e` | edit the input in nvim (`$VISUAL`, then `$EDITOR`, then `nvim`); a non-zero exit leaves the input unchanged |
 | `:mode manual\|auto-read\|edit\|auto\|plan` | set the agent mode |
-| `:model NAME` | switch model (when idle): `llamacpp/current`, `qwen3.5:9b` (Ollama), `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists providers |
-| `:models` | models the Ollama server has (the optional backend; llama.cpp serves the one GGUF `maic vendor` shows) |
+| `:model NAME` | switch model (when idle): `llamacpp/current`, `llamacpp/Qwen3.5-9B-Q4_K_M` (any GGUF under the models directory), `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists providers |
+| `:models` | models the current provider serves (llama.cpp: every GGUF under the models directory, by file name) |
 | `:think on\|off` | let the model reason before answering |
 | `:set markdown\|mouse on\|off` | rendering and scroll-wheel toggles |
 | `:!cmd` or `!cmd` | run a command in **your** shell, unsandboxed, in the workspace; output shows in the conversation and is passed to the model as context (Ctrl-C stops it) |

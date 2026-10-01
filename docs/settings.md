@@ -11,7 +11,7 @@ At each location a `settings.lua` is used when it exists, else a `settings.json`
 Because a settings file is code, it can decide things per machine:
 
 ```lua
-local model = maic.hostname == "laptop" and "ollama/qwen3.5:4b" or "llamacpp/current"
+local model = maic.hostname == "laptop" and "llamacpp/Qwen3.5-4B-Q4_K_M" or "llamacpp/current"
 return {
   model = os.getenv("MAIC_MODEL") or model,
   mode = "auto-read",
@@ -43,7 +43,7 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 
 | Key | What |
 | :--- | :--- |
-| `model` | `provider/model`, or a bare Ollama model name. Default `llamacpp/current`: the vendored llama-server ([llamacpp.md](llamacpp.md)), which serves whatever GGUF you linked under the name `current`. `--model` on the command line and `:model` in the session override it. |
+| `model` | `provider/model`, or a bare model name for the first provider. Default `llamacpp/current`: the vendored llama-server ([llamacpp.md](llamacpp.md)), which serves whatever GGUF you linked under the name `current`. `--model` on the command line and `:model` in the session override it. |
 | `mode` | `manual`, `auto-read`, `edit`, `auto` or `plan` (see [cli/README.md](../cli/README.md#modes)). |
 | `think` | Ask the model to reason before answering. Slower; better on hard problems. |
 | `markdown` | Render markdown in the conversation window (`:set markdown off` for raw text). The input box always highlights markdown. |
@@ -54,7 +54,7 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 | `compact_keep_results` | Tool results that are never stubbed, counting from the most recent (default `4`). |
 | `context` | The context window in tokens (default `16384`): the local llama.cpp server's `--ctx-size` and the readout. `--ctx N` and `:ctx N` override and restart the server. |
 | `models` | Presets by short name, adding to or overriding the built-in ones: `models = { ["opus-5.5"] = { model = "anthropic/claude-opus-5-5", context = 1000000, reviewer = "anthropic/claude-sonnet-5", think = true } }`. `reviewer = "same"` makes the model review itself; `context` sets the provider's window for the readout (and the server's size for a local model). Built in: `opus-5.5`, `fable-5.1`, `sonnet-5`, `haiku-4.5`, `qwen-4b`, `qwen-9b` (text, 16k), `qwen-9b-vision` (8k). `--model NAME` and `:model NAME` accept a preset's name. |
-| `models_dir` | Where model files live. llama.cpp's router serves every GGUF under `<models_dir>/llamacpp/` (`${MAIC_MODELS}` in service files). Also ComfyUI's `checkpoints/ diffusion_models/ loras/ text_encoders/ vae/` and Ollama's `ollama/` store. Used when MAIC installs ComfyUI (see [vendor.md](vendor.md)). |
+| `models_dir` | Where model files live. llama.cpp's router serves every GGUF under `<models_dir>/llamacpp/` (`${MAIC_MODELS}` in service files). Also ComfyUI's `checkpoints/ diffusion_models/ loras/ text_encoders/ vae/`. Used when MAIC installs ComfyUI (see [vendor.md](vendor.md)). |
 | `forbid` | Terms no tool call may contain, in any letter case (`/.../` for a POSIX extended regex): a search pattern, a command, a path or any argument with one is halted before it runs, under the dumb harness too. Layers add to the built-in list; `:forbid` at run time. |
 | `allow` | Command patterns (glob over the whole command line) that run in every mode but plan without an approval prompt or the reviewer; MAIC's own helpers are always on it. Trip patterns still win. Layers add up; `:allow` at run time. |
 | `rules` | Standing one-line instructions (`{ "always answer in French" }`) carried with `system_prompt` at both ends of the system prompt and in the per-turn note; layers add up. `--rule` and `:rule` at run time. A rule is a request; `prefill` is a guarantee. |
@@ -79,12 +79,11 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 
 ## Providers
 
-Where models come from. MAIC ships with `llamacpp` (local, the default) and `ollama` (local, the optional second backend), `anthropic`, `deepseek` and `openrouter`; a `providers` entry adds a new one or changes a shipped one by name.
+Where models come from. MAIC ships with `llamacpp` (local, the default), `anthropic`, `deepseek` and `openrouter`; a `providers` entry adds a new one or changes a shipped one by name.
 
 | Shipped | Kind | `base_url` | Key |
 | :--- | :--- | :--- | :--- |
 | `llamacpp` | `openai` | `http://127.0.0.1:8081/v1` (the vendored llama-server, [llamacpp.md](llamacpp.md); every `sampling` key reaches it, including `xtc_probability`, `dry_multiplier`, `grammar`, `json_schema`, and `logit_bias` from token bans) | none |
-| `ollama` | `ollama` | `http://127.0.0.1:11434` (optional; `maic up ollama`, `:models` lists what it has) | none |
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
 | `deepseek` | `openai` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` |
 | `openrouter` | `openai` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
@@ -101,17 +100,17 @@ Where models come from. MAIC ships with `llamacpp` (local, the default) and `oll
 
 | Field | What |
 | :--- | :--- |
-| `kind` | `ollama` (native Ollama API), `anthropic` (Messages API), or `openai` (any OpenAI-compatible `/chat/completions`: DeepSeek, OpenRouter, vLLM, LM Studio, llama.cpp server, ...). |
+| `kind` | `anthropic` (Messages API), or `openai` (any OpenAI-compatible `/chat/completions`: llama.cpp server, DeepSeek, OpenRouter, vLLM, LM Studio, ...). |
 | `base_url` | Where it listens. A path prefix is fine (`https://openrouter.ai/api/v1`). |
 | `api_key_env` | Environment variable holding the key. |
 | `api_key_command` | A command that prints the key (a password manager). Keys themselves never go in this file; MAIC refuses an `api_key` field. |
 | `options.mid_system` | OpenAI-compatible kinds only. `false` (default): a system message after the first (mode changes, resume notes, ban cuts) is sent as a user-role `[system note]`, because local chat templates such as Qwen's reject a second system message. `true` sends them as system, for servers that accept that. |
 | `options.thinking_controls` | OpenAI-compatible kinds only. `true` sends `chat_template_kwargs.enable_thinking` and, when thinking is off, `reasoning_effort: "none"` (llama-server honours both; OpenAI's own API rejects unknown fields, so it is on only for `llamacpp` by default). |
-| `options.operator_note` | Whether `system_prompt` / `--system` text is also appended to each user turn as the model sees it (default `true`; `false` for Anthropic, whose models follow the system prompt). Measured necessary for small models under Ollama once tool schemas are attached. |
+| `options.operator_note` | Whether `system_prompt` / `--system` text is also appended to each user turn as the model sees it (default `true`; `false` for Anthropic, whose models follow the system prompt). Measured necessary for small local models once tool schemas are attached. |
 | `options.sampling` | Any kind: a table merged into every request to that provider (`temperature`, `top_k`, `top_p`, `min_p`, `seed`, `repeat_penalty`, and for llama.cpp-style servers their own keys such as `xtc_probability`). Anthropic's current models reject sampling parameters, so leave it unset there. |
 | `options` | Kind-specific. Anthropic: `max_tokens` (64000), `effort` (`high`), `think_effort` (`xhigh`, used when `:think on`), `fallbacks` (`"default"` turns on server-side refusal fallbacks), `auth: "bearer"` for an OAuth token. OpenAI kinds: `extra_body`, merged into every request. |
 
-Use a provider with `:model anthropic/claude-opus-5-5`, `:model deepseek/deepseek-chat`, `:model lmstudio/whatever-it-serves`, or `maic --model openrouter/some/model`. A bare name with no known prefix goes to Ollama (its names can contain `/`).
+Use a provider with `:model anthropic/claude-opus-5-5`, `:model deepseek/deepseek-chat`, `:model lmstudio/whatever-it-serves`, or `maic --model openrouter/some/model`. A bare name with no known prefix goes to the first provider, `llamacpp` (model names can contain `/`).
 
 **Remote providers send data off this machine**: your prompts, every file the agent reads, and every command's output. MAIC says so when you switch to one and shows `REMOTE` in the status line. A provider is local when its `base_url` is on 127.0.0.1, localhost or ::1.
 

@@ -6,7 +6,7 @@ MAIC is written so that nothing closed-source ends up in it. This page says what
 
 Allowed as input:
 
-* Public API documentation and published protocol formats (the Anthropic Messages API, the Ollama and OpenAI-compatible HTTP APIs, SSE, JSON, bubblewrap's command line, Linux man pages).
+* Public API documentation and published protocol formats (the Anthropic Messages API, the OpenAI-compatible HTTP API, SSE, JSON, bubblewrap's command line, Linux man pages).
 * The observed behaviour of tools used as products (how Claude Code's modes, queued messages, `-c`/`-r` or approval prompts feel). Behaviour and conventions are reimplemented from a description; no source is involved.
 * Open-source code under MIT, BSD, Apache-2.0 or similar. Reading it for ideas is fine. Copying code into MAIC requires keeping its license notice next to the copied part and listing it below.
 * Design documents, generated or written, as long as they contain ideas rather than someone else's code.
@@ -25,7 +25,7 @@ Not allowed:
 | Claude Code, as a product | behaviour | Modes, the approval prompt, queued mid-turn messages, `-c` / `-r`, `-p`, instruction files. Reimplemented from the observed behaviour. No source was available or used. |
 | opencode (MIT, `~/dev2/tools-and-things/opencode`) | open source, read only | Feature comparison in [opencode-comparison.md](opencode-comparison.md). No code copied. |
 | A generated "cleanroom harness spec" (Google) | design | Two ideas kept for the plan: per-role permission profiles (sandbox paths, network, budgets per agent role), and a forkable transcript tree. Its SQL and JSON schema were not adopted; see below. |
-| Anthropic API reference, Ollama and OpenAI API references | public docs | The provider clients in `core/src/anthropic.cpp`, `ollama.cpp`, `openai.cpp`. |
+| Anthropic and OpenAI API references | public docs | The provider clients in `core/src/anthropic.cpp` and `openai.cpp`. |
 
 ### How the spec's ideas map onto MAIC
 
