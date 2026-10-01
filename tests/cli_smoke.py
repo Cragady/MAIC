@@ -74,6 +74,8 @@ def main():
     # maic setup off a terminal: the plan and exit 2, nothing done (the settings file exists, so that step is not on it).
     s = subprocess.run([maic, "setup"], capture_output=True, text=True, env=env, cwd=home, timeout=120, stdin=subprocess.DEVNULL)
     setup_ok = s.returncode == 2 and "plan (each a yes/no in a terminal)" in s.stdout and "Build llama.cpp" in s.stdout and "Write the global settings" not in s.stdout and "AddressSanitizer" not in s.stderr
+    # The models it offers come from the catalog, by id.
+    setup_ok = setup_ok and "Fetch qwen3.5-4b (" in s.stdout and "Fetch qwen3.5-9b-text (a link to qwen3.5-9b's weights" in s.stdout
     print(("ok" if setup_ok else "FAIL") + ": setup off a terminal, exit %d" % s.returncode)
     if not setup_ok:
         print(s.stdout[-2000:], s.stderr[-2000:])
@@ -98,8 +100,65 @@ def main():
     r = subprocess.run([maic, "tools"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
     list_ok = r.returncode == 0 and "word_count  (python)" in r.stdout and "reads **; writes nothing; timeout 10 s" in r.stdout
     print(("ok" if list_ok else "FAIL") + ": maic tools lists script tools with language and declared reads/writes" + ("" if list_ok else "\n" + r.stdout[-1500:]))
+    models_ok = models_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok else 1)
+    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and models_ok else 1)
+
+
+def models_smoke(maic, port):
+    """`maic models` over a models tree shaped like Micaiah's drive: the 4B and 9B folders with their projectors (sparse
+    files of the catalog's sizes) and the -text folder holding only the relative link. Nothing is downloaded."""
+    home, env = make_home(port)
+    mdir = os.path.join(home, "models")
+    with open(os.path.join(home, "config", "maic", "settings.lua"), "w") as f:
+        f.write("return { models_dir = '%s', load_instructions = false }\n" % mdir)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "models", "catalog.json")) as f:
+        catalog = {m["id"]: m for m in json.load(f)["models"]}
+    for mid in ("qwen3.5-4b", "qwen3.5-9b"):
+        d = os.path.join(mdir, "llamacpp", catalog[mid]["install"]["dir"])
+        os.makedirs(d)
+        for fl in catalog[mid]["files"]:
+            with open(os.path.join(d, fl["name"]), "wb") as out:
+                out.truncate(fl["size"])
+    os.makedirs(os.path.join(mdir, "llamacpp", "Qwen3.5-9B-Q4_K_M-text"))
+    os.symlink("../Qwen3.5-9B-Q4_K_M/Qwen3.5-9B-Q4_K_M.gguf", os.path.join(mdir, "llamacpp", "Qwen3.5-9B-Q4_K_M-text", "Qwen3.5-9B-Q4_K_M-text.gguf"))
+    results = []
+
+    def run(*args):
+        return subprocess.run([maic, *args], capture_output=True, text=True, env=env, cwd=home, timeout=60, stdin=subprocess.DEVNULL)
+
+    def report(ok, what, r):
+        print(("ok" if ok else "FAIL") + ": " + what + ("" if ok else "\n" + r.stdout[-2000:] + r.stderr[-2000:]))
+        results.append(ok)
+
+    def row(out, mid):
+        """The table's columns by position: id, role, size, installed, current, presets."""
+        line = next((l for l in out.splitlines() if l.startswith(mid + " ")), "")
+        return {"size": line[40:49].strip(), "installed": line[50:60].strip(), "current": line[61:70].strip(), "presets": line[71:].strip()}
+
+    r = run("models", "check")
+    report(r.returncode == 0 and "0 problems" in r.stdout, "maic models check passes on the shipped catalog", r)
+    r = run("models", "install", "qwen3.5-9b-text", "--link")
+    report(r.returncode == 0 and "present: " in r.stdout and "downloading" not in r.stdout and "qwen-9b" in r.stdout,
+           "installing the -text entry on that tree downloads nothing, links it as current and names its preset", r)
+    r = run("models")
+    four, nine, text, coder = row(r.stdout, "qwen3.5-4b"), row(r.stdout, "qwen3.5-9b"), row(r.stdout, "qwen3.5-9b-text"), row(r.stdout, "qwen2.5-coder-7b")
+    report(r.returncode == 0 and four["size"] == "3.2 GB" and four["installed"] == "yes" and nine["installed"] == "yes" and text["size"] == "link" and text["installed"] == "yes"
+           and text["current"] == "llamacpp" and text["presets"] == "qwen-9b" and nine["current"] == "" and nine["presets"] == "qwen-9b-vision" and coder["installed"] == "no",
+           "the table: the three folders installed, the -text link current, the coder not installed", r)
+    r = run("models", "info", "qwen3.5-9b-text")
+    report(r.returncode == 0 and r.stdout.splitlines()[2].startswith("The 9B without image processing") and "shares:" in r.stdout, "info prints the brief first", r)
+    r = run("models", "remove", "qwen3.5-9b", "--yes")
+    report(r.returncode == 1 and "qwen3.5-9b-text links qwen3.5-9b's weights" in r.stderr and os.path.exists(os.path.join(mdir, "llamacpp", "Qwen3.5-9B-Q4_K_M")),
+           "remove refuses the 9B while the -text entry links it, and names it", r)
+    r = run("models", "remove", "qwen3.5-4b")
+    report(r.returncode == 2 and "--yes" in r.stderr and os.path.exists(os.path.join(mdir, "llamacpp", "Qwen3.5-4B-Q4_K_M")), "remove off a terminal needs --yes", r)
+    r = run("models", "remove", "qwen3.5-4b", "--yes")
+    report(r.returncode == 0 and not os.path.exists(os.path.join(mdir, "llamacpp", "Qwen3.5-4B-Q4_K_M")), "with --yes it removes the files and the folder", r)
+    r = run("help", "models")
+    report(r.returncode == 0 and "*models*" in r.stdout and "llama.vim" in r.stdout, "maic help models is the catalog page", r)
+    return all(results)
 
 
 if __name__ == "__main__":

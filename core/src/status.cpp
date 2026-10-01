@@ -152,6 +152,9 @@ std::string missing_requirement(const ServiceDef& def) {
     std::error_code ec;
     for (const auto& path : def.requires_paths) {
         if (std::filesystem::exists(path, ec)) continue;
+        if (is_fim_server(def.name)) {
+            return def.name + " needs a completion model: maic models install qwen2.5-coder-7b --link (or the 3b or 1.5b) links " + path.string();
+        }
         if (is_llama_server(def.name)) {
             return def.name + " needs a models directory: put a GGUF under " + path.string() + " or run maic vendor model llamacpp URL SHA256 (models_dir in settings moves it)";
         }
@@ -196,6 +199,10 @@ bool is_llama_server(const std::string& service_name) {
     return service_name == "llamacpp" || service_name.rfind("llamacpp-", 0) == 0;
 }
 
+bool is_fim_server(const std::string& service_name) {
+    return service_name == "llamacpp-fim";
+}
+
 std::string free_gpu_for(const ServiceDef& def, const std::vector<ServiceDef>& services) {
     if (!def.needs_gpu || is_llama_server(def.name)) return "";
     std::string out;
@@ -217,6 +224,15 @@ GpuReport gpu_report(const std::vector<ServiceDef>& services) {
         s.name = def.name;
         s.running = service_status(def).state == ServiceState::Running;
         if (s.running) s.models = resident_models(local_url(def));
+        if (is_fim_server(def.name)) {
+            for (size_t i = 0; i + 1 < def.command.size(); ++i) {
+                if (def.command[i] == "--ctx-size" || def.command[i] == "-c") s.context = std::atoi(def.command[i + 1].c_str());
+            }
+            std::string linked = fim_current_id();
+            for (auto& m : s.models) {
+                if (m == "current" && !linked.empty()) m = linked;
+            }
+        }
         r.servers.push_back(s);
     }
     if (const auto* cf = by_name(services, "comfyui"); cf && service_status(*cf).state == ServiceState::Running) {
@@ -294,7 +310,7 @@ std::string gpu_free(const std::vector<ServiceDef>& services, const std::string&
             out += "comfyui: not running\n";
         }
     }
-    if (!known) throw std::runtime_error("maic gpu free [all|llamacpp|llamacpp-2|comfyui]");
+    if (!known) throw std::runtime_error("maic gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|comfyui]");
     return out;
 }
 
@@ -341,12 +357,16 @@ std::string k_tokens(int context) {
 
 }  // namespace
 
+long estimate_footprint(long weight_bytes, const std::string& id, int context) {
+    double per_token_mb = params_b(id) > 6 ? 0.13 : 0.065;
+    return weight_bytes + static_cast<long>(context * per_token_mb * 1024 * 1024);
+}
+
 long model_footprint(const ModelPlan& plan, const std::filesystem::path& models_root) {
     if (plan.bytes >= 0) return plan.bytes;
     long weights = gguf_bytes(plan.id, models_root);
     if (weights <= 0) return -1;
-    double per_token_mb = params_b(plan.id) > 6 ? 0.13 : 0.065;
-    return weights + static_cast<long>(plan.context * per_token_mb * 1024 * 1024);
+    return estimate_footprint(weights, plan.id, plan.context);
 }
 
 std::string budget_sentence(const std::vector<ModelPlan>& plans, const std::filesystem::path& models_root, long card_total, bool comfyui_running, long comfyui_used) {
@@ -372,6 +392,13 @@ std::string gpu_budget(const GpuReport& report, const Settings& settings, long c
     std::vector<ModelPlan> plans;
     std::string main_model;
     for (const auto& s : report.servers) {
+        if (is_fim_server(s.name)) {
+            // Counted while it runs: it loads the linked coder on llama.vim's first request.
+            std::string id = !s.models.empty() ? s.models.front() : s.running ? fim_current_id() : "";
+            long bytes = id.empty() ? -1 : model_footprint({id, s.context}, fim_models_root());
+            if (bytes >= 0) plans.push_back({"", 0, "completion " + size_label(id) + " at " + k_tokens(s.context), bytes});
+            continue;
+        }
         ModelPlan plan;
         plan.context = s.name == "llamacpp" ? settings.context : settings.context_2;
         if (!s.models.empty()) {
@@ -406,7 +433,9 @@ std::string explain_exit(const ServiceDef& def, const std::vector<ServiceDef>& s
         }
         if (who.empty() && g.comfyui_running && def.name != "comfyui") who = "comfyui holds its models";
         if (g.whisper_running && def.name != "whisper") who += (who.empty() ? "" : ", ") + std::string("whisper holds its model");
-        return "CUDA out of memory: the card is full" + (who.empty() ? std::string(" (maic gpu shows who holds it)") : " (" + who + "). maic gpu free releases it, then maic up " + def.name + " again");
+        std::string out = "CUDA out of memory: the card is full" + (who.empty() ? std::string(" (maic gpu shows who holds it)") : " (" + who + "). maic gpu free releases it, then maic up " + def.name + " again");
+        if (is_fim_server(def.name)) out += "; a smaller completion model also helps: maic models install qwen2.5-coder-3b --link (or qwen2.5-coder-1.5b)";
+        return out;
     }
     if (has("Address already in use")) return "port " + std::to_string(def.port) + " is already in use: another copy is running, or something else took the port (maic status)";
     if (has("ModuleNotFoundError") || has("No module named")) return "a Python module is missing: the venv is incomplete (maic vendor update " + def.name + " rebuilds it)";

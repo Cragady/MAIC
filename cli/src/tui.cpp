@@ -1921,7 +1921,7 @@ void App::run_command(const std::string& line) {
                 } else {
                     GpuReport report = gpu_report(services());
                     std::string fit = gpu_budget(report, settings_);
-                    post(Kind::Notice, report.text() + (fit.empty() ? "" : fit + "\n") + ":gpu free [all|llamacpp|llamacpp-2|comfyui] releases memory without stopping anything");
+                    post(Kind::Notice, report.text() + (fit.empty() ? "" : fit + "\n") + ":gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|comfyui] releases memory without stopping anything");
                 }
             } catch (const std::exception& e) {
                 post(Kind::Error, e.what());

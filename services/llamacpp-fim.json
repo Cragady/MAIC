@@ -1,0 +1,33 @@
+{
+  "name": "llamacpp-fim",
+  "description": "code completion for llama.vim: llama.cpp in router mode on port 8084 over ${MAIC_MODELS}/fim, serving the coder `maic models install ID --link` made current as the model \"current\" through /infill; one resident model, unloaded like the others when the GPU is wanted; no chat provider (docs/models.md, Code completion)",
+  "command": [
+    "${MAIC_VENDOR}/llamacpp/bin/llama-server",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8084",
+    "--models-dir",
+    "${MAIC_MODELS}/fim",
+    "--models-max",
+    "1",
+    "--ctx-size",
+    "8192",
+    "-ub",
+    "1024",
+    "-b",
+    "1024",
+    "--cache-reuse",
+    "256",
+    "-ngl",
+    "99"
+  ],
+  "port": 8084,
+  "requires": [
+    "${MAIC_MODELS}/fim/current.gguf"
+  ],
+  "ready_timeout": 120,
+  "ready_pattern": "listening on",
+  "needs_gpu": true,
+  "artifacts": []
+}

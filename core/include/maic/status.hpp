@@ -53,8 +53,11 @@ std::string unreachable_hint(const Provider& provider, const std::vector<Service
 std::vector<std::string> resident_models(const std::string& base_url);
 std::vector<std::string> unload_resident(const std::string& base_url);
 
-// The llama servers: `llamacpp` and `llamacpp-2` (services/llamacpp*.json), one resident model each.
+// The llama servers: `llamacpp`, `llamacpp-2` and `llamacpp-fim` (services/llamacpp*.json), one resident model each.
 bool is_llama_server(const std::string& service_name);
+// The code completion server (services/llamacpp-fim.json, port 8084): a router over <models_dir>/fim that serves
+// /infill to llama.vim, with no chat provider.
+bool is_fim_server(const std::string& service_name);
 
 // Before starting `def`: when it needs the GPU and a llama server holds a model, unload it. A llama server
 // itself loads nothing at start, so starting one never evicts the other. Returns a notice ("" when nothing
@@ -65,9 +68,10 @@ std::string free_gpu_for(const ServiceDef& def, const std::vector<ServiceDef>& s
 // own VRAM figures.
 struct GpuReport {
     struct Server {
-        std::string name;                 // llamacpp, llamacpp-2
+        std::string name;                 // llamacpp, llamacpp-2, llamacpp-fim
         bool running = false;
-        std::vector<std::string> models;  // resident ("" entries never)
+        std::vector<std::string> models;  // resident ("" entries never); the completion server's "current" as the folder it links
+        int context = 0;                  // the completion server's --ctx-size; the others take theirs from settings
     };
     std::vector<Server> servers;   // every llama server, in service order
     bool comfyui_running = false;
@@ -97,12 +101,15 @@ struct ModelPlan {
 // estimate from the context and the parameter count in the name (65 MB per 1k tokens for a 4B, 130 for a
 // 9B). -1 when no such model is under `models_root`.
 long model_footprint(const ModelPlan& plan, const std::filesystem::path& models_root);
+// The arithmetic under it, for weights already summed (the catalog's vram figures use it too).
+long estimate_footprint(long weight_bytes, const std::string& id, int context);
 // One plain sentence: "4B at 16k (3.6 GB est.) + 4B at 8k (3.1 GB est.) = 6.7 GB of 8.0 GB: fits with ComfyUI
 // stopped". `card_total` and `comfyui_used` in bytes, -1 when unknown. "" when no plan has a file.
 std::string budget_sentence(const std::vector<ModelPlan>& plans, const std::filesystem::path& models_root, long card_total, bool comfyui_running, long comfyui_used);
 // The sentence for this machine: each llama server's resident model, else the one settings would send it
 // (`model` and `context` for llamacpp; `reviewer_model` on llamacpp-2, else the same model, with `context_2`),
-// and the whisper server's model when one is linked (its file plus an estimate for its buffers).
+// the whisper server's model when one is linked (its file plus an estimate for its buffers), and the completion
+// server's model while that server runs.
 std::string gpu_budget(const GpuReport& report, const Settings& settings, long card_total_fallback = -1);
 
 // Why a service died, from the tail of its log: a CUDA out of memory, a missing module, a port in use, and

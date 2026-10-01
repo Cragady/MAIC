@@ -1,0 +1,172 @@
+{
+  "//": "MAIC's model catalog: what `maic models` lists and installs. Every file is pinned to a commit and checked by SHA-256 and size (both from Hugging Face's API: /api/models/<repo>/tree/<revision>?blobs=true). vram figures are estimates in GB with the arithmetic of `maic gpu` (the files' size plus a KV cache per 1k tokens; whisper models their file plus 300 MB of buffers). ~/.config/maic/models.json adds entries or overrides fields by id. docs/models.md",
+  "models": [
+    {
+      "id": "qwen3.5-4b",
+      "name": "Qwen3.5 4B, Q4_K_M, with its vision projector",
+      "role": "agent",
+      "brief": "Qwen3.5's 4B at 4-bit with its vision projector: MAIC's quick model, the default scribe for diction, and able to read images. It fits an 8 GB card at up to 32k context and leaves room beside a parked ComfyUI. It is weaker than the 9B at long multi-step work and makes more tool-call mistakes. Pick it when the card is shared or speed matters more than depth.",
+      "license": "apache-2.0",
+      "license_url": "https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/LICENSE",
+      "source": {"repo": "unsloth/Qwen3.5-4B-GGUF", "revision": "e87f176479d0855a907a41277aca2f8ee7a09523"},
+      "files": [
+        {"name": "Qwen3.5-4B-Q4_K_M.gguf", "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf",
+         "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4", "size": 2740937888, "kind": "weights"},
+        {"name": "mmproj-F16.gguf", "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/mmproj-F16.gguf",
+         "sha256": "cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864", "size": 672423616, "kind": "mmproj"}
+      ],
+      "install": {"root": "llamacpp", "dir": "Qwen3.5-4B-Q4_K_M"},
+      "vram": [{"context": 8192, "gb": 3.7}, {"context": 16384, "gb": 4.2}, {"context": 32768, "gb": 5.3}],
+      "context": 16384,
+      "presets": ["qwen-4b"],
+      "notes": "The projector loads with the model whenever it is in the folder. unsloth's upload of Qwen's own weights."
+    },
+    {
+      "id": "qwen3.5-9b",
+      "name": "Qwen3.5 9B, Q4_K_M, with its vision projector",
+      "role": "vision",
+      "brief": "Qwen3.5's 9B at 4-bit with its vision projector, for image work: describing, captioning and reading pictures. With the projector loaded an 8 GB card holds it at 8k context and no more, so it is the wrong entry for long agent sessions; qwen3.5-9b-text links these same weights without the projector for those. Pick it when a picture is part of the task.",
+      "license": "apache-2.0",
+      "license_url": "https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/LICENSE",
+      "source": {"repo": "unsloth/Qwen3.5-9B-GGUF", "revision": "3885219b6810b007914f3a7950a8d1b469d598a5"},
+      "files": [
+        {"name": "Qwen3.5-9B-Q4_K_M.gguf", "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf",
+         "sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8", "size": 5680522464, "kind": "weights"},
+        {"name": "mmproj-F16.gguf", "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/mmproj-F16.gguf",
+         "sha256": "f70dc3509053962b0d0d3ee8a7eacebf5d60aa560cad78254ae8698516ae029f", "size": 918166080, "kind": "mmproj"}
+      ],
+      "install": {"root": "llamacpp", "dir": "Qwen3.5-9B-Q4_K_M"},
+      "vram": [{"context": 8192, "gb": 7.2}],
+      "context": 8192,
+      "presets": ["qwen-9b-vision"],
+      "notes": "qwen3.5-9b-text shares this entry's GGUF, so it cannot be removed while that one is installed."
+    },
+    {
+      "id": "qwen3.5-9b-text",
+      "name": "Qwen3.5 9B, Q4_K_M, text only",
+      "role": "agent",
+      "brief": "The 9B without image processing: a folder holding a relative link to qwen3.5-9b's GGUF and no projector, so nothing is stored twice and the gigabyte the projector costs goes to context instead (16k on an 8 GB card). This is the entry for MAIC's agent and for the diction scribe: stronger than the 4B at planning, tool calls and long instructions. It cannot see images, and it needs most of the card, so ComfyUI has to be stopped or unloaded. Installing it installs qwen3.5-9b first.",
+      "license": "apache-2.0",
+      "license_url": "https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/LICENSE",
+      "source": {"repo": "unsloth/Qwen3.5-9B-GGUF", "revision": "3885219b6810b007914f3a7950a8d1b469d598a5"},
+      "files": [
+        {"name": "Qwen3.5-9B-Q4_K_M-text.gguf", "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf",
+         "sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8", "size": 5680522464, "kind": "weights"}
+      ],
+      "install": {"root": "llamacpp", "dir": "Qwen3.5-9B-Q4_K_M-text"},
+      "shares": {"entry": "qwen3.5-9b", "file": "Qwen3.5-9B-Q4_K_M.gguf"},
+      "vram": [{"context": 8192, "gb": 6.3}, {"context": 16384, "gb": 7.4}],
+      "context": 16384,
+      "presets": ["qwen-9b"],
+      "notes": "A first-class entry by Micaiah's requirement: the 9B without image processing is never dropped from the catalog. Its file is the link Qwen3.5-9B-Q4_K_M-text.gguf -> ../Qwen3.5-9B-Q4_K_M/Qwen3.5-9B-Q4_K_M.gguf (docs/llamacpp.md, One model, two entries)."
+    },
+    {
+      "id": "whisper-distil-large-v3",
+      "name": "Whisper distil-large-v3, fp16",
+      "role": "speech",
+      "brief": "distil-whisper's large-v3 in ggml form, English only, fp16: the model legacy diction always used and the most accurate speech model here for English dictation. It holds about 1.7 GB on the card while whisper-server runs, which counts on a shared 8 GB card. Pick it when whisper has the card to itself or shares it with the 4B scribe.",
+      "license": "mit",
+      "license_url": "https://huggingface.co/distil-whisper/distil-large-v3",
+      "source": {"repo": "distil-whisper/distil-large-v3-ggml", "revision": "0d78dd96ed9fc152325f63b53788fec3b43de031"},
+      "files": [
+        {"name": "ggml-distil-large-v3.bin", "url": "https://huggingface.co/distil-whisper/distil-large-v3-ggml/resolve/0d78dd96ed9fc152325f63b53788fec3b43de031/ggml-distil-large-v3.bin",
+         "sha256": "2883a11b90fb10ed592d826edeaee7d2929bf1ab985109fe9e1e7b4d2b69a298", "size": 1519521155, "kind": "weights"}
+      ],
+      "install": {"root": "whisper", "dir": ""},
+      "vram": [{"context": 0, "gb": 1.7}],
+      "context": 0,
+      "presets": [],
+      "notes": "whisper-server loads <models_dir>/whisper/current.bin; --link points it here. diction's -m names a file for one session."
+    },
+    {
+      "id": "whisper-large-v3-turbo-q5_0",
+      "name": "Whisper large-v3-turbo, q5_0",
+      "role": "speech",
+      "brief": "OpenAI's large-v3-turbo quantised to 5 bits by the whisper.cpp project: the small-VRAM choice, about 0.8 GB resident, and multilingual. The quantisation costs some accuracy against an fp16 model, so for English dictation on a card with room, distil-large-v3 is the better pick. Pick this one when the card is crowded, for example with the 9B scribe or the code completion model resident.",
+      "license": "mit",
+      "license_url": "https://huggingface.co/openai/whisper-large-v3-turbo",
+      "source": {"repo": "ggerganov/whisper.cpp", "revision": "5359861c739e955e79d9a303bcbc70fb988958b1"},
+      "files": [
+        {"name": "ggml-large-v3-turbo-q5_0.bin", "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin",
+         "sha256": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2", "size": 574041195, "kind": "weights"}
+      ],
+      "install": {"root": "whisper", "dir": ""},
+      "vram": [{"context": 0, "gb": 0.8}],
+      "context": 0,
+      "presets": [],
+      "notes": "whisper-server loads <models_dir>/whisper/current.bin; --link points it here."
+    },
+    {
+      "id": "silero-vad-v6.2.0",
+      "name": "Silero VAD v6.2.0",
+      "role": "vad",
+      "brief": "Silero's voice activity detector in ggml form. services/whisper.json requires it: whisper-server runs it over each utterance so that silence and breathing are not transcribed into hallucinated stock phrases. It is under 1 MB, it is not a speech model, and it is never linked as the current one.",
+      "license": "mit",
+      "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
+      "source": {"repo": "ggml-org/whisper-vad", "revision": "9ffd54a1e1ee413ddf265af9913beaf518d1639b"},
+      "files": [
+        {"name": "ggml-silero-v6.2.0.bin", "url": "https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin",
+         "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987", "size": 885098, "kind": "vad"}
+      ],
+      "install": {"root": "whisper", "dir": ""},
+      "vram": [],
+      "context": 0,
+      "presets": [],
+      "notes": "Loaded by its own name beside the speech model; its memory is inside whisper's 300 MB of buffers."
+    },
+    {
+      "id": "qwen2.5-coder-7b",
+      "name": "Qwen2.5-Coder 7B base, i1-Q4_K_M",
+      "role": "completion",
+      "brief": "Qwen2.5-Coder 7B, the base model (not Instruct), trained for fill-in-the-middle: the default code completion model, served on port 8084 for llama.vim. Qwen publishes no GGUF of its base coders and ggml-org's 7B is Q8_0 at 8.1 GB, which does not fit an 8 GB card, so this is mradermacher's imatrix Q4_K_M (4.4 GB) made from Qwen/Qwen2.5-Coder-7B; mradermacher is a long-standing quantiser, and an imatrix quant keeps more quality than a plain one of the same size. It gives the best suggestions of the three, at about 5.4 GB with 8k context, so no agent model fits beside it. It is a poor diction scribe and a poor agent model: it completes code rather than following instructions, and it is a generation older than Qwen3.5.",
+      "license": "apache-2.0",
+      "license_url": "https://huggingface.co/Qwen/Qwen2.5-Coder-7B/blob/main/LICENSE",
+      "source": {"repo": "mradermacher/Qwen2.5-Coder-7B-i1-GGUF", "revision": "8876f319c1aad46592be371cd11c4dee46cd111e"},
+      "files": [
+        {"name": "Qwen2.5-Coder-7B.i1-Q4_K_M.gguf", "url": "https://huggingface.co/mradermacher/Qwen2.5-Coder-7B-i1-GGUF/resolve/8876f319c1aad46592be371cd11c4dee46cd111e/Qwen2.5-Coder-7B.i1-Q4_K_M.gguf",
+         "sha256": "701bcbeee10c9b8b93d542c1baeda2eb2a3fa61f9a979f1743fb2e5ed5f72fd2", "size": 4683074624, "kind": "weights"}
+      ],
+      "install": {"root": "fim", "dir": "Qwen2.5-Coder-7B-Q4_K_M"},
+      "vram": [{"context": 8192, "gb": 5.4}, {"context": 16384, "gb": 6.4}],
+      "context": 8192,
+      "presets": [],
+      "notes": "Served by services/llamacpp-fim.json (router mode over <models_dir>/fim, the linked one as model \"current\"). The same repository has i1-Q5_K_M (5.1 GB) for a card with more room; add it in ~/.config/maic/models.json."
+    },
+    {
+      "id": "qwen2.5-coder-3b",
+      "name": "Qwen2.5-Coder 3B base, Q8_0",
+      "role": "completion",
+      "brief": "Qwen2.5-Coder 3B, the base model, at Q8_0 from ggml-org, the llama.cpp project's own repository and the file llama.vim's 3B preset fetches. Its suggestions are weaker than the 7B's on longer completions but arrive faster, and at about 3.6 GB with 8k context it fits beside the 4B agent at 16k. It is under Qwen's research licence (non-commercial use), unlike the 7B and the 1.5B. Like the other coders it is the wrong model for the scribe or the agent.",
+      "license": "qwen-research",
+      "license_url": "https://huggingface.co/Qwen/Qwen2.5-Coder-3B/blob/main/LICENSE",
+      "source": {"repo": "ggml-org/Qwen2.5-Coder-3B-Q8_0-GGUF", "revision": "9c1de162ae417c9c3aacde97c729c4128de047d8"},
+      "files": [
+        {"name": "qwen2.5-coder-3b-q8_0.gguf", "url": "https://huggingface.co/ggml-org/Qwen2.5-Coder-3B-Q8_0-GGUF/resolve/9c1de162ae417c9c3aacde97c729c4128de047d8/qwen2.5-coder-3b-q8_0.gguf",
+         "sha256": "a522a906e299ed34db738b9626b2cd0da9e446c14674468a22fc2eae3dbd344d", "size": 3285476160, "kind": "weights"}
+      ],
+      "install": {"root": "fim", "dir": "Qwen2.5-Coder-3B-Q8_0"},
+      "vram": [{"context": 8192, "gb": 3.6}, {"context": 16384, "gb": 4.1}, {"context": 32768, "gb": 5.1}],
+      "context": 8192,
+      "presets": [],
+      "notes": "Served by services/llamacpp-fim.json when linked (maic models install qwen2.5-coder-3b --link)."
+    },
+    {
+      "id": "qwen2.5-coder-1.5b",
+      "name": "Qwen2.5-Coder 1.5B base, Q8_0",
+      "role": "completion",
+      "brief": "Qwen2.5-Coder 1.5B, the base model, at Q8_0 from ggml-org (llama.vim's smallest preset). The fastest of the three and about 2.1 GB with 8k context, so it fits beside the 4B agent, whisper or a parked ComfyUI; its suggestions are shorter and more often wrong. Like the other coders it is the wrong model for the scribe or the agent.",
+      "license": "apache-2.0",
+      "license_url": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B/blob/main/LICENSE",
+      "source": {"repo": "ggml-org/Qwen2.5-Coder-1.5B-Q8_0-GGUF", "revision": "8be1b8a895a84beea772817caaa71eba6b6e0d07"},
+      "files": [
+        {"name": "qwen2.5-coder-1.5b-q8_0.gguf", "url": "https://huggingface.co/ggml-org/Qwen2.5-Coder-1.5B-Q8_0-GGUF/resolve/8be1b8a895a84beea772817caaa71eba6b6e0d07/qwen2.5-coder-1.5b-q8_0.gguf",
+         "sha256": "29871c94d15727a6e243f79a37113d4ae625a6215b5e800bf41a23af2da32832", "size": 1646573056, "kind": "weights"}
+      ],
+      "install": {"root": "fim", "dir": "Qwen2.5-Coder-1.5B-Q8_0"},
+      "vram": [{"context": 8192, "gb": 2.1}, {"context": 16384, "gb": 2.6}, {"context": 32768, "gb": 3.6}],
+      "context": 8192,
+      "presets": [],
+      "notes": "Served by services/llamacpp-fim.json when linked (maic models install qwen2.5-coder-1.5b --link)."
+    }
+  ]
+}

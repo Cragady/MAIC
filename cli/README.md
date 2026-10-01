@@ -32,6 +32,8 @@ maic model resolve qwen-4b         # what a preset or provider/model means here,
 maic settings init                 # a documented settings file (docs/settings.md)
 maic doctor                        # the machine, the tools MAIC needs, installed models, a recommended setup
 maic setup                         # the first run as yes/no questions: settings, llama.cpp, ComfyUI, a model, the tripwire
+maic models                        # the model catalog: what each is for, installed or not, current; maic models install ID [--link] (docs/models.md)
+maic up llamacpp-fim               # code completion for llama.vim on 8084, after maic models install qwen2.5-coder-7b --link
 maic server token new phone        # remote access (docs/remote.md): a bearer token for one device, shown once
 maic server start                  # the API and the phone web client; --listen 0.0.0.0:7373 for the LAN, with TLS
 maic server pair                   # with server.relay set: a code and a maic://pair/... string the phone pastes on the LAN
@@ -82,7 +84,7 @@ The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"
 | `:e` | edit the input in nvim (`$VISUAL`, then `$EDITOR`, then `nvim`); a non-zero exit leaves the input unchanged |
 | `:mode manual\|auto-read\|edit\|auto\|plan` | set the agent mode |
 | `:model NAME` | switch model (when idle): `llamacpp/current`, `llamacpp/Qwen3.5-9B-Q4_K_M` (any GGUF under the models directory), `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists providers |
-| `:models` | models the current provider serves (llama.cpp: every GGUF under the models directory, by file name) |
+| `:models` | models the current provider serves (llama.cpp: every GGUF under the models directory, by file name); `maic models` in the shell is the catalog of models MAIC can install (`:h models`, docs/models.md) |
 | `:think on\|off` | let the model reason before answering |
 | `:set markdown\|mouse\|enter_sends on\|off`, `:set highlight nvim\|builtin` | rendering, scroll-wheel, Enter and input-highlighter toggles |
 | `:!cmd` or `!cmd` | run a command in **your** shell, unsandboxed, in the workspace; output shows in the conversation and is passed to the model as context (Ctrl-C stops it) |
@@ -93,7 +95,7 @@ The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"
 | `:instructions` | the MAIC.md / AGENTS.md files in effect |
 | `:session` / `:artifacts` | where this transcript is; where everything is kept, with sizes |
 | `:path [NAME] [copy]` / `:open NAME` | every place maic knows by a short name (`workspace`, `session`, `sessions`, `models`, `workflows`, `templates`, `vendor/llamacpp`, `comfyui/outputs`, ...); show one, copy it to the clipboard, or open it in the file manager. `maic path`, `maic open`, and `eval "$(maic shell-init)"` for `mcd NAME` in your shell. See `:h path` |
-| `:gpu [free [llamacpp\|llamacpp-2\|comfyui]]` | who holds the card (each llama server's resident model, ComfyUI's VRAM view) and one sentence on whether the two models fit it; `free` unloads without stopping anything. `maic gpu` in the shell. A failed `maic up` explains a CUDA out of memory in plain words |
+| `:gpu [free [llamacpp\|llamacpp-2\|llamacpp-fim\|comfyui]]` | who holds the card (each llama server's resident model, the code completion server's too, ComfyUI's VRAM view) and one sentence on whether the two models fit it; `free` unloads without stopping anything. `maic gpu` in the shell. A failed `maic up` explains a CUDA out of memory in plain words |
 | `:ctx [N]` / `:ctx2 [N]` | the context window of the main llama server (`--ctx`, `context`) and of the side server `llamacpp-2` (`--ctx2`, `context_2`); setting one restarts that server when it runs with another size. See `:h ctx` |
 | `:open NAME folder` / `maic cd NAME [--subshell]` | the containing folder in the file manager; the place's directory printed for `cd "$(maic cd NAME)"`, or with `--subshell` a shell there (`exit` returns) |
 | `:open SERVICE [firefox\|chrome]` | a service's URL in the browser (`browser` in settings picks the default one; `remote` in settings opens a subscribed maic-server's copy) |

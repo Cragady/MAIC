@@ -238,7 +238,7 @@ maic up llamacpp-2               # the scribe's server (or maic up llamacpp; see
 maic diction
 ```
 
-The models, with their SHA-256 as Hugging Face's API gives them (`?blobs=true` on the tree listing):
+The same three are catalog entries, so `maic models install whisper-distil-large-v3 --link` and `maic models install silero-vad-v6.2.0` do the above with the files pinned to a commit ([models.md](models.md); `whisper-large-v3-turbo-q5_0` is the small-VRAM one). The models, with their SHA-256 as Hugging Face's API gives them (`?blobs=true` on the tree listing):
 
 | File | Size | SHA-256 | What |
 | :--- | :--- | :--- | :--- |

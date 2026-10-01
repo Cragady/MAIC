@@ -66,5 +66,6 @@ file(WRITE ${CMAKE_BINARY_DIR}/diction-VERSION "${MAIC_GIT_VERSION}\n")
 install(FILES ${CMAKE_BINARY_DIR}/diction-VERSION DESTINATION share/maic/diction RENAME VERSION)
 install(DIRECTORY server/web/ DESTINATION share/maic/server/web)
 install(DIRECTORY services/ DESTINATION share/maic/services)
+install(DIRECTORY models/ DESTINATION share/maic/models)
 # Fallback root for a copy installed without the repository: the vendor ledger and scripts, not the checkouts.
 install(FILES vendor/manifest.json vendor/comfyui.sh vendor/llamacpp.sh vendor/whispercpp.sh vendor/VENDORING DESTINATION share/maic/vendor)
