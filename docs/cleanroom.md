@@ -26,6 +26,7 @@ Not allowed:
 | opencode (MIT, `~/dev2/tools-and-things/opencode`) | open source, read only | Feature comparison in [opencode-comparison.md](opencode-comparison.md). No code copied. |
 | A generated "cleanroom harness spec" (Google) | design | Two ideas kept for the plan: per-role permission profiles (sandbox paths, network, budgets per agent role), and a forkable transcript tree. Its SQL and JSON schema were not adopted; see below. |
 | Anthropic and OpenAI API references | public docs | The provider clients in `core/src/anthropic.cpp` and `openai.cpp`. |
+| RFC 7748 (X25519), RFC 5869 (HKDF), RFC 8439 (ChaCha20-Poly1305) and the IETF XChaCha draft | public specs | The relay tunnel in `server/src/tunnel.cpp` (through libsodium) and the web client's copy of ChaCha20, Poly1305 and HChaCha20, written from the RFC text and checked against the RFCs' own vectors. |
 
 ### How the spec's ideas map onto MAIC
 
@@ -44,7 +45,8 @@ Where an outside approach and MAIC's rules cannot both hold, MAIC's rules win an
 | FTXUI 5 | MIT | terminal UI |
 | cpp-httplib 0.15 | MIT | HTTP client (providers), the server, test servers |
 | nlohmann-json 3.11 | MIT | JSON |
-| OpenSSL 3 (through vcpkg) | Apache-2.0 | HTTPS to remote providers; the server's TLS, self-signed certificate, token hashing and random tokens |
+| OpenSSL 3 (through vcpkg) | Apache-2.0 | HTTPS to remote providers; the server's and the relay's TLS, self-signed certificates, token hashing and random tokens |
+| libsodium 1.0.20 (through vcpkg) | ISC | the relay tunnel: X25519, HKDF-SHA256, XChaCha20-Poly1305, constant-time compares, random keys and codes |
 | bubblewrap (system package, called as a program) | LGPL-2.0+ | the command sandbox; not linked, only executed |
 | glibc regex (`regcomp`) | LGPL, system library | `search_files` |
 

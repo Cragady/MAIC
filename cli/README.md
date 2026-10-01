@@ -30,6 +30,11 @@ maic artifacts                     # where MAIC and its services keep transcript
 maic settings init                 # a documented settings file (docs/settings.md)
 maic doctor                        # the machine, the tools MAIC needs, installed models, a recommended setup
 maic setup                         # the first run as yes/no questions: settings, llama.cpp, ComfyUI, a model, the tripwire
+maic server token new phone        # remote access (docs/remote.md): a bearer token for one device, shown once
+maic server start                  # the API and the phone web client; --listen 0.0.0.0:7373 for the LAN, with TLS
+maic server pair                   # with server.relay set: a code and a maic://pair/... string the phone pastes on the LAN
+maic server pairs                  # the phones paired for the relay; maic server unpair NAME forgets one
+maic server status                 # the configuration, the relay link (connected since, or not and why), whether it is up
 ```
 
 ## Screen

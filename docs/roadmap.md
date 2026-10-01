@@ -6,11 +6,7 @@ Status of the built parts in detail: [README.md](../README.md), [cli/README.md](
 
 ## Next, in order
 
-### 1. Rendezvous relay for the phone
-
-An outbound WebSocket from the workstation to a small relay, end-to-end encrypted after a one-time pairing on the LAN, so the phone reaches home without an open port and the relay sees nothing. Design in [remote.md](remote.md). The tripwire stays local-only: no route on the relay can unlock. Depends on nothing; the web client works over it unchanged.
-
-### 2. Accounts on maic-server
+### 1. Accounts on maic-server
 
 Micaiah's decision (2026-09-30): accounts belong to MAIC's own server, never to llama.cpp (which has API keys only, no identities). Design document first, then build; security-sensitive, so the design is reviewed before code.
 
@@ -21,32 +17,32 @@ Micaiah's decision (2026-09-30): accounts belong to MAIC's own server, never to 
 * Best practice throughout: **argon2id** for password hashing (a hard requirement), short-lived session tokens with refresh and revocation, rate limits on login and codes, no secrets in URLs, a recovery path that does not weaken 2FA, the audit log naming the user.
 * Per-user session ownership, an admin list, the per-device tokens folded into per-user ones.
 
-Depends on 1 for phone use away from the LAN, not for the LAN itself.
+The relay (done) already carries the phone away from the LAN; accounts ride inside its tunnel unchanged.
 
-### 3. One remote interface: MAIC plus llama.cpp
+### 2. One remote interface: MAIC plus llama.cpp
 
-The web app and the phone apps present one clean interface that combines the MAIC server (sessions, approvals, the harness, services) and the llama.cpp server (models, loading and switching, sampling and XTC, a plain chat with the loaded model), so remote access gives both. llama.cpp stays behind MAIC's server, never exposed on its own; MAIC's server proxies what the app needs. A native client (Android first) follows the web app: notifications for pending approvals, pairing in the app, background reattach. Depends on 2.
+The web app and the phone apps present one clean interface that combines the MAIC server (sessions, approvals, the harness, services) and the llama.cpp server (models, loading and switching, sampling and XTC, a plain chat with the loaded model), so remote access gives both. llama.cpp stays behind MAIC's server, never exposed on its own; MAIC's server proxies what the app needs. A native client (Android first) follows the web app: notifications for pending approvals, pairing in the app, background reattach. Depends on 1.
 
-### 4. Prompt profiles per backend
+### 3. Prompt profiles per backend
 
 Measured on 2026-09-30 with qwen3.5:4b: under Ollama and under llama.cpp alike, with MAIC's tool schemas attached, a short operator rule was ignored in every system-side placement and followed when it closed the user turn; the `operator_note` provider option came out of that. Next: a profile per backend (where operator text goes, whether a per-turn note is sent, how tools are described, prefill) chosen by provider kind and overridable in settings, measured rather than assumed, and re-measured with the 9B. Depends on nothing.
 
-### 5. Tools and the polyglot spokes
+### 4. Tools and the polyglot spokes
 
 * The rest of the `tools/` design from `programming-lang-for-agentic-cli.md`: tools as manifests plus scripts in Perl, Python, TypeScript, Go, WASM and shell, run through the same authorisation step, with per-tool network grants declared in the manifest.
 * More MAIC-owned helpers in the style of `maic-storyboard`: single-entry drivers that do the mechanical part and hand a small model one decision per turn.
 
-### 6. Windows
+### 5. Windows
 
 The tripwire design for Windows is in [harness.md](harness.md); the rest needs a port of the sandbox (AppContainer), the service manager (job objects with kill-on-close, junctions instead of symlinks, portable git on PATH, `%LOCALAPPDATA%\maic` for state and the uv cache), the runtime directory for temporary transcripts, and the terminal layer.
 
-### 7. Editor and UI
+### 6. Editor and UI
 
 * nvim as the highlighter for the input (an embedded `nvim --embed` over msgpack-rpc, one instance kept alive) for people who have it; the built-in highlighter stays the default.
 * Macros, `W B E` and `%` in the input; diff rendering for edits in the conversation window.
 * A settings key to make Enter send on one-line inputs, if it ever turns out to matter.
 
-### 8. Tests and tooling
+### 7. Tests and tooling
 
 * Make the timing-sensitive agent tests (cancel, mid-turn delivery) robust under load; they have flaked once under a parallel build.
 * A UI test harness that drives the TUI through a pty in CI, like the ad-hoc driver used during development.

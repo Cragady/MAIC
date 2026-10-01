@@ -1,7 +1,9 @@
 #include "server.hpp"
 
 #include "auth.hpp"
+#include "home_link.hpp"
 #include "tls.hpp"
+#include "tunnel.hpp"
 
 #include "maic/agent.hpp"
 #include "maic/paths.hpp"
@@ -141,7 +143,7 @@ private:
 }  // namespace
 
 struct Server::Impl {
-    explicit Impl(ServerOptions o) : options(std::move(o)), tokens(options.state / "tokens.json") {}
+    explicit Impl(ServerOptions o) : options(std::move(o)), tokens(options.state / "tokens.json"), pairs(options.state / "pairs.json") {}
 
     ServerOptions options;
     std::unique_ptr<httplib::Server> srv;
@@ -156,6 +158,9 @@ struct Server::Impl {
     TokenStore tokens;
     RateLimit rate;
     std::mutex audit_mu;
+    std::mutex pairs_mu;
+    PairStore pairs;
+    std::unique_ptr<HomeLink> home;  // the outbound connection to server.relay, when one is set
 
     std::mutex sessions_mu;
     std::map<std::string, std::shared_ptr<Session>> sessions;
@@ -169,7 +174,10 @@ struct Server::Impl {
     }
 
     void audit(const httplib::Request& req, const httplib::Response& res) {
-        std::string line = utc_now() + " " + req.remote_addr + " " + token_name(req).value_or("-") + " " + req.method + " " + req.path + " " +
+        // A request out of the relay tunnel arrives from our own HomeLink on loopback; it names the phone.
+        std::string source = req.remote_addr;
+        if (req.has_header("X-Maic-Via") && (source == "127.0.0.1" || source == "::1")) source = req.get_header_value("X-Maic-Via");
+        std::string line = utc_now() + " " + source + " " + token_name(req).value_or("-") + " " + req.method + " " + req.path + " " +
                            std::to_string(res.status) + "\n";
         std::lock_guard lock(audit_mu);
         int fd = open((options.state / "audit.log").c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
@@ -270,7 +278,13 @@ struct Server::Impl {
             std::lock_guard lock(sessions_mu);
             count = sessions.size();
         }
+        json relay;
+        if (home) {
+            HomeLink::State hs = home->state();
+            relay = {{"url", st.server.relay}, {"connected", hs.connected}, {"since", hs.since}, {"last_connected", hs.last_connected}, {"error", hs.error}};
+        }
         return {{"harness", {{"tripped", r.tripped}, {"reason", r.tripwire}}},
+                {"relay", relay},
                 {"services", svc},
                 {"model", st.model},
                 {"provider", provider.name},
@@ -488,6 +502,22 @@ struct Server::Impl {
             reply(res, session_json(*s));
         });
 
+        // The pairing exchange, on the LAN only: the phone proves it saw the code `maic server pair` printed and
+        // leaves its public key; it gets ours, the pairing id and the relay to use. Nothing here reaches the
+        // relay, and the relay has no counterpart to this route.
+        srv->Post("/api/pair", [this](const httplib::Request& req, httplib::Response& res) {
+            json body = body_of(req);
+            std::string code = body.value("code", ""), name = body.value("name", "phone");
+            auto pk = key_from_b64url(body.value("public_key", ""));
+            if (!pk) throw HttpError{400, "public_key must be 32 bytes of base64url"};
+            if (options.settings.server.relay.empty()) throw HttpError{409, "no relay is configured (server.relay in settings)"};
+            if (auto why = claim_pairing_offer(options.state / "pairing.json", code)) throw HttpError{403, *why};
+            std::lock_guard lock(pairs_mu);
+            pairs.refresh();
+            pairs.add(name, *pk);
+            reply(res, {{"name", name}, {"pairing_id", pairs.pairing_id()}, {"relay", options.settings.server.relay}, {"public_key", b64url(pairs.keypair().pk)}}, 201);
+        });
+
         // The panic button works from a phone; the reset does not exist here (it needs the local sudo password).
         srv->Post("/api/trip", [this](const httplib::Request& req, httplib::Response& res) {
             std::string reason = body_of(req).value("reason", "tripped from a remote client");
@@ -573,12 +603,26 @@ int Server::bind() {
 }
 
 void Server::run() {
-    impl_->srv->listen_after_bind();
+    Impl& im = *impl_;
+    const ServerSettings& ss = im.options.settings.server;
+    if (!ss.relay.empty()) {
+        bool any = im.host == "0.0.0.0" || im.host == "::";
+        HomeLinkOptions h;
+        h.relay = ss.relay;
+        h.relay_cert = ss.relay_cert;
+        h.pairs_file = im.options.state / "pairs.json";
+        h.status_file = im.options.state / "relay.json";
+        h.loopback = std::string(im.tls ? "https://" : "http://") + (any ? "127.0.0.1" : im.host) + ":" + std::to_string(im.port);
+        im.home = std::make_unique<HomeLink>(std::move(h));
+        im.home->start();
+    }
+    im.srv->listen_after_bind();
 }
 
 void Server::stop() {
     Impl& im = *impl_;
     im.stopping = true;
+    if (im.home) im.home->stop();
     std::vector<std::shared_ptr<Session>> all;
     {
         std::lock_guard lock(im.sessions_mu);
