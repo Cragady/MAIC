@@ -88,6 +88,18 @@ std::string View::last_assistant() const {
     return "";
 }
 
+bool View::click(int row) {
+    if (row < 0) return false;
+    size_t idx = static_cast<size_t>(last_top_ + row);
+    if (idx >= lines_.size()) return false;
+    std::lock_guard lock(mu_);
+    auto& e = entries_[lines_[idx].entry];
+    if (!attached(e.kind)) return false;
+    e.collapsed = !e.collapsed;
+    ++version_;
+    return true;
+}
+
 void View::set_all_collapsed(bool on) {
     std::lock_guard lock(mu_);
     for (auto& e : entries_) {
@@ -243,6 +255,7 @@ void View::ensure_cursor_visible(int height) {
     int total = static_cast<int>(lines_.size());
     int bottom = total - scroll_;
     int top = std::max(0, bottom - height);
+    last_top_ = top;
     int cur = static_cast<int>(cur_line_);
     if (cur < top) scroll_ = total - (cur + height);
     else if (cur >= bottom) scroll_ = total - cur - 1;
@@ -567,6 +580,7 @@ Element View::render(const Settings& settings, size_t width, int height) {
     scroll_ = std::clamp(scroll_, 0, std::max(0, total - height));
     int bottom = total - scroll_;
     int top = std::max(0, bottom - height);
+    last_top_ = top;
 
     const Style& visual_style = settings.style("visual");
     const Style& search_style = settings.style("search");

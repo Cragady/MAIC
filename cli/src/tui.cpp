@@ -925,6 +925,10 @@ bool App::handle(Event e) {
             int dir = m.button == Mouse::WheelUp ? 1 : -1;
             if (focus_ == Focus::Input && editor_.mode() == Editor::Mode::Insert) editor_.history_step(-dir);
             else view_.scroll_by(dir * 3);
+        } else if (m.button == Mouse::Left && m.motion == Mouse::Pressed) {
+            // A click on a tool call or result in the conversation window folds or unfolds it (like za).
+            int top = focus_ == Focus::Conversation ? 1 : 0;  // the focus border takes a row
+            if (m.y >= top && m.y < top + view_height_) view_.click(m.y - top);
         }
         return true;
     }

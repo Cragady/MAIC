@@ -59,6 +59,9 @@ public:
     std::string search_next(int direction);
 
     ftxui::Element render(const Settings& settings, size_t width, int height);
+    // A mouse click on row `row` of the last rendered window (0 = its top line): toggles the fold of the
+    // tool entry under it. Returns true when something was toggled.
+    bool click(int row);
     std::string status_hint() const;  // "↑12" while scrolled, position when focused
     size_t match_count() const { return matches_.size(); }
 
@@ -93,6 +96,7 @@ private:
     int scroll_ = 0;          // lines up from the bottom; 0 follows new output
     size_t last_total_ = 0;
     int last_height_ = 10;
+    int last_top_ = 0;        // first line index shown by the last render
 
     bool focused_ = false;
     size_t cur_line_ = 0, cur_col_ = 0;

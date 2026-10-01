@@ -9,6 +9,8 @@
 #include "maic/vendor.hpp"
 
 #include <algorithm>
+#include <fstream>
+#include <deque>
 #include <cstdlib>
 #include <cctype>
 
@@ -193,7 +195,7 @@ const std::vector<CommandInfo>& commands() {
         {"models", {}, "", "models the Ollama server has", "*:models*\nLists the models on the current Ollama provider (`ollama list`). llama.cpp serves one GGUF at a time, the one `maic vendor` shows; `maic vendor use llamacpp PATH` changes it."},
         {"think", {}, "on|off", "let the model reason first", "*:think*\n`:think on` asks the model to reason before answering: slower, better on hard problems. Anthropic models then use the provider's `think_effort`."},
         {"set", {}, "markdown|mouse on|off", "rendering and mouse toggles",
-         "*:set*\n`:set markdown off` shows the conversation as raw text; `on` renders it. `:set mouse off` stops the scroll wheel and gives the terminal its normal mouse selection back. `:set tooldetails on` shows tool output in full instead of an 8-line preview (in the conversation window `za` folds or unfolds one result, `zR` unfolds all, `zM` folds all). markdown and mouse persist through settings.lua."},
+         "*:set*\n`:set markdown off` shows the conversation as raw text; `on` renders it. `:set mouse on` also makes a left click on a tool call or result fold or unfold it (like `za`); `:set mouse off` stops the scroll wheel and gives the terminal its normal mouse selection back. `:set tooldetails on` shows tool output in full instead of an 8-line preview (in the conversation window `za` folds or unfolds one result, `zR` unfolds all, `zM` folds all). markdown and mouse persist through settings.lua."},
         {"status", {}, "", "harness, services, model, session",
          "*:status*\nThe harness state, every service with where it runs (host process, pid, url) and a quick action, the model and whether it is remote, this session's file, the mode, queued messages, the user-defined tools and the model's todo list."},
         {"todo", {"plan"}, "", "the model's plan (the todo tool)",
@@ -469,6 +471,36 @@ std::string failure_text(const Agent& agent, const std::exception& e) {
     if (dynamic_cast<const TransportError*>(&e)) {
         std::string hint = unreachable_hint(resolve_model(agent.providers, agent.model).first, load_services(root_dir() / "services"));
         if (!hint.empty()) text += "\n" + hint;
+    } else if (const auto* api = dynamic_cast<const ApiError*>(&e); api && api->status == 500 && text.find("failed to load") != std::string::npos) {
+        auto [provider, name] = resolve_model(agent.providers, agent.model);
+        if (provider.name == "llamacpp") {
+            auto services = load_services(root_dir() / "services");
+            GpuReport g = gpu_report(services);
+            std::string why = "llama.cpp could not load " + name + ".";
+            bool oom = false;
+            for (const auto& def : services) {
+                if (def.name != "llamacpp") continue;
+                std::ifstream in(service_log_path(def));
+                std::deque<std::string> tail;
+                for (std::string line; std::getline(in, line);) {
+                    tail.push_back(line);
+                    if (tail.size() > 60) tail.pop_front();
+                }
+                for (const auto& l : tail) oom = oom || l.find("out of memory") != std::string::npos || l.find("failed to allocate") != std::string::npos;
+            }
+            if (oom) {
+                why += " The card ran out of memory while loading it";
+                if (g.comfyui_running && g.comfyui_vram_used > 0) {
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), " (ComfyUI holds %.1f GB)", static_cast<double>(g.comfyui_vram_used) / (1 << 30));
+                    why += buf;
+                }
+                why += ". Free it with `maic gpu free comfyui` (or stop ComfyUI), lower the context (`:ctx 8192`), or use the smaller model; a model with a vision projector needs about 1 GB more.";
+            } else {
+                why += " `maic logs llamacpp` has the reason.";
+            }
+            text += "\n" + why;
+        }
     } else if (const auto* api = dynamic_cast<const ApiError*>(&e); api && api->status == 400 && text.find("not found") != std::string::npos) {
         auto [provider, name] = resolve_model(agent.providers, agent.model);
         if (provider.name == "llamacpp") {
