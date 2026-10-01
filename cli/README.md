@@ -106,7 +106,8 @@ The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"
 | `:!cmd` or `!cmd` | run a command in **your** shell, unsandboxed, in the workspace; output shows in the conversation and is passed to the model as context (Ctrl-C stops it) |
 | `:status` | harness, every service with where it runs (`[host]` pid or `[docker]` container) and what it holds (resident model; ComfyUI's VRAM and queue), model and whether it is remote, session file, queue. See `:h status` |
 | `:up NAME` / `:down NAME` | start / stop a service |
-| `:init` | scaffold `MAIC.md` and `.maic/settings.json` here, then have the agent draft the `MAIC.md` from the project |
+| `:init` | scaffold `MAIC.md` and `.maic/settings.json` here, then have the agent draft the `MAIC.md` from the project; a recorded session that worked here throughout moves into the project's transcript home (`projects/<encoded workspace>/`), and one with more than `init_move_outside_reads` files read or any file written outside asks first. See `:h init` |
+| `:cd PATH\|-\|PLACE` / `:pwd` | move this session's workspace (when idle): an absolute path, one relative to the workspace, `~/...`, a place name, or `-` for the previous one; the harness root, shell commands, the project settings layers and the instruction files follow, the model gets a note and the transcript a `workspace` record. `:cd` alone or `:pwd` shows it. See `:h cd` |
 | `:settings` | which settings files are in effect and where this session's transcript lives |
 | `:instructions` | the MAIC.md / AGENTS.md files in effect |
 | `:session` / `:artifacts` | where this transcript is; where everything is kept, with sizes |

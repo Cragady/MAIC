@@ -1700,6 +1700,46 @@ int main() {
         expect(!dangling, "a dangling tool call from the old session is dropped on resume");
     }
 
+    section(":cd");
+    {
+        FakeServer fake;
+        fs::path a = ws / "cd-a", b = ws / "cd-b";
+        fs::create_directories(a);
+        fs::create_directories(b);
+        std::ofstream(b / "MAIC.md") << "Fennec ears stay a third of her height.\n";
+        SessionLog log("agent-test");
+        Agent agent(a, "test");
+        agent.providers = {fake.provider()};
+        agent.set_log(&log);
+        Recorder r;
+        agent.submit("hello", Origin::Local, r, no_cancel);
+        bool refused = false;
+        try {
+            agent.set_workspace(b, Origin::Remote);
+        } catch (const std::exception&) {
+            refused = true;
+        }
+        expect(refused && agent.harness().workspace() == fs::weakly_canonical(a), "a remote origin cannot change the workspace");
+        agent.set_workspace(b, Origin::Local);
+        expect(agent.harness().workspace() == fs::weakly_canonical(b), "the harness root moves");
+        agent.submit("where now", Origin::Local, r, no_cancel);
+        bool noted = false;
+        for (const auto& m : fake.requests.back()["messages"]) {
+            std::string c = m["content"].is_string() ? m["content"].get<std::string>() : "";
+            if (m["role"] == "system" && c.find("The workspace moved from " + fs::weakly_canonical(a).string() + " to " + fs::weakly_canonical(b).string()) != std::string::npos &&
+                c.find("Fennec ears stay a third of her height.") != std::string::npos)
+                noted = true;
+        }
+        expect(noted, "the model gets a system note: where the workspace moved and the instructions there");
+        json rec;
+        std::ifstream in(log.path());
+        for (std::string l; std::getline(in, l);) {
+            auto j = json::parse(l, nullptr, false);
+            if (j.is_object() && j.value("type", "") == "workspace") rec = j;
+        }
+        expect(rec.value("from", "") == fs::weakly_canonical(a).string() && rec.value("to", "") == fs::weakly_canonical(b).string(), "the transcript gets a workspace record {from, to}");
+    }
+
     fs::remove_all(ws);
     return finish();
 }

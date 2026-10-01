@@ -10,7 +10,8 @@ import http.server, json, os, subprocess, sys, tempfile, threading, time
 
 class Fake(http.server.BaseHTTPRequestHandler):
     """Answers every chat with "echo: " plus the first line of the last user message, streamed as SSE. A message
-    starting with "hold" gets a reply that idles for 10 s instead, for the interrupt tests."""
+    starting with "hold" gets a reply that idles for 10 s instead, for the interrupt tests; one starting "slow:" is
+    answered after three seconds, for a test that needs the agent busy."""
 
     def log_message(self, *a):
         pass
@@ -39,6 +40,8 @@ class Fake(http.server.BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
             return
+        if last.startswith("slow:"):
+            time.sleep(3)
         for piece in ("echo: ", last.split("\n")[0]):
             self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {"content": piece}}]}) + "\n\n").encode())
         self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 5, "completion_tokens": 2}}) + "\n\n").encode())

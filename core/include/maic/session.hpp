@@ -42,9 +42,24 @@ public:
         return SessionLog(Fork{}, parent, records, kind, home);
     }
 
-    const std::filesystem::path& path() const { return path_; }
+    std::filesystem::path path() const {
+        std::lock_guard lock(mu_);
+        return path_;
+    }
     // Stamps `type` and, unless the record already carries one (a record copied from another session), `time`.
     void write(const std::string& type, nlohmann::json data);
+
+    // Moves the open session into `dest_dir` (`:init` into the project home) and returns the new path. Records
+    // written meanwhile go to <dest>/<id>.jsonl.pending and are appended once the file is in place. The `sub`
+    // sessions it started move with it, and a `rehomed` record {from, to, reason} follows. On failure the session
+    // stays where it was with every record, and this throws.
+    std::filesystem::path relocate(const std::filesystem::path& dest_dir, const std::string& reason);
+    // Tests: take the copy path as if the homes were on different filesystems, and run a hook once writes are
+    // diverted, before the file moves.
+    bool relocate_by_copy = false;
+    std::function<void()> while_relocating;
+    // What reopening repaired from a move a crash interrupted (recover_relocations), for the caller to show.
+    const std::vector<std::string>& recovered() const { return recovered_; }
 
     // Tag constructors behind reopen() and fork(), public so a SessionLog can be made with make_unique.
     struct Reopen {};
@@ -55,9 +70,17 @@ public:
 private:
     void create(const std::string& kind, const std::filesystem::path& home);
     std::filesystem::path path_;
-    std::mutex mu_;
+    mutable std::mutex mu_;
     std::ofstream out_;
+    int pending_fd_ = -1;  // while relocating: where write() puts records
+    std::vector<std::string> recovered_;
 };
+
+// Finishes a move a crash interrupted (SessionLog::relocate): records left in <id>.jsonl.pending are appended to the
+// session file wherever it ended up, a copy that never got renamed into place (<id>.jsonl.moving, or a complete copy
+// beside a source that was not yet removed) is discarded. `id` limits it to one session; "" looks at every home.
+// Returns one notice per repair.
+std::vector<std::string> recover_relocations(const std::string& id = "");
 
 // What `maic sessions` and `--resume` show.
 struct SessionInfo {
@@ -86,6 +109,25 @@ std::vector<SessionInfo> list_sessions(const std::optional<std::filesystem::path
 
 // Moves a session file to another home. Forks keep working: they find their parent by id.
 std::filesystem::path rehome_session(const SessionInfo& session, const std::string& home);
+
+// The `sub` sessions `path` started (they live in its home and name it as their parent).
+std::vector<std::filesystem::path> sub_sessions_of(const std::filesystem::path& path);
+
+// Whether `:init` moves a session into the project home of `workspace`, the current one: Stay when it is not
+// recorded or already there; Ask when it worked outside `workspace` (any write, or more than
+// `outside_reads_allowed` files read), judged over the whole session, so work done before a `:cd` or under another
+// workspace on an earlier open counts unless its paths fall inside this one; Move otherwise. `reason` says why.
+struct InitMove {
+    enum Verdict { Move, Ask, Stay } verdict = Stay;
+    size_t outside_reads = 0;   // distinct files read outside the workspace
+    size_t outside_writes = 0;  // written, edited, moved, copied to, deleted or made outside it, or shell workdirs there
+    std::string reason;
+};
+// `records`: the session's records in order (walk_records), then those of its `sub` sessions.
+InitMove init_move_check(const std::filesystem::path& path, const std::vector<nlohmann::json>& records, const std::filesystem::path& workspace,
+                         bool recorded, size_t outside_reads_allowed);
+// The same, reading the records of `path` and its `sub` sessions.
+InitMove init_move_check(const std::filesystem::path& path, const std::filesystem::path& workspace, bool recorded, size_t outside_reads_allowed);
 
 // Finds a session by id, unique id prefix, or path.
 std::optional<SessionInfo> find_session(const std::string& id_or_path);

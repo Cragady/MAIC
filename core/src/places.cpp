@@ -6,6 +6,7 @@
 #include "maic/session.hpp"
 #include "maic/vendor.hpp"
 
+#include <cstdlib>
 #include <stdexcept>
 
 namespace maic {
@@ -72,6 +73,28 @@ const Place& find_place(const std::vector<Place>& places, const std::string& que
         throw std::runtime_error("no place named '" + query + "'. Places: " + names);
     }
     throw std::runtime_error("'" + query + "' matches several places: " + names);
+}
+
+fs::path cd_target(const std::string& arg, const fs::path& workspace, const fs::path& previous, const std::vector<Place>& places) {
+    std::error_code ec;
+    if (arg == "-") {
+        if (previous.empty()) throw std::runtime_error("no previous workspace in this session");
+        if (!fs::is_directory(previous, ec)) throw std::runtime_error("the previous workspace " + previous.string() + " is gone");
+        return previous;
+    }
+    fs::path p = arg;
+    if (arg == "~") p = std::getenv("HOME");
+    else if (arg.rfind("~/", 0) == 0) p = fs::path(std::getenv("HOME")) / arg.substr(2);
+    else if (p.is_relative()) p = workspace / p;
+    if (fs::is_directory(p, ec)) return fs::weakly_canonical(p, ec);
+    const Place* place = nullptr;
+    try {
+        place = &find_place(places, arg);
+    } catch (const std::runtime_error&) {
+    }
+    if (!place) throw std::runtime_error("no directory " + p.lexically_normal().string() + ", and no place named '" + arg + "'");
+    if (!fs::is_directory(place->path, ec)) throw std::runtime_error("the place " + place->name + " is " + place->path.string() + ", not a directory");
+    return fs::weakly_canonical(place->path, ec);
 }
 
 std::string browser_command(const std::string& browser, const std::string& url) {

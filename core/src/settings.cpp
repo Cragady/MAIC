@@ -296,6 +296,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         }
     }
     s.sources.push_back(path);
+    s.layered.merge_patch(j);
     try {
         s.model = j.value("model", s.model);
         s.mode = j.value("mode", s.mode);
@@ -304,6 +305,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.mouse = j.value("mouse", s.mouse);
         s.sound = j.value("sound", s.sound);
         s.sessions_home = j.value("sessions_home", s.sessions_home);
+        s.init_move_outside_reads = j.value("init_move_outside_reads", s.init_move_outside_reads);
         s.leader = j.value("leader", s.leader);
         s.highlight = j.value("highlight", s.highlight);
         s.theme = j.value("theme", s.theme);
@@ -620,6 +622,8 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"markdown", d.markdown},
         {"mouse", d.mouse},
         {"sessions_home", d.sessions_home},
+        {"init_move_outside_reads", d.init_move_outside_reads},
+        {"//init_move_outside_reads", ":init moves this session into the project's home without asking when it wrote nothing outside the project and read at most this many files there"},
         {"leader", "space"},
         {"highlight", d.highlight},
         {"theme", d.theme},

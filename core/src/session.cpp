@@ -1,7 +1,9 @@
 #include <signal.h>
 #include "maic/session.hpp"
 
+#include "maic/harness.hpp"
 #include "maic/paths.hpp"
+#include "maic/tools.hpp"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -14,7 +16,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <set>
 #include <stdexcept>
+#include <string_view>
 
 namespace maic {
 
@@ -87,9 +91,14 @@ SessionLog::SessionLog(Fork, const fs::path& parent, size_t records, const std::
 }
 
 SessionLog::SessionLog(Reopen, const fs::path& path) : path_(path) {
-    if (!fs::is_regular_file(path)) throw std::runtime_error("no session at " + path.string());
-    out_.open(path, std::ios::app);
-    if (!out_) throw std::runtime_error("can't append to " + path.string());
+    // A move this session was in the middle of when MAIC stopped is finished first; it may have left the file elsewhere.
+    recovered_ = recover_relocations(path.stem().string());
+    if (!fs::is_regular_file(path_)) {
+        if (auto found = find_session(path.stem().string()); found && !recovered_.empty()) path_ = found->path;
+    }
+    if (!fs::is_regular_file(path_)) throw std::runtime_error("no session at " + path.string());
+    out_.open(path_, std::ios::app);
+    if (!out_) throw std::runtime_error("can't append to " + path_.string());
 }
 
 namespace {
@@ -150,6 +159,18 @@ SessionInfo read_session_info(const fs::path& path) {
     }
     if (info.opened_in.empty()) info.opened_in = info.workspace;
     return info;
+}
+
+std::vector<fs::path> sub_sessions_of(const fs::path& path) {
+    std::vector<fs::path> out;
+    std::error_code ec;
+    std::string id = path.stem().string();
+    for (const auto& e : fs::directory_iterator(path.parent_path(), ec)) {
+        if (e.path().extension() != ".jsonl" || e.path().stem().string().find("-sub-") == std::string::npos) continue;
+        SessionInfo info = read_session_info(e.path());
+        if (info.kind == "sub" && info.delegated_from == id) out.push_back(e.path());
+    }
+    return out;
 }
 
 std::vector<SessionInfo> list_sessions(const std::optional<fs::path>& workspace) {
@@ -550,11 +571,271 @@ std::string render_text(const LoadedSession& session, size_t from, size_t to, bo
     return out;
 }
 
+namespace {
+
+bool write_all(int fd, std::string_view data) {
+    while (!data.empty()) {
+        ssize_t n = ::write(fd, data.data(), data.size());
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        data.remove_prefix(static_cast<size_t>(n));
+    }
+    return true;
+}
+
+std::string read_bytes(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+// Appends `data` to `file` and fsyncs it.
+bool append_synced(const fs::path& file, std::string_view data) {
+    int fd = open(file.c_str(), O_WRONLY | O_APPEND | O_CLOEXEC);
+    if (fd < 0) return false;
+    bool ok = write_all(fd, data) && fsync(fd) == 0;
+    close(fd);
+    return ok;
+}
+
+// rename(2), or when the two are on different filesystems (or `copy`), a copy to <to>.moving that is fsynced and
+// renamed into place before the source goes. On failure the source is untouched and nothing is left at `to`.
+void move_session_file(const fs::path& from, const fs::path& to, bool copy) {
+    if (!copy) {
+        if (rename(from.c_str(), to.c_str()) == 0) return;
+        if (errno != EXDEV) throw std::runtime_error("can't move " + from.string() + " to " + to.string() + ": " + std::strerror(errno));
+    }
+    fs::path moving = to.string() + ".moving";
+    int in = open(from.c_str(), O_RDONLY | O_CLOEXEC);
+    if (in < 0) throw std::runtime_error("can't read " + from.string() + ": " + std::strerror(errno));
+    int out = open(moving.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (out < 0) {
+        int err = errno;
+        close(in);
+        throw std::runtime_error("can't create " + moving.string() + ": " + std::strerror(err));
+    }
+    bool ok = true;
+    char buf[1 << 16];
+    for (ssize_t n; ok && (n = read(in, buf, sizeof(buf))) != 0;) {
+        if (n < 0) ok = errno == EINTR;
+        else ok = write_all(out, std::string_view(buf, static_cast<size_t>(n)));
+    }
+    ok = ok && fsync(out) == 0;
+    close(in);
+    close(out);
+    if (!ok || rename(moving.c_str(), to.c_str()) != 0) {
+        int err = errno;
+        unlink(moving.c_str());
+        throw std::runtime_error("can't copy " + from.string() + " to " + to.string() + ": " + std::strerror(err));
+    }
+    if (unlink(from.c_str()) != 0) {
+        int err = errno;
+        unlink(to.c_str());
+        throw std::runtime_error("can't remove " + from.string() + " after copying it: " + std::strerror(err));
+    }
+}
+
+}  // namespace
+
+fs::path SessionLog::relocate(const fs::path& dest_dir, const std::string& reason) {
+    fs::create_directories(dest_dir);
+    std::error_code ec;
+    fs::permissions(dest_dir.parent_path(), fs::perms::owner_all, fs::perm_options::replace, ec);
+    fs::permissions(dest_dir, fs::perms::owner_all, fs::perm_options::replace, ec);
+    fs::path from, to, pending;
+    {
+        std::lock_guard lock(mu_);
+        if (pending_fd_ >= 0) throw std::runtime_error("the session is already being moved");
+        from = path_;
+        to = dest_dir / from.filename();
+        if (fs::exists(from.string() + ".tripped", ec)) throw std::runtime_error("the session's tripwire lock is set beside it; :unlock first");
+        if (fs::exists(to, ec)) throw std::runtime_error(to.string() + " already exists");
+        pending = to.string() + ".pending";
+        pending_fd_ = open(pending.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_APPEND | O_CLOEXEC, 0600);
+        if (pending_fd_ < 0) throw std::runtime_error("can't create " + pending.string() + ": " + std::strerror(errno));
+        out_.close();
+    }
+    std::vector<fs::path> children = sub_sessions_of(from);
+    if (while_relocating) while_relocating();
+    std::string failure;
+    try {
+        move_session_file(from, to, relocate_by_copy);
+    } catch (const std::exception& e) {
+        failure = e.what();
+    }
+    {
+        std::lock_guard lock(mu_);
+        fs::path at = failure.empty() ? to : from;
+        bool appended = append_synced(at, read_bytes(pending));
+        close(pending_fd_);
+        pending_fd_ = -1;
+        if (appended) unlink(pending.c_str());
+        else failure += (failure.empty() ? "" : "; ") + std::string("the records written meanwhile are in ") + pending.string() + " until the session is opened again";
+        path_ = at;
+        out_.open(path_, std::ios::app);
+    }
+    if (!failure.empty()) throw std::runtime_error(failure);
+    for (const auto& c : children) {
+        if (auto err = move_path(c, dest_dir / c.filename())) throw std::runtime_error("moved the session, but not its subagent " + c.stem().string() + ": " + err.message());
+    }
+    write("rehomed", {{"from", from.string()}, {"to", to.string()}, {"reason", reason}});
+    return to;
+}
+
+std::vector<std::string> recover_relocations(const std::string& id) {
+    std::map<std::string, std::vector<fs::path>> files;  // by file name: <id>.jsonl, .pending and .moving
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(sessions_dir(), ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (ec) break;
+        std::string name = it->path().filename().string();
+        if (it->is_directory(ec) && name.rfind(".", 0) == 0) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        if (!id.empty() && name.rfind(id + ".jsonl", 0) != 0) continue;
+        if (name.find(".jsonl") != std::string::npos) files[name].push_back(it->path());
+    }
+    std::vector<std::string> notices;
+    auto home_of = [](const fs::path& p) { return p.parent_path().lexically_relative(sessions_dir()).string() + "/"; };
+    for (const auto& [name, leftovers] : files) {
+        bool pending = name.size() > 14 && name.compare(name.size() - 14, 14, ".jsonl.pending") == 0;
+        bool moving = name.size() > 13 && name.compare(name.size() - 13, 13, ".jsonl.moving") == 0;
+        if (!pending && !moving) continue;
+        std::string sid = name.substr(0, name.find(".jsonl"));
+        for (const auto& leftover : leftovers) {
+            fs::path dir = leftover.parent_path(), target = dir / (sid + ".jsonl");
+            std::optional<fs::path> source;
+            if (auto f = files.find(sid + ".jsonl"); f != files.end()) {
+                for (const auto& p : f->second) {
+                    if (p.parent_path() != dir) source = p;
+                }
+            }
+            fs::path live = fs::exists(target, ec) ? target : source.value_or(fs::path());
+            if (!live.empty() && session_running(read_session_info(live))) continue;  // its own process is moving it now
+            if (moving) {
+                if (!source) {
+                    notices.push_back("an unfinished copy of session " + sid + " is at " + leftover.string() + " and no original was found; left as it is");
+                    continue;
+                }
+                fs::remove(leftover, ec);
+                notices.push_back("discarded an unfinished copy of session " + sid + " in " + home_of(leftover) + " (a move was interrupted; the original in " + home_of(*source) + " is intact)");
+                continue;
+            }
+            if (source && fs::exists(target, ec)) {
+                // Copied and renamed into place, but the source was never removed: the copy is the same file.
+                if (read_bytes(target) != read_bytes(*source)) {
+                    notices.push_back("session " + sid + " is in both " + home_of(*source) + " and " + home_of(target) + " and they differ; left as they are, with " + leftover.string());
+                    continue;
+                }
+                fs::remove(target, ec);
+                live = *source;
+            }
+            if (live.empty()) {
+                notices.push_back("records of session " + sid + " from an interrupted move are in " + leftover.string() + ", but the session file is gone; left as it is");
+                continue;
+            }
+            // A crash can come after the records were appended and before their file was removed: skip what the
+            // session already ends with.
+            std::string held = read_bytes(leftover), file = read_bytes(live);
+            size_t k = std::min(held.size(), file.size());
+            while (k > 0 && file.compare(file.size() - k, k, held, 0, k) != 0) --k;
+            if (!append_synced(live, std::string_view(held).substr(k))) {
+                notices.push_back("could not add the records of session " + sid + " in " + leftover.string() + " back to " + live.string());
+                continue;
+            }
+            fs::remove(leftover, ec);
+            size_t added = static_cast<size_t>(std::count(held.begin() + static_cast<long>(k), held.end(), '\n'));
+            notices.push_back("session " + sid + " was being moved when MAIC stopped: " + std::to_string(added) + " record" + (added == 1 ? "" : "s") +
+                              " written meanwhile were added back to it, in " + home_of(live));
+        }
+    }
+    return notices;
+}
+
+InitMove init_move_check(const fs::path& path, const std::vector<nlohmann::json>& records, const fs::path& workspace, bool recorded,
+                         size_t outside_reads_allowed) {
+    InitMove m;
+    std::error_code ec;
+    fs::path ws = fs::weakly_canonical(workspace, ec);
+    fs::path home = sessions_home("project:" + ws.string());
+    if (!recorded) {
+        m.reason = "it is not recorded (--no-record): it lives in the runtime directory and is gone at logout";
+        return m;
+    }
+    if (fs::weakly_canonical(path.parent_path(), ec) == fs::weakly_canonical(home, ec)) {
+        m.reason = "it is already in " + home.lexically_relative(sessions_dir()).string() + "/";
+        return m;
+    }
+    auto outside = [&](const fs::path& p) {
+        fs::path rel = p.lexically_relative(ws);
+        return rel.empty() || *rel.begin() == "..";
+    };
+    std::set<std::string> reads, writes;
+    // Paths are resolved against the workspace in effect when the call was made, then judged against this one.
+    std::optional<Harness> at;
+    at.emplace(ws);
+    for (const auto& j : records) {
+        std::string type = j.value("type", "");
+        if (type == "start") at.emplace(j.value("workspace", ws.string()));
+        else if (type == "workspace") at.emplace(j.value("to", ws.string()));
+        if (type != "tool" || !j.value("ok", true)) continue;
+        std::vector<Action> actions;
+        try {
+            actions = tool_actions(*at, j.value("tool", ""), j.value("arguments", nlohmann::json::object()));
+        } catch (const std::exception&) {
+            // Not a built-in (a Lua or script tool: its actions are listed below) or arguments it never ran with.
+        }
+        for (const auto& sub : j.value("actions", nlohmann::json::array())) {
+            if (!sub.is_object()) continue;
+            std::string d = sub.value("decision", ""), a = sub.value("action", "");
+            if (d == "deny" || d == "trip" || sub.value("approval", "") == "no") continue;
+            for (auto [prefix, kind] : {std::pair<const char*, Action::Kind>{"writes ", Action::Kind::Write}, {"reads ", Action::Kind::Read},
+                                        {"write_file ", Action::Kind::Write}, {"read_file ", Action::Kind::Read}, {"list_dir ", Action::Kind::Read}}) {
+                if (a.rfind(prefix, 0) != 0) continue;
+                std::string p = a.substr(std::strlen(prefix));
+                p = p.substr(0, p.find(" (declared by "));
+                actions.push_back({kind, at->resolve(p), ""});
+            }
+        }
+        for (const auto& a : actions) {
+            if (a.kind == Action::Kind::Shell) {
+                if (!a.workdir.empty() && outside(a.workdir)) writes.insert(a.workdir.string());
+            } else if (outside(a.path)) {
+                (a.kind == Action::Kind::Write ? writes : reads).insert(a.path.string());
+            }
+        }
+    }
+    m.outside_reads = reads.size();
+    m.outside_writes = writes.size();
+    if (m.outside_writes > 0 || m.outside_reads > outside_reads_allowed) {
+        m.verdict = InitMove::Ask;
+        m.reason = "it read " + std::to_string(m.outside_reads) + " and wrote " + std::to_string(m.outside_writes) + " files outside the project";
+    } else {
+        m.verdict = InitMove::Move;
+        m.reason = "it worked here throughout";
+    }
+    return m;
+}
+
+InitMove init_move_check(const fs::path& path, const fs::path& workspace, bool recorded, size_t outside_reads_allowed) {
+    std::vector<nlohmann::json> records;
+    auto keep = [&](const nlohmann::json& j) { records.push_back(j); };
+    if (recorded) {
+        walk_records(path, ~size_t(0), keep);
+        for (const auto& c : sub_sessions_of(path)) walk_records(c, ~size_t(0), keep);
+    }
+    return init_move_check(path, records, workspace, recorded, outside_reads_allowed);
+}
+
 void SessionLog::write(const std::string& type, nlohmann::json data) {
     data["type"] = type;
     if (!data.contains("time")) data["time"] = now("%Y-%m-%dT%H:%M:%S%z");
+    std::string line = data.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + '\n';
     std::lock_guard lock(mu_);
-    out_ << data.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
+    if (pending_fd_ >= 0) {
+        write_all(pending_fd_, line);
+        return;
+    }
+    out_ << line;
     out_.flush();
 }
 

@@ -169,6 +169,10 @@ public:
     void set_permission(Permission p) { harness_.set_permission(std::move(p)); }
     void set_allow(const std::vector<std::string>& patterns) { harness_.set_allow(patterns); }
     void set_confined(bool on) { harness_.set_confined(on); }
+    // :cd, a user command only (a remote origin is refused): the harness, relative paths and the instruction files
+    // follow `dir`, the transcript gets a `workspace` record and the conversation a system note saying so.
+    // Throws when the harness refuses the move (a confined session leaving its start directory).
+    void set_workspace(const std::filesystem::path& dir, Origin origin);
     void set_forbid(std::vector<std::string> terms) { harness_.set_forbid(std::move(terms)); }
 
     // Subagents. The `task` tool runs a child Agent in this workspace as one of these agents (role subagent or all), with
