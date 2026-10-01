@@ -51,6 +51,42 @@ bool is_space(char c) {
     return c == ' ' || c == '\t' || c == '\n';
 }
 
+// A macro's text back into keys: an escape sequence the editor knows is one special key, a lone Esc is Esc,
+// a line feed is Enter, DEL is Backspace, other control bytes are the Ctrl keys, the rest UTF-8 characters.
+std::vector<Event> events_of(const std::string& s) {
+    static const Event specials[] = {Event::ArrowLeft, Event::ArrowRight, Event::ArrowUp, Event::ArrowDown, Event::Home, Event::End, Event::Delete};
+    std::vector<Event> out;
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c == 0x1b) {
+            bool matched = false;
+            for (const auto& sp : specials) {
+                if (s.compare(i, sp.input().size(), sp.input()) == 0) {
+                    out.push_back(sp);
+                    i += sp.input().size();
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) out.push_back(Event::Escape), ++i;
+        } else if (c == '\n' || c == '\r') {
+            out.push_back(Event::Return);
+            ++i;
+        } else if (c == 0x7f) {
+            out.push_back(Event::Backspace);
+            ++i;
+        } else if (c < 0x20) {
+            out.push_back(Event::Character(std::string(1, s[i])));
+            ++i;
+        } else {
+            size_t n = utf8_next(s, i);
+            out.push_back(Event::Character(s.substr(i, n - i)));
+            i = n;
+        }
+    }
+    return out;
+}
+
 }  // namespace
 
 std::pair<size_t, size_t> Editor::selection() const {
@@ -161,6 +197,12 @@ void Editor::begin_command(char prefix) {
     cmdline_.clear();
 }
 
+void Editor::newline() {
+    if (mode_ != Mode::Insert && mode_ != Mode::Replace) return;
+    insert_text(cursor_, "\n");
+    ++cursor_;
+}
+
 void Editor::clamp_normal() {
     if (mode_ == Mode::Insert || mode_ == Mode::Command || mode_ == Mode::Replace || insert_once_) return;
     if (cursor_ >= text_.size()) cursor_ = text_.empty() ? 0 : utf8_prev(text_, text_.size());
@@ -175,7 +217,7 @@ bool Editor::idle() const {
 }
 
 bool Editor::wants_char() const {
-    return pending_.size() == 1 && std::string("rm\"fFtT'`ia").find(pending_[0]) != std::string::npos;
+    return pending_.size() == 1 && std::string("rm\"fFtT'`iaq@").find(pending_[0]) != std::string::npos;
 }
 
 void Editor::enter_insert(size_t at, bool snapshot, int repeat, char kind) {
@@ -199,7 +241,8 @@ void Editor::leave_insert() {
                 insert_text(cursor_, "\n");
                 ++cursor_;
             }
-            for (const auto& e : typed) handle_insert(e);
+            Result dropped;  // a Send inside a repeated insert session is not a send
+            for (const auto& e : typed) handle_insert(e, dropped);
         }
     }
     insert_repeat_ = 1;
@@ -330,48 +373,87 @@ bool Editor::blank_line(size_t pos) const {
     return pos >= text_.size() || text_[pos] == '\n';
 }
 
-void Editor::word_forward() {
+int Editor::cls_at(size_t i, bool big) const {
+    int c = char_class(static_cast<unsigned char>(text_[i]));
+    return big && c ? 1 : c;
+}
+
+void Editor::word_forward(bool big) {
     if (cursor_ >= text_.size()) return;
-    int cls = char_class(text_[cursor_]);
-    while (cursor_ < text_.size() && cls != 0 && char_class(text_[cursor_]) == cls) cursor_ = utf8_next(text_, cursor_);
-    while (cursor_ < text_.size() && char_class(text_[cursor_]) == 0) cursor_ = utf8_next(text_, cursor_);
+    int cls = cls_at(cursor_, big);
+    while (cursor_ < text_.size() && cls != 0 && cls_at(cursor_, big) == cls) cursor_ = utf8_next(text_, cursor_);
+    while (cursor_ < text_.size() && cls_at(cursor_, big) == 0) cursor_ = utf8_next(text_, cursor_);
 }
 
-void Editor::word_backward() {
-    while (cursor_ > 0 && char_class(text_[utf8_prev(text_, cursor_)]) == 0) cursor_ = utf8_prev(text_, cursor_);
+void Editor::word_backward(bool big) {
+    while (cursor_ > 0 && cls_at(utf8_prev(text_, cursor_), big) == 0) cursor_ = utf8_prev(text_, cursor_);
     if (cursor_ == 0) return;
-    int cls = char_class(text_[utf8_prev(text_, cursor_)]);
-    while (cursor_ > 0 && char_class(text_[utf8_prev(text_, cursor_)]) == cls) cursor_ = utf8_prev(text_, cursor_);
+    int cls = cls_at(utf8_prev(text_, cursor_), big);
+    while (cursor_ > 0 && cls_at(utf8_prev(text_, cursor_), big) == cls) cursor_ = utf8_prev(text_, cursor_);
 }
 
-void Editor::word_end() {
+void Editor::word_end(bool big) {
     if (text_.empty()) return;
     cursor_ = utf8_next(text_, cursor_);
-    while (cursor_ < text_.size() && char_class(text_[cursor_]) == 0) cursor_ = utf8_next(text_, cursor_);
+    while (cursor_ < text_.size() && cls_at(cursor_, big) == 0) cursor_ = utf8_next(text_, cursor_);
     if (cursor_ >= text_.size()) {
         cursor_ = utf8_prev(text_, text_.size());
         return;
     }
-    int cls = char_class(text_[cursor_]);
-    while (utf8_next(text_, cursor_) < text_.size() && char_class(text_[utf8_next(text_, cursor_)]) == cls) cursor_ = utf8_next(text_, cursor_);
+    int cls = cls_at(cursor_, big);
+    while (utf8_next(text_, cursor_) < text_.size() && cls_at(utf8_next(text_, cursor_), big) == cls) cursor_ = utf8_next(text_, cursor_);
 }
 
-// ge: back to the end of the previous word.
-void Editor::word_end_backward() {
+// ge / gE: back to the end of the previous word.
+void Editor::word_end_backward(bool big) {
     if (cursor_ == 0) return;
     size_t p = std::min(cursor_, text_.size() - 1);
-    int cls = char_class(text_[p]);
-    while (p > 0 && cls != 0 && char_class(text_[utf8_prev(text_, p)]) == cls) p = utf8_prev(text_, p);
+    int cls = cls_at(p, big);
+    while (p > 0 && cls != 0 && cls_at(utf8_prev(text_, p), big) == cls) p = utf8_prev(text_, p);
     if (p > 0) p = utf8_prev(text_, p);
-    while (p > 0 && char_class(text_[p]) == 0) p = utf8_prev(text_, p);
+    while (p > 0 && cls_at(p, big) == 0) p = utf8_prev(text_, p);
     cursor_ = p;
 }
 
 // End of the word under the cursor (no advance first): what `cw` changes.
-void Editor::current_word_end() {
+void Editor::current_word_end(bool big) {
     if (cursor_ >= text_.size()) return;
-    int cls = char_class(text_[cursor_]);
-    while (utf8_next(text_, cursor_) < text_.size() && char_class(text_[utf8_next(text_, cursor_)]) == cls) cursor_ = utf8_next(text_, cursor_);
+    int cls = cls_at(cursor_, big);
+    while (utf8_next(text_, cursor_) < text_.size() && cls_at(utf8_next(text_, cursor_), big) == cls) cursor_ = utf8_next(text_, cursor_);
+}
+
+// %: the first of ( ) [ ] { } at or after the cursor on the line, then its partner, nesting counted, across lines.
+size_t Editor::match_bracket() const {
+    const std::string open = "([{", close = ")]}";
+    size_t le = line_finish(cursor_), p = cursor_;
+    while (p < le && open.find(text_[p]) == std::string::npos && close.find(text_[p]) == std::string::npos) ++p;
+    if (p >= le) return std::string::npos;
+    bool forward = open.find(text_[p]) != std::string::npos;
+    char o = forward ? text_[p] : open[close.find(text_[p])];
+    char c = forward ? close[open.find(text_[p])] : text_[p];
+    int depth = 0;
+    if (forward) {
+        for (size_t i = p; i < text_.size(); ++i) {
+            if (text_[i] == o) ++depth;
+            else if (text_[i] == c && --depth == 0) return i;
+        }
+    } else {
+        for (size_t i = p + 1; i-- > 0;) {
+            if (text_[i] == c) ++depth;
+            else if (text_[i] == o && --depth == 0) return i;
+        }
+    }
+    return std::string::npos;
+}
+
+std::string Editor::word_under_cursor() const {
+    size_t le = line_finish(cursor_), p = cursor_;
+    while (p < le && char_class(static_cast<unsigned char>(text_[p])) != 1) p = utf8_next(text_, p);
+    if (p >= le) return "";
+    size_t from = p, to = p;
+    while (from > 0 && char_class(static_cast<unsigned char>(text_[utf8_prev(text_, from)])) == 1) from = utf8_prev(text_, from);
+    while (to < le && char_class(static_cast<unsigned char>(text_[to])) == 1) to = utf8_next(text_, to);
+    return text_.substr(from, to - from);
 }
 
 void Editor::line_start() {
@@ -647,9 +729,9 @@ Editor::Parse Editor::motion(const std::string& k, int count, bool objects, Rang
                 r.linewise = r.jump = true;
                 return Parse::Done;
             }
-            if (k == "e") {
+            if (k == "e" || k == "E") {
                 size_t save = cursor_;
-                for (int i = 0; i < n; ++i) word_end_backward();
+                for (int i = 0; i < n; ++i) word_end_backward(k == "E");
                 r.to = cursor_;
                 cursor_ = save;
                 r.inclusive = true;
@@ -686,16 +768,25 @@ Editor::Parse Editor::motion(const std::string& k, int count, bool objects, Rang
         r.inclusive = kind == "f" || kind == "t";
         return Parse::Done;
     }
-    if (k == "w" || k == "b" || k == "e") {
+    if (k == "w" || k == "b" || k == "e" || k == "W" || k == "B" || k == "E") {
+        bool big = std::isupper(static_cast<unsigned char>(k[0]));
+        char m = static_cast<char>(std::tolower(static_cast<unsigned char>(k[0])));
         size_t save = cursor_;
         for (int i = 0; i < n; ++i) {
-            if (k == "w") word_forward();
-            else if (k == "b") word_backward();
-            else word_end();
+            if (m == 'w') word_forward(big);
+            else if (m == 'b') word_backward(big);
+            else word_end(big);
         }
         r.to = cursor_;
         cursor_ = save;
-        r.inclusive = k == "e";
+        r.inclusive = m == 'e';
+        return Parse::Done;
+    }
+    if (k == "%") {
+        size_t p = match_bracket();
+        if (p == std::string::npos) return Parse::None;
+        r.to = p;
+        r.inclusive = r.jump = true;
         return Parse::Done;
     }
     if (k == "h" || k == "l") {
@@ -1015,14 +1106,15 @@ void Editor::finish_command() {
 
 Editor::Result Editor::handle(const Event& e) {
     Result result;
+    if (recording_ && !replaying_ && macro_depth_ == 0) macro_text_ += e.input();
     if (!replaying_ && mode_ != Mode::Command) {
         if (keys_.empty() && rec_groups_.empty()) change_start_ = text_;
         keys_.push_back(e);
     }
     switch (mode_) {
         case Mode::Insert:
-        case Mode::Replace: handle_insert(e); break;
-        case Mode::Normal: handle_normal(e); break;
+        case Mode::Replace: handle_insert(e, result); break;
+        case Mode::Normal: handle_normal(e, result); break;
         case Mode::Visual:
         case Mode::VisualLine: handle_visual(e); break;
         case Mode::Command: handle_command(e, result); break;
@@ -1031,7 +1123,39 @@ Editor::Result Editor::handle(const Event& e) {
     return result;
 }
 
-bool Editor::handle_insert(const Event& e) {
+// @{reg}: the register's text is fed back as keys, n times; a motion that finds nothing stops it, as in vim.
+// The @ keys themselves are not part of what `.` repeats; the last change inside the macro is.
+void Editor::run_macro(char reg, int n, Result& result) {
+    if (reg == '@') reg = last_macro_;
+    auto it = registers_.find(reg);
+    if (it == registers_.end() || it->second.text.empty() || macro_depth_ >= 100) return;
+    last_macro_ = reg;
+    std::vector<Event> evs = events_of(it->second.text);
+    keys_.clear();
+    rec_groups_.clear();
+    ++macro_depth_;
+    motion_failed_ = false;
+    for (int i = 0; i < n && !motion_failed_; ++i) {
+        for (const auto& e : evs) {
+            Result r = handle(e);
+            if (r.action != Action::None) result = r;
+            if (motion_failed_) break;
+        }
+    }
+    --macro_depth_;
+    if (macro_depth_ == 0) motion_failed_ = false;
+}
+
+// The q that ends a recording is not part of the macro.
+void Editor::stop_recording() {
+    if (macro_depth_ == 0 && !macro_text_.empty()) macro_text_.pop_back();
+    registers_[recording_] = {macro_text_, false};
+    recording_ = 0;
+    macro_text_.clear();
+    no_repeat_ = true;
+}
+
+bool Editor::handle_insert(const Event& e, Result& result) {
     const std::string& k = e.input();
     if (e == Event::Escape) return leave_insert(), true;
     session_keys_.push_back(e);
@@ -1093,6 +1217,12 @@ bool Editor::handle_insert(const Event& e) {
         }
     }
     if (e == Event::Return) {
+        if (enter_sends_ && text_.find('\n') == std::string::npos) {  // one line: Enter sends it (newline() is Shift+Enter)
+            session_keys_.pop_back();
+            result.action = Action::Send;
+            result.text = text_;
+            return true;
+        }
         insert_text(cursor_, "\n");
         ++cursor_;
         return true;
@@ -1104,7 +1234,7 @@ bool Editor::handle_insert(const Event& e) {
     if (e == Event::Delete) return delete_range(cursor_, utf8_next(text_, cursor_), false), true;
     if (k == "\x17") {  // Ctrl-W
         size_t end = cursor_;
-        word_backward();
+        word_backward(false);
         delete_range(cursor_, end, false);
         return true;
     }
@@ -1124,7 +1254,7 @@ bool Editor::handle_insert(const Event& e) {
     return false;
 }
 
-bool Editor::handle_normal(const Event& e) {
+bool Editor::handle_normal(const Event& e, Result& result) {
     const std::string& k = e.input();
     if (e == Event::Escape) {
         op_.clear();
@@ -1163,7 +1293,7 @@ bool Editor::handle_normal(const Event& e) {
     count_ = 0;
     int n = std::max(raw, 1);
 
-    if (literal && (pending_ == "\"" || pending_ == "m" || pending_ == "r")) {
+    if (literal && (pending_ == "\"" || pending_ == "m" || pending_ == "r" || pending_ == "q" || pending_ == "@")) {
         std::string arg = pending_;
         pending_.clear();
         if (arg == "r") {
@@ -1175,6 +1305,17 @@ bool Editor::handle_normal(const Event& e) {
         char c = k[0];
         if (arg == "m") {
             if (c >= 'a' && c <= 'z') marks_[c] = cursor_;
+            return true;
+        }
+        if (arg == "q") {
+            if (c >= 'a' && c <= 'z') {
+                recording_ = c;
+                macro_text_.clear();
+            }
+            return no_repeat_ = true, true;
+        }
+        if (arg == "@") {
+            if ((c >= 'a' && c <= 'z') || c == '@') run_macro(c, n, result);
             return true;
         }
         if (std::isalpha(static_cast<unsigned char>(c))) reg_sel_ = c;
@@ -1198,12 +1339,12 @@ bool Editor::handle_normal(const Event& e) {
             op_count_ = 0;
             return true;
         }
-        if (op_ == "c" && pending_.empty() && key == "w" && cursor_ < text_.size() && char_class(text_[cursor_]) != 0) {
+        if (op_ == "c" && pending_.empty() && (key == "w" || key == "W") && cursor_ < text_.size() && char_class(text_[cursor_]) != 0) {
             // vim special case: cw on a word changes to the end of that word (then n-1 more words)
             Range r;
             r.from = cursor_;
-            current_word_end();
-            for (int i = 1; i < cn; ++i) word_end();
+            current_word_end(key == "W");
+            for (int i = 1; i < cn; ++i) word_end(key == "W");
             r.to = cursor_;
             cursor_ = r.from;
             r.inclusive = true;
@@ -1216,6 +1357,7 @@ bool Editor::handle_normal(const Event& e) {
         Parse res = motion(key, count, true, r);
         if (res == Parse::More) return count_ = raw, true;
         if (res == Parse::Done) apply_operator(op_, r, 1);
+        else motion_failed_ = true;
         op_.clear();
         op_count_ = 0;
         return true;
@@ -1231,6 +1373,7 @@ bool Editor::handle_normal(const Event& e) {
         Parse res = motion(key, raw, false, r);
         if (res == Parse::More) count_ = raw;
         else if (res == Parse::Done) move_to(r);
+        else motion_failed_ = true;
         return true;
     }
 
@@ -1243,7 +1386,18 @@ bool Editor::handle_normal(const Event& e) {
         return no_repeat_ = true, true;
     }
     if (k == ".") return repeat_change(raw), true;
-    if (k == "\"" || k == "r" || k == "m") return pending_ = k, count_ = raw, true;
+    if (k == "q") {
+        if (recording_) return stop_recording(), true;
+        return pending_ = k, true;
+    }
+    if (k == "*" || k == "#") {
+        std::string word = word_under_cursor();
+        if (word.empty()) return motion_failed_ = true, true;
+        result.action = k == "*" ? Action::Search : Action::SearchBack;
+        result.text = word;
+        return true;
+    }
+    if (k == "\"" || k == "r" || k == "m" || k == "@") return pending_ = k, count_ = raw, true;
     if (k == "i") return enter_insert(cursor_, true, n, 'i'), true;
     if (k == "a") return enter_insert(cursor_ < text_.size() && text_[cursor_] != '\n' ? utf8_next(text_, cursor_) : cursor_, true, n, 'a'), true;
     if (k == "I") return enter_insert(first_nonblank(cursor_), true, n, 'I'), true;
@@ -1320,6 +1474,7 @@ bool Editor::handle_normal(const Event& e) {
     Parse res = motion(key, raw, false, r);
     if (res == Parse::More) return count_ = raw, true;
     if (res == Parse::Done) return move_to(r), true;
+    motion_failed_ = true;
     return false;
 }
 
@@ -1397,6 +1552,7 @@ bool Editor::handle_visual(const Event& e) {
     }
     std::string key = literal ? k : e == Event::ArrowLeft ? "h" : e == Event::ArrowRight ? "l" : e == Event::ArrowUp ? "k" : e == Event::ArrowDown ? "j" : k;
     if (pending_.empty()) {
+        if (k == "q" && recording_) return stop_recording(), true;
         if (k == "y") return finish("y");
         if (k == "d" || k == "x") return finish("d");
         if (k == "c" || k == "s") return finish("c");
@@ -1428,7 +1584,8 @@ bool Editor::handle_visual(const Event& e) {
     Range r;
     Parse res = motion(key, raw, true, r);
     if (res == Parse::More) count_ = raw;
-    else if (res == Parse::Done) {
+    else if (res == Parse::None) motion_failed_ = true;
+    else {
         if (r.object) {
             if (r.to > r.from) {
                 anchor_ = r.from;

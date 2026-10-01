@@ -68,6 +68,8 @@ struct Settings {
     // "project", or a name under sessions/.
     std::string sessions_home = "auto";
     std::string leader = " ";
+    std::string highlight = "builtin";  // the input's highlighter: "builtin", or "nvim" (an embedded nvim --embed, when it is installed)
+    bool enter_sends = false;           // Enter sends a one-line input in insert mode (Shift+Enter / Alt+Enter then insert a newline)
     std::string models_dir;
     int context = 16384;       // the local server's context window in tokens (--ctx-size for llama.cpp) and the readout
     int context_2 = 8192;      // the same for the side server (services/llamacpp-2.json, ${MAIC_CONTEXT_2})

@@ -2,6 +2,7 @@
 
 #include "commands.hpp"
 #include "editor.hpp"
+#include "highlight.hpp"
 #include "maic/agent.hpp"
 #include "maic/artifacts.hpp"
 #include "maic/clipboard.hpp"
@@ -217,6 +218,7 @@ public:
         }
         view_.set_markdown(settings_.markdown);
         editor_.set_leader(settings_.leader);
+        editor_.set_enter_sends(settings_.enter_sends);
         {
             // Earlier sessions' prompts, so ↑ / Ctrl-P reach them after a restart (the last 500).
             std::vector<std::string> items;
@@ -483,6 +485,9 @@ private:
     }
 
     Element render_input(size_t width, int& rows);
+    std::vector<StyledLine> input_lines(const std::string& text);  // the built-in markdown highlighter, or nvim's
+    std::unique_ptr<NvimHighlighter> nvim_hl_;  // highlight = "nvim": started on first use, reaped on exit
+    bool nvim_hl_failed_ = false;
     Element render_palette(int& rows);
     std::vector<std::string> palette_entries();  // what the palette lists for the current command line
     std::vector<std::string> installed_models();  // the local providers' models, cached for a while (a localhost call)
@@ -496,6 +501,7 @@ private:
 
     bool handle_approval(const Event& e);
     bool handle_question(const Event& e);
+    void act(const Editor::Result& r);
     void answer(Approval a, std::string feedback = "");
     void answer_question(std::string text);
     void submit(std::string text, bool now);
@@ -567,7 +573,8 @@ void App::welcome() {
         view_.append(Kind::Notice, "tools: " + names + "  (:tools lists them)");
     }
     for (const auto& n : agent_.tool_notices()) view_.append(Kind::Error, n);
-    view_.append(Kind::Notice, "Press i to type, Alt+Enter (or :w) to send, Enter for a new line. Esc = normal mode: j/k scroll, u/Ctrl-R undo/redo, :e opens nvim, Ctrl-W k = conversation window, :help for everything.");
+    view_.append(Kind::Notice, std::string("Press i to type, ") + (settings_.enter_sends ? "Enter to send a one-line input (Shift+Enter or Alt+Enter for a new line, :w sends any)" : "Alt+Enter (or :w) to send, Enter for a new line") +
+                                   ". Esc = normal mode: j/k scroll, u/Ctrl-R undo/redo, :e opens nvim, Ctrl-W k = conversation window, :help for everything.");
     if (agent_.remote()) view_.append(Kind::Error, "This model runs off this machine: prompts, files the agent reads and command output are sent to it.");
     // The service behind the current model, if any: say so when it is down. Never a service the model does not use.
     try {
@@ -587,7 +594,7 @@ Element App::render_input(size_t width, int& rows) {
     bool insert = editor_.mode() == Editor::Mode::Insert || editor_.mode() == Editor::Mode::Replace;
     std::string pre = lua_mode_ ? (insert ? "lua❯" : "lua│") : insert ? "❯ " : "│ ";
     size_t avail = width > 3 ? width - 2 : 1;
-    auto lines = editor_.text().empty() ? std::vector<StyledLine>{{}} : markdown_lines(editor_.text());
+    auto lines = editor_.text().empty() ? std::vector<StyledLine>{{}} : input_lines(editor_.text());
     auto chunks = chunk_rows(lines, avail);
     rows = static_cast<int>(chunks.size());
 
@@ -623,6 +630,22 @@ Element App::render_input(size_t width, int& rows) {
         out.push_back(hbox({lead, body}));
     }
     return vbox(out);
+}
+
+// nvim gets 50 ms per keystroke; when its reply is late the built-in highlighter paints this frame and the
+// reply's arrival redraws. When nvim is missing or breaks, one notice says so and the built-in one stays.
+std::vector<StyledLine> App::input_lines(const std::string& text) {
+    if (settings_.highlight == "nvim" && !nvim_hl_failed_) {
+        if (!nvim_hl_) nvim_hl_ = std::make_unique<NvimHighlighter>("nvim", [this] { screen_.PostEvent(Event::Custom); });
+        auto lines = nvim_hl_->highlight(text, std::chrono::milliseconds(50));
+        if (lines) return *lines;
+        if (!nvim_hl_->alive()) {
+            nvim_hl_failed_ = true;
+            post(Kind::Notice, "highlight = nvim: " + nvim_hl_->error() + "; using the built-in highlighter");
+            nvim_hl_.reset();
+        }
+    }
+    return markdown_lines(text);
 }
 
 // The palette: commands (or arguments) matching what is typed after ':'.
@@ -776,6 +799,7 @@ Element App::render_bottom_status() {
         }
     }
     Elements parts = {text(vim) | decorate(settings_.style(style)), text(" ")};
+    if (char q = editor_.recording()) parts.push_back(text("recording @" + std::string(1, q) + " ") | decorate(settings_.style("notice")));
     std::string hint = view_.status_hint();
     if (!hint.empty()) parts.push_back(text(hint + " ") | decorate(settings_.style("status_dim")));
     if (!status_msg_.empty()) parts.push_back(text(status_msg_) | decorate(settings_.style("notice")));
@@ -813,10 +837,7 @@ Element App::render_approval() {
         std::istringstream in(r.preview);
         int n = 0;
         for (std::string line; std::getline(in, line) && n < 14; ++n) {
-            Element e = text(line);
-            if (line.rfind("+ ", 0) == 0) e = e | color(Color::Green);
-            else if (line.rfind("- ", 0) == 0) e = e | color(Color::Red);
-            rows.push_back(e);
+            rows.push_back(render_line(settings_, {{line, diff_flags(line)}}, Style{}));
         }
     }
     if (approval_->typing) {
@@ -913,8 +934,14 @@ bool App::handle(Event e) {
     // so split it back into Esc plus the keys. Real escape sequences (CSI "\x1b[", SS3 "\x1bO") pass through.
     const std::string& raw = e.input();
     // Alt+Enter sends (nvim has no default Alt mappings, so nothing is lost). Terminals send it as Esc + Enter.
-    if (raw == "\x1b\r" || raw == "\x1b\n") {
-        if (!asking()) submit(editor_.text(), false);
+    // With enter_sends on, Enter itself sends a one-line input (the editor says so), and in insert mode Alt+Enter
+    // or Shift+Enter (CSI u or modifyOtherKeys, as terminals encode it) is the line break instead.
+    bool shift_enter = raw == "\x1b[13;2u" || raw == "\x1b[27;2;13~";
+    if (raw == "\x1b\r" || raw == "\x1b\n" || shift_enter) {
+        if (asking()) return true;
+        bool inserting = editor_.mode() == Editor::Mode::Insert || editor_.mode() == Editor::Mode::Replace;
+        if (settings_.enter_sends && inserting && focus_ == Focus::Input) editor_.newline();
+        else if (!shift_enter) submit(editor_.text(), false);
         return true;
     }
     if (!e.is_mouse() && raw.size() >= 2 && raw[0] == '\x1b' && raw[1] != '[' && raw[1] != 'O') {
@@ -994,13 +1021,7 @@ bool App::handle(Event e) {
             if (!entries.empty()) palette_sel_ = (palette_sel_ + entries.size() - 1) % entries.size();
             return true;
         }
-        auto r = editor_.handle(e);
-        if (r.action == Editor::Action::Command) run_command(r.text);
-        if (r.action == Editor::Action::Search) {
-            view_.search(r.text);
-            set_focus(Focus::Conversation);
-            status_msg_ = view_.search_next(1);
-        }
+        act(editor_.handle(e));
         return true;
     }
     if (focus_ == Focus::Conversation) {
@@ -1040,14 +1061,20 @@ bool App::handle(Event e) {
         if (e == Event::PageUp) return view_.page(-1), true;
         if (e == Event::PageDown) return view_.page(1), true;
     }
-    auto r = editor_.handle(e);
+    act(editor_.handle(e));
+    return true;
+}
+
+// What the editor asked for after a key: a command, a conversation search (`/`, `*`, `#`), or a send.
+void App::act(const Editor::Result& r) {
     if (r.action == Editor::Action::Command) run_command(r.text);
-    else if (r.action == Editor::Action::Search) {
+    else if (r.action == Editor::Action::Search || r.action == Editor::Action::SearchBack) {
         view_.search(r.text);
         set_focus(Focus::Conversation);
-        status_msg_ = view_.search_next(1);
+        status_msg_ = view_.search_next(r.action == Editor::Action::Search ? 1 : -1);
+    } else if (r.action == Editor::Action::Send) {
+        submit(r.text, false);
     }
-    return true;
 }
 
 bool App::handle_approval(const Event& e) {
@@ -1421,7 +1448,19 @@ void App::run_command(const std::string& line) {
                 view_.set_collapse_default(!on);
                 view_.set_all_collapsed(!on);
                 post(Kind::Notice, on ? "tool output shown in full (za folds one, zM all)" : "tool output folded to a preview (za unfolds one, zR all)");
-            } else post(Kind::Error, ":set markdown|mouse|tooldetails|timestamps on|off");
+            } else if (key == "highlight" || key == "hl") {
+                if (value != "nvim" && value != "builtin") post(Kind::Error, ":set highlight nvim|builtin");
+                else {
+                    settings_.highlight = value;
+                    nvim_hl_.reset();
+                    nvim_hl_failed_ = false;
+                    post(Kind::Notice, value == "nvim" ? "input highlighted by nvim (started on the next keystroke)" : "built-in input highlighter");
+                }
+            } else if (key == "enter_sends" || key == "entersends") {
+                settings_.enter_sends = on;
+                editor_.set_enter_sends(on);
+                post(Kind::Notice, on ? "Enter sends a one-line input; Shift+Enter or Alt+Enter inserts a line break" : "Enter inserts a line break; Alt+Enter or :w sends");
+            } else post(Kind::Error, ":set markdown|mouse|tooldetails|timestamps|enter_sends on|off, :set highlight nvim|builtin");
         } else if (cmd == "lua" || cmd == "luafile") {
             if (cmd == "lua" && arg.empty()) {
                 lua_mode_ = !lua_mode_;
@@ -1963,6 +2002,7 @@ void App::quit() {
 }
 
 void App::shutdown() {
+    nvim_hl_.reset();
     cancel_ = true;
     shell_cancel_ = true;
     answer(Approval::No);

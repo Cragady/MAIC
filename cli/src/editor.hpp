@@ -10,17 +10,19 @@
 namespace maic {
 
 // The input box: a small vim. Starts in normal mode. Insert, normal, replace, visual and visual-line modes,
-// counts, operators (d c y > < gq gu gU g~), text objects, marks, named registers, `.` repeat, multi-level
-// undo/redo (an insert session is one step), and prompt history. Enter inserts a newline; sending is the
-// app's job (Alt+Enter or :w). Cursor positions are byte offsets.
+// counts, operators (d c y > < gq gu gU g~), text objects, marks, named registers, macros, `.` repeat,
+// multi-level undo/redo (an insert session is one step), and prompt history. Enter inserts a newline; sending
+// is the app's job (Alt+Enter or :w), unless enter_sends is on and the input is one line. Cursor positions are
+// byte offsets.
 class Editor {
 public:
     enum class Mode { Insert, Normal, Visual, VisualLine, Command, Replace };
-    enum class Action { None, Command, Search };
+    // Search / SearchBack: `/` and `*` / `#`, which search the conversation. Send: Enter with enter_sends on.
+    enum class Action { None, Command, Search, SearchBack, Send };
 
     struct Result {
         Action action = Action::None;
-        std::string text;  // the command line for Command / Search
+        std::string text;  // the command line for Command, the pattern for Search / SearchBack
     };
 
     struct Register {
@@ -33,6 +35,7 @@ public:
     void set_leader(std::string leader) { leader_ = std::move(leader); }
     void set_textwidth(int cols) { textwidth_ = cols; }    // gq wraps to this
     void set_shiftwidth(int cols) { shiftwidth_ = cols; }  // > and < shift by this
+    void set_enter_sends(bool on) { enter_sends_ = on; }   // Enter sends a one-line input (Result::Send)
 
     Result handle(const ftxui::Event& e);
 
@@ -46,7 +49,9 @@ public:
     // Selection as [begin, end) byte offsets, valid in the visual modes.
     std::pair<size_t, size_t> selection() const;
     // The named registers "a to "z that hold something, for :reg. The shared register is the unnamed one.
+    // A recorded macro is the register's text, with special keys as the bytes the terminal sends.
     const std::map<char, Register>& registers() const { return registers_; }
+    char recording() const { return recording_; }  // the register q{a-z} is recording into, 0 when none
 
     void set_text(std::string text);
     void replace_text(std::string text);  // like set_text, but undoable (external editor round trip)
@@ -58,6 +63,7 @@ public:
     void history_step(int dir);
     void escape();  // to normal mode, like pressing Esc
     void begin_command(char prefix);  // ':' or '/'
+    void newline();  // a line break at the cursor in insert mode: Shift+Enter / Alt+Enter when enter_sends is on
 
 private:
     struct Range {
@@ -69,13 +75,15 @@ private:
     };
     enum class Parse { Done, More, None };
 
-    bool handle_insert(const ftxui::Event& e);
-    bool handle_normal(const ftxui::Event& e);
+    bool handle_insert(const ftxui::Event& e, Result& result);
+    bool handle_normal(const ftxui::Event& e, Result& result);
     bool handle_visual(const ftxui::Event& e);
+    void run_macro(char reg, int n, Result& result);  // @{a-z}, @@
+    void stop_recording();
     bool handle_command(const ftxui::Event& e, Result& result);
     void finish_command();
     bool idle() const;        // nothing half typed
-    bool wants_char() const;  // the next key is an argument: after r m " f F t T ' ` i a
+    bool wants_char() const;  // the next key is an argument: after r m " f F t T ' ` i a q @
     void leave_insert();
     void repeat_change(int n);
 
@@ -84,11 +92,15 @@ private:
     size_t first_nonblank(size_t pos) const;
     size_t next_line(size_t pos) const;  // start of the next line, or npos
     bool blank_line(size_t pos) const;
-    void word_forward();
-    void word_backward();
-    void word_end();
-    void word_end_backward();
-    void current_word_end();
+    // Word motions; `big` is the WORD kind (W B E gE: runs of non-blanks).
+    int cls_at(size_t i, bool big) const;
+    void word_forward(bool big);
+    void word_backward(bool big);
+    void word_end(bool big);
+    void word_end_backward(bool big);
+    void current_word_end(bool big);
+    size_t match_bracket() const;  // %: the partner of the bracket under or after the cursor on the line, or npos
+    std::string word_under_cursor() const;  // * #: the keyword under or after the cursor on the line
     void line_start();
     void line_end();
     size_t find_char(const std::string& kind, const std::string& ch, int n, bool repeat) const;  // f F t T on the line, or npos
@@ -146,6 +158,7 @@ private:
     std::string history_draft_;
     int textwidth_ = 80;
     int shiftwidth_ = 4;
+    bool enter_sends_ = false;
 
     std::string last_find_kind_, last_find_char_;  // for ; and ,
     std::map<char, size_t> marks_;
@@ -164,6 +177,13 @@ private:
     char insert_kind_ = 0;
     std::vector<std::string> replaced_;  // replace mode: what each typed character covered ("" when it was inserted)
     bool insert_reg_pending_ = false;    // Ctrl-R waiting for its register
+
+    // Macros: q{a-z} appends every key to macro_text_ until q; @{a-z} feeds the register's text back as keys.
+    char recording_ = 0;
+    std::string macro_text_;
+    char last_macro_ = 0;
+    int macro_depth_ = 0;        // > 0 while a macro runs: its keys are not recorded again
+    bool motion_failed_ = false;  // a motion found nothing: a running macro stops, as vim's does on an error
 };
 
 // UTF-8 helpers shared by the editor and the view.

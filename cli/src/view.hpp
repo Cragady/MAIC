@@ -115,4 +115,9 @@ private:
     std::vector<std::pair<size_t, size_t>> matches_;  // (line, column)
 };
 
+// Diff text in tool output and approval previews: `+` lines, `-` lines, and `@@` or file headers.
+bool looks_like_diff(const std::string& text);
+unsigned diff_flags(const std::string& line);  // DiffAdd, DiffDel, DiffHunk or MdNone
+std::vector<StyledLine> diff_lines(const std::string& text);
+
 }  // namespace maic
