@@ -260,7 +260,7 @@ struct Server::Impl {
         auto services = load_services(root_dir() / "services");
         StatusReport r = status_report(services);
         json svc = json::array();
-        for (const auto& s : r.services) svc.push_back({{"name", s.name}, {"state", s.state}, {"where", s.where}});
+        for (const auto& s : r.services) svc.push_back({{"name", s.name}, {"state", s.state}, {"runtime", s.runtime}, {"where", s.where}, {"detail", s.detail}});
         const Settings& st = options.settings;
         auto [provider, model_name] = resolve_model(st.providers, st.model);
         json roots_json = json::array();

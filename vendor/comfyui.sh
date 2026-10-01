@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Installs the vendored ComfyUI the way MAIC wants it: its own Python via uv (system Python untouched),
-# CUDA 13 torch, MAIC's own custom nodes (the llama.cpp chat nodes, the template shelf), models on the
-# external drive, workflows kept in MAIC's artifact tree. Idempotent: run again to update packages.
+# CUDA 13 torch, MAIC's own custom nodes (the llama.cpp chat nodes, the template shelf), workflows kept in
+# MAIC's artifact tree. Idempotent: run again to update packages. The model paths (extra_model_paths.yaml)
+# are written by `maic vendor wire comfyui` from the manifest's models map, not here.
 #
-#   vendor/comfyui.sh install|update|wire|check   MAIC_VENDOR=<state>/vendor  MAIC_STATE=<state>  MAIC_MODELS_DIR=<models>
-#   install/update fetch packages (network); wire only links the custom nodes, model paths and workflows.
+#   vendor/comfyui.sh install|update|wire|check   MAIC_VENDOR=<state>/vendor  MAIC_STATE=<state>  MAIC_ROOT=<repo>
+#   install/update fetch packages (network); wire only links the custom nodes and workflows.
 #
 # The checkout is $MAIC_VENDOR/ComfyUI (a symlink to the submodule, or to an adopted install).
 set -euo pipefail
@@ -21,19 +22,6 @@ wire() {
     mkdir -p custom_nodes
     if [ ! -e custom_nodes/comfyui-maic-llamacpp ]; then
         ln -s "$MAIC_ROOT/vendor/comfyui-maic-llamacpp" custom_nodes/comfyui-maic-llamacpp
-    fi
-    # Models live on the external drive, one folder per type.
-    if [ -n "${MAIC_MODELS_DIR:-}" ] && [ ! -f extra_model_paths.yaml ]; then
-        cat > extra_model_paths.yaml <<EOF
-maic:
-    base_path: "$MAIC_MODELS_DIR/"
-    checkpoints: checkpoints/
-    diffusion_models: diffusion_models/
-    loras: loras/
-    text_encoders: text_encoders/
-    vae: vae/
-EOF
-        echo "wrote extra_model_paths.yaml -> $MAIC_MODELS_DIR"
     fi
     # Your own templates (originals, opened as copies) show up in ComfyUI's template browser through a
     # no-op custom node whose example_workflows/ points at the artifact tree.

@@ -1,6 +1,7 @@
 #include "commands.hpp"
 #include "doctor.hpp"
 #include "headless.hpp"
+#include "setup.hpp"
 #include "maic/artifacts.hpp"
 #include "maic/import.hpp"
 #include "maic/paths.hpp"
@@ -28,7 +29,6 @@
 #include <cctype>
 #include <cstdlib>
 #include <ctime>
-#include <deque>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -75,15 +75,19 @@ void usage(std::ostream& out = std::cerr) {
                  "  vendor adopt NAME PATH     use an install you already have instead of fetching\n"
                  "  vendor use llamacpp PATH   the GGUF that llamacpp/current means (a file under the models directory)\n"
                  "  vendor model llamacpp URL SHA256 [--into DIR]   download a GGUF, verify it, link it as the model\n"
+                 "  vendor wire NAME           redo the links and, for comfyui, the maic: block of extra_model_paths.yaml\n"
+                 "                             from models_dir (no network; add and adopt do this too)\n"
                  "  vendor unlink NAME         stop using it (nothing is deleted)\n"
                  "  lua [FILE [args...] | -e CODE]   Lua (vendored LuaJIT) here, with the maic table; no arguments: a REPL (maic help lua)\n"
                  "  tools                      every tool the model can call: built-ins, the helpers beside maic, this\n"
                  "                             directory's Lua tools (maic help tools)\n"
                  "  doctor                     what this machine has, what MAIC needs, a recommended setup\n"
-                 "  status                     harness, services, where they run, quick actions\n"
+                 "  setup                      a guided first run: prerequisites, settings, llama.cpp, ComfyUI, a model, the\n"
+                 "                             tripwire; every step is a yes/no question, nothing runs without a yes\n"
+                 "  status                     harness, services (host process or docker container), what each holds, quick actions\n"
                  "  up <service...|all>        start services\n"
                  "  down <service...|all>      stop services MAIC started\n"
-                 "  logs <service> [lines]     the end of a service's log (default 40 lines)\n"
+                 "  logs <service> [lines]     the end of a service's log (default 40 lines; docker logs for a container)\n"
                  "  gpu [free [all|llamacpp|llamacpp-2|comfyui]]   who holds the card (each llama server's resident model, ComfyUI's\n"
                  "                             VRAM) and whether two models fit it; free unloads models without stopping anything\n"
                  "  path [NAME] [--copy]       every place maic knows (workspace, sessions, models, workflows, ...) or one path;\n"
@@ -207,17 +211,12 @@ int cmd_down(const std::vector<maic::ServiceDef>& services) {
 }
 
 int cmd_logs(const maic::ServiceDef& def, size_t lines) {
-    std::ifstream in(maic::service_log_path(def));
-    if (!in) {
+    std::string tail = maic::log_tail(def, lines);
+    if (tail.empty()) {
         std::cerr << "maic: no log yet for " << def.name << "\n";
         return 1;
     }
-    std::deque<std::string> tail;
-    for (std::string line; std::getline(in, line);) {
-        tail.push_back(std::move(line));
-        if (tail.size() > lines) tail.pop_front();
-    }
-    for (const auto& line : tail) std::cout << line << "\n";
+    std::cout << tail;
     return 0;
 }
 
@@ -752,6 +751,7 @@ int main(int argc, char** argv) {
             return maic::server::run_server_command(cargs);
         }
         if (cmd == "doctor") return maic::run_doctor();
+        if (cmd == "setup") return maic::run_setup();
         if (cmd == "lua") {
             maic::Lua lua(std::filesystem::current_path());
             maic::Lua::Result r;
@@ -824,7 +824,7 @@ int main(int argc, char** argv) {
                 }
                 return 0;
             }
-            if (cargs.size() < 2) throw std::runtime_error("maic vendor add|adopt|use|unlink NAME [PATH]");
+            if (cargs.size() < 2) throw std::runtime_error("maic vendor add|adopt|use|wire|unlink NAME [PATH]");
             auto e = maic::find_vendor(cargs[1]);
             if (!e) throw std::runtime_error("no vendored service named " + cargs[1] + " (maic vendor)");
             if (cargs[0] == "add") maic::vendor_add(*e);
@@ -837,8 +837,9 @@ int main(int argc, char** argv) {
                 }
                 maic::vendor_model(*e, cargs[2], cargs[3], into);
             }
+            else if (cargs[0] == "wire") maic::vendor_wire(*e);
             else if (cargs[0] == "unlink") maic::vendor_unlink(*e);
-            else throw std::runtime_error("maic vendor add|adopt|use|model|unlink NAME [PATH | URL SHA256]");
+            else throw std::runtime_error("maic vendor add|adopt|use|model|wire|unlink NAME [PATH | URL SHA256]");
             return 0;
         }
         if (cmd == "init") {
@@ -924,7 +925,7 @@ int main(int argc, char** argv) {
                 bool running = st.state == maic::ServiceState::Running;
                 if ((cmd == "up") == running) continue;  // up lists what is stopped, down what runs
                 std::string missing = cmd == "up" ? maic::missing_requirement(def) : "";
-                rows.push_back(def.name + "  " + (running ? "running, pid " + std::to_string(st.pid) : "stopped") + "  port " + std::to_string(def.port) +
+                rows.push_back(def.name + "  " + (running ? "running, " + st.who() : "stopped") + "  port " + std::to_string(def.port) +
                                (missing.empty() ? "" : "  (" + missing + ")") + "\n     " + def.description);
                 candidates.push_back(def);
             }

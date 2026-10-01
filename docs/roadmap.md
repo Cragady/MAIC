@@ -31,33 +31,26 @@ The web app and the phone apps present one clean interface that combines the MAI
 
 Measured on 2026-09-30 with qwen3.5:4b: under Ollama and under llama.cpp alike, with MAIC's tool schemas attached, a short operator rule was ignored in every system-side placement and followed when it closed the user turn; the `operator_note` provider option came out of that. Next: a profile per backend (where operator text goes, whether a per-turn note is sent, how tools are described, prefill) chosen by provider kind and overridable in settings, measured rather than assumed, and re-measured with the 9B. Depends on nothing.
 
-### 5. Services: Docker, setup, health
-
-* Docker as a service runtime (`"runtime": "docker"`), shown in `:status` the same way, with the same loopback-only rule.
-* `maic doctor` growing into `maic setup`: pull the recommended model with `maic vendor model`, write the settings, install the tripwire, in one guided run.
-* Health beyond "port open": model loaded and VRAM in use for llama.cpp and ComfyUI; the torch-versus-driver check from the Stability Matrix assessment; a `ready_pattern` beside the port check.
-* From [assessments/stability-matrix.md](assessments/stability-matrix.md): a regenerated `maic:` block in `extra_model_paths.yaml` from a models map, an offline missing-node check for workflows, adopt verification against the git remote.
-
-### 6. Tools and the polyglot spokes
+### 5. Tools and the polyglot spokes
 
 * The rest of the `tools/` design from `programming-lang-for-agentic-cli.md`: tools as manifests plus scripts in Perl, Python, TypeScript, Go, WASM and shell, run through the same authorisation step, with per-tool network grants declared in the manifest.
 * More MAIC-owned helpers in the style of `maic-storyboard`: single-entry drivers that do the mechanical part and hand a small model one decision per turn.
 
-### 7. Absorbing the rest of cai-tools
+### 6. Absorbing the rest of cai-tools
 
 `~/dev2/cai-tools` is Claude-specific tooling; import, redact and fork-at are in MAIC ([sessions.md](sessions.md)). Still in cai, each a candidate once it is clear what it means against a MAIC session: `trans-fairy compose`, `install --graft-onto`, `install --inject`, `state`, `trans-fairy-write`, `redact --project`, and the subtools notation, grant, commit, enroll, hook, edit, time, document, name, fabricate, sync, flow, read, reflow.
 
-### 8. Windows
+### 7. Windows
 
 The tripwire design for Windows is in [harness.md](harness.md); the rest needs a port of the sandbox (AppContainer), the service manager (job objects with kill-on-close, junctions instead of symlinks, portable git on PATH, `%LOCALAPPDATA%\maic` for state and the uv cache), the runtime directory for temporary transcripts, and the terminal layer.
 
-### 9. Editor and UI
+### 8. Editor and UI
 
 * nvim as the highlighter for the input (an embedded `nvim --embed` over msgpack-rpc, one instance kept alive) for people who have it; the built-in highlighter stays the default.
 * Macros, `W B E` and `%` in the input; diff rendering for edits in the conversation window.
 * A settings key to make Enter send on one-line inputs, if it ever turns out to matter.
 
-### 10. Tests and tooling
+### 9. Tests and tooling
 
 * Make the timing-sensitive agent tests (cancel, mid-turn delivery) robust under load; they have flaked once under a parallel build.
 * A UI test harness that drives the TUI through a pty in CI, like the ad-hoc driver used during development.
@@ -82,5 +75,6 @@ Built, in the order it landed, so the list above is only what is left.
 * **Tools**: read, list (tree), glob, search, write, edit, multi_edit, apply_patch, move, copy, delete, make_dir, run_shell, question, todo; user-defined Lua tools behind the harness; `maic-workflow-edit` and `maic-storyboard` for ComfyUI.
 * **Services and vendoring**: pinned submodules, `maic vendor add|adopt|use|model`, ComfyUI with MAIC's own llama.cpp node (the Ollama node retired), the artifact tree with workflows and templates, `maic path`/`open`/`shell-init` (`mcd`), menus for `up`, `down`, `unlock`, `open`, browser choice and a subscribed remote.
 * **Two models at once (2026-10-01)**: a second llama-server, `llamacpp-2` on port 8082 over the same GGUFs with its own `context_2`; the `llamacpp-2` provider; `--ctx2` / `:ctx2`; `maic gpu` and `maic doctor` say whether the two models fit the card; the smart harness reviews on the side server when it is up, so the main model is never evicted; the Story chat deep pass points at it.
+* **Services: Docker, setup, health (2026-10-01)**: `"runtime": "docker"` in a service file (image, volumes under MAIC's trees, env, `--gpus all`), loopback only, shown as `[docker]` with its container, started, inspected, logged and stopped through docker, `services/comfyui-docker.json.example` as the shape; `maic setup`, the first run as yes/no questions over prerequisites, settings (asks `models_dir`), llama.cpp, ComfyUI, a checked Qwen3.5 GGUF and the tripwire, the plan alone off a terminal; health beyond the port: the resident model, ComfyUI's VRAM and queue under `maic status`, `ready_pattern` in the service files, the torch-versus-driver CUDA check in `maic doctor`; from the Stability Matrix assessment: `maic vendor wire comfyui` regenerating the `maic:` block of `extra_model_paths.yaml` from the manifest's models map, `maic-workflow-edit check` for node types nobody provides (offline), adopt reading the git remote and ref.
 * **Remote access, first slice**: `maic-server` with per-device tokens, TLS off loopback, audit log, SSE streaming, approvals over the API, a one-file phone-friendly web client; `Origin::Remote` always asked.
 * **Subagents and role profiles (2026-10-01)**: the `delegate` tool runs a child agent in the workspace under a profile (`orchestrator`, `builder`, `scout`, `reviewer`, or one from `profiles` in settings) that only narrows: mode capped by the session's, write paths, tool list, step and token budgets, its own transcript of kind `sub` listed under the parent, approvals through the parent, one level only. The additive `permission` block (allow / ask / deny over `tool:pattern`) with the `allow` list folded in; it runs after the trip patterns, secrets and system paths and never touches them.

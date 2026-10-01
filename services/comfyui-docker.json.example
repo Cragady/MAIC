@@ -1,0 +1,38 @@
+{
+  "//": "ComfyUI in a container instead of the vendored venv. Copy to comfyui-docker.json (load_services skips .example files), pull the image yourself (docker pull ...), and keep comfyui.json or this one, not both on port 8188. MAIC never pulls an image.",
+  "name": "comfyui",
+  "description": "ComfyUI in a container, loopback only (docker run --rm -d --name maic-comfyui -p 127.0.0.1:8188:8188 --gpus all ...)",
+  "runtime": "docker",
+  "image": "ghcr.io/example/comfyui:latest",
+  "command": [
+    "--disable-api-nodes",
+    "--disable-auto-launch",
+    "--listen",
+    "0.0.0.0",
+    "--port",
+    "8188"
+  ],
+  "port": 8188,
+  "gpu": true,
+  "needs_gpu": true,
+  "volumes": {
+    "${MAIC_MODELS}": "/models",
+    "${MAIC_STATE}/workflows/comfyui": "/app/ComfyUI/user/default/workflows",
+    "${MAIC_STATE}/comfyui-docker/output": "/app/ComfyUI/output"
+  },
+  "env": {
+    "PYTHONUNBUFFERED": "1"
+  },
+  "requires": [
+    "${MAIC_MODELS}"
+  ],
+  "ready_timeout": 180,
+  "ready_pattern": "To see the GUI go to",
+  "artifacts": [
+    {
+      "name": "outputs",
+      "description": "generated images from the container",
+      "path": "${MAIC_STATE}/comfyui-docker/output"
+    }
+  ]
+}

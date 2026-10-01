@@ -20,6 +20,9 @@ Non-interactive (an agent through run_shell, or a script):
                                                            substring replacement across text fields
     workflow_edit.py apply PATH EDITS.json                 a list of {"node": 10, "field": "text", "op": "set"|"append"|"prepend", "value": "..."}
     every writing command takes --dry-run (show the diff, write nothing) and --out PATH (write elsewhere)
+    workflow_edit.py check PATH [--comfyui DIR]            node types the workflow uses that neither ComfyUI core nor
+                                                           its custom_nodes provide, read from the vendored checkout
+                                                           ($MAIC_VENDOR/ComfyUI by default), offline; exit 1 when any
 
 Filling a manga workflow from a story JSON? Use `maic-storyboard` instead: it runs this tool for you, one
 panel per turn, and prints the exact `set` command for each prompt.
@@ -34,6 +37,7 @@ import argparse
 import difflib
 import json
 import os
+import re
 import shutil
 import sys
 
@@ -58,6 +62,8 @@ FIELDS = {
     "MaicLlmChat": ["system", "prompt", "think", "format", "temperature", "top_k", "top_p", "min_p", "seed", "control_after_generate", "extra_json", "keep_context", "session_id", "reset"],
 }
 TEXT_FIELDS = {"text", "prompt", "system", "filename_prefix", "extra_json", "value"}
+# Node types the frontend provides on its own; they are in no NODE_CLASS_MAPPINGS.
+FRONTEND_NODES = {"Note", "MarkdownNote", "PrimitiveNode", "Reroute"}
 
 
 def load(path):
@@ -263,6 +269,90 @@ def cmd_apply(args):
     write(wf, original, args.path, args.out, args.dry_run)
 
 
+def comfyui_dir(arg):
+    if arg:
+        return arg
+    state = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.join(os.environ.get("MAIC_VENDOR") or os.path.join(state, "maic", "vendor"), "ComfyUI")
+
+
+# Both ways a ComfyUI module registers node types: the key of a NODE_CLASS_MAPPINGS dict ("KSampler": KSampler)
+# and a v3 schema's node_id="ImageCrop".
+MAPPING_KEY = re.compile(r'^\s*[\'"]([^\'"]+)[\'"]\s*:', re.M)
+NODE_ID = re.compile(r'\bnode_id\s*=\s*[\'"]([^\'"]+)[\'"]')
+
+
+def node_types_in(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            src = f.read()
+    except OSError:
+        return set()
+    found = set(NODE_ID.findall(src))
+    for m in re.finditer(r"NODE_CLASS_MAPPINGS\s*(?:\[[^\]]*\])?\s*=\s*\{", src):
+        depth, i = 1, m.end()
+        while i < len(src) and depth:
+            depth += {"{": 1, "}": -1}.get(src[i], 0)
+            i += 1
+        found.update(MAPPING_KEY.findall(src[m.end():i]))
+    return found
+
+
+def provided_types(root):
+    """Every node type the checkout at `root` registers: nodes.py, comfy_extras/, and each custom node pack."""
+    files = [os.path.join(root, "nodes.py")]
+    extras = os.path.join(root, "comfy_extras")
+    if os.path.isdir(extras):
+        files += [os.path.join(extras, n) for n in sorted(os.listdir(extras)) if n.endswith(".py")]
+    for pack in sorted(os.listdir(os.path.join(root, "custom_nodes"))) if os.path.isdir(os.path.join(root, "custom_nodes")) else []:
+        pack_dir = os.path.join(root, "custom_nodes", pack)
+        if pack.endswith(".py"):
+            files.append(pack_dir)
+            continue
+        for dirpath, dirnames, filenames in os.walk(pack_dir, followlinks=True):
+            dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__", "node_modules", ".venv", "web", "js")]
+            files += [os.path.join(dirpath, n) for n in filenames if n.endswith(".py")]
+    types = set()
+    for f in files:
+        types |= node_types_in(f)
+    return types
+
+
+def workflow_node_types(wf):
+    """type -> pack hint (cnr_id or aux_id from the node's properties, "" when it carries none), over the
+    top-level nodes and every subgraph's; a subgraph's own id counts as provided by the workflow."""
+    types = {}
+    subgraphs = (wf.get("definitions") or {}).get("subgraphs") or []
+    local = {str(sg.get("id")) for sg in subgraphs}
+    for group in [wf["nodes"]] + [sg.get("nodes") or [] for sg in subgraphs]:
+        for n in group:
+            t = n.get("type", "")
+            if not t or t in local:
+                continue
+            props = n.get("properties") or {}
+            hint = props.get("cnr_id") or props.get("aux_id") or ""
+            if t not in types or (hint and not types[t]):
+                types[t] = hint
+    return types
+
+
+def cmd_check(args):
+    wf = load(args.path)
+    root = comfyui_dir(args.comfyui)
+    if not os.path.isfile(os.path.join(root, "nodes.py")):
+        sys.exit(f"no ComfyUI checkout at {root} (maic vendor add comfyui, or --comfyui DIR)")
+    have = provided_types(root) | FRONTEND_NODES
+    used = workflow_node_types(wf)
+    missing = {t: hint for t, hint in used.items() if t not in have}
+    print(f"{len(used)} node types in {os.path.basename(args.path)}, checked against {root}")
+    if not missing:
+        print("every node type is provided")
+        return
+    for t in sorted(missing):
+        print(f"  missing: {t}" + (f"  (pack {missing[t]})" if missing[t] else ""))
+    sys.exit(1)
+
+
 def read_multiline(prompt):
     print(prompt + ' (end with a line holding only ".")')
     lines = []
@@ -368,6 +458,10 @@ def main():
     common(p)
     p.add_argument("edits")
     p.set_defaults(func=cmd_apply)
+    p = sub.add_parser("check", help="node types the workflow uses that the ComfyUI checkout does not provide")
+    common(p, writes=False)
+    p.add_argument("--comfyui", help="the ComfyUI checkout (default: $MAIC_VENDOR/ComfyUI)")
+    p.set_defaults(func=cmd_check)
     p = sub.add_parser("edit", help="interactive walk over every field")
     common(p)
     p.add_argument("--only", nargs="*", default=[], help="node types")

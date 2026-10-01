@@ -36,6 +36,8 @@ python3 tools/comfyui/workflow_edit.py apply FILE edits.json
 
 Long text can come from stdin: `set FILE 50.text -`. Exit codes: 0 written (or the dry run shown), 1 bad argument, 2 node or field not found; every message names the node and lists its fields.
 
+`check FILE [--comfyui DIR]` lists the node types the workflow uses that nobody provides: it reads the vendored ComfyUI's `nodes.py`, `comfy_extras/*.py` and every pack under `custom_nodes/` (`NODE_CLASS_MAPPINGS` keys and v3 `node_id`s), offline, and names the pack a missing node's `cnr_id` / `aux_id` points at. The default checkout is `$MAIC_VENDOR/ComfyUI`; subgraph ids and the frontend's own nodes (Note, Reroute) never count as missing. Exit 0 when everything is provided, 1 when something is missing. Installing a pack stays a manual, pinned addition to `vendor/manifest.json`.
+
 ## Field names
 
 Known node types show named slots (`CLIPTextEncode.text`, `KSampler.seed/steps/cfg/sampler_name/scheduler/denoise`, `SaveImage.filename_prefix`, `TextOverlay.text/font_size/color/...`, `ImageStitch.direction/...`, MAIC's `MaicLlmChat.system/prompt/...`); anything else shows `w0`, `w1`, ... in the order ComfyUI stores them. `inspect` always shows the current value beside the name, so a slot is never a guess.

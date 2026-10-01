@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -19,6 +20,7 @@ struct VendorEntry {
     std::string description;
     std::vector<std::string> patches;  // repo-relative, applied to a submodule after checkout
     std::vector<std::string> needs;    // other entries installed first
+    std::map<std::string, std::string> models;  // comfyui: model category -> subfolder under models_dir, for extra_model_paths.yaml
 };
 
 std::vector<VendorEntry> load_vendor_manifest();
@@ -40,6 +42,14 @@ VendorStatus vendor_status(const VendorEntry& e);
 
 // Points the link at a checkout the user already has; nothing is copied or moved.
 void vendor_adopt(const VendorEntry& e, const std::filesystem::path& existing);
+
+// Wires a linked checkout in without the network: the install script's `wire` step (custom node links,
+// workflows folder), and for comfyui the `maic:` block of extra_model_paths.yaml regenerated from the
+// manifest's models map and models_dir. Idempotent; `add` and `adopt` run it too.
+void vendor_wire(const VendorEntry& e);
+// The yaml with its `maic:` root key replaced (or added) by one that maps every category in `models` under
+// `base_path`; every other root key and comment is kept as it was. Pure, for vendor_wire and its test.
+std::string merge_model_paths_yaml(const std::string& existing, const std::string& base_path, const std::map<std::string, std::string>& models);
 
 // Fetches (submodule update), links, applies patches and runs the install script.
 // Network access happens here and only here, because the user asked for it. Output streams to stdout.

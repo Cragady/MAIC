@@ -68,11 +68,14 @@ double free_gb(const fs::path& p) {
     return static_cast<double>(st.f_bavail) * st.f_frsize / 1e9;
 }
 
-struct Gpu {
-    std::string name;
-    int vram_mb = 0;  // 0 when unknown
-    std::string note;
-};
+bool has_model(const std::vector<std::string>& models, const std::string& name) {
+    for (const auto& m : models) {
+        if (m == name || m.rfind(name + "-", 0) == 0) return true;
+    }
+    return false;
+}
+
+}  // namespace
 
 Gpu detect_gpu() {
     Gpu g;
@@ -113,14 +116,35 @@ Gpu detect_gpu() {
     return g;
 }
 
-bool has_model(const std::vector<std::string>& models, const std::string& name) {
-    for (const auto& m : models) {
-        if (m == name || m.rfind(name + "-", 0) == 0) return true;
-    }
-    return false;
+std::vector<Check> prerequisites() {
+    std::vector<Check> out;
+    auto program = [&](const std::string& name, const std::string& why, bool optional = false) {
+        bool ok = has_program(name);
+        out.push_back({name + " (" + why + ")", ok, ok ? "" : optional ? "not found; optional" : "install " + name, optional});
+    };
+    program("python3", "ComfyUI, the helpers beside maic");
+    program("git", "maic vendor add fetches submodules");
+    program("uv", "ComfyUI's own Python; https://docs.astral.sh/uv/");
+    program("curl", "maic vendor model downloads");
+    bool bwrap = has_program("bwrap");
+    out.push_back({"bubblewrap (the command sandbox)", bwrap, bwrap ? "" : "install bubblewrap; run_shell cannot work without it"});
+    bool trip = fs::exists("/usr/local/sbin/maic-lock");
+    out.push_back({"tripwire installed", trip, trip ? "" : "sudo ./harness/install-tripwire.sh"});
+    program("docker", "services with \"runtime\": \"docker\"", true);
+    program("nvidia-smi", "the GPU and its driver", true);
+    return out;
 }
 
-}  // namespace
+Recommendation recommend(const Gpu& gpu, long ram_gb) {
+    int vram_gb = gpu.vram_mb / 1024;
+    if (vram_gb >= 24) return {"Qwen3.5-9B", "Qwen3.5-27B", "24 GB or more fits a 27B at 4-bit with room for context"};
+    if (vram_gb >= 16) return {"Qwen3.5-9B", "Qwen3.5-14B", "16 GB fits a 14B at 4-bit"};
+    if (vram_gb >= 12) return {"Qwen3.5-4B", "Qwen3.5-14B", "12 GB fits a 14B at 4-bit, tightly"};
+    if (vram_gb >= 8) return {"Qwen3.5-4B", "Qwen3.5-9B", "8 GB: the 4B fits entirely on the GPU, the 9B mostly (measured 81 and 21 tokens/s on an RTX 2080)"};
+    if (vram_gb > 0) return {"Qwen3.5-2B", "Qwen3.5-4B", "under 8 GB: keep models small so they stay on the GPU"};
+    if (ram_gb >= 32) return {"Qwen3.5-4B", "Qwen3.5-9B", "no usable GPU found; a 4B on CPU is workable, a 9B is slow"};
+    return {"Qwen3.5-2B", "Qwen3.5-4B", "no usable GPU and limited RAM"};
+}
 
 int run_doctor() {
     std::cout << "MAIC doctor\n\n";
@@ -144,12 +168,17 @@ int run_doctor() {
     auto line = [&](const std::string& what, bool ok, const std::string& detail) {
         std::cout << "  " << (ok ? "ok  " : "--  ") << what << (detail.empty() ? "" : ": " + detail) << "\n";
     };
-    line("bubblewrap (the command sandbox)", has_program("bwrap"), has_program("bwrap") ? "" : "install bubblewrap; run_shell cannot work without it");
-    line("tripwire installed", fs::exists("/usr/local/sbin/maic-lock"), fs::exists("/usr/local/sbin/maic-lock") ? "" : "sudo ./harness/install-tripwire.sh");
+    for (const auto& c : prerequisites()) line(c.what, c.ok, c.detail);
     for (const auto& e : load_vendor_manifest()) {
         auto st = vendor_status(e);
         line("vendored " + e.name + " (" + e.ref + ")", st.installed, st.installed ? st.target : st.note);
         if (e.name == "llamacpp" && st.installed) line("llama.cpp model", !st.model.empty(), st.model.empty() ? "maic vendor use llamacpp PATH" : st.model);
+    }
+    // The venv's torch against the driver: a cu130 wheel on a driver below 580 fails at the first CUDA call.
+    if (std::string torch = comfyui_torch_cuda(); !torch.empty()) {
+        std::string driver = driver_cuda();
+        std::string verdict = cuda_agreement(torch, driver);
+        line("ComfyUI torch vs driver", !driver.empty() && verdict.find("they agree") != std::string::npos, driver.empty() ? "torch is built for CUDA " + torch + "; nvidia-smi did not answer" : verdict);
     }
     std::vector<ServiceDef> services;
     try {
@@ -175,15 +204,7 @@ int run_doctor() {
         std::cout << "\n";
     }
     std::cout << "\nrecommendation\n";
-    int vram_gb = gpu.vram_mb / 1024;
-    std::string quick, deep, why;
-    if (vram_gb >= 24) quick = "Qwen3.5-9B", deep = "Qwen3.5-27B", why = "24 GB or more fits a 27B at 4-bit with room for context";
-    else if (vram_gb >= 16) quick = "Qwen3.5-9B", deep = "Qwen3.5-14B", why = "16 GB fits a 14B at 4-bit";
-    else if (vram_gb >= 12) quick = "Qwen3.5-4B", deep = "Qwen3.5-14B", why = "12 GB fits a 14B at 4-bit, tightly";
-    else if (vram_gb >= 8) quick = "Qwen3.5-4B", deep = "Qwen3.5-9B", why = "8 GB: the 4B fits entirely on the GPU, the 9B mostly (measured 81 and 21 tokens/s on an RTX 2080)";
-    else if (vram_gb > 0) quick = "Qwen3.5-2B", deep = "Qwen3.5-4B", why = "under 8 GB: keep models small so they stay on the GPU";
-    else if (ram_gb >= 32) quick = "Qwen3.5-4B", deep = "Qwen3.5-9B", why = "no usable GPU found; a 4B on CPU is workable, a 9B is slow";
-    else quick = "Qwen3.5-2B", deep = "Qwen3.5-4B", why = "no usable GPU and limited RAM";
+    auto [quick, deep, why] = recommend(gpu, ram_gb);
     std::cout << "  " << why << "\n";
     auto lc = find_vendor("llamacpp");
     VendorStatus lcs = lc ? vendor_status(*lc) : VendorStatus{};
@@ -199,7 +220,7 @@ int run_doctor() {
     if (std::string fit = gpu_budget(gpu_report(services), settings, gpu.vram_mb > 0 ? static_cast<long>(gpu.vram_mb) * 1024 * 1024 : -1); !fit.empty()) {
         std::cout << "  two servers: " << fit << "\n";
     }
-    if (!fs::exists(settings_path())) std::cout << "  no settings file yet: maic settings init\n";
+    if (!fs::exists(settings_path())) std::cout << "  no settings file yet: maic settings init (or maic setup for the whole first run)\n";
     if (!fs::exists(global_instructions_path())) std::cout << "  no global MAIC.md yet: " << global_instructions_path().string() << " (name, pronouns, standing rules)\n";
     if (avail_gb < 8) std::cout << "  only " << avail_gb << " GB of RAM is free right now; models load faster with more\n";
     std::cout << "  remote models (anthropic/..., deepseek/...) need an API key in the environment; see docs/settings.md\n";

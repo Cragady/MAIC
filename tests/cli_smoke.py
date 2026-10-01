@@ -44,4 +44,10 @@ ok = r.returncode == 0 and "echo: ping" in r.stdout and "AddressSanitizer" not i
 print(("ok" if ok else "FAIL") + ": exit %d, stdout %r" % (r.returncode, r.stdout.strip()[:80]))
 if not ok:
     print(r.stderr[-3000:])
-sys.exit(0 if ok else 1)
+# maic setup off a terminal: the plan and exit 2, nothing done (the settings file exists, so that step is not on it).
+s = subprocess.run([MAIC, "setup"], capture_output=True, text=True, env=env, cwd=home, timeout=120, stdin=subprocess.DEVNULL)
+setup_ok = s.returncode == 2 and "plan (each a yes/no in a terminal)" in s.stdout and "Build llama.cpp" in s.stdout and "Write the global settings" not in s.stdout and "AddressSanitizer" not in s.stderr
+print(("ok" if setup_ok else "FAIL") + ": setup off a terminal, exit %d" % s.returncode)
+if not setup_ok:
+    print(s.stdout[-2000:], s.stderr[-2000:])
+sys.exit(0 if ok and setup_ok else 1)

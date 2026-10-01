@@ -17,6 +17,7 @@
     "/run/media/cragady/Extra Storage/LinBox-Overflow/llm-models"
   ],
   "ready_timeout": 120,
+  "ready_pattern": "To see the GUI go to",
   "artifacts": [
     {
       "name": "outputs",
