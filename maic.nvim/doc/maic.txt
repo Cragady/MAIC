@@ -41,9 +41,10 @@ As a package: >lua
 
                                                                 *maic.setup()*
 require("maic").setup({opts})
-    Sets the options (|maic-options|) and, unless `keymaps = false`, the
-    keymaps (|maic-keymaps|). May be called again; options not given return
-    to their defaults.
+    Merges {opts} over |maic-defaults| and sets the keymaps
+    (|maic-keymaps|) unless `keymaps = false`. May be called again: options
+    not given return to their defaults, and the keys the last call set are
+    removed before the new ones are set.
 
 ==============================================================================
 3. COMMANDS                                                  *maic-commands*
@@ -95,15 +96,33 @@ require("maic").setup({opts})
 ==============================================================================
 4. OPTIONS                                                    *maic-options*
 
-Defaults: >lua
-    require("maic").setup({
+                                                               *maic-defaults*
+Every option lives in one table, `require("maic").defaults`. |maic.setup()|
+deep-merges your {opts} over it (`vim.tbl_deep_extend("force", ...)`),
+which is what lazy.nvim's `opts` passes, so you name only what you change: >lua
+    require("maic").setup({ open = "float", keymaps = { quickfix = false } })
+<
+The table, as shipped: >lua
+    {
       cmd = "maic",
       args = {},
       open = "vsplit",
       size = nil,
       prefix = "<leader>m",
-      keymaps = true,
-    })
+      keymaps = {
+        open = "<leader>mm",
+        toggle = "<leader>mt",
+        send = "<leader>ms",
+        send_selection = "<leader>ms",
+        send_buffer = "<leader>mb",
+        diagnostics = "<leader>md",
+        workspace_diagnostics = "<leader>mD",
+        quickfix = "<leader>mq",
+      },
+    }
+<
+Read it from Lua to build on it, never to change it: >lua
+    print(vim.inspect(require("maic").defaults.keymaps))
 <
                                                                     *maic-cmd*
 cmd         The program: a name on PATH, a path, or a list of the program
@@ -121,11 +140,14 @@ size        "split": rows (default 15). "vsplit": columns (default 40% of
             the screen). "float": a fraction of the editor (default 0.8).
 
                                                                  *maic-prefix*
-prefix      Where the default keymaps live.
+prefix      Where the default keymaps live: a default key that starts with
+            `<leader>m` moves under it. Keys you name in `keymaps` stay
+            exactly as you give them.
 
                                                            *maic-keymaps-opt*
-keymaps     true: the defaults under |maic-prefix|. false: none. A table moves
-            or drops single ones by name: >lua
+keymaps     A table of name = key (|maic-keymaps|); merged over the
+            defaults, so a table moves or drops single ones by name. false:
+            none. true: the defaults. >lua
                 keymaps = { send = "<leader>ss", quickfix = false }
 <
 ==============================================================================

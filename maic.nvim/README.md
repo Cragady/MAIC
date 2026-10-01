@@ -51,20 +51,31 @@ A snippet looks like this:
 
 ## Options
 
+Every option and its default is in one table, `require("maic").defaults` (`:h maic-defaults`). `setup(opts)` deep-merges `opts` over it with `vim.tbl_deep_extend("force", ...)`, which is what lazy.nvim's `opts` passes, so name only what you change:
+
 ```lua
-require("maic").setup({
+{ dir = "~/dev2/MAIC/maic.nvim", opts = { open = "float", keymaps = { quickfix = false } } }
+```
+
+The table as shipped:
+
+```lua
+{
   cmd = "maic",          -- the program: a name on PATH, a path, or a list such as { "maic", "--harness", "dumb" }
   args = {},             -- arguments for every start, before those given to :Maic
   open = "vsplit",       -- "split", "vsplit", "float" or "tab"
   size = nil,            -- split: rows (15), vsplit: columns (40% of the screen), float: a fraction of the editor (0.8)
-  prefix = "<leader>m",  -- where the default keymaps live
-  keymaps = true,        -- false: none; a table moves or drops single ones, e.g. { send = "<leader>ss", quickfix = false }
-})
+  prefix = "<leader>m",  -- a default key that starts with <leader>m moves under it
+  keymaps = {            -- name = key; false drops one, keymaps = false drops all
+    open = "<leader>mm", toggle = "<leader>mt", send = "<leader>ms", send_selection = "<leader>ms",
+    send_buffer = "<leader>mb", diagnostics = "<leader>md", workspace_diagnostics = "<leader>mD", quickfix = "<leader>mq",
+  },
+}
 ```
 
 ## Keymaps
 
-Set by `setup()` unless `keymaps = false`; names for the `keymaps` table in the first column.
+Set by `setup()` unless `keymaps = false`; the first column is the name in the `keymaps` table. A second `setup()` removes the keys the first one set before it sets its own.
 
 | Name | Keys | Mode | Does |
 | :--- | :--- | :--- | :--- |

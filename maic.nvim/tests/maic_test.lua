@@ -86,6 +86,17 @@ expect(mapped("<leader>mm") and mapped("<leader>ms") and mapped("<leader>ms", "x
   "setup() maps under <leader>m")
 maic.setup({ keymaps = { send = "<leader>xs", quickfix = false }, prefix = "<leader>z" })
 expect(mapped("<leader>xs") and mapped("<leader>zm") and not mapped("<leader>zq"), "single keys can be moved or dropped, the prefix changed")
+expect(not mapped("<leader>mm") and not mapped("<leader>ms"), "a second setup() removes the keys the first one set")
+
+io.write("the defaults table\n")
+expect(type(maic.defaults) == "table" and maic.defaults.keymaps.open == "<leader>mm" and maic.defaults.open == "vsplit",
+  "require('maic').defaults holds every option")
+maic.setup({ open = "float", keymaps = { send = "<leader>xs" } })
+expect(maic.config.open == "float" and maic.config.cmd == "maic" and maic.config.keymaps.send == "<leader>xs" and maic.config.keymaps.toggle == "<leader>mt",
+  "setup(opts) deep-merges opts over the defaults")
+expect(maic.defaults.keymaps.send == "<leader>ms" and maic.defaults.open == "vsplit", "and leaves the defaults table as it was")
+maic.setup({ keymaps = true })
+expect(mapped("<leader>mm") and mapped("<leader>ms"), "keymaps = true is the defaults")
 
 for _, j in ipairs(vim.api.nvim_list_chans()) do
   if j.mode == "terminal" then pcall(vim.fn.jobstop, j.id) end

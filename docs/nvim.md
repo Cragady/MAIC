@@ -16,7 +16,7 @@ Standard layout: `plugin/maic.lua` (the commands, nothing else loads until one i
 
 Text goes into MAIC's input as a paste and is never sent by itself. The plugin finds MAIC through `nvim_list_chans()`: the client named `maic` whose `pid` attribute is this tab's terminal job (with no MAIC terminal in the tab, the newest `maic` client), and calls `rpcnotify(chan, "maic_send", text)`; `require("maic").command(":theme mono")` sends `maic_command`, run in MAIC as if typed. When MAIC is not connected (it was refused, or it is an older build), `:MaicSend` writes the text into the terminal job as a bracketed paste (`ESC [200~ ... ESC [201~`), which MAIC also takes into the input whole, in any mode.
 
-`require("maic").setup{}` sets the options and the keymaps, `<leader>m` then `m` (open), `t` (toggle), `s` (send the path; in visual mode the selection), `b` (the whole buffer), `d` / `D` (diagnostics, every buffer's), `q` (quickfix). `keymaps = false` sets none; a table moves or drops single ones.
+Every option and its default is one table, `require("maic").defaults` (`:h maic-defaults`): the layout, the keymaps and whatever comes next. `require("maic").setup(opts)` (lazy.nvim's `opts`) deep-merges `opts` over it with `vim.tbl_deep_extend("force", ...)` and sets the keymaps, `<leader>m` then `m` (open), `t` (toggle), `s` (send the path; in visual mode the selection), `b` (the whole buffer), `d` / `D` (diagnostics, every buffer's), `q` (quickfix). `keymaps = false` sets none; a table moves or drops single ones by name.
 
 ## The MAIC side: finding the host
 

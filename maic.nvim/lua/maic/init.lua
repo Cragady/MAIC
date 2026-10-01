@@ -2,16 +2,28 @@
 -- its input. MAIC's side of the connection (the host, User autocmds, :e, the theme) is in MAIC: docs/nvim.md.
 local M = {}
 
-local defaults = {
+-- Every option and its default, in one table (:h maic-defaults). setup(opts) deep-merges opts over it, which is
+-- what lazy.nvim's `opts` does.
+M.defaults = {
   cmd = "maic", -- the program: a name on PATH, a path, or a list (program and arguments)
   args = {}, -- arguments for every start, before the ones given to :Maic
   open = "vsplit", -- "split", "vsplit", "float" or "tab"
   size = nil, -- split: rows, vsplit: columns, float: a fraction of the editor (0.8); nil: a default for the layout
-  keymaps = true, -- false: none; a table sets single keys ({ send = "<leader>ss" }, false drops one)
-  prefix = "<leader>m", -- the default keys are under it
+  prefix = "<leader>m", -- the default keys below that start with <leader>m move under it
+  -- name = key; false drops one, `keymaps = false` drops them all
+  keymaps = {
+    open = "<leader>mm",
+    toggle = "<leader>mt",
+    send = "<leader>ms",
+    send_selection = "<leader>ms",
+    send_buffer = "<leader>mb",
+    diagnostics = "<leader>md",
+    workspace_diagnostics = "<leader>mD",
+    quickfix = "<leader>mq",
+  },
 }
 
-M.config = vim.deepcopy(defaults)
+M.config = vim.deepcopy(M.defaults)
 
 -- MAIC's terminal per tab page: { buf, job }. In the "tab" layout the tab is MAIC's own.
 local terms = {}
@@ -242,26 +254,47 @@ function M.send_quickfix()
   return M.send_text("Quickfix list" .. (title ~= "" and (" (" .. title .. ")") or "") .. ":\n" .. table.concat(lines, "\n"))
 end
 
--- name = { mode, key under the prefix, rhs, description }
-local keymaps = {
-  open = { "n", "m", "<cmd>Maic<cr>", "MAIC: open or focus" },
-  toggle = { "n", "t", "<cmd>MaicToggle<cr>", "MAIC: show or hide" },
-  send = { "n", "s", "<cmd>MaicSend<cr>", "MAIC: send the buffer's path" },
-  send_selection = { "x", "s", ":MaicSend<cr>", "MAIC: send the selection" },
-  send_buffer = { "n", "b", "<cmd>%MaicSend<cr>", "MAIC: send the whole buffer" },
-  diagnostics = { "n", "d", "<cmd>MaicDiagnostics<cr>", "MAIC: send this buffer's diagnostics" },
-  workspace_diagnostics = { "n", "D", "<cmd>MaicDiagnostics!<cr>", "MAIC: send every buffer's diagnostics" },
-  quickfix = { "n", "q", "<cmd>MaicQuickfix<cr>", "MAIC: send the quickfix list" },
+-- What each keymap does: name = { mode, rhs, description }.
+local actions = {
+  open = { "n", "<cmd>Maic<cr>", "MAIC: open or focus" },
+  toggle = { "n", "<cmd>MaicToggle<cr>", "MAIC: show or hide" },
+  send = { "n", "<cmd>MaicSend<cr>", "MAIC: send the buffer's path" },
+  send_selection = { "x", ":MaicSend<cr>", "MAIC: send the selection" },
+  send_buffer = { "n", "<cmd>%MaicSend<cr>", "MAIC: send the whole buffer" },
+  diagnostics = { "n", "<cmd>MaicDiagnostics<cr>", "MAIC: send this buffer's diagnostics" },
+  workspace_diagnostics = { "n", "<cmd>MaicDiagnostics!<cr>", "MAIC: send every buffer's diagnostics" },
+  quickfix = { "n", "<cmd>MaicQuickfix<cr>", "MAIC: send the quickfix list" },
 }
 
+-- The global keymaps the config asks for: { name, mode, lhs, rhs, desc, explicit }, explicit when opts named the key.
+function M.planned(opts)
+  local c, out = M.config, {}
+  if c.keymaps == false then return out end
+  local mine = type(c.keymaps) == "table" and c.keymaps or M.defaults.keymaps
+  local given = opts and type(opts.keymaps) == "table" and opts.keymaps or {}
+  for name, a in pairs(actions) do
+    local lhs = mine[name]
+    if lhs == nil then lhs = M.defaults.keymaps[name] end
+    if lhs and given[name] == nil and c.prefix ~= M.defaults.prefix and vim.startswith(lhs, M.defaults.prefix) then
+      lhs = c.prefix .. lhs:sub(#M.defaults.prefix + 1)
+    end
+    if lhs then
+      out[#out + 1] = { name = name, mode = a[1], lhs = lhs, rhs = a[2], desc = a[3], explicit = given[name] ~= nil }
+    end
+  end
+  table.sort(out, function(a, b) return a.name < b.name end)
+  return out
+end
+
+local set = {} -- the global keymaps the last setup() made, so a second setup() replaces them
+
 function M.setup(opts)
-  M.config = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts or {})
-  if M.config.keymaps == false then return end
-  local custom = type(M.config.keymaps) == "table" and M.config.keymaps or {}
-  for name, k in pairs(keymaps) do
-    local lhs = custom[name]
-    if lhs == nil then lhs = M.config.prefix .. k[2] end
-    if lhs then vim.keymap.set(k[1], lhs, k[3], { desc = k[4], silent = true }) end
+  M.config = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), opts or {})
+  for _, k in ipairs(set) do pcall(vim.keymap.del, k.mode, k.lhs) end
+  set = {}
+  for _, k in ipairs(M.planned(opts)) do
+    vim.keymap.set(k.mode, k.lhs, k.rhs, { desc = k.desc, silent = true })
+    set[#set + 1] = k
   end
 end
 
