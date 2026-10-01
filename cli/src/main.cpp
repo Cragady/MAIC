@@ -29,7 +29,9 @@
 #include <algorithm>
 #include <sstream>
 #include <cctype>
+#include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <iostream>
@@ -130,6 +132,11 @@ void usage(std::ostream& out = std::cerr) {
                  "  sessions compose ID --from N [--root FILE|-] [--home ...]   a new session: ID's records from N on, copied,\n"
                  "                             after an optional root text and a note that the earlier part is missing\n"
                  "                             (none of these three changes an existing transcript)\n"
+                 "  cai [TOOL [args...]]       cai-tools (docs/cai.md): the dispatcher's listing, or one of its tools with the\n"
+                 "                             arguments untouched; the same as `cai TOOL ...` (and `maic-cai`) on PATH\n"
+                 "  trans-fairy [args...]      maic cai trans-fairy ...: cut, compose, graft and install transcripts\n"
+                 "  trans-fairy-write [args...]   maic cai trans-fairy-write ...: overwrite one, with a backup first\n"
+                 "                             (both take a MAIC session or a Claude Code transcript, told apart by content)\n"
                  "  settings init [--json]|path  write the global settings file (Lua; --json for JSON), or show where it goes\n"
                  "  init                       scaffold this project: MAIC.md and .maic/settings.lua (transcripts then\n"
                  "                             go under sessions/projects/); :init in a session also drafts the MAIC.md\n"
@@ -143,9 +150,39 @@ void usage(std::ostream& out = std::cerr) {
                  "                             (removed without sudo; the session shown with its task, dir, model, running or not)\n"
                  "\n"
                  "  help [TOPIC]               this text, or one page: maic help help lists the topics; help headless,\n"
-                 "                             sessions, modes, keys, vendor, lua, settings, ... (the same pages as :h)\n"
+                 "                             sessions, modes, keys, vendor, lua, settings, ... (the same pages as :h);\n"
+                 "                             help cai [TOOL], help trans-fairy and help trans-fairy-write print cai's help\n"
                  "\n"
                  "modes: manual, auto-read, edit, auto, plan\n";
+}
+
+// cai-tools (docs/cai.md). The `cai` wrapper is the one entry point: `maic cai TOOL ...`, `maic trans-fairy ...`,
+// `maic trans-fairy-write ...` and `maic help cai|TOOL` exec it with the arguments untouched, before any option of
+// maic's own is read, so a cai flag (--json, --model, -h) is never taken for one of maic's. The exec keeps stdin,
+// stdout, stderr and the exit code. The wrapper installed beside this binary comes first, then the source tree's.
+const std::vector<std::string>& cai_tools() {
+    static const std::vector<std::string> tools = {"trans-fairy", "redact", "trans-fairy-write", "notation", "grant", "commit", "enroll", "hook",
+                                                   "edit", "time", "document", "name", "fabricate", "sync", "flow", "read", "reflow"};
+    return tools;
+}
+
+[[noreturn]] void exec_cai(std::vector<std::string> args) {
+    std::error_code ec;
+    std::vector<std::filesystem::path> where = {maic::root_dir() / "tools" / "cai" / "bin" / "cai"};
+    std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (!ec) where.insert(where.begin(), exe.parent_path() / "cai");
+    for (const auto& script : where) {
+        if (!std::filesystem::is_regular_file(script, ec)) continue;
+        std::string path = script.string();
+        std::vector<char*> argv = {path.data()};
+        for (auto& a : args) argv.push_back(a.data());
+        argv.push_back(nullptr);
+        execv(argv[0], argv.data());
+        std::cerr << "maic: cannot run " << path << ": " << std::strerror(errno) << "\n";
+        _exit(127);
+    }
+    std::cerr << "maic: the cai wrapper is not installed beside maic or in " << where.back().parent_path().string() << " (maic help cai)\n";
+    _exit(127);
 }
 
 std::vector<maic::ServiceDef> select(const std::vector<maic::ServiceDef>& all, const std::vector<std::string>& names) {
@@ -770,6 +807,24 @@ int main(int argc, char** argv) {
     } catch (const std::exception&) {
         // a broken settings file is reported by whichever command loads it properly
     }
+    if (argc >= 2) {
+        // cai first, on the raw argv: its arguments are its own (docs/cai.md).
+        std::string first = argv[1];
+        std::vector<std::string> pass(argv + 2, argv + argc);
+        if (first == "cai") exec_cai(pass);
+        if (first == "trans-fairy" || first == "trans-fairy-write") {
+            pass.insert(pass.begin(), first);
+            exec_cai(pass);
+        }
+        // maic help cai [TOOL], maic help trans-fairy[-write]: the tools' own help. Other cai names are left to
+        // maic's own pages (`edit` is one), so `maic help cai edit` is how to reach that tool's.
+        if ((first == "help" || first == "-h" || first == "--help") && argc >= 3) {
+            std::string topic = argv[2];
+            if (topic == "cai" && argc >= 4) exec_cai({argv[3], "--help"});
+            if (topic == "cai") exec_cai({"--help"});
+            if (topic == "trans-fairy" || topic == "trans-fairy-write") exec_cai({topic, "--help"});
+        }
+    }
     std::vector<std::string> args;
     // Clustered short flags: -pi is -p -i. A flag that takes a value (-m, -C) must come last in a cluster.
     for (int i = 1; i < argc; ++i) {
@@ -1088,6 +1143,14 @@ int main(int argc, char** argv) {
                          "  maic-storyboard       a story JSON into a manga workflow, one panel per turn\n"
                          "  maic-danbooru-tags    check prompt tags against a local copy of Danbooru's vocabulary\n"
                          "  maic-panel-check      one manga panel's prompt, negative, sampler and captions, with the usual mistakes flagged\n";
+            std::cout << "\ncai-tools (docs/cai.md; `cai TOOL ...` and `maic cai TOOL ...` run the same, `maic-cai` is `cai`; on the\n"
+                         "allow list: read, time, trans-fairy state, the listing and trans-fairy's help; maic help cai TOOL):\n";
+            for (const auto& t : cai_tools()) {
+                std::string maic_form = t == "trans-fairy" || t == "trans-fairy-write" ? "maic " + t : "maic cai " + t;
+                char line[200];
+                snprintf(line, sizeof(line), "  %-22s %s\n", ("cai " + t).c_str(), maic_form.c_str());
+                std::cout << line;
+            }
             auto set = maic::load_lua_tools(std::filesystem::current_path());
             std::cout << "\nuser-defined Lua tools for this directory:\n";
             if (set.tools.empty()) {

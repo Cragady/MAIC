@@ -1,0 +1,5 @@
+{"type": "user", "uuid": "aaa", "message": {"role": "user", "content": "bare string content"}}
+{"type": "user", "uuid": "bbb", "message": {"role": "user", "content": [{"type": "text", "text": "list block content"}]}}
+{"type": "user", "uuid": "ccc", "message": {"role": "user", "content": [{"type": "tool_result", "content": "result as string"}]}}
+{"type": "user", "uuid": "ddd", "message": {"role": "user", "content": [{"type": "tool_result", "content": [{"type": "text", "text": "result as object"}]}]}}
+{"type": "assistant", "uuid": "eee", "message": {"role": "assistant", "content": [{"type": "text", "text": "assistant text"}, {"type": "thinking", "thinking": "hidden reasoning"}]}}

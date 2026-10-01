@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "note": "Named sync jobs. Each pulls a source SOPIA defines into a dated, frozen snapshot inside cai, so cai works from a single download with nothing else reachable. Adding something to carry is an entry here, not a code change.",
+  "jobs": {
+    "shapes": {
+      "summary": "Document shapes -- how parts are arranged.",
+      "from": "docs/shapes.json",
+      "into": "document",
+      "prefix": "shapes"
+    },
+    "notation": {
+      "summary": "The marker dictionary -- what symbols mean.",
+      "from": "docs/guides/notation-dictionary.json",
+      "into": "notation",
+      "prefix": "notation-dictionary"
+    },
+    "hooks": {
+      "summary": "Git hook definitions and the shim text.",
+      "from": "docs/hooks.json",
+      "into": "hook",
+      "prefix": "hooks"
+    },
+    "flows": {
+      "summary": "Named flows -- what order, and what must hold between.",
+      "from": "docs/flows.json",
+      "into": "flow",
+      "prefix": "flows"
+    },
+    "reflow-lines": {
+      "summary": "The line-breaking reflow implementation, carried into diction so its internal tooling reflows without requiring cai.",
+      "from": "tools/cai/src/cai/reflow/lines.py",
+      "root": "self",
+      "kind": "text",
+      "ext": ".py",
+      "into": "diction/sync-frozen",
+      "prefix": "reflow-lines",
+      "why": "diction ships independently and must not depend on cai -- inverting that is what the split exists to prevent. A hand-maintained second copy is the drift this suite spends its life closing. A DATED SNAPSHOT is neither: one canonical source, and a carried copy that states what it copied and when, so staleness is measured rather than guessed. Under the hood; no user reaches for it."
+    }
+  }
+}

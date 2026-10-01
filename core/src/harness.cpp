@@ -1,5 +1,6 @@
 #include "maic/harness.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <fnmatch.h>
 
@@ -10,6 +11,7 @@
 #include <regex>
 #include <set>
 #include <sstream>
+#include <vector>
 
 namespace maic {
 
@@ -356,15 +358,38 @@ Decision Harness::check_agent_def(const Action& action, Decision d) const {
 
 namespace {
 
+// cai (docs/cai.md) under any of its spellings: `cai`, `maic-cai`, `maic cai`, and `maic trans-fairy`. Read-only are
+// the dispatcher's listing, every tool's help, `read` without `--out` (argparse takes any prefix of it), `time`, and
+// trans-fairy's plain `state` report and its `--audit`. One command only: no redirection, chaining or substitution.
+bool cai_read_only(const std::vector<std::string>& w) {
+    if (w.empty()) return true;
+    const std::string& tool = w[0];
+    std::string verb = w.size() > 1 ? w[1] : "";
+    if (tool == "--help" || tool == "-h") return w.size() == 1;
+    if (verb == "--help" || verb == "-h" || verb == "--man-help" || (tool == "trans-fairy" && verb == "--mahd")) return true;
+    if (tool == "read") return std::none_of(w.begin() + 1, w.end(), [](const std::string& x) { return x.rfind("--o", 0) == 0; });
+    if (tool == "time") return true;
+    if (tool == "trans-fairy" && verb == "state") return w.size() == 2 || (w.size() == 3 && w[2] == "--audit");
+    return false;
+}
+
 // MAIC's own helpers: their looking-only invocations count as read-only commands.
 bool helper_read_only(const std::string& command) {
     std::istringstream in(command);
-    std::string prog, sub;
-    in >> prog >> sub;
+    std::vector<std::string> words;
+    for (std::string x; in >> x;) words.push_back(x);
+    std::string prog = words.empty() ? "" : words[0];
+    std::string sub = words.size() > 1 ? words[1] : "";
     if (prog == "maic-storyboard") return sub.empty() || sub == "status" || sub == "plan" || sub == "check" || sub == "--help" || sub == "-h";
     if (prog == "maic-workflow-edit") return sub == "inspect" || sub == "--help" || sub == "-h";
     if (prog == "maic-danbooru-tags") return sub == "check" || sub == "search" || sub == "show" || sub == "--help" || sub == "-h" || sub.empty();
     if (prog == "maic-panel-check") return true;  // it only reads the workflow and the local tag file
+    bool cai = prog == "cai" || prog == "maic-cai" || (prog == "maic" && (sub == "cai" || sub == "trans-fairy" || sub == "trans-fairy-write"));
+    if (cai) {
+        if (command.find_first_of(";&|<>`\n\r") != std::string::npos || command.find("$(") != std::string::npos) return false;
+        size_t skip = prog == "maic" && sub == "cai" ? 2 : 1;
+        return cai_read_only(std::vector<std::string>(words.begin() + std::min(skip, words.size()), words.end()));
+    }
     if (prog == "maic") return sub == "path" || sub == "status" || sub == "artifacts" || sub == "sessions" || sub == "help" || sub == "vendor" || sub == "doctor" || sub == "tools";
     return false;
 }

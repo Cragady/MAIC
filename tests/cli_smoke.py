@@ -101,8 +101,40 @@ def main():
     r = subprocess.run([maic, "themes"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
     themes_ok = r.returncode == 0 and "* default  built in" in r.stdout and "  gruvbox-dark  " in r.stdout and "  mono  " in r.stdout
     print(("ok" if themes_ok else "FAIL") + ": maic themes lists the shipped themes with the active one marked" + ("" if themes_ok else "\n" + r.stdout[-1500:] + r.stderr[-1500:]))
+    # cai-tools (docs/cai.md): `maic cai read` on a MAIC session in the throwaway state dir, the `cai` wrapper matching
+    # it byte for byte, a tool's help through `maic help`, the listing, and the dispatcher's exit code coming through.
+    sess_dir = os.path.join(env["XDG_STATE_HOME"], "maic", "sessions", "general")
+    os.makedirs(sess_dir, mode=0o700)
+    sess = os.path.join(sess_dir, "20260101-120000-tui-1.jsonl")
+    with open(sess, "w") as f:
+        for rec in ({"type": "start", "workspace": home, "model": "fake/fake", "mode": "manual", "host": "h", "pid": 1},
+                    {"type": "user", "text": "hello from a maic session", "provider": "fake", "model": "fake/fake", "remote": False, "mode": "manual"},
+                    {"type": "msg", "role": "user", "content": "hello from a maic session"},
+                    {"type": "tool", "tool": "read_file", "arguments": {"path": "a.txt"}, "result": "the file", "ok": True},
+                    {"type": "assistant", "text": "echo: hello from a maic session"},
+                    {"type": "usage", "input": 5, "output": 2, "context": 7}, {"type": "title", "text": "smoke"}):
+            f.write(json.dumps(dict(rec, time="2026-01-01T12:00:00+0000")) + "\n")
+    r = subprocess.run([maic, "cai", "read", sess], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    cai_ok = r.returncode == 0 and "hello from a maic session" in r.stdout and "echo: hello" in r.stdout and "L2 \u00b7 user" in r.stdout
+    print(("ok" if cai_ok else "FAIL") + ": maic cai read on a MAIC session, exit %d" % r.returncode + ("" if cai_ok else "\n" + r.stdout[-1500:] + r.stderr[-1500:]))
+    cai = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "cai", "bin", "cai")
+    w = subprocess.run([cai, "read", sess, "--select", "tools"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    m = subprocess.run([maic, "cai", "read", sess, "--select", "tools"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    wrap_ok = w.returncode == m.returncode == 0 and w.stdout == m.stdout and "[tool_use read_file]" in w.stdout
+    print(("ok" if wrap_ok else "FAIL") + ": the cai wrapper and maic cai agree byte for byte" + ("" if wrap_ok else "\n" + w.stdout[-800:] + w.stderr[-800:] + m.stderr[-800:]))
+    h = subprocess.run([maic, "help", "trans-fairy"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    c = subprocess.run([cai, "--help"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    mc = subprocess.run([maic, "cai", "--help"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    help_ok = h.returncode == 0 and "cai trans-fairy" in h.stdout and c.returncode == mc.returncode == 0 and c.stdout == mc.stdout and "trans-fairy-write" in c.stdout and "fabricate" in c.stdout
+    print(("ok" if help_ok else "FAIL") + ": maic help trans-fairy and cai --help pass through" + ("" if help_ok else "\n" + h.stdout[-600:] + h.stderr[-600:] + c.stdout[-600:]))
+    r = subprocess.run([maic, "cai", "nosuchtool"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    t = subprocess.run([maic, "tools"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    exit_ok = (r.returncode == 2 and "no such tool" in r.stderr and "cai-tools (docs/cai.md" in t.stdout
+               and all(("cai %s" % n) in t.stdout for n in ("trans-fairy", "trans-fairy-write", "fabricate", "read", "reflow"))
+               and "maic trans-fairy-write" in t.stdout and "maic cai read" in t.stdout)
+    print(("ok" if exit_ok else "FAIL") + ": the dispatcher's exit code comes through and maic tools lists the cai block" + ("" if exit_ok else "\n" + r.stderr[-600:] + t.stdout[-1200:]))
     srv.shutdown()
-    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok else 1)
+    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok else 1)
 
 
 if __name__ == "__main__":

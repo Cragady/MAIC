@@ -2,7 +2,7 @@
 
 A session is one JSONL file: one JSON object per line, appended and never rewritten. It holds both what the model saw (the messages, exactly as sent) and what you saw (the displayable transcript), so it can be resumed, forked, exported, listed and scrubbed with nothing but a text tool. Files are created `0600` in a `0700` directory under `~/.local/state/maic/sessions/`. `core/src/session.cpp` writes and reads them; the agent adds records through `SessionLog::write`, which stamps every record with `type` and `time` (local time, ISO 8601 with the offset).
 
-The user-facing side (`-c`, `-r`, `--append`, `maic sessions`) is in [cli/README.md](../cli/README.md#sessions); this page is the format.
+The user-facing side (`-c`, `-r`, `--append`, `maic sessions`) is in [cli/README.md](../cli/README.md#sessions); this page is the format. cai's tools ([cai.md](cai.md)) read and build sessions too, and cai's `trans-fairy-write` is the one exception to never rewriting a session file: it copies the file to `sessions/.backups/<id>/` first and appends a `rewritten` record naming the copy.
 
 ## Records
 

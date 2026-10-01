@@ -191,8 +191,34 @@ int main() {
         expect(a.check(Action{Action::Kind::Shell, {}, "maic-storyboard next"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow, "MAIC's helpers run in auto-read");
         expect(a.check(Action{Action::Kind::Shell, {}, "maic-storyboard next"}, Mode::Plan, Origin::Local).verdict == Verdict::Deny, "plan mode still refuses one that could write");
         expect(a.check(Action{Action::Kind::Shell, {}, "maic-storyboard status"}, Mode::Plan, Origin::Local).verdict == Verdict::Allow, "but its looking-only shapes are read-only");
+        // cai (docs/cai.md): the same classification under `cai`, `maic-cai` and `maic cai`.
+        for (const char* cmd : {"cai", "maic-cai", "maic cai", "cai read s.jsonl", "cai read s.jsonl --select tools --json", "maic-cai read s.jsonl",
+                                "maic cai read s.jsonl", "cai trans-fairy --man-help", "maic-cai trans-fairy -h", "maic cai trans-fairy --help",
+                                "maic trans-fairy --mahd", "cai trans-fairy state", "maic-cai trans-fairy state --audit", "maic cai trans-fairy state",
+                                "cai redact --help", "maic-cai trans-fairy-write --man-help", "maic trans-fairy-write --help", "cai fabricate -h",
+                                "cai time now", "maic-cai time window 2h", "maic cai time until 2026-10-01T00:00:00Z", "cai --help", "maic-cai -h"}) {
+            expect(a.check(Action{Action::Kind::Shell, {}, cmd}, Mode::Plan, Origin::Local).verdict == Verdict::Allow, std::string("cai, looking only, is read-only: ") + cmd);
+        }
+        for (const char* cmd : {"cai trans-fairy-write t.jsonl --from s.jsonl --backup b", "maic-cai trans-fairy-write restore ID", "maic trans-fairy-write t --from s --backup b",
+                                "cai trans-fairy install", "maic cai trans-fairy state --ledger", "maic-cai trans-fairy state --split previous-agent",
+                                "cai fabricate t.jsonl --to o --user x --at 1", "cai commit -m x", "maic cai redact t.jsonl --backup b", "cai enroll --strong",
+                                "maic trans-fairy init", "cai hook pre-commit", "cai edit f --old a --new b",
+                                "cai read s.jsonl --out o.txt", "maic-cai read s.jsonl --ou o.txt", "maic cai read s.jsonl --out=o.txt",
+                                "cai read s.jsonl > o.txt", "maic-cai read s.jsonl; touch x", "cai read $(ls)", "cai time now && touch x"}) {
+            expect(a.check(Action{Action::Kind::Shell, {}, cmd}, Mode::Plan, Origin::Local).verdict == Verdict::Deny, std::string("cai that could write is not: ") + cmd);
+        }
         Harness defaults(ws);
         defaults.set_permission(Settings{}.permission);
+        for (const char* cmd : {"cai read s.jsonl", "maic-cai read s.jsonl --before-compaction", "cai trans-fairy --man-help", "maic-cai trans-fairy state",
+                                "cai trans-fairy state --audit", "maic-cai trans-fairy state --audit", "cai time now", "maic-cai time now", "cai --help",
+                                "maic-cai --help", "cai trans-fairy --help", "maic-cai trans-fairy --man-help"}) {
+            expect(defaults.check(Action{Action::Kind::Shell, {}, cmd}, Mode::Manual, Origin::Local).verdict == Verdict::Allow, std::string("cai's readers are on the default allow list under both spellings: ") + cmd);
+        }
+        for (const char* cmd : {"cai trans-fairy-write t --from s --backup b", "maic-cai trans-fairy-write restore ID", "cai commit -m x", "cai hook pre-commit",
+                                "maic-cai enroll --strong", "cai trans-fairy state --ledger", "cai fabricate t --to o --user x --at 1",
+                                "cai read s.jsonl --out o.txt", "maic-cai read s.jsonl --out o.txt", "cai grant check", "maic-cai trans-fairy-write list-backups ID"}) {
+            expect(defaults.check(Action{Action::Kind::Shell, {}, cmd}, Mode::Manual, Origin::Local).verdict == Verdict::Ask, std::string("and nothing of cai's that writes, commits or hooks is: ") + cmd);
+        }
         expect(defaults.check(Action{Action::Kind::Shell, {}, "maic-danbooru-tags check --prompt \"1girl, grey hair\""}, Mode::Manual, Origin::Local).verdict == Verdict::Allow &&
                    defaults.check(Action{Action::Kind::Shell, {}, "maic-danbooru-tags search hair"}, Mode::Plan, Origin::Local).verdict == Verdict::Allow &&
                    defaults.check(Action{Action::Kind::Shell, {}, "maic-danbooru-tags --help"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow,

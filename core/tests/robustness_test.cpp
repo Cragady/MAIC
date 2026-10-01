@@ -1013,12 +1013,23 @@ int main() {
         auto allows = [](const std::vector<std::string>& v, const char* s) { return std::find(v.begin(), v.end(), s) != v.end(); };
         expect(allows(sa.permission.allow, "run_shell:pytest *") && allows(sa.permission.allow, "run_shell:maic-storyboard*"),
                "the old allow key lands in permission.allow as run_shell entries, beside the default helpers");
+        for (const char* sub : {"read*", "time*", "--help", "trans-fairy --help", "trans-fairy --man-help", "trans-fairy state", "trans-fairy state --audit"}) {
+            expect(allows(sa.permission.allow, (std::string("run_shell:cai ") + sub).c_str()) && allows(sa.permission.allow, (std::string("run_shell:maic-cai ") + sub).c_str()),
+                   std::string("a read-only cai invocation is a default allow entry under both spellings: ") + sub);
+        }
+        expect(allows(sa.permission.ask, "run_shell:cai read* --o*") && allows(sa.permission.ask, "run_shell:maic-cai read* --o*"),
+               "and read's --out, which writes a new file, is a default ask entry under both");
+        for (const auto& e : sa.permission.allow) {
+            for (const char* w : {"trans-fairy-write", "fabricate", "commit", "hook", "grant", "enroll", "redact", "trans-fairy*", "reflow", "edit", "sync"}) {
+                expect(e.find(std::string(" ") + w) == std::string::npos, "no default allow entry names a cai tool that writes: " + e);
+            }
+        }
         write_file(ws / "proj" / ".maic" / "settings.lua",
                    "return { permission = { allow = { 'run_shell:npm test' }, ask = { 'edit_file:src/core.cpp' }, deny = { 'write:build/**' } },\n"
                    "  profiles = { scout = { budget_tokens = 20000, max_steps = 10 } },\n"
                    "  agents = { docs = { mode = 'edit', role = 'subagent', description = 'Writes the docs', write_paths = { 'docs/**' }, tools = { 'read_file', 'edit_file' }, model = 'qwen-4b', reviewer = false } } }");
         Settings sp = load_settings(ws / "proj");
-        expect(allows(sp.permission.allow, "run_shell:npm test") && allows(sp.permission.allow, "run_shell:maic-storyboard*") && sp.permission.ask == std::vector<std::string>{"edit_file:src/core.cpp"} && sp.permission.deny == std::vector<std::string>{"write:build/**"},
+        expect(allows(sp.permission.allow, "run_shell:npm test") && allows(sp.permission.allow, "run_shell:maic-storyboard*") && sp.permission.ask.size() == Settings{}.permission.ask.size() + 1 && sp.permission.ask.back() == "edit_file:src/core.cpp" && sp.permission.deny == std::vector<std::string>{"write:build/**"},
                "permission lists load and add to the default allow entries");
         const AgentDef* explore = find_agent_def(sp.agents, "explore");
         const AgentDef* docs = find_agent_def(sp.agents, "docs");

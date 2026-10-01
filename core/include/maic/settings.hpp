@@ -144,7 +144,16 @@ struct Settings {
     std::vector<std::string> forbid = {"threesome", "/(^|[^a-z0-9])([fm][fm]o|[fm]o[fmo]|o[fmo][fmo])s?([^a-z0-9]|$)/"};
     // `permission`: allow / ask / deny over `tool:argument` patterns (docs/harness.md); layers add up. MAIC's own helpers
     // are pre-approved. The old `allow` key still works: its command patterns land here as `run_shell:` entries.
-    Permission permission{{"run_shell:maic-storyboard*", "run_shell:maic-workflow-edit*", "run_shell:maic-danbooru-tags*", "run_shell:maic-panel-check*", "run_shell:maic path*", "run_shell:maic status*", "run_shell:maic artifacts*", "run_shell:maic sessions*"}, {}, {}};
+    Permission permission{{"run_shell:maic-storyboard*", "run_shell:maic-workflow-edit*", "run_shell:maic-danbooru-tags*", "run_shell:maic-panel-check*", "run_shell:maic path*", "run_shell:maic status*", "run_shell:maic artifacts*", "run_shell:maic sessions*",
+                          // cai's read-only invocations (docs/cai.md), each under both spellings of the one script: `read`
+                          // (a reader with no write path; its `--out` is asked, below), `time` (clock arithmetic), the
+                          // dispatcher's listing, trans-fairy's help and its plain `state` report. Nothing that writes.
+                          "run_shell:cai read*", "run_shell:maic-cai read*", "run_shell:cai time*", "run_shell:maic-cai time*",
+                          "run_shell:cai --help", "run_shell:maic-cai --help", "run_shell:cai trans-fairy --help", "run_shell:maic-cai trans-fairy --help",
+                          "run_shell:cai trans-fairy --man-help", "run_shell:maic-cai trans-fairy --man-help",
+                          "run_shell:cai trans-fairy state", "run_shell:maic-cai trans-fairy state",
+                          "run_shell:cai trans-fairy state --audit", "run_shell:maic-cai trans-fairy state --audit"},
+                         {"run_shell:cai read* --o*", "run_shell:maic-cai read* --o*"}, {}};
     std::vector<AgentDef> agents = default_agent_defs();  // `agents` in settings (older: `profiles`) adds or narrows, by name
     Bans bans;                      // strings, patterns and tokens the model must not produce (docs/bans.md)
     nlohmann::json sampling = nlohmann::json::object();  // sampler keys for every provider; a provider's options.sampling overrides

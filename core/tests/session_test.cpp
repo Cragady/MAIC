@@ -134,6 +134,14 @@ int main() {
                    "maic sessions lists it with the title, the turns and the first prompt");
         }
         expect(found, "the imported session is listed");
+        // trans-fairy-write's copies (docs/cai.md) sit under sessions/.backups/<id>/ and are not sessions.
+        fs::path copy = sessions_dir() / ".backups" / path.stem() / "20261001T000000Z.jsonl";
+        fs::create_directories(copy.parent_path());
+        fs::copy_file(path, copy);
+        bool backup_listed = false;
+        for (const auto& info : list_sessions()) backup_listed = backup_listed || info.path.string().find("/.backups/") != std::string::npos;
+        expect(!backup_listed, "a backup under sessions/.backups is not listed as a session");
+        fs::remove_all(sessions_dir() / ".backups");
         LoadedSession loaded = load_session(path);
         expect(loaded.messages.size() == 6 && loaded.messages[1].tool_calls.size() == 1 && loaded.messages[2].role == "tool" && loaded.transcript.size() == 7,
                "it loads back as a resumable conversation with a displayable transcript");

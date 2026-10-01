@@ -1,0 +1,147 @@
+{
+  "schema": 1,
+  "note": "Frozen snapshot, synced from SOPIA at the instant above. It is immutable: a later sync writes a NEW dated file beside this one rather than editing it, so this keeps its single-commit freeze while the set tracks the source. Carried so cai works from a single download with nothing else reachable.",
+  "shapes": {
+    "session-name": {
+      "summary": "What a session is called, and why each part sits where it does.",
+      "order": "<cwd-name> <lineage markers> <role marker> - <8 uuid chars>",
+      "parts": [
+        {
+          "key": "cwd",
+          "required": true,
+          "reads": "the operator",
+          "why": "what the session is for. It LEADS because a listing truncates the tail, and sibling repositories are the pattern implemented more often than forking."
+        },
+        {
+          "key": "lineage",
+          "required": false,
+          "reads": "the operator",
+          "notation": [
+            "fork",
+            "has-open-forks"
+          ],
+          "why": "is this a fork, and does it have open forks. The pair co-occurs; depth is deliberately untracked."
+        },
+        {
+          "key": "role",
+          "required": false,
+          "reads": "the operator",
+          "notation": [
+            "role-pivot",
+            "role-anchor"
+          ],
+          "why": "is this the pivot, or a lineage held below one. Promotion is the operator's; demotion is the tool's."
+        },
+        {
+          "key": "slice",
+          "required": true,
+          "reads": "other agents",
+          "why": "eight uuid characters, matching the commit trailer. The name is the address; the slice is documentation, and a mismatch records where a conversation came from."
+        }
+      ],
+      "rules": [
+        "The name carries lineage; the sessionId carries iteration. Marked definitely-needs-improvement.",
+        "A marker earns its place only if you would make a different decision on seeing it in a listing.",
+        "The slice does three jobs: address, commit trailer, and edit signature in a comms chain."
+      ]
+    },
+    "grant": {
+      "summary": "A statement that a named party may do a named thing, in a named place, for a stated span.",
+      "document": "SOPIA/docs/grant-shape.md",
+      "parts": [
+        {
+          "key": "repo",
+          "required": true,
+          "why": "where it applies. A grant is never global."
+        },
+        {
+          "key": "sessionId",
+          "required": true,
+          "why": "who, unforgeably. THIS is what authorises."
+        },
+        {
+          "key": "sessionName",
+          "required": false,
+          "why": "who, as an operator reads it."
+        },
+        {
+          "key": "action",
+          "required": false,
+          "why": "what. Absent means repository-wide."
+        },
+        {
+          "key": "effect",
+          "required": false,
+          "why": "allow or deny. A deny is a statement; an absent permission is silence."
+        },
+        {
+          "key": "granted",
+          "required": true,
+          "why": "UTC instant it begins."
+        },
+        {
+          "key": "expires",
+          "required": false,
+          "why": "UTC instant it ends, or absent if it ends another way."
+        }
+      ],
+      "rules": [
+        "Uncertainty never becomes permission: every failure path returns no-grant.",
+        "A local grant is organisational, not security -- the signing authority for anything a server acts on must be server-side."
+      ]
+    },
+    "hook-definition": {
+      "summary": "What an installed git hook stands for, so the hook file can stay a shim.",
+      "parts": [
+        {
+          "key": "action",
+          "required": true,
+          "notation": [
+            "grant-action"
+          ],
+          "why": "which permission this hook asks about. The same vocabulary a grant uses, so the two agree by construction rather than by coincidence."
+        },
+        {
+          "key": "what",
+          "required": true,
+          "why": "the word used in a refusal message, for a human reading it."
+        },
+        {
+          "key": "note",
+          "required": false,
+          "why": "what a reader needs that the fields cannot say."
+        }
+      ],
+      "rules": [
+        "The installed file is a shim: it carries only which hook it is and where the root is.",
+        "A pre-commit hook runs before the message exists, so it cannot check a subject or run a verification."
+      ]
+    },
+    "enrollment-marker": {
+      "summary": "A repository's recorded decision about how strongly it is held to cai.",
+      "parts": [
+        {
+          "key": "enrollment",
+          "required": true,
+          "notation": [
+            "enrollment-level"
+          ],
+          "why": "the level decided. `off` is recorded rather than inferred from a missing hook, so refusal is distinguishable from neglect."
+        },
+        {
+          "key": "note",
+          "required": false,
+          "why": "why the decision was made, for whoever finds it later."
+        }
+      ],
+      "rules": [
+        "Committed rather than ignored: hooks live in .git and do not survive a clone, while this does.",
+        "Re-running enroll with no level reconciles the repository to whatever this says."
+      ]
+    }
+  },
+  "frozen": "2026-09-02T05:47:56Z",
+  "synced": "2026-09-02T05:47:56Z",
+  "name": "shapes-20260902T054756Z.json",
+  "syncedFrom": "docs/shapes.json"
+}

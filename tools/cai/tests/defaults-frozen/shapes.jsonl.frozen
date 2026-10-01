@@ -1,0 +1,6 @@
+{
+  "frozen": "2026-09-02T02:41:23Z",
+  "name": "shapes.jsonl.frozen",
+  "vouches_for": "shapes.jsonl",
+  "note": "Sidecar. shapes.jsonl is JSONL and cannot carry a stamp, so this file carries one for it and names the file it vouches for -- which is what closes the rename bypass for that class."
+}

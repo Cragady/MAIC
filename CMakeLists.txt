@@ -48,12 +48,20 @@ add_test(NAME danbooru_tags COMMAND python3 -m unittest -q test_danbooru_tags
 add_test(NAME panel_check COMMAND python3 -m unittest -q test_panel_check
          WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/tools/comfyui)
 set_tests_properties(comfy_node workflow_edit storyboard danbooru_tags panel_check PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
+# cai-tools, ported whole as tools/cai (docs/cai.md): its own suite as written, plus the MAIC tests beside it, through its runner.
+add_test(NAME cai_tools COMMAND python3 ${PROJECT_SOURCE_DIR}/tools/cai/run_tests.py)
+set_tests_properties(cai_tools PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1 TIMEOUT 900)
 
 install(TARGETS maic maic-server maic-relay RUNTIME DESTINATION bin)
 install(PROGRAMS tools/comfyui/workflow_edit.py DESTINATION bin RENAME maic-workflow-edit)
 install(PROGRAMS tools/comfyui/storyboard.py DESTINATION bin RENAME maic-storyboard)
 install(PROGRAMS tools/comfyui/danbooru_tags.py DESTINATION bin RENAME maic-danbooru-tags)
 install(PROGRAMS tools/comfyui/panel_check.py DESTINATION bin RENAME maic-panel-check)
+# cai-tools (docs/cai.md): the `cai` wrapper, `maic-cai` a link to it, and the package under share/maic/tools/cai as in the tree.
+install(PROGRAMS tools/cai/bin/cai DESTINATION bin)
+install(CODE "file(CREATE_LINK cai \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bin/maic-cai\" SYMBOLIC)")
+install(DIRECTORY tools/cai/src tools/cai/docs tools/cai/reference DESTINATION share/maic/tools/cai PATTERN "__pycache__" EXCLUDE)
+install(FILES tools/cai/pyproject.toml tools/cai/README.md tools/cai/PROVENANCE.md tools/cai/IMPROVEMENTS.md DESTINATION share/maic/tools/cai)
 install(DIRECTORY server/web/ DESTINATION share/maic/server/web)
 install(DIRECTORY services/ DESTINATION share/maic/services)
 install(DIRECTORY themes/ DESTINATION share/maic/themes)

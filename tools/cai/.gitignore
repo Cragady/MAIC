@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+build/
+dist/
+*.jsonl
+uuid-pool.txt
+
+# Frozen defaults are tracked on purpose: a fixture nothing records is a
+# fixture a fresh clone cannot run. The broad *.jsonl rule above exists to keep
+# transcripts out, and it was silently excluding the grammar suite's only input.
+!tests/defaults-frozen/
+!tests/defaults-frozen/*.jsonl
