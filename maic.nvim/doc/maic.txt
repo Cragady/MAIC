@@ -236,6 +236,28 @@ chose it, and is reported the same way as shadowing what held it. The keys
 maic.nvim sets in its own buffers are buffer-local and never touch your
 global mappings. |:checkhealth| maic lists every key.
 
+                                                    *maic-health* *maic-check*
+:checkhealth maic
+    Lists every key maic.nvim sets (global, and buffer-local in MAIC's own
+    buffers), the keys MAIC's own input needs in its terminal (<Esc>,
+    <C-w>, <C-p>, <S-Tab>, <C-z>, <C-c>, <M-CR>) and, when llama.vim is
+    installed (|g:llama_config| is set or its autoload/llama.vim is on
+    'runtimepath'), every key llama.vim uses, against your mappings in the
+    modes each is used in. Your buffer-local mappings are collected too: the
+    check opens a plain file buffer, a scratch buffer of filetype
+    `maic-input` and a terminal of filetype `maic` in a tab of its own, reads
+    what your FileType, BufEnter and TermOpen autocmds mapped there, and
+    closes them again.
+
+    Each key is one line: OK when it is free (or a passthrough makes it
+    reach MAIC), WARN when maic.nvim skipped it, a key you named shadows
+    something, two mappings share a prefix so one waits 'timeoutlen', or an
+    insert-mode key starts with a key that types (with a <Space> leader,
+    llama.vim's default insert-mode <leader>llf makes every typed space
+    wait), and ERROR when a key MAIC needs never reaches it in its terminal.
+    Every WARN and ERROR comes with the fix. `maic nvim keymaps` runs the
+    same check outside nvim, against your config.
+
 ==============================================================================
 6. EVENTS                                                      *maic-events*
 

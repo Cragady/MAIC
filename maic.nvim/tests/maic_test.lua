@@ -187,6 +187,50 @@ pcall(vim.keymap.del, "n", "<leader>mq")
 vim.keymap.del("n", "<leader>mdx")
 vim.notify = real_notify
 
+io.write("the keymap check (:checkhealth maic)\n")
+local K = require("maic.keymaps")
+maic.setup({})
+local function find(report, section, needle)
+  for _, s in ipairs(report.sections) do
+    if s.name == section then
+      for _, it in ipairs(s.items) do
+        if it.text:find(needle, 1, true) then return it end
+      end
+    end
+  end
+end
+local tabs, bufs = #vim.api.nvim_list_tabpages(), #vim.api.nvim_list_bufs()
+local r0 = K.check()
+expect(#vim.api.nvim_list_tabpages() == tabs and #vim.api.nvim_list_bufs() == bufs, "the scratch buffers it opens are closed again")
+expect(#r0.hash == 64 and find(r0, "maic.nvim's keys", "<leader>mm (normal): MAIC: open or focus").level == "ok", "every key maic.nvim sets is listed, free ones OK")
+expect(find(r0, "maic.nvim's keys", "<Esc> (terminal) in MAIC's terminal").level == "ok", "the buffer-local keys of MAIC's terminal are listed too")
+expect(find(r0, "MAIC's terminal input", "<C-w> (window moves").level == "ok", "the keys MAIC's input needs reach it in a plain nvim")
+expect(find(r0, "llama.vim", "not installed").level == "info", "no llama.vim: an info line")
+vim.keymap.set("t", "<C-w>", "<C-\\><C-n><C-w>", { desc = "window from a terminal" })
+vim.keymap.set("t", "<Esc>", "<C-\\><C-n>", { desc = "leave the terminal" })
+vim.api.nvim_create_autocmd("FileType", { pattern = "maic-input", callback = function() vim.keymap.set("n", "<C-c>", "<cmd>close<cr>", { buffer = true, desc = "close it" }) end })
+vim.g.llama_config = { endpoint_fim = "http://127.0.0.1:8084/infill" }
+local r1 = K.check()
+local cw = find(r1, "MAIC's terminal input", "<C-w>")
+expect(cw.level == "error" and cw.hint:find('terminal_passthrough = { ["<C-w>"] = true }', 1, true) ~= nil, "a global terminal-mode <C-w> is an error with the fix: " .. cw.text)
+expect(find(r1, "MAIC's terminal input", "<Esc>").level == "ok", "a global terminal-mode <Esc> is fine: it is passed through")
+expect(find(r1, "maic.nvim's keys", "<C-c> (normal) in a maic-input buffer").level == "warn", "a FileType maic-input mapping on <C-c> is found in the scratch input buffer")
+local llf = find(r1, "llama.vim", "<leader>llf (insert)")
+expect(llf and llf.level == "warn" and llf.text:find("typing <Space> in insert mode waits", 1, true) ~= nil, "llama.vim's insert-mode <leader>llf with a Space leader is a warning")
+expect(find(r1, "llama.vim", "<Tab> (insert)").text:find("only while a suggestion shows", 1, true) ~= nil, "Tab is llama.vim's only while a suggestion shows")
+expect(r1.hash ~= r0.hash, "the collision hash changes with the collisions")
+vim.g.llama_config = { keymap_fim_trigger = "<M-f>", keymap_fim_accept_word = "<M-]>" }
+local r2 = K.check()
+expect(find(r2, "llama.vim", "<M-f> (insert)").level == "ok" and find(r2, "llama.vim", "<M-]> (insert)").level == "ok", "<M-f> and <M-]> are free in a plain nvim")
+vim.cmd("checkhealth maic")
+local text = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+expect(text:find("maic.nvim's keys", 1, true) ~= nil and text:find("MAIC never gets <C-w>", 1, true) ~= nil, ":checkhealth maic shows the same report")
+vim.cmd("bwipe!")
+vim.g.llama_config = nil
+vim.api.nvim_clear_autocmds({ event = "FileType", pattern = "maic-input" })
+vim.keymap.del("t", "<C-w>")
+vim.keymap.del("t", "<Esc>")
+
 for _, j in ipairs(vim.api.nvim_list_chans()) do
   if j.mode == "terminal" then pcall(vim.fn.jobstop, j.id) end
 end

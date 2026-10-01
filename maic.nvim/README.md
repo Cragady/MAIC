@@ -101,6 +101,10 @@ In MAIC's own buffers only, buffer-local: `<C-c>` in normal mode is `:MaicInterr
 
 maic.nvim never overwrites a mapping. Before it sets a default key it checks `maparg()` and `mapcheck()` in that mode; when another mapping holds the key or shares a prefix with it, the key is skipped, and every skipped key is reported once per session in one warning naming the key, the mode and what holds it (its description and the script and line that set it). A key you name in `keymaps` is set anyway, since you chose it, and reported as shadowing what held it.
 
+## `:checkhealth maic`
+
+Lists every key maic.nvim sets (global, and buffer-local in MAIC's own buffers), the keys MAIC's own input needs in its terminal (`<Esc>`, `<C-w>`, `<C-p>`, `<S-Tab>`, `<C-z>`, `<C-c>`, `<M-CR>`) and, when llama.vim is installed (`g:llama_config` set, or its `autoload/llama.vim` on the runtimepath), every key llama.vim uses, against your mappings in the modes that matter, global and buffer-local: it opens a plain file buffer, a scratch `maic-input` buffer and a `maic` terminal in a tab of its own to collect what your FileType, BufEnter and TermOpen autocmds map there, then closes them. OK when a key is free, WARN when maic.nvim skipped it, a key you named shadows something, two mappings share a prefix (one waits `timeoutlen`) or an insert-mode key starts with a key that types, ERROR when a key MAIC needs never reaches it in its terminal; every WARN and ERROR names the fix. `maic nvim keymaps` runs the same check from the shell against your config.
+
 ## Lua
 
 `require("maic")` also has `interrupt()` (returns `"rpc"`, `"key"` or nil), `send_text(text)` (returns `"rpc"`, `"paste"` or nil), `command(":cmd")` (runs a command in a connected MAIC as if typed), `channel()`, `open(args)`, `toggle()`, and the formatters `format_snippet`, `format_diagnostics`, `format_quickfix`.

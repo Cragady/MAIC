@@ -375,7 +375,8 @@ end
 local set = {} -- the global keymaps the last setup() made, so a second setup() replaces them
 
 function M.setup(opts)
-  M.config = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), opts or {})
+  M.opts = opts or {}
+  M.config = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), M.opts)
   for _, k in ipairs(set) do pcall(vim.keymap.del, k.mode, k.lhs) end
   set = {}
   -- `maic nvim keymaps` runs the user's config with this set: plan the keys, set none, say nothing.
