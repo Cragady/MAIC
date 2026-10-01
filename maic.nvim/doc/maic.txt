@@ -355,5 +355,10 @@ Connected:
 - The model gets a `diagnostics` tool, judged as a read like any read. It
   can never run Lua here or change a buffer: its edits are file writes
   through MAIC's harness, which this nvim then reloads.
+- |:MaicInterrupt| reaches it as `maic_interrupt`.
+
+`maic --bare` (or `MAIC_BARE=1`) never connects, even inside nvim: then
+|:MaicSend| falls back to the bracketed paste and |:MaicInterrupt| to
+typing Ctrl-C. MAIC's status strip shows `bare`; `:h bare` in MAIC.
 
  vim:tw=78:ts=8:ft=help:norl:

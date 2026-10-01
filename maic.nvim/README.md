@@ -144,4 +144,6 @@ Inside this nvim, MAIC connects to `$NVIM` only when the socket is yours and the
 nvim --headless -u NONE -i NONE -n -l maic.nvim/tests/maic_test.lua
 ```
 
-MAIC's `ctest -R nvim` runs it too, after the tests of MAIC's half against a headless nvim.
+MAIC's `ctest -R nvim` runs it too, after the tests of MAIC's half against a headless nvim. The Lua tests cover the formatters, the bracketed paste and Ctrl-C into an unconnected terminal, one MAIC per tab, the defaults table and its deep merge, the never-overwrite rule and its one warning, the `<Esc>`, `<C-c>` and `terminal_escape` maps of MAIC's terminal (and a `TermOpen` autocmd skipping it by filetype), and the keymap check behind `:checkhealth maic`.
+
+`maic --bare` (or `MAIC_BARE=1`) never connects to this nvim: `:MaicSend` then uses the bracketed paste and `:MaicInterrupt` types Ctrl-C.
