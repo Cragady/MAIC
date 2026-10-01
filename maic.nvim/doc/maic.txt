@@ -119,6 +119,9 @@ The table, as shipped: >lua
         workspace_diagnostics = "<leader>mD",
         quickfix = "<leader>mq",
       },
+      terminal_escape = "<C-\\><C-n>",
+      terminal_passthrough = { ["<Esc>"] = true },
+      filetypes = { terminal = "maic", input = "maic-input" },
     }
 <
 Read it from Lua to build on it, never to change it: >lua
@@ -150,6 +153,26 @@ keymaps     A table of name = key (|maic-keymaps|); merged over the
             none. true: the defaults. >lua
                 keymaps = { send = "<leader>ss", quickfix = false }
 <
+                                                        *maic-terminal_escape*
+terminal_escape
+            The key that leaves terminal mode in MAIC's terminal. The
+            default is nvim's own |t_CTRL-\_CTRL-N|, which needs no mapping;
+            any other key is mapped buffer-local there. See |maic-esc|.
+
+                                                   *maic-terminal_passthrough*
+terminal_passthrough
+            Keys that reach MAIC in its terminal even when a global
+            terminal-mode mapping holds them: `key = true`, `false` drops one.
+            Each is a buffer-local, |:map-nowait| |:tnoremap| of the key to
+            itself in MAIC's terminal only. >lua
+                terminal_passthrough = { ["<C-w>"] = true }
+<
+                                                         *maic-filetypes*
+filetypes   MAIC's buffers get these filetypes so plugins can include or
+            exclude them: `terminal` (MAIC's terminal, set before the job
+            starts, so a |TermOpen| autocmd sees it) and `input` (the input
+            buffer of nvim as MAIC's interface, to come).
+
 ==============================================================================
 5. KEYMAPS                                                    *maic-keymaps*
 
@@ -165,6 +188,17 @@ Set by |maic.setup()|; the name is the key in the `keymaps` table.
     workspace_diagnostics   <leader>mD    normal   :MaicDiagnostics!
     quickfix                <leader>mq    normal   |:MaicQuickfix|
 
+                                                                   *maic-esc*
+In MAIC's terminal, <Esc> goes to MAIC, whose input is vim-like and needs it
+for normal mode, even when you have the common >vim
+    tnoremap <Esc> <C-\><C-n>
+<a global mapping that makes <Esc> leave terminal mode. maic.nvim maps <Esc>
+to itself buffer-local in MAIC's terminal (|maic-terminal_passthrough|), so
+your mapping keeps working in every other terminal. To leave terminal mode in
+MAIC's, press <C-\><C-n>, or set |maic-terminal_escape| to a key of your
+own. A |TermOpen| autocmd that maps keys in every terminal can skip MAIC's: >lua
+    if vim.bo[ev.buf].filetype == "maic" then return end
+<
                                                        *maic-never-overwrite*
 maic.nvim never overwrites a mapping. Before it sets a default key it asks
 |maparg()| and |mapcheck()| for that mode: when another mapping holds the key,

@@ -70,8 +70,13 @@ The table as shipped:
     open = "<leader>mm", toggle = "<leader>mt", send = "<leader>ms", send_selection = "<leader>ms",
     send_buffer = "<leader>mb", diagnostics = "<leader>md", workspace_diagnostics = "<leader>mD", quickfix = "<leader>mq",
   },
+  terminal_escape = "<C-\\><C-n>",            -- leaves terminal mode in MAIC's terminal; another key is mapped there
+  terminal_passthrough = { ["<Esc>"] = true },  -- keys that reach MAIC in its terminal over a global terminal-mode mapping
+  filetypes = { terminal = "maic", input = "maic-input" },  -- MAIC's buffers, for plugins to include or exclude
 }
 ```
+
+**Esc in MAIC's terminal.** MAIC's input is vim-like and needs `<Esc>` for normal mode. With the common global `tnoremap <Esc> <C-\><C-n>`, `<Esc>` would leave terminal mode instead, so maic.nvim maps `<Esc>` to itself buffer-local (noremap, nowait) in MAIC's terminal only: MAIC gets it, and the global mapping keeps working in every other terminal. In MAIC's terminal, `<C-\><C-n>` (nvim's own) leaves terminal mode, or `terminal_escape` names another key. MAIC's terminal has the filetype `maic` before its job starts, so a `TermOpen` autocmd can skip it.
 
 ## Keymaps
 

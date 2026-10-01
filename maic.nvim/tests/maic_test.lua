@@ -99,6 +99,48 @@ expect(maic.defaults.keymaps.send == "<leader>ms" and maic.defaults.open == "vsp
 maic.setup({ keymaps = true })
 expect(mapped("<leader>mm") and mapped("<leader>ms"), "keymaps = true is the defaults")
 
+io.write("Esc in MAIC's terminal\n")
+vim.keymap.set("t", "<Esc>", "<C-\\><C-n>", { desc = "leave the terminal" })
+maic.setup({ keymaps = false, cmd = { "sh", "-c", "sleep 30" }, open = "split", terminal_escape = "<C-q>" })
+vim.cmd("tabnew")
+vim.cmd("Maic")
+local tbuf = vim.api.nvim_get_current_buf()
+local function local_map(lhs, mode)
+  for _, m in ipairs(vim.api.nvim_buf_get_keymap(tbuf, mode or "t")) do
+    if m.lhs == lhs then return m end
+  end
+end
+local esc = local_map("<Esc>")
+expect(vim.bo[tbuf].buftype == "terminal" and vim.bo[tbuf].filetype == "maic", "MAIC's terminal has the filetype maic")
+expect(esc and esc.rhs == "<Esc>" and esc.noremap == 1 and esc.nowait == 1, "a buffer-local terminal-mode <Esc> sends Esc to MAIC (noremap, nowait)")
+local q = local_map("<C-Q>")
+expect(q and q.rhs == "<C-\\><C-N>", "terminal_escape leaves terminal mode there: " .. vim.inspect(q and q.rhs))
+expect(vim.fn.maparg("<Esc>", "t", false, true).buffer == 1 and vim.api.nvim_get_keymap("t")[1].desc == "leave the terminal",
+  "the user's global <Esc> mapping stays as it was")
+maic.setup({ keymaps = false, cmd = { "sh", "-c", "sleep 30" }, open = "split" })
+local seen = {}
+local real_notify2 = vim.notify
+vim.notify = function(msg) seen[#seen + 1] = msg end
+local au = vim.api.nvim_create_autocmd("TermOpen", { callback = function(ev) vim.keymap.set("t", "<Esc>", "<C-\\><C-n>", { buffer = ev.buf, desc = "termopen esc" }) end })
+vim.cmd("tabnew")
+vim.cmd("Maic")
+tbuf = vim.api.nvim_get_current_buf()
+vim.wait(500, function() return #seen > 0 end)
+expect(local_map("<Esc>").desc == "termopen esc" and local_map("<C-Q>") == nil, "a buffer-local <Esc> from a TermOpen autocmd is left alone; terminal_escape = nvim's own maps nothing")
+expect(#seen == 1 and seen[1]:find("<Esc> (terminal, MAIC's buffer) skipped, held by \"termopen esc\"", 1, true) ~= nil, "and reported: " .. (seen[1] or ""))
+vim.api.nvim_del_autocmd(au)
+vim.api.nvim_create_autocmd("TermOpen", { callback = function(ev)
+  if vim.bo[ev.buf].filetype == "maic" then return end
+  vim.keymap.set("t", "<Esc>", "<C-\\><C-n>", { buffer = ev.buf })
+end })
+vim.cmd("tabnew")
+vim.cmd("Maic")
+tbuf = vim.api.nvim_get_current_buf()
+expect(local_map("<Esc>").rhs == "<Esc>", "a TermOpen autocmd can skip MAIC's terminal by its filetype")
+vim.api.nvim_clear_autocmds({ event = "TermOpen" })
+vim.notify = real_notify2
+vim.keymap.del("t", "<Esc>")
+
 io.write("never overwrite a mapping\n")
 local notes = {}
 local real_notify = vim.notify

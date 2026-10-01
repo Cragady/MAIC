@@ -21,6 +21,12 @@ M.defaults = {
     workspace_diagnostics = "<leader>mD",
     quickfix = "<leader>mq",
   },
+  -- Leaves terminal mode in MAIC's terminal. nvim's own <C-\><C-n> needs no mapping; another key is mapped there.
+  terminal_escape = "<C-\\><C-n>",
+  -- Keys that reach MAIC in its terminal even when a global terminal-mode mapping holds them (buffer-local, so
+  -- the global mapping keeps working everywhere else). key = true; false drops one.
+  terminal_passthrough = { ["<Esc>"] = true },
+  filetypes = { terminal = "maic", input = "maic-input" }, -- MAIC's buffers, for plugins to include or exclude
 }
 
 M.config = vim.deepcopy(M.defaults)
@@ -84,10 +90,14 @@ local function command(extra)
   return cmd
 end
 
+local map -- below: sets a keymap unless another mapping holds its key
+
 local function start(extra)
   make_window(nil)
   local buf = vim.api.nvim_get_current_buf()
   local tab = vim.api.nvim_get_current_tabpage()
+  -- Before the job, so a TermOpen autocmd can tell MAIC's terminal by its filetype.
+  if M.config.filetypes and M.config.filetypes.terminal then vim.bo[buf].filetype = M.config.filetypes.terminal end
   local opts = { on_exit = function() if terms[tab] and terms[tab].buf == buf then terms[tab] = nil end end }
   local job
   if vim.fn.has("nvim-0.11") == 1 then
@@ -102,6 +112,9 @@ local function start(extra)
   end
   vim.bo[buf].bufhidden = "hide"
   terms[tab] = { buf = buf, job = job }
+  if vim.g.maic_keymap_check ~= 1 then
+    for _, k in ipairs(M.buffer_planned()) do map(k, buf) end
+  end
   vim.cmd("startinsert")
 end
 
@@ -295,14 +308,14 @@ local function report(line)
   if #pending > 1 then return end
   vim.schedule(function()
     vim.notify("maic.nvim never overwrites a mapping:\n  " .. table.concat(pending, "\n  ")
-      .. "\nName another key in setup({ keymaps = { ... } }); :checkhealth maic lists every key.", vim.log.levels.WARN)
+      .. "\nName another key in setup() or drop it (:h maic-defaults); :checkhealth maic lists every key.", vim.log.levels.WARN)
     pending = {}
   end)
 end
 
 -- Sets `k` unless another mapping holds its key (a default is then skipped and reported; a key the user named is
 -- set and reported). `buf`: buffer-local there, with nowait. True when it was set.
-local function map(k, buf)
+function map(k, buf)
   local K = require("maic.keymaps")
   local clash = K.clash(k.mode, k.lhs, buf)
   local where = ("%s (%s%s)"):format(k.lhs, K.mode_name(k.mode), buf and ", MAIC's buffer" or "")
@@ -310,9 +323,26 @@ local function map(k, buf)
     report(where .. " skipped, held by " .. clash.holder)
     return false
   end
-  if clash and k.explicit then report(where .. ", your keymaps." .. k.name .. ", shadows " .. clash.holder) end
+  if clash and k.explicit then report(where .. ", your " .. (k.name:find("[.]") and k.name or "keymaps." .. k.name) .. ", shadows " .. clash.holder) end
   vim.keymap.set(k.mode, k.lhs, k.rhs, { desc = k.desc, silent = true, buffer = buf, nowait = buf ~= nil })
   return true
+end
+
+-- The buffer-local keymaps of MAIC's terminal: the passthrough keys, and terminal_escape when it is not nvim's own.
+function M.buffer_planned()
+  local c, out = M.config, {}
+  local escape = c.terminal_escape ~= M.defaults.terminal_escape and c.terminal_escape or nil
+  for key, on in pairs(c.terminal_passthrough or {}) do
+    if on and key ~= escape then
+      out[#out + 1] = { name = "terminal_passthrough", mode = "t", lhs = key, rhs = key, desc = "MAIC: " .. key .. " goes to MAIC",
+        explicit = M.defaults.terminal_passthrough[key] == nil }
+    end
+  end
+  table.sort(out, function(a, b) return a.lhs < b.lhs end)
+  if escape then
+    out[#out + 1] = { name = "terminal_escape", mode = "t", lhs = escape, rhs = "<C-\\><C-n>", desc = "MAIC: leave terminal mode", explicit = true }
+  end
+  return out
 end
 
 local set = {} -- the global keymaps the last setup() made, so a second setup() replaces them

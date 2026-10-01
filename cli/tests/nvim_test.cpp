@@ -77,6 +77,11 @@ int run(const std::vector<std::string>& argv) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128;
 }
 
+std::string read_file(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
 template <class F>
 bool eventually(F f, int ms = 5000) {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
@@ -426,6 +431,31 @@ int main() {
         expect(eventually(client, 15000), "maic started in a terminal of this nvim passes the ancestry check and connects as client \"maic\" with its pid");
         other->exec_lua("vim.fn.jobstop(vim.g.maic_job)", json::array());
         expect(eventually([&] { return !client(); }, 10000), "and disconnects when it exits");
+    }
+
+    section("Esc in MAIC's terminal");
+    {
+        // A user's global tnoremap <Esc> <C-\><C-n>: MAIC's terminal still gets Esc, nvim's own key leaves it, and
+        // every other terminal keeps the user's mapping. Keys go in through nvim_input, the real input path.
+        fs::path typed = tmp / "typed";
+        auto mode = [&] { return other->exec_lua("return vim.api.nvim_get_mode().mode", json::array()); };
+        other->exec_lua("local out = ... vim.keymap.set('t', '<Esc>', '<C-\\\\><C-n>') "
+                        "require('maic').setup({ keymaps = false, open = 'split', cmd = { 'sh', '-c', 'stty raw -echo; exec cat > ' .. out } }) "
+                        "vim.cmd('tabnew') vim.cmd('Maic')",
+                        json::array({typed.string()}));
+        expect(eventually([&] { return fs::exists(typed) && mode() == "t"; }), "MAIC's terminal starts in terminal mode");
+        other->request("nvim_input", {msgpack::Value::str("ab<Esc>c")});
+        expect(eventually([&] { return read_file(typed) == "ab\x1b" "c"; }), "Esc reaches MAIC as Esc: " + json(read_file(typed)).dump());
+        expect(mode() == "t", "and MAIC's terminal stays in terminal mode");
+        other->request("nvim_input", {msgpack::Value::str("<C-\\><C-n>")});
+        expect(eventually([&] { return mode() == "nt"; }), "<C-\\><C-n> (terminal_escape) leaves it");
+        other->exec_lua("vim.cmd('tabnew') vim.g.plain_job = vim.fn.jobstart({ 'sh', '-c', 'sleep 30' }, { term = true }) vim.cmd('startinsert')", json::array());
+        expect(eventually([&] { return mode() == "t"; }), "another terminal in terminal mode");
+        other->request("nvim_input", {msgpack::Value::str("<Esc>")});
+        expect(eventually([&] { return mode() == "nt"; }), "the user's global <Esc> still leaves terminal mode everywhere else");
+        other->exec_lua("vim.fn.jobstop(vim.g.plain_job) for _, c in ipairs(vim.api.nvim_list_chans()) do if c.mode == 'terminal' then pcall(vim.fn.jobstop, c.id) end end "
+                        "vim.cmd('silent! tabonly!') vim.keymap.del('t', '<Esc>')",
+                        json::array());
     }
 
     section("the host going away");
