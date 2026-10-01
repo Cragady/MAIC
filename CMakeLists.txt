@@ -27,6 +27,7 @@ include(vendor/luajit.cmake)
 
 add_subdirectory(core)
 add_subdirectory(server)
+add_subdirectory(relay)
 add_subdirectory(cli)
 add_subdirectory(harness)
 
@@ -43,7 +44,7 @@ add_test(NAME danbooru_tags COMMAND python3 -m unittest -q test_danbooru_tags
          WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/tools/comfyui)
 set_tests_properties(comfy_node workflow_edit storyboard danbooru_tags PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
 
-install(TARGETS maic maic-server RUNTIME DESTINATION bin)
+install(TARGETS maic maic-server maic-relay RUNTIME DESTINATION bin)
 install(PROGRAMS tools/comfyui/workflow_edit.py DESTINATION bin RENAME maic-workflow-edit)
 install(PROGRAMS tools/comfyui/storyboard.py DESTINATION bin RENAME maic-storyboard)
 install(PROGRAMS tools/comfyui/danbooru_tags.py DESTINATION bin RENAME maic-danbooru-tags)

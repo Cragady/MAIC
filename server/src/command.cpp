@@ -1,6 +1,9 @@
-// `maic server ...`: start, token new|list|revoke, status.
+// `maic server ...`: start, token new|list|revoke, pair, pairs, unpair, status.
 #include "auth.hpp"
 #include "server.hpp"
+#include "tunnel.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include "maic/harness.hpp"
 #include "maic/paths.hpp"
@@ -12,6 +15,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <thread>
 
@@ -32,10 +36,15 @@ void usage(std::ostream& out) {
            "       maic server token new NAME     a bearer token for one device, printed once\n"
            "       maic server token list\n"
            "       maic server token revoke NAME\n"
-           "       maic server status             the configuration, and whether a server answers\n"
+           "       maic server pair               a one-time code and pairing string for a phone, valid 2 minutes (server.relay set)\n"
+           "       maic server pairs              the phones paired for the relay\n"
+           "       maic server unpair NAME\n"
+           "       maic server status             the configuration, the relay link, and whether a server answers\n"
            "\n"
            "Loopback is the default. Any other address needs TLS: a self-signed certificate is made on first use\n"
-           "(pin its fingerprint on the phone), or set server.cert and server.key in settings. docs/remote.md\n";
+           "(pin its fingerprint on the phone), or set server.cert and server.key in settings. With server.relay set\n"
+           "the server dials out to a maic-relay so a paired phone reaches it from anywhere, end-to-end encrypted.\n"
+           "docs/remote.md\n";
 }
 
 std::vector<fs::path> workspace_roots(const Settings& settings) {
@@ -73,6 +82,51 @@ int cmd_token(const std::vector<std::string>& args, const fs::path& state) {
     return 2;
 }
 
+int cmd_pair(const std::vector<std::string>& args, const Settings& settings, const fs::path& state) {
+    PairStore store(state / "pairs.json");
+    if (args.empty()) {
+        if (settings.server.relay.empty()) throw std::runtime_error("set server.relay = \"https://host:port\" (the maic-relay the server dials out to) in settings first; maic help server");
+        std::string code = new_pairing_code();
+        write_pairing_offer(state / "pairing.json", code);
+        std::cout << "pairing code, valid two minutes: " << code.substr(0, 4) << " " << code.substr(4) << "\n\n"
+                  << "On the phone, on this LAN, open the web client (the token box first if it has none), then Sessions > Pair with\n"
+                     "a relay, and paste this string. The exchange runs over the LAN, straight to this server, never through the relay:\n\n"
+                  << "    maic://pair/" << settings.server.relay << "/" << store.pairing_id() << "/" << code << "\n\n"
+                  << "The server must be running (maic server start). Three wrong codes void the offer.\n";
+        return 0;
+    }
+    if (args.size() == 1 && args[0] == "list") {
+        auto all = store.list();
+        if (all.empty()) std::cout << "no phones paired yet: maic server pair\n";
+        for (const auto& p : all) std::cout << p.name << "  key " << p.public_key.substr(0, 12) << "...  paired " << p.created << "\n";
+        return 0;
+    }
+    if (args.size() == 2 && args[0] == "remove") {
+        if (!store.remove(args[1])) {
+            std::cerr << "maic server: no phone named " << args[1] << "\n";
+            return 1;
+        }
+        std::cout << "unpaired " << args[1] << "; its next connection through the relay is refused\n";
+        return 0;
+    }
+    usage(std::cerr);
+    return 2;
+}
+
+// The relay link as the running server last wrote it (<state>/relay.json), for the status line.
+std::string relay_notice(const Settings& settings, const fs::path& state) {
+    if (settings.server.relay.empty()) return "none (server.relay in settings)";
+    std::ifstream in(state / "relay.json");
+    nlohmann::json j = in ? nlohmann::json::parse(in, nullptr, false) : nlohmann::json();
+    std::string out = settings.server.relay;
+    if (!j.is_object()) return out + "  (no link yet: start the server)";
+    if (j.value("connected", false)) return out + "  connected since " + j.value("since", "");
+    std::string last = j.value("last_connected", "");
+    out += "  not connected" + (last.empty() ? std::string(", never has been") : ", last " + last);
+    if (!j.value("error", "").empty()) out += " (" + j.value("error", "") + ")";
+    return out;
+}
+
 int cmd_status(const Settings& settings, const fs::path& state) {
     std::string listen = settings.server.listen;
     size_t colon = listen.rfind(':');
@@ -88,6 +142,8 @@ int cmd_status(const Settings& settings, const fs::path& state) {
     std::cout << "workspaces:";
     for (const auto& w : workspace_roots(settings)) std::cout << " " << w.string();
     std::cout << "\ntokens:     " << store.list().size() << " (maic server token list)\n"
+              << "relay:      " << relay_notice(settings, state) << "\n"
+              << "paired:     " << PairStore(state / "pairs.json").list().size() << " phone(s) (maic server pairs)\n"
               << "audit log:  " << (state / "audit.log").string() << "\n";
     // Any answer, even the 401 an unauthenticated probe gets, means a server is up.
     std::string probe_host = host == "0.0.0.0" || host == "::" || host.empty() ? "127.0.0.1" : host;
@@ -130,6 +186,7 @@ int cmd_start(const std::vector<std::string>& args) {
     for (const auto& w : workspace_roots(settings)) std::cout << " " << w.string();
     std::cout << "\n";
     if (tokens.empty()) std::cout << "no tokens yet, so every request gets 401: maic server token new NAME\n";
+    if (!settings.server.relay.empty()) std::cout << "relay: dialling " << settings.server.relay << " (maic server status shows the link; maic server pair enrols a phone)\n";
     std::cout << "Ctrl-C stops it. Every tool call from here is asked about, whatever the mode; the tripwire can be tripped\n"
                  "from a client but never reset.\n";
 
@@ -151,6 +208,9 @@ int run_server_command(const std::vector<std::string>& args) {
     fs::path state = state_dir() / "server";
     if (sub == "start") return cmd_start(rest);
     if (sub == "token") return cmd_token(rest, state);
+    if (sub == "pair") return cmd_pair(rest, load_settings(), state);
+    if (sub == "pairs") return cmd_pair({"list"}, load_settings(), state);
+    if (sub == "unpair" && rest.size() == 1) return cmd_pair({"remove", rest[0]}, load_settings(), state);
     if (sub == "status") return cmd_status(load_settings(), state);
     if (sub == "help" || sub == "-h" || sub == "--help") {
         usage(std::cout);

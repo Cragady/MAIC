@@ -1,6 +1,6 @@
 # server
 
-Remote access to MAIC: `maic-server` (also `maic server start`) owns agent sessions and serves a small JSON API with server-sent events, plus the single-file web client in `web/index.html`. The design, setup, API reference and the relay plan are in [docs/remote.md](../docs/remote.md).
+Remote access to MAIC: `maic-server` (also `maic server start`) owns agent sessions and serves a small JSON API with server-sent events, plus the single-file web client in `web/index.html`. With `server.relay` set it also dials out to a `maic-relay` ([relay/](../relay)) and carries the same API to a paired phone through an end-to-end encrypted tunnel. The design, setup, API reference, the wire format and the pairing walkthrough are in [docs/remote.md](../docs/remote.md).
 
 Constraints it keeps:
 
@@ -9,4 +9,4 @@ Constraints it keeps:
 * It **cannot reset the tripwire.** There is no route for it; a client can only trip.
 * Loopback by default. Any other address needs TLS (self-signed on first use, or a configured pair) and every request needs a per-device bearer token. Failed attempts are rate limited per source; every request is written to an audit log.
 
-Layout: `src/server.cpp` (sessions, routes, streaming), `src/auth.cpp` (tokens, hashing, rate limit), `src/tls.cpp` (certificate generation), `src/command.cpp` (`maic server ...`), `tests/server_test.cpp`.
+Layout: `src/server.cpp` (sessions, routes, streaming, `/api/pair`), `src/auth.cpp` (tokens, hashing, rate limit), `src/tls.cpp` (certificate generation, shared with the relay), `src/tunnel.cpp` (frames, the handshake and session keys, the pairing store and offer), `src/home_link.cpp` (the outbound connection to the relay and requests replayed against the server's own listener), `src/command.cpp` (`maic server ...`), `tests/server_test.cpp`, `tests/relay_test.cpp`, `tests/tunnel_js_test.mjs` (the web client's crypto under node).

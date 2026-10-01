@@ -39,6 +39,8 @@ struct ServerSettings {
     std::vector<std::filesystem::path> workspaces;  // allowed roots for remote sessions; empty = ~/dev2 if it exists, else the current directory
     std::filesystem::path cert;                     // PEM pair; empty = a self-signed one generated under state/server on first use
     std::filesystem::path key;
+    std::string relay;                              // https://host:port of a maic-relay the server dials out to; empty = none
+    std::filesystem::path relay_cert;               // PEM that pins the relay's certificate; empty = the system CA store
 };
 
 // A model preset: one short name that sets the model, its context window, the reviewer the smart harness

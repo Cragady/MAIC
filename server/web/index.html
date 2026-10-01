@@ -93,6 +93,24 @@
     <div id="sessionList"></div>
     <div class="card"><div class="row"><button class="danger" id="tripBtn">Trip the harness</button></div>
       <p class="hint">Stops every action until <code>maic unlock</code> is run at the workstation. There is no remote unlock.</p></div>
+    <div class="card" id="pairCard">
+      <h2>Pair with a relay</h2>
+      <p class="hint">For this phone away from home. On the workstation, <code>maic server pair</code> prints a code and a string; paste the string here while on the LAN. The keys are exchanged with this server directly, never through the relay.</p>
+      <div class="row"><input id="pairString" placeholder="maic://pair/https://relay:7474/ID/CODE" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <input id="pairName" placeholder="this phone's name" value="phone" autocomplete="off"></div>
+      <div class="row" style="margin-top:8px"><button class="primary" id="pairBtn">Pair</button></div>
+      <p class="hint" id="pairResult"></p>
+      <div id="pairDone" hidden>
+        <p class="hint">Paired. Open the relay from this link and the browser carries the pairing over. The link holds your key and token in its fragment, which the relay never receives and which is removed from the address bar on arrival; do not send it anywhere.</p>
+        <div class="row"><a id="pairLink"><button class="primary" style="width:100%">Open the relay</button></a></div>
+        <textarea id="pairBundle" rows="3" readonly style="margin-top:8px;font-size:12px"></textarea>
+      </div>
+    </div>
+    <div class="card" id="relayCard" hidden>
+      <h2>Through a relay</h2>
+      <p class="hint" id="relayInfo"></p>
+      <div class="row"><button id="forgetRelay">Forget this pairing</button></div>
+    </div>
   </section>
 
   <section id="chatScreen" class="screen">
@@ -124,10 +142,344 @@
 </footer>
 
 <script>
+// --- tunnel crypto begin ---
+// The phone's end of the relay tunnel; server/src/tunnel.cpp is the workstation's (docs/remote.md). X25519 and
+// HKDF-SHA256 come from WebCrypto. XChaCha20-Poly1305 is written out here from RFC 8439 and the XChaCha
+// draft, because browsers do not ship it. server/tests/tunnel_js_test.mjs runs this block against the same
+// vectors as the C++ test.
+const Tunnel = (() => {
+  const te = new TextEncoder();
+  const u32 = (b, i) => (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24)) >>> 0;
+  const rotl = (v, c) => ((v << c) | (v >>> (32 - c))) >>> 0;
+  const SIGMA = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574];
+
+  function rounds(s) {
+    const qr = (a, b, c, d) => {
+      s[a] = (s[a] + s[b]) >>> 0; s[d] = rotl(s[d] ^ s[a], 16);
+      s[c] = (s[c] + s[d]) >>> 0; s[b] = rotl(s[b] ^ s[c], 12);
+      s[a] = (s[a] + s[b]) >>> 0; s[d] = rotl(s[d] ^ s[a], 8);
+      s[c] = (s[c] + s[d]) >>> 0; s[b] = rotl(s[b] ^ s[c], 7);
+    };
+    for (let i = 0; i < 10; i++) {
+      qr(0, 4, 8, 12); qr(1, 5, 9, 13); qr(2, 6, 10, 14); qr(3, 7, 11, 15);
+      qr(0, 5, 10, 15); qr(1, 6, 11, 12); qr(2, 7, 8, 13); qr(3, 4, 9, 14);
+    }
+  }
+  function state(key, words) {
+    const s = new Uint32Array(16);
+    for (let i = 0; i < 4; i++) s[i] = SIGMA[i];
+    for (let i = 0; i < 8; i++) s[4 + i] = u32(key, 4 * i);
+    for (let i = 0; i < 4; i++) s[12 + i] = words[i];
+    return s;
+  }
+  // ChaCha20 over `data` from block `counter`.
+  function chacha20(key, counter, nonce12, data) {
+    const out = new Uint8Array(data.length);
+    const block = new Uint8Array(64);
+    const view = new DataView(block.buffer);
+    for (let off = 0; off < data.length; off += 64, counter++) {
+      const init = state(key, [counter >>> 0, u32(nonce12, 0), u32(nonce12, 4), u32(nonce12, 8)]);
+      const s = Uint32Array.from(init);
+      rounds(s);
+      for (let i = 0; i < 16; i++) view.setUint32(4 * i, (s[i] + init[i]) >>> 0, true);
+      const n = Math.min(64, data.length - off);
+      for (let i = 0; i < n; i++) out[off + i] = data[off + i] ^ block[i];
+    }
+    return out;
+  }
+  function hchacha20(key, nonce16) {
+    const s = state(key, [u32(nonce16, 0), u32(nonce16, 4), u32(nonce16, 8), u32(nonce16, 12)]);
+    rounds(s);
+    const out = new Uint8Array(32);
+    const view = new DataView(out.buffer);
+    for (let i = 0; i < 4; i++) { view.setUint32(4 * i, s[i], true); view.setUint32(16 + 4 * i, s[12 + i], true); }
+    return out;
+  }
+  // Poly1305 over BigInt: frames are small, and a wrong carry would be worse than a slow one.
+  function poly1305(key, msg) {
+    const le = (b, from, to) => { let v = 0n; for (let i = to - 1; i >= from; i--) v = (v << 8n) | BigInt(b[i]); return v; };
+    const r = le(key, 0, 16) & 0x0ffffffc0ffffffc0ffffffc0fffffffn;
+    const s = le(key, 16, 32);
+    const p = (1n << 130n) - 5n;
+    let h = 0n;
+    for (let i = 0; i < msg.length; i += 16) {
+      const n = Math.min(16, msg.length - i);
+      h = ((h + le(msg, i, i + n) + (1n << BigInt(8 * n))) * r) % p;
+    }
+    h = (h + s) & ((1n << 128n) - 1n);
+    const out = new Uint8Array(16);
+    for (let i = 0; i < 16; i++) { out[i] = Number(h & 0xffn); h >>= 8n; }
+    return out;
+  }
+  function macData(ad, ct) {
+    const pad = (n) => (16 - (n % 16)) % 16;
+    const out = new Uint8Array(ad.length + pad(ad.length) + ct.length + pad(ct.length) + 16);
+    out.set(ad, 0);
+    out.set(ct, ad.length + pad(ad.length));
+    const at = ad.length + pad(ad.length) + ct.length + pad(ct.length);
+    const view = new DataView(out.buffer);
+    view.setUint32(at, ad.length, true);
+    view.setUint32(at + 8, ct.length, true);
+    return out;
+  }
+  const none = new Uint8Array(0);
+  function aeadSeal(key, nonce12, plain, ad = none) {
+    const polyKey = chacha20(key, 0, nonce12, new Uint8Array(32));
+    const ct = chacha20(key, 1, nonce12, plain);
+    const tag = poly1305(polyKey, macData(ad, ct));
+    const out = new Uint8Array(ct.length + 16);
+    out.set(ct);
+    out.set(tag, ct.length);
+    return out;
+  }
+  function aeadOpen(key, nonce12, sealed, ad = none) {
+    if (sealed.length < 16) return null;
+    const ct = sealed.subarray(0, sealed.length - 16), tag = sealed.subarray(sealed.length - 16);
+    const want = poly1305(chacha20(key, 0, nonce12, new Uint8Array(32)), macData(ad, ct));
+    let diff = 0;
+    for (let i = 0; i < 16; i++) diff |= want[i] ^ tag[i];
+    return diff ? null : chacha20(key, 1, nonce12, ct);
+  }
+  const xNonce = (nonce24) => { const n = new Uint8Array(12); n.set(nonce24.subarray(16), 4); return n; };
+  const xSeal = (key, nonce24, plain, ad) => aeadSeal(hchacha20(key, nonce24.subarray(0, 16)), xNonce(nonce24), plain, ad);
+  const xOpen = (key, nonce24, sealed, ad) => aeadOpen(hchacha20(key, nonce24.subarray(0, 16)), xNonce(nonce24), sealed, ad);
+
+  // Frames: len(4) | body, big endian. The hello body is "MAIC1" | static(32) | ephemeral(32); every later
+  // body is nonce(24) | ciphertext, the nonce a frame counter in its first 8 bytes, zero after.
+  function nonceFor(counter) {
+    const n = new Uint8Array(24);
+    const view = new DataView(n.buffer);
+    view.setUint32(0, Math.floor(counter / 0x100000000));
+    view.setUint32(4, counter >>> 0);
+    return n;
+  }
+  class Sealer {
+    constructor(key) { this.key = key; this.counter = 0; }
+    seal(plain) {
+      const n = nonceFor(this.counter++);
+      const ct = xSeal(this.key, n, plain);
+      const out = new Uint8Array(24 + ct.length);
+      out.set(n);
+      out.set(ct, 24);
+      return out;
+    }
+  }
+  class Opener {
+    constructor(key) { this.key = key; this.expected = 0; }
+    // null for a bad tag or any counter but the next one.
+    open(body) {
+      if (body.length < 40) return null;
+      const want = nonceFor(this.expected);
+      for (let i = 0; i < 24; i++) if (body[i] !== want[i]) return null;
+      const plain = xOpen(this.key, body.subarray(0, 24), body.subarray(24));
+      if (plain) this.expected++;
+      return plain;
+    }
+  }
+  const concat = (a, b) => { const out = new Uint8Array(a.length + b.length); out.set(a); out.set(b, a.length); return out; };
+  function frame(body) {
+    const out = new Uint8Array(4 + body.length);
+    new DataView(out.buffer).setUint32(0, body.length);
+    out.set(body, 4);
+    return out;
+  }
+  // Whole frames off the front of a buffer: [bodies, rest].
+  function splitFrames(buf) {
+    const bodies = [];
+    let at = 0;
+    while (buf.length - at >= 4) {
+      const n = new DataView(buf.buffer, buf.byteOffset + at).getUint32(0);
+      if (buf.length - at < 4 + n) break;
+      bodies.push(buf.slice(at + 4, at + 4 + n));
+      at += 4 + n;
+    }
+    return [bodies, buf.slice(at)];
+  }
+  // Inside the tunnel: kind(1) | stream(4) | payload.
+  const Kind = { Ready: 0, Request: 1, Head: 2, Data: 3, End: 4, Error: 5 };
+  function message(kind, stream, payload) {
+    const out = new Uint8Array(5 + payload.length);
+    out[0] = kind;
+    new DataView(out.buffer).setUint32(1, stream);
+    out.set(payload, 5);
+    return out;
+  }
+  function parseMessage(plain) {
+    if (plain.length < 5) return null;
+    return { kind: plain[0], stream: new DataView(plain.buffer, plain.byteOffset).getUint32(1), payload: plain.subarray(5) };
+  }
+  const hello = (staticPk, ephPk) => concat(concat(te.encode('MAIC1'), staticPk), ephPk);
+  function parseHello(body) {
+    if (body.length !== 69 || new TextDecoder().decode(body.subarray(0, 5)) !== 'MAIC1') return null;
+    return { statik: body.slice(5, 37), eph: body.slice(37, 69) };
+  }
+  const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const unb64url = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+
+  // X25519 and HKDF through WebCrypto. A key pair is kept as its private JWK and raw public bytes.
+  async function generateKeyPair() {
+    const kp = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
+    return { privateJwk: await crypto.subtle.exportKey('jwk', kp.privateKey), publicRaw: new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey)) };
+  }
+  async function dh(privateJwk, publicRaw) {
+    const priv = await crypto.subtle.importKey('jwk', privateJwk, { name: 'X25519' }, false, ['deriveBits']);
+    const pub = await crypto.subtle.importKey('raw', publicRaw, { name: 'X25519' }, false, []);
+    return new Uint8Array(await crypto.subtle.deriveBits({ name: 'X25519', public: pub }, priv, 256));
+  }
+  async function hkdf(salt, ikm, info, len) {
+    const key = await crypto.subtle.importKey('raw', ikm, 'HKDF', false, ['deriveBits']);
+    return new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info }, key, 8 * len));
+  }
+  // The session keys as the phone computes them: ephemeral with ephemeral, phone ephemeral with home static,
+  // phone static with home ephemeral, then HKDF bound to all four public keys. The workstation computes the same.
+  async function deriveSession(phoneStatic, phoneEph, homeStaticPk, homeEphPk) {
+    const ee = await dh(phoneEph.privateJwk, homeEphPk);
+    const ph = await dh(phoneEph.privateJwk, homeStaticPk);
+    const hp = await dh(phoneStatic.privateJwk, homeEphPk);
+    const info = concat(concat(phoneStatic.publicRaw, phoneEph.publicRaw), concat(homeStaticPk, homeEphPk));
+    const okm = await hkdf(te.encode('maic-tunnel-v1'), concat(concat(ee, ph), hp), info, 64);
+    return { toHome: okm.slice(0, 32), toPhone: okm.slice(32, 64) };
+  }
+  return { chacha20, hchacha20, poly1305, aeadSeal, aeadOpen, xSeal, xOpen, Sealer, Opener, frame, splitFrames, concat, Kind, message, parseMessage, hello, parseHello, b64url, unb64url, generateKeyPair, dh, hkdf, deriveSession };
+})();
+// --- tunnel crypto end ---
+
+// The phone's connection through maic-relay: one long GET for frames coming down, one POST per frame going
+// up (browsers cannot stream a request body over HTTP/1.1), a handshake with the workstation, and fetch()
+// over it so the rest of this page does not know which way its requests travel.
+class RelayTunnel {
+  constructor(pairing) {
+    this.pairing = pairing;  // {pairing_id, home, pub, key, name} from the pairing bundle
+    this.ready = null;
+    this.chain = Promise.resolve();
+    this.streams = new Map();
+    this.nextStream = 1;
+    this.sealer = null;
+    this.opener = null;
+    this.keepalive = null;
+    this.onstate = () => {};
+  }
+  path() { return '/r/' + this.pairing.pairing_id + '/phone'; }
+  connect() {
+    if (!this.ready) this.ready = this.open().catch((e) => { this.ready = null; throw e; });
+    return this.ready;
+  }
+  async open() {
+    this.onstate('connecting');
+    const eph = await Tunnel.generateKeyPair();
+    const res = await fetch(this.path(), { cache: 'no-store' });
+    if (!res.ok) throw new Error('relay: HTTP ' + res.status + ' ' + (await res.text()).trim());
+    let settle;
+    const handshake = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+    this.pump(res.body.getReader(), eph, settle);
+    await this.post(Tunnel.frame(Tunnel.hello(Tunnel.unb64url(this.pairing.pub), eph.publicRaw)));
+    await handshake;
+    this.keepalive = setInterval(() => this.post(Tunnel.frame(new Uint8Array(0))).catch(() => {}), 20000);
+    this.onstate('connected');
+  }
+  // Frames leave in the order they were sealed: one POST at a time.
+  post(bytes) {
+    const go = async () => {
+      const res = await fetch(this.path(), { method: 'POST', body: bytes, headers: { 'Content-Type': 'application/octet-stream' }, cache: 'no-store' });
+      if (!res.ok) throw new Error('relay: HTTP ' + res.status);
+    };
+    this.chain = this.chain.then(go, go);
+    return this.chain;
+  }
+  send(kind, stream, payload) { return this.post(Tunnel.frame(this.sealer.seal(Tunnel.message(kind, stream, payload)))); }
+  async pump(reader, eph, settle) {
+    let buf = new Uint8Array(0), bodies;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf = Tunnel.concat(buf, value);
+        [bodies, buf] = Tunnel.splitFrames(buf);
+        for (const body of bodies) {
+          if (!body.length) continue;
+          if (!this.opener) {
+            const h = Tunnel.parseHello(body);
+            if (!h) throw new Error('the workstation sent a bad hello');
+            const keys = await Tunnel.deriveSession({ privateJwk: this.pairing.key, publicRaw: Tunnel.unb64url(this.pairing.pub) }, eph, Tunnel.unb64url(this.pairing.home), h.eph);
+            this.sealer = new Tunnel.Sealer(keys.toHome);
+            this.opener = new Tunnel.Opener(keys.toPhone);
+            continue;
+          }
+          const plain = this.opener.open(body);
+          if (!plain) throw new Error('a frame from the workstation did not open');
+          const m = Tunnel.parseMessage(plain);
+          if (m.kind === Tunnel.Kind.Ready) settle.resolve();
+          else this.deliver(m);
+        }
+      }
+      throw new Error(this.opener ? 'the connection through the relay ended' : 'the workstation did not answer: it may be offline, or this phone is no longer paired (maic server pairs)');
+    } catch (e) {
+      this.teardown(e);
+      settle.reject(e);
+    }
+  }
+  teardown(err) {
+    clearInterval(this.keepalive);
+    this.ready = null;
+    this.sealer = this.opener = null;
+    for (const s of this.streams.values()) s.fail(err);
+    this.streams.clear();
+    this.onstate('disconnected', err.message);
+  }
+  deliver(m) {
+    const s = this.streams.get(m.stream);
+    if (!s) return;
+    const text = () => new TextDecoder().decode(m.payload);
+    switch (m.kind) {
+      case Tunnel.Kind.Head: s.head(JSON.parse(text())); break;
+      case Tunnel.Kind.Data: s.data(m.payload); break;
+      case Tunnel.Kind.End: s.end(); this.streams.delete(m.stream); break;
+      case Tunnel.Kind.Error: s.fail(new Error(text())); this.streams.delete(m.stream); break;
+    }
+  }
+  async fetch(path, init = {}) {
+    await this.connect();
+    const id = this.nextStream++;
+    const te = new TextEncoder();
+    const head = { method: init.method || 'GET', path, headers: init.headers || {} };
+    const payload = Tunnel.concat(te.encode(JSON.stringify(head) + '\n'), init.body === undefined ? new Uint8Array(0) : te.encode(init.body));
+    let controller = null, settle;
+    const response = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+    const tunnel = this;
+    this.streams.set(id, {
+      head(h) {
+        const empty = [101, 204, 205, 304].includes(h.status);
+        const body = empty ? null : new ReadableStream({ start(c) { controller = c; }, cancel() { tunnel.streams.delete(id); tunnel.send(Tunnel.Kind.End, id, new Uint8Array(0)).catch(() => {}); } });
+        settle.resolve(new Response(body, { status: h.status, headers: h.headers }));
+      },
+      data(bytes) { if (controller) controller.enqueue(bytes); },
+      end() { if (controller) { try { controller.close(); } catch (e) {} } },
+      fail(err) { settle.reject(err); if (controller) { try { controller.error(err); } catch (e) {} } },
+    });
+    await this.send(Tunnel.Kind.Request, id, payload);
+    return response;
+  }
+}
+
 (() => {
   const $ = (id) => document.getElementById(id);
-  const state = { token: '', session: null, seq: 0, running: false, reading: false, approval: null, status: null };
+  const state = { token: '', session: null, seq: 0, running: false, reading: false, approval: null, status: null, relay: null, tunnel: null, relayState: '' };
+  // Arriving from the LAN page's "Open the relay" link: the pairing bundle rides in the fragment, which the
+  // relay never receives. It goes into this origin's storage and out of the address bar.
+  if (location.hash.startsWith('#pair=')) {
+    try {
+      const bundle = JSON.parse(new TextDecoder().decode(Tunnel.unb64url(location.hash.slice(6))));
+      localStorage.setItem('maic.relay', JSON.stringify(bundle));
+      localStorage.setItem('maic.token', bundle.token);
+    } catch (e) {}
+    history.replaceState(null, '', location.pathname);
+  }
   try { state.token = localStorage.getItem('maic.token') || ''; } catch (e) {}
+  try { state.relay = JSON.parse(localStorage.getItem('maic.relay') || 'null'); } catch (e) {}
+  if (state.relay) {
+    state.tunnel = new RelayTunnel(state.relay);
+    state.tunnel.onstate = (s, why) => { state.relayState = s + (why ? ': ' + why : ''); statusLine(); };
+  }
 
   function show(screen) {
     for (const s of document.querySelectorAll('.screen')) s.classList.toggle('on', s.id === screen);
@@ -137,7 +489,8 @@
   async function api(path, options = {}) {
     const headers = Object.assign({ 'Authorization': 'Bearer ' + state.token }, options.headers || {});
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
-    const res = await fetch(path, Object.assign({}, options, { headers, body: options.body === undefined ? undefined : JSON.stringify(options.body) }));
+    const init = Object.assign({}, options, { headers, body: options.body === undefined ? undefined : JSON.stringify(options.body) });
+    const res = state.tunnel ? await state.tunnel.fetch(path, init) : await fetch(path, init);
     if (res.status === 401) { tokenScreen('The server did not accept that token.'); throw new Error('unauthorized'); }
     if (res.status === 429) { tokenScreen('Too many failed attempts; wait a minute.'); throw new Error('rate limited'); }
     return res;
@@ -158,12 +511,13 @@
 
   function statusLine() {
     const s = state.status;
-    if (!s) return;
+    if (!s) { if (state.relay) $('status').textContent = 'relay ' + state.relayState; return; }
     const harness = s.harness.tripped ? '<span class="tripped">TRIPPED</span>' : '<span class="armed">armed</span>';
     const model = state.session ? state.session.model : s.model;
     const remote = (state.session ? state.session.remote_model : s.remote_model) ? ' <span class="remote">REMOTE</span>' : '';
     const mode = state.session ? state.session.mode : s.mode;
-    $('status').innerHTML = harness + ' · <b>' + escape(model) + '</b>' + remote + ' · ' + escape(mode) + (state.running ? ' · working' : '');
+    const via = state.relay ? ' · relay ' + escape(state.relayState || '') : '';
+    $('status').innerHTML = harness + ' · <b>' + escape(model) + '</b>' + remote + ' · ' + escape(mode) + (state.running ? ' · working' : '') + via;
     $('mode').value = mode;
   }
 
@@ -171,7 +525,12 @@
 
   async function loadStatus() {
     state.status = await json('/api/status');
-    $('roots').textContent = 'allowed roots: ' + state.status.workspaces.join(', ');
+    const r = state.status.relay;
+    $('roots').textContent = 'allowed roots: ' + state.status.workspaces.join(', ') +
+      (r ? '. Relay ' + r.url + ': ' + (r.connected ? 'connected' : 'not connected' + (r.error ? ' (' + r.error + ')' : '')) : '');
+    $('pairCard').hidden = !!state.relay || !r;
+    $('relayCard').hidden = !state.relay;
+    if (state.relay) $('relayInfo').textContent = 'This page talks to the workstation through ' + location.origin + ' as "' + state.relay.name + '", end to end encrypted. Pairing is done on the LAN page.';
     statusLine();
   }
 
@@ -374,6 +733,27 @@
   $('input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); } });
   $('stop').onclick = () => state.session && json('/api/sessions/' + state.session.id + '/interrupt', { method: 'POST', body: {} }).catch(() => {});
   for (const b of document.querySelectorAll('#approval button')) b.onclick = () => answer(b.dataset.choice);
+  $('pairBtn').onclick = async () => {
+    const m = /^maic:\/\/pair\/(.+)\/([A-Za-z0-9_-]+)\/(\d{8})$/.exec($('pairString').value.trim());
+    $('pairResult').textContent = '';
+    if (!m) { $('pairResult').textContent = 'That is not a maic://pair/RELAY/ID/CODE string.'; return; }
+    try {
+      const kp = await Tunnel.generateKeyPair();
+      const r = await json('/api/pair', { method: 'POST', body: { code: m[3], name: $('pairName').value.trim() || 'phone', public_key: Tunnel.b64url(kp.publicRaw) } });
+      const relay = m[1].replace(/\/+$/, '');
+      const bundle = { relay, pairing_id: r.pairing_id, home: r.public_key, name: r.name, key: kp.privateJwk, pub: Tunnel.b64url(kp.publicRaw), token: state.token };
+      const link = relay + '/#pair=' + Tunnel.b64url(new TextEncoder().encode(JSON.stringify(bundle)));
+      $('pairLink').href = link;
+      $('pairBundle').value = link;
+      $('pairDone').hidden = false;
+      $('pairResult').textContent = 'Paired as "' + r.name + '".';
+    } catch (e) { $('pairResult').textContent = e.message; }
+  };
+  $('forgetRelay').onclick = () => {
+    if (!confirm('Forget this pairing on this phone? The workstation keeps it until maic server unpair.')) return;
+    try { localStorage.removeItem('maic.relay'); localStorage.removeItem('maic.token'); } catch (e) {}
+    location.reload();
+  };
   $('tripBtn').onclick = async () => {
     const reason = prompt('Trip the harness. Reason?', 'tripped from the phone');
     if (reason === null) return;
@@ -386,6 +766,8 @@
   (async () => {
     if (!state.token) return tokenScreen('');
     try { await loadStatus(); await loadSessions(); } catch (e) { if (!$('tokenScreen').classList.contains('on')) $('status').textContent = e.message; }
+    // Through the relay, a lost connection comes back on its own; the next request reconnects.
+    if (state.tunnel) setInterval(() => { if (!document.hidden && !state.tunnel.ready) loadStatus().catch(() => {}); }, 5000);
   })();
 })();
 </script>

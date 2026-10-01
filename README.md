@@ -95,8 +95,8 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.
 * [opencode-quick-wins.md](docs/opencode-quick-wins.md) — 23 small, ranked improvements to take from opencode, with file pointers.
 * [cleanroom.md](docs/cleanroom.md) — what may go into MAIC, where the design came from, third-party licenses.
-* [remote.md](docs/remote.md): remote access: `maic-server`, the phone web client, tokens and TLS, the API, the relay design, why the tripwire cannot be reset remotely.
-* [roadmap.md](docs/roadmap.md): everything MAIC should still become: the relay and a native phone client, the harness layers, cai-tools, tools, editor, services.
+* [remote.md](docs/remote.md): remote access: `maic-server`, the phone web client, tokens and TLS, the API, `maic-relay` and the end-to-end tunnel for the phone away from home, why the tripwire cannot be reset remotely.
+* [roadmap.md](docs/roadmap.md): everything MAIC should still become: accounts and a native phone client, the harness layers, cai-tools, tools, editor, services.
 * [comfyui-setup.md](docs/comfyui-setup.md) — ComfyUI in its own venv, models on the external drive.
 * [local-llm-benchmarks.md](docs/local-llm-benchmarks.md) — measured tok/s per model and runtime.
 
@@ -131,6 +131,7 @@ MAIC/
 ├── vendor/     pinned submodules (llama.cpp, ComfyUI), MAIC's own ComfyUI nodes (comfyui-maic-*), install scripts, manifest.json. See docs/vendor.md
 ├── tools/      examples of user-defined Lua tools (docs/tools.md); the polyglot runtimes are planned
 ├── server/     maic-server: sessions over HTTP with server-sent events, the phone web client. See docs/remote.md
+├── relay/      maic-relay: the rendezvous the server dials out to so the phone reaches it from anywhere; sees only sizes
 └── docs/
 ```
 
@@ -164,9 +165,10 @@ maic trip "reason"           # panic button, no password
 maic unlock                  # needs your sudo password
 maic server token new phone  # a bearer token for one device, shown once
 maic server start            # the API and web client on 127.0.0.1:7373; --listen 0.0.0.0:7373 for the LAN, with TLS
+maic server pair             # with server.relay set: pair the phone once on the LAN, then it reaches home through the relay
 ```
 
-State lives in `~/.local/state/maic/`: `run/<service>.pid` (PID plus process start time, so a reused PID is never mistaken for the service), `logs/<service>.log`, `sessions/*.jsonl`, and `server/` (token hashes, the audit log, the self-signed certificate). Settings and standing instructions live in `~/.config/maic/` ([docs/settings.md](docs/settings.md)).
+State lives in `~/.local/state/maic/`: `run/<service>.pid` (PID plus process start time, so a reused PID is never mistaken for the service), `logs/<service>.log`, `sessions/*.jsonl`, and `server/` (token hashes, the audit log, the self-signed certificate, the relay pairing keys). Settings and standing instructions live in `~/.config/maic/` ([docs/settings.md](docs/settings.md)).
 
 ## Immediate Steps
 

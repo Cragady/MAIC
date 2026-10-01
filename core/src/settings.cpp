@@ -315,6 +315,8 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         }
         if (server.contains("cert")) s.server.cert = expand_vars(server["cert"].get<std::string>());
         if (server.contains("key")) s.server.key = expand_vars(server["key"].get<std::string>());
+        s.server.relay = server.value("relay", s.server.relay);
+        if (server.contains("relay_cert")) s.server.relay_cert = expand_vars(server["relay_cert"].get<std::string>());
         json preset_table = j.value("models", json::object());  // a named copy: iterating a temporary dangles
         for (const auto& [name, pj] : preset_table.items()) {
             if (!pj.is_object()) continue;
@@ -506,8 +508,8 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"sampling", nlohmann::json::object()},
         {"//sampling", "sampler keys sent with every request: temperature, top_k, top_p, min_p, seed, repeat_penalty; xtc_probability / xtc_threshold on llama.cpp-style servers only. :sampling changes them live"},
         {"//system_prompt", "text placed first in every system prompt, or \"@~/path/to/file.md\"; independent of instruction files"},
-        {"//server", "maic server: listen ADDR:PORT (TLS is required off loopback), workspaces remote sessions may open, cert/key (empty: self-signed)."},
-        {"server", {{"listen", d.server.listen}, {"workspaces", json::array()}, {"cert", ""}, {"key", ""}}},
+        {"//server", "maic server: listen ADDR:PORT (TLS is required off loopback), workspaces remote sessions may open, cert/key (empty: self-signed), relay (https://host:port of a maic-relay the server dials out to for the phone away from home; pair with maic server pair), relay_cert (PEM pinning a self-signed relay certificate)."},
+        {"server", {{"listen", d.server.listen}, {"workspaces", json::array()}, {"cert", ""}, {"key", ""}, {"relay", ""}, {"relay_cert", ""}}},
         {"providers", providers},
         {"models", json::object()},
         {"//models", "presets by short name, adding to or overriding the built-in ones (opus-5.5, sonnet-5, haiku-4.5, fable-5.1, qwen-4b, qwen-9b, qwen-9b-vision): models = { [\"opus-5.5\"] = { model = \"anthropic/claude-opus-5-5\", context = 1000000, reviewer = \"anthropic/claude-sonnet-5\", think = true } }. reviewer \"same\" means the model reviews itself; context sizes are your plan's figures. A model on the side server: [\"qwen-4b-side\"] = { model = \"llamacpp-2/Qwen3.5-4B-Q4_K_M\", context = 8192 }"},
