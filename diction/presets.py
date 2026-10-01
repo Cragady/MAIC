@@ -1,27 +1,36 @@
-"""Presets: a scribe and a whisper model under one name, with a note on what the pair costs.
+"""Presets: a scribe backend, a scribe and a whisper model under one name, with a note on what they cost.
 
-`default` is diction as it always ran: Claude Haiku as the scribe, distil-large-v3 for speech. The other two keep
-the narration on this machine. `[presets.NAME]` in diction's config.toml adds a preset, or overrides a built-in one
+`default` is diction as it always ran: Claude Haiku through the `claude` CLI on the user's own login, and
+distil-large-v3 for speech. `api` is the same Haiku through Anthropic's API. `local` and `local-small` keep the
+narration on this machine. `[presets.NAME]` in diction's config.toml adds a preset, or overrides a built-in one
 field by field.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 
 from diction import whisper as whisper_mod
 from diction.scribe import resolve_agent, server_answers
 from diction.ui import BOLD, DIM, OFF, YELLOW
 
 BUILTIN = {
-    "default": {"scribe": "haiku-4.5", "whisper": "distil-large-v3",
-                "note": "narration goes to Anthropic, as before"},
-    "local": {"scribe": "llamacpp-2/Qwen3.5-9B-Q4_K_M-text", "whisper": "large-v3-turbo-q5_0",
+    "default": {"backend": "claude-cli", "scribe": "haiku", "whisper": "distil-large-v3",
+                "note": "narration goes to Anthropic through your claude login, as before"},
+    "api": {"backend": "api", "scribe": "haiku-4.5", "whisper": "distil-large-v3",
+            "note": "narration goes to Anthropic through its API; needs ANTHROPIC_API_KEY"},
+    "local": {"backend": "local", "scribe": "llamacpp-2/Qwen3.5-9B-Q4_K_M-text", "whisper": "large-v3-turbo-q5_0",
               "note": "needs the card to itself (~7.3 GB); nothing leaves the machine"},
-    "local-small": {"scribe": "llamacpp-2/Qwen3.5-4B-Q4_K_M", "whisper": "large-v3-turbo-q5_0",
+    "local-small": {"backend": "local", "scribe": "llamacpp-2/Qwen3.5-4B-Q4_K_M", "whisper": "large-v3-turbo-q5_0",
                     "note": "fits beside a parked ComfyUI (~4.7 GB); nothing leaves the machine"},
 }
-FIELDS = ("scribe", "whisper", "note")
+FIELDS = ("backend", "scribe", "whisper", "note")
+# claude-cli: the `claude` process diction always ran. api: a cloud provider through `maic model resolve`.
+# local: an OpenAI-compatible MAIC server (llama-server), likewise resolved, never a cloud one.
+BACKENDS = ("claude-cli", "api", "local")
+CLAUDE_MISSING = ("the default scribe runs through the claude CLI, which is not installed; "
+                  "--preset api (needs ANTHROPIC_API_KEY) or --preset local keeps working")
 
 # `maic models install` ids for the scribe models the built-in presets name.
 SCRIBE_CATALOG = {"Qwen3.5-9B-Q4_K_M-text": "qwen3.5-9b-text", "Qwen3.5-4B-Q4_K_M": "qwen3.5-4b"}
@@ -41,17 +50,23 @@ def chosen_name(flag: str | None) -> str:
     return flag or os.environ.get("DICTION_PRESET") or "default"
 
 
-def choose(flag: str | None, scribe: str | None, whisper: str | None, cfg: dict) -> tuple[str, str, str]:
-    """(preset, scribe, whisper). Each of the two models on its own: its flag, then its environment variable
-    (DICTION_AGENT_MODEL, DICTION_MODEL), then the chosen preset (--preset, then DICTION_PRESET), then `default`."""
+def choose(flag: str | None, backend: str | None, scribe: str | None, whisper: str | None,
+           cfg: dict) -> tuple[str, str, str, str]:
+    """(preset, backend, scribe, whisper). Each field on its own: its flag, then its environment variable
+    (DICTION_BACKEND, DICTION_AGENT_MODEL, DICTION_MODEL), then the chosen preset (--preset, then DICTION_PRESET),
+    then `default`."""
     presets = table(cfg)
     name = chosen_name(flag)
     if name not in presets:
         raise ValueError(f"no preset '{name}' (there: {', '.join(presets)})")
     p, d = presets[name], presets["default"]
-    return (name,
-            scribe or os.environ.get("DICTION_AGENT_MODEL") or p.get("scribe") or d["scribe"],
-            whisper or os.environ.get("DICTION_MODEL") or p.get("whisper") or d["whisper"])
+    out = (name,
+           backend or os.environ.get("DICTION_BACKEND") or p.get("backend") or d["backend"],
+           scribe or os.environ.get("DICTION_AGENT_MODEL") or p.get("scribe") or d["scribe"],
+           whisper or os.environ.get("DICTION_MODEL") or p.get("whisper") or d["whisper"])
+    if out[1] not in BACKENDS:
+        raise ValueError(f"no scribe backend '{out[1]}' (there: {', '.join(BACKENDS)})")
+    return out
 
 
 def whisper_state(name: str) -> str:
@@ -70,12 +85,19 @@ def scribe_installed(model: str) -> bool:
     return any(f.is_file() and not f.name.startswith("mmproj") for f in (root / model).glob("*.gguf"))
 
 
-def scribe_state(name: str) -> str:
+def scribe_state(backend: str, name: str) -> str:
+    if backend == "claude-cli":
+        exe = shutil.which("claude")
+        if not exe:
+            return f"{YELLOW}claude is not on PATH: {CLAUDE_MISSING}{OFF}"
+        return f"claude --model {name}, cloud: the narration's text goes to Anthropic; claude is {exe}"
     try:
         agent = resolve_agent(name)
     except Exception as e:
         return f"{YELLOW}{e}{OFF}"
     where = f"{agent['provider']}/{agent['model']}"
+    if backend == "local" and agent.get("remote"):
+        return f"{YELLOW}{where} is a cloud model, which the local backend refuses{OFF}"
     if agent.get("remote"):
         if agent.get("api_key_env") and os.environ.get(agent["api_key_env"]):
             key = f"{agent['api_key_env']} is set"
@@ -107,9 +129,12 @@ def show(cfg: dict, flag: str | None) -> int:
     for name, p in presets.items():
         mark = f" {DIM}(chosen){OFF}" if name == active else ""
         print(f"{BOLD}{name}{OFF}{mark}")
+        backend = p.get("backend") or presets["default"]["backend"]
         scribe = p.get("scribe") or presets["default"]["scribe"]
         whisper = p.get("whisper") or presets["default"]["whisper"]
-        print(f"  scribe   {scribe}: {scribe_state(scribe)}")
+        print(f"  backend  {backend}" if backend in BACKENDS
+              else f"  backend  {YELLOW}{backend}: not one of {', '.join(BACKENDS)}{OFF}")
+        print(f"  scribe   {scribe}: {scribe_state(backend, scribe)}")
         print(f"  whisper  {whisper}: {whisper_state(whisper)}")
         if p.get("note"):
             print(f"  {DIM}{p['note']}{OFF}")

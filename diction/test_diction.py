@@ -20,9 +20,10 @@ import wave
 from unittest import mock
 from pathlib import Path
 
-from diction import presets
+from diction import presets, scribe as scribe_mod
 from diction.document import Procedure, apply_reply
-from diction.scribe import HISTORY_EXCHANGES, SYSTEM_PROMPT_INSERT, SYSTEM_PROMPT_NORMAL, build_messages, resolve_agent
+from diction.scribe import (HISTORY_EXCHANGES, SYSTEM_PROMPT_INSERT, SYSTEM_PROMPT_NORMAL, ClaudeScribe, build_messages,
+                            resolve_agent)
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -124,6 +125,40 @@ sys.exit(1)
 """
 
 
+# `claude -p --input-format stream-json --output-format stream-json --verbose`, as diction reads it: one JSON user
+# message a line in; an init line, the assistant's message and a `result` line out per message. Every start, message
+# and end of input is noted in FAKE_CLAUDE_LOG.
+FAKE_CLAUDE = """#!/usr/bin/env python3
+import json, os, sys
+replies = json.loads(os.environ.get("FAKE_CLAUDE_REPLIES", "{}"))
+def note(**kw):
+    with open(os.environ["FAKE_CLAUDE_LOG"], "a") as f:
+        f.write(json.dumps(dict(pid=os.getpid(), **kw)) + "\\n")
+note(event="start", argv=sys.argv[1:], cwd=os.getcwd())
+print(json.dumps({"type": "system", "subtype": "init", "model": sys.argv[sys.argv.index("--model") + 1]}), flush=True)
+for line in sys.stdin:
+    payload = json.loads(line)["message"]["content"][0]["text"]
+    said = payload.split("<utterance>\\n", 1)[1].rsplit("\\n</utterance>", 1)[0]
+    note(event="message", said=said, payload=payload)
+    reply = replies.get(said, "SKIP")
+    print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": reply}]}}), flush=True)
+    if reply == "FAIL":
+        print(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True, "result": "overloaded"}), flush=True)
+    else:
+        print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": reply}), flush=True)
+note(event="eof")
+"""
+
+
+def claude_log(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def legacy_argv(prompt: str, model: str) -> list[str]:
+    return ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+            "--system-prompt", prompt, "--model", model, "--no-session-persistence"]
+
+
 def spec(provider, port, model="fake", context=16384):
     return {"provider": provider, "kind": "openai", "base_url": f"http://127.0.0.1:{port}/v1", "model": model,
             "context": context, "remote": False, "api_key_env": "", "api_key_command": ""}
@@ -152,15 +187,27 @@ class Pipeline(unittest.TestCase):
         maic = self.tmp / "maic"
         maic.write_text(FAKE_MAIC)
         maic.chmod(0o755)
+        # The fake claude is the only one on PATH; the real one is never reached.
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        (self.bin / "claude").write_text(FAKE_CLAUDE)
+        (self.bin / "claude").chmod(0o755)
+        self.claude_log = self.tmp / "claude.log"
         # The side server is a closed port here, so the default stays on the main one.
         self.specs = {"qwen-4b": spec("llamacpp", self.scribe.server_address[1]), "llamacpp-2/fake": spec("llamacpp-2", 9)}
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("DICTION_") and k != "ANTHROPIC_API_KEY"}
         self.env.update(PYTHONPATH=str(REPO), PYTHONDONTWRITEBYTECODE="1", MAIC_BIN=str(maic),
                         MAIC_MODELS_DIR=str(self.tmp / "models"), XDG_CONFIG_HOME=str(self.tmp / "config"),
+                        XDG_STATE_HOME=str(self.tmp / "state"), PATH=f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin",
+                        FAKE_CLAUDE_LOG=str(self.claude_log),
                         DICTION_WHISPER_URL=f"http://127.0.0.1:{self.whisper.server_address[1]}")
         # Most cases exercise the pipeline on a local scribe and whatever whisper-server holds; the preset cases
         # below drop these to get the defaults.
-        self.env.update(DICTION_AGENT_MODEL="qwen-4b", DICTION_MODEL="current")
+        self.env.update(DICTION_BACKEND="local", DICTION_AGENT_MODEL="qwen-4b", DICTION_MODEL="current")
+
+    def defaults(self):
+        for k in ("DICTION_BACKEND", "DICTION_AGENT_MODEL", "DICTION_MODEL"):
+            del self.env[k]
 
     def tearDown(self):
         for srv in (self.whisper, self.scribe):
@@ -249,40 +296,86 @@ class Pipeline(unittest.TestCase):
             side.shutdown()
             side.server_close()
 
-    def test_no_flags_is_legacy_haiku_and_distil_large_v3(self):
-        for k in ("DICTION_AGENT_MODEL", "DICTION_MODEL"):
-            del self.env[k]
+    def test_no_flags_is_legacy_claude_cli_haiku_and_distil_large_v3(self):
+        self.defaults()
+        said = ["open the shared inbox", "then filter to unbilled"]
+        self.env["FAKE_CLAUDE_REPLIES"] = json.dumps({said[0]: "APPEND: Open the shared inbox.",
+                                                      said[1]: "APPEND: Then filter to unbilled."})
+        ggml(self.tmp / "models" / "whisper" / "ggml-distil-large-v3.bin")
+        p, doc = self.run_diction(said)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("Open the shared inbox.\n\nThen filter to unbilled.", doc)
+        self.assertEqual(self.scribe.requests, [])
+        log = claude_log(self.claude_log)
+        starts = [e for e in log if e["event"] == "start"]
+        self.assertEqual(len(starts), 1, "one process for the session's scribe key, reused")
+        self.assertEqual(starts[0]["argv"], legacy_argv(SYSTEM_PROMPT_INSERT, "haiku"))
+        self.assertEqual(starts[0]["cwd"], str(self.tmp / "state" / "diction" / "agent-cwd"))
+        self.assertEqual([e["said"] for e in log if e["event"] == "message"], said)
+        self.assertIn("<steps>\n1. Open the shared inbox.\n</steps>", log[-2]["payload"])
+        self.assertEqual(log[-1]["event"], "eof", "stdin closed and the process ended on shutdown")
+        load = [r for r in self.whisper.requests if r[0] == "/load"]
+        self.assertTrue(load[0][1]["model"].endswith(b"/ggml-distil-large-v3.bin"), load)
+        self.assertIn("preset: default · backend: claude-cli · whisper: distil-large-v3 · scribe: haiku", p.stdout)
+        self.assertIn("the claude CLI sends the text of every utterance to Anthropic", p.stdout)
+
+    def test_claude_missing_names_the_other_presets(self):
+        self.defaults()
+        (self.bin / "claude").unlink()
+        p, _ = self.run_diction(["anything"])
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("the default scribe runs through the claude CLI, which is not installed; "
+                      "--preset api (needs ANTHROPIC_API_KEY) or --preset local keeps working", p.stdout)
+
+    def anthropic_run(self, *flags: str):
+        """One utterance through the Anthropic fake as haiku-4.5; returns (process, document, its requests)."""
         cloud = serve(FakeAnthropic)
         cloud.replies = {"open the shared inbox": "APPEND: Open the shared inbox."}
         self.specs["haiku-4.5"] = cloud_spec(cloud.server_address[1])
         self.env["ANTHROPIC_API_KEY"] = "test-key"
-        ggml(self.tmp / "models" / "whisper" / "ggml-distil-large-v3.bin")
         try:
-            p, doc = self.run_diction(["open the shared inbox"])
+            p, doc = self.run_diction(["open the shared inbox"], *flags)
         finally:
             cloud.shutdown()
             cloud.server_close()
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("Open the shared inbox.", doc)
-        self.assertEqual(self.scribe.requests, [])
+        self.assertEqual((self.scribe.requests, claude_log(self.claude_log)), ([], []))
         path, headers, body = cloud.requests[0]
         self.assertEqual((path, headers["x-api-key"]), ("/v1/messages", "test-key"))
         self.assertEqual((body["model"], body["system"]), ("claude-haiku-4-5-20251001", SYSTEM_PROMPT_INSERT))
-        load = [r for r in self.whisper.requests if r[0] == "/load"]
-        self.assertTrue(load[0][1]["model"].endswith(b"/ggml-distil-large-v3.bin"), load)
-        self.assertIn("preset: default · whisper: distil-large-v3 · scribe: anthropic/claude-haiku-4-5-20251001", p.stdout)
         self.assertIn("anthropic is a cloud provider", p.stdout)
+        return p
 
-    def test_default_without_a_key_names_the_variable_and_the_local_preset(self):
-        del self.env["DICTION_AGENT_MODEL"]
+    def test_preset_api_is_haiku_through_the_anthropic_api(self):
+        self.defaults()
+        ggml(self.tmp / "models" / "whisper" / "ggml-distil-large-v3.bin")
+        p = self.anthropic_run("--preset", "api")
+        self.assertIn("preset: api · backend: api · whisper: distil-large-v3 · scribe: anthropic/claude-haiku-4-5-20251001",
+                      p.stdout)
+
+    def test_backend_api_on_the_default_preset_maps_haiku(self):
+        self.defaults()
+        self.env["DICTION_MODEL"] = "current"
+        p = self.anthropic_run("--backend", "api")
+        self.assertIn("preset: default · backend: api", p.stdout)
+
+    def test_api_without_a_key_names_the_variable_and_the_local_preset(self):
+        self.defaults()
+        self.env["DICTION_MODEL"] = "current"
         self.specs["haiku-4.5"] = cloud_spec(9)
-        p, _ = self.run_diction(["anything"])
+        p, _ = self.run_diction(["anything"], "--preset", "api")
         self.assertEqual(p.returncode, 1)
         self.assertIn("set ANTHROPIC_API_KEY (or --preset local", p.stdout)
 
+    def test_local_backend_refuses_a_cloud_model(self):
+        self.specs["haiku-4.5"] = cloud_spec(9)
+        p, _ = self.run_diction(["anything"], "--agent-model", "haiku")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("anthropic/claude-haiku-4-5-20251001 is a cloud model; the local backend keeps the text", p.stdout)
+
     def test_preset_local_is_the_9b_text_entry_on_llamacpp_2(self):
-        for k in ("DICTION_AGENT_MODEL", "DICTION_MODEL"):
-            del self.env[k]
+        self.defaults()
         self.scribe.replies = {"hello there": "APPEND: Hello there."}
         self.specs["llamacpp-2/Qwen3.5-9B-Q4_K_M-text"] = spec("llamacpp-2", self.scribe.server_address[1],
                                                                "Qwen3.5-9B-Q4_K_M-text", 8192)
@@ -291,76 +384,81 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("Hello there.", doc)
         self.assertEqual(self.scribe.requests[0]["model"], "Qwen3.5-9B-Q4_K_M-text")
-        self.assertIn("preset: local · whisper: large-v3-turbo-q5_0 · scribe: llamacpp-2/Qwen3.5-9B-Q4_K_M-text", p.stdout)
+        self.assertIn("preset: local · backend: local · whisper: large-v3-turbo-q5_0 · "
+                      "scribe: llamacpp-2/Qwen3.5-9B-Q4_K_M-text", p.stdout)
         self.assertNotIn("cloud provider", p.stdout)
+        self.assertNotIn("Anthropic", p.stdout)
         load = [r for r in self.whisper.requests if r[0] == "/load"]
         self.assertTrue(load[0][1]["model"].endswith(b"/ggml-large-v3-turbo-q5_0.bin"), load)
 
-    def test_legacy_alias_haiku_reaches_claude_haiku(self):
-        cloud = serve(FakeAnthropic)
-        cloud.replies = {"hello there": "APPEND: Hello there."}
-        self.specs["haiku-4.5"] = cloud_spec(cloud.server_address[1])
-        self.env["ANTHROPIC_API_KEY"] = "test-key"
-        try:
-            p, doc = self.run_diction(["hello there"], "--agent-model", "haiku")
-        finally:
-            cloud.shutdown()
-            cloud.server_close()
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn("Hello there.", doc)
-        self.assertEqual((len(cloud.requests), len(self.scribe.requests)), (1, 0))
+    def test_legacy_alias_haiku_on_the_api_backend_is_haiku_4_5(self):
+        self.anthropic_run("--backend", "api", "--agent-model", "haiku")
         self.specs.update({"sonnet-5": cloud_spec(9, "claude-sonnet-5"), "opus-5.5": cloud_spec(9, "claude-opus-5-5")})
         with mock.patch.dict(os.environ, MAIC_BIN=self.env["MAIC_BIN"], FAKE_MAIC_SPECS=json.dumps(self.specs)):
             self.assertEqual(resolve_agent("sonnet")["model"], "claude-sonnet-5")
             self.assertEqual(resolve_agent("opus")["model"], "claude-opus-5-5")
 
+    def test_agent_model_on_claude_cli_goes_to_claude_model_unchanged(self):
+        del self.env["DICTION_BACKEND"]
+        p, _ = self.run_diction(["hello there"], "--agent-model", "sonnet", "--mode", "normal")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        start = claude_log(self.claude_log)[0]
+        self.assertEqual(start["argv"], legacy_argv(SYSTEM_PROMPT_NORMAL, "sonnet"))
+
     def test_config_preset_overrides_a_builtin_field_by_field(self):
         conf = self.tmp / "config" / "diction" / "config.toml"
         conf.parent.mkdir(parents=True)
         conf.write_text('[presets.local]\nwhisper = "distil-large-v3"\n\n[presets.mine]\nscribe = "qwen-4b"\n')
-        del self.env["DICTION_MODEL"]
+        self.defaults()
         self.specs["llamacpp-2/Qwen3.5-9B-Q4_K_M-text"] = spec("llamacpp-2", self.scribe.server_address[1])
         ggml(self.tmp / "models" / "whisper" / "ggml-distil-large-v3.bin")
-        del self.env["DICTION_AGENT_MODEL"]
         p, _ = self.run_diction(["hello there"], "--preset", "local")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn("whisper: distil-large-v3 · scribe: llamacpp-2/fake", p.stdout)
-        table = presets.table({"presets": {"local": {"whisper": "distil-large-v3"}, "mine": {"scribe": "qwen-4b"}}})
-        self.assertEqual(table["local"], dict(presets.BUILTIN["local"], whisper="distil-large-v3"))
+        self.assertIn("backend: local · whisper: distil-large-v3 · scribe: llamacpp-2/fake", p.stdout)
+        cfg = {"presets": {"local": {"whisper": "distil-large-v3"}, "mine": {"scribe": "qwen-4b", "backend": "local"}}}
+        self.assertEqual(presets.table(cfg)["local"], dict(presets.BUILTIN["local"], whisper="distil-large-v3"))
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(presets.choose("mine", None, None, {"presets": {"mine": {"scribe": "qwen-4b"}}}),
-                             ("mine", "qwen-4b", "distil-large-v3"))
+            self.assertEqual(presets.choose("mine", None, None, None, cfg), ("mine", "local", "qwen-4b", "distil-large-v3"))
+            with self.assertRaisesRegex(ValueError, "no scribe backend 'cloud'"):
+                presets.choose("mine", None, None, None, {"presets": {"mine": {"backend": "cloud"}}})
 
     def test_presets_lists_each_with_what_is_missing(self):
         conf = self.tmp / "config" / "diction" / "config.toml"
         conf.parent.mkdir(parents=True)
-        conf.write_text('[presets.mine]\nscribe = "llamacpp-2/Qwen3.5-4B-Q4_K_M"\nnote = "my own"\n')
+        conf.write_text('[presets.mine]\nbackend = "local"\nscribe = "llamacpp-2/Qwen3.5-4B-Q4_K_M"\nnote = "my own"\n')
         self.specs.update({"haiku-4.5": cloud_spec(9),
                            "llamacpp-2/Qwen3.5-9B-Q4_K_M-text": spec("llamacpp-2", 9, "Qwen3.5-9B-Q4_K_M-text", 8192),
                            "llamacpp-2/Qwen3.5-4B-Q4_K_M": spec("llamacpp-2", 9, "Qwen3.5-4B-Q4_K_M", 8192)})
+        self.defaults()
         p = self.diction("presets")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         out = re.sub(r"\x1b\[[0-9;]*m", "", p.stdout)
-        self.assertEqual(re.findall(r"^(\S+)", out, re.M), ["default", "local", "local-small", "mine"])
+        self.assertEqual(re.findall(r"^(\S+)", out, re.M), ["default", "api", "local", "local-small", "mine"])
+        default, api, local, small, mine = re.split(r"^\S.*\n", out, flags=re.M)[1:]
         self.assertIn("default (chosen)", out)
-        self.assertIn("scribe   haiku-4.5: anthropic/claude-haiku-4-5-20251001, cloud", out)
-        self.assertIn("no key: set ANTHROPIC_API_KEY", out)
-        self.assertIn("not installed: maic models install whisper-distil-large-v3", out)
-        self.assertIn("not installed: maic models install whisper-large-v3-turbo-q5_0", out)
-        self.assertIn("not installed: maic models install qwen3.5-9b-text", out)
-        self.assertIn("not installed: maic models install qwen3.5-4b", out)
-        self.assertIn("server not answering at http://127.0.0.1:9/v1: maic up llamacpp-2", out)
-        self.assertIn("narration goes to Anthropic, as before", out)
-        self.assertIn("my own", out)
-        self.assertIn("whisper  distil-large-v3", out.split("\nmine")[1], "a config preset without whisper takes the default's")
+        self.assertIn("backend  claude-cli\n  scribe   haiku: claude --model haiku, cloud", default)
+        self.assertIn(f"claude is {self.bin / 'claude'}", default)
+        self.assertIn("narration goes to Anthropic through your claude login, as before", default)
+        self.assertIn("backend  api\n  scribe   haiku-4.5: anthropic/claude-haiku-4-5-20251001, cloud", api)
+        self.assertIn("no key: set ANTHROPIC_API_KEY", api)
+        self.assertIn("not installed: maic models install whisper-distil-large-v3", default)
+        self.assertIn("backend  local", local)
+        self.assertIn("not installed: maic models install whisper-large-v3-turbo-q5_0", local)
+        self.assertIn("not installed: maic models install qwen3.5-9b-text", local)
+        self.assertIn("not installed: maic models install qwen3.5-4b", small)
+        self.assertIn("server not answering at http://127.0.0.1:9/v1: maic up llamacpp-2", small)
+        self.assertIn("my own", mine)
+        self.assertIn("whisper  distil-large-v3", mine, "a config preset without whisper takes the default's")
 
         models = self.tmp / "models"
         ggml(models / "whisper" / "ggml-large-v3-turbo-q5_0.bin")
         (models / "llamacpp" / "Qwen3.5-4B-Q4_K_M").mkdir(parents=True)
         (models / "llamacpp" / "Qwen3.5-4B-Q4_K_M" / "Qwen3.5-4B-Q4_K_M.gguf").write_bytes(b"GGUF")
+        (self.bin / "claude").unlink()
         self.env.update(DICTION_PRESET="local-small", ANTHROPIC_API_KEY="test-key")
         out = re.sub(r"\x1b\[[0-9;]*m", "", self.diction("presets").stdout)
         self.assertIn("local-small (chosen)", out)
+        self.assertIn("claude is not on PATH: the default scribe runs through the claude CLI", out)
         self.assertIn("ANTHROPIC_API_KEY is set", out)
         self.assertIn("whisper  large-v3-turbo-q5_0: installed (ggml-large-v3-turbo-q5_0.bin)", out)
         self.assertNotIn("maic models install qwen3.5-4b", out)
@@ -421,19 +519,75 @@ class Trimming(unittest.TestCase):
 class Precedence(unittest.TestCase):
     def test_nothing_set_is_the_default_preset(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(presets.choose(None, None, None, {}), ("default", "haiku-4.5", "distil-large-v3"))
-            with self.assertRaisesRegex(ValueError, r"no preset 'nope' \(there: default, local, local-small\)"):
-                presets.choose("nope", None, None, {})
+            self.assertEqual(presets.choose(None, None, None, None, {}), ("default", "claude-cli", "haiku", "distil-large-v3"))
+            with self.assertRaisesRegex(ValueError, r"no preset 'nope' \(there: default, api, local, local-small\)"):
+                presets.choose("nope", None, None, None, {})
 
     def test_flag_beats_environment_beats_preset(self):
         with mock.patch.dict(os.environ, {"DICTION_PRESET": "local"}, clear=True):
-            self.assertEqual(presets.choose(None, None, None, {}),
-                             ("local", "llamacpp-2/Qwen3.5-9B-Q4_K_M-text", "large-v3-turbo-q5_0"))
-            self.assertEqual(presets.choose("local-small", None, None, {}),
-                             ("local-small", "llamacpp-2/Qwen3.5-4B-Q4_K_M", "large-v3-turbo-q5_0"))
-            os.environ.update(DICTION_AGENT_MODEL="qwen-4b", DICTION_MODEL="distil-large-v3")
-            self.assertEqual(presets.choose(None, None, None, {}), ("local", "qwen-4b", "distil-large-v3"))
-            self.assertEqual(presets.choose(None, "sonnet", "current", {}), ("local", "sonnet", "current"))
+            self.assertEqual(presets.choose(None, None, None, None, {}),
+                             ("local", "local", "llamacpp-2/Qwen3.5-9B-Q4_K_M-text", "large-v3-turbo-q5_0"))
+            self.assertEqual(presets.choose("local-small", None, None, None, {}),
+                             ("local-small", "local", "llamacpp-2/Qwen3.5-4B-Q4_K_M", "large-v3-turbo-q5_0"))
+            os.environ.update(DICTION_BACKEND="api", DICTION_AGENT_MODEL="qwen-4b", DICTION_MODEL="distil-large-v3")
+            self.assertEqual(presets.choose(None, None, None, None, {}), ("local", "api", "qwen-4b", "distil-large-v3"))
+            self.assertEqual(presets.choose(None, "claude-cli", "sonnet", "current", {}),
+                             ("local", "claude-cli", "sonnet", "current"))
+
+
+class ClaudeCli(unittest.TestCase):
+    """The claude-cli backend in process, against the fake claude: one process per scribe key, reaped on close."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="diction-claude-"))
+        (self.tmp / "bin").mkdir()
+        (self.tmp / "bin" / "claude").write_text(FAKE_CLAUDE)
+        (self.tmp / "bin" / "claude").chmod(0o755)
+        self.log = self.tmp / "claude.log"
+        replies = {"one": "APPEND: One.", "two": "APPEND: Two.", "three": "APPEND: Three.", "boom": "FAIL"}
+        patches = [mock.patch.dict(os.environ, PATH=f"{self.tmp / 'bin'}{os.pathsep}/usr/bin{os.pathsep}/bin",
+                                   FAKE_CLAUDE_LOG=str(self.log), FAKE_CLAUDE_REPLIES=json.dumps(replies)),
+                   mock.patch.object(scribe_mod, "AGENT_CWD", self.tmp / "agent-cwd")]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.doc = Procedure(self.tmp / "d.md", "D")
+
+    def test_one_process_per_scribe_key_reused_and_reaped(self):
+        agent = ClaudeScribe("haiku", 30)
+        self.assertEqual(agent.ask(self.doc, "one", "insert"), "APPEND: One.")
+        self.doc.append("One.")
+        self.assertEqual(agent.ask(self.doc, "two", "insert"), "APPEND: Two.")
+        self.assertEqual(agent.ask(self.doc, "three", "normal"), "APPEND: Three.")
+        with self.assertRaisesRegex(RuntimeError, "overloaded"):
+            agent.ask(self.doc, "boom", "normal")
+        procs = list(agent.procs.values())
+        agent.close()
+        self.assertEqual([p.returncode for p in procs], [0, 0])
+        for p in procs:
+            p.stdout.close()
+        log = claude_log(self.log)
+        starts = [e for e in log if e["event"] == "start"]
+        self.assertEqual([s["argv"] for s in starts],
+                         [legacy_argv(SYSTEM_PROMPT_INSERT, "haiku"), legacy_argv(SYSTEM_PROMPT_NORMAL, "haiku")])
+        self.assertEqual({s["cwd"] for s in starts}, {str(self.tmp / "agent-cwd")})
+        self.assertEqual([e["said"] for e in log if e["event"] == "message"], ["one", "two", "three", "boom"])
+        self.assertEqual(sum(e["event"] == "eof" for e in log), 2)
+        second = next(e for e in log if e.get("said") == "two")
+        self.assertIn("<steps>\n1. One.\n</steps>\n\n<utterance>\ntwo\n</utterance>", second["payload"])
+
+    def test_a_dead_process_is_respawned(self):
+        agent = ClaudeScribe("haiku", 30)
+        agent.ask(self.doc, "one", "insert")
+        first = agent.procs["insert"]
+        first.kill()
+        first.wait()
+        self.assertEqual(agent.ask(self.doc, "two", "insert"), "APPEND: Two.")
+        self.assertIsNot(agent.procs["insert"], first)
+        agent.close()
+        for p in (first, agent.procs["insert"]):
+            p.stdin.close()
+            p.stdout.close()
 
 
 @unittest.skipUnless(os.environ.get("MAIC_BIN"), "needs the built maic (MAIC_BIN; ctest sets it)")

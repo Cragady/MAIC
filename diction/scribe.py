@@ -1,10 +1,12 @@
 """The scribe: a chat model that turns each utterance into directives for the document.
 
-It was a persistent headless `claude` process per mode. It is now an OpenAI-compatible chat client (stdlib urllib,
-SSE streaming) against llama-server on loopback, one conversation per scribe key as before, with the same system
-prompts and per-utterance messages. A local window is small, so each request carries the system prompt, the
-document, and only as many earlier exchanges as fit (see build_messages). `--agent-model` is resolved by
-`maic model resolve NAME`; a cloud preset works too, and diction says so at start.
+Three backends, one conversation per scribe key in each, with the same system prompts and per-utterance messages:
+
+* claude-cli, ClaudeScribe: a persistent headless `claude` process per mode, on the user's own login, as diction
+  always ran. Ported from the original diction.py.
+* api and local, Scribe: a chat client (stdlib urllib) for a provider `maic model resolve NAME` names, Anthropic's
+  Messages API or an OpenAI-compatible server such as llama-server on loopback. A local window is small, so each
+  request carries the system prompt, the document, and only as many earlier exchanges as fit (see build_messages).
 """
 
 from __future__ import annotations
@@ -19,9 +21,17 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
+from pathlib import Path
+
 from diction.document import Procedure, apply_reply
-from diction.ui import DIM, OFF, RED, say
+from diction.ui import DIM, OFF, RED, esc, say
 from diction.whisper import maic_bin
+
+# A neutral working directory for the claude process, so it picks up no project's instructions. The original kept
+# it beside diction.py; an installed copy's directory may not be writable, so it lives in the state directory.
+AGENT_CWD = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "diction" / "agent-cwd"
+# How many of the newest passages each claude-cli message carries, as the original's Procedure.context().
+CLAUDE_CONTEXT = 25
 
 SYSTEM_PROMPT_INSERT = """You turn spoken narration into a clean written transcript.
 
@@ -281,6 +291,87 @@ def api_key(agent: dict) -> str:
     return ""
 
 
+class ClaudeScribe:
+    """A long-lived headless `claude` session that turns utterances into
+    directives. Kept persistent so we pay CLI startup once, not per utterance."""
+
+    def __init__(self, model: str, timeout: int, errlog=None,
+                 prompts: dict | None = None):
+        self.model = model
+        # One session per mode, spawned on first use. A single session that knows
+        # about both modes does not hold the line: with the command markers listed
+        # in its own prompt, it emits commands during insert-mode turns no matter
+        # how the mode is stated per turn. Measured, not assumed.
+        self.prompts = prompts or {"normal": SYSTEM_PROMPT_NORMAL,
+                                   "insert": SYSTEM_PROMPT_INSERT}
+        self.timeout = timeout
+        self.errlog = errlog
+        self.procs: dict[str, subprocess.Popen] = {}
+        AGENT_CWD.mkdir(parents=True, exist_ok=True)
+
+    def _spawn(self, key: str) -> subprocess.Popen:
+        return subprocess.Popen(
+            ["claude", "-p", "--input-format", "stream-json",
+             "--output-format", "stream-json", "--verbose",
+             "--system-prompt", self.prompts[key], "--model", self.model,
+             "--no-session-persistence"],
+            cwd=AGENT_CWD, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=self.errlog or subprocess.DEVNULL, text=True, bufsize=1,
+            # Own process group: Ctrl-C hits the terminal's foreground group, and
+            # we still want the scribe alive to finish draining the queue.
+            start_new_session=True)
+
+    def ask(self, proc_doc: Procedure, text: str, key: str) -> str:
+        key = key if key in self.prompts else next(iter(self.prompts))
+        proc = self.procs.get(key)
+        if proc is None or proc.poll() is not None:
+            proc = self.procs[key] = self._spawn(key)
+        rows = proc_doc.recap(CLAUDE_CONTEXT)
+        context = "\n".join(f"{i}. {s}" for i, s in rows) or "(empty - no steps recorded yet)"
+        payload = (f"<steps>\n{context}\n</steps>\n\n"
+                   f"<utterance>\n{text}\n</utterance>")
+        msg = {"type": "user",
+               "message": {"role": "user", "content": [{"type": "text", "text": payload}]}}
+        try:
+            proc.stdin.write(json.dumps(msg) + "\n")
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            proc = self.procs[key] = self._spawn(key)
+            proc.stdin.write(json.dumps(msg) + "\n")
+            proc.stdin.flush()
+
+        # readline() rather than `for line in proc.stdout`: iterating a pipe
+        # read-aheads in chunks and can block past the deadline.
+        deadline = time.time() + self.timeout
+        while time.time() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                raise RuntimeError("scribe session ended unexpectedly")
+            try:
+                m = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if m.get("type") == "result":
+                if m.get("is_error"):
+                    detail = esc(str(m.get("result") or m.get("subtype") or "unknown error"))
+                    raise RuntimeError(detail[:200])
+                return (m.get("result") or "").strip()
+        raise TimeoutError(f"no reply in {self.timeout}s")
+
+    def close(self):
+        for proc in self.procs.values():
+            if proc.poll() is not None:
+                continue
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+
+
 class ContextOverflow(RuntimeError):
     pass
 
@@ -314,6 +405,9 @@ class Scribe:
         history.append((text, reply))
         del history[:-HISTORY_EXCHANGES]
         return reply
+
+    def close(self):
+        """Nothing to reap: each request is its own connection."""
 
     def _log(self, line: str):
         if self.errlog:
@@ -372,7 +466,7 @@ class Scribe:
         return "".join(b.get("text", "") for b in reply.get("content", []) if b.get("type") == "text").strip()
 
 
-def scribe(agent: Scribe, in_q: queue.Queue, proc_doc: Procedure,
+def scribe(agent: Scribe | ClaudeScribe, in_q: queue.Queue, proc_doc: Procedure,
            done: threading.Event, journal=None, allow_commands: bool = True,
            record_commands: bool = False):
     try:
@@ -398,5 +492,6 @@ def scribe(agent: Scribe, in_q: queue.Queue, proc_doc: Procedure,
                     journal.applied(ts, f"scribe failed: {e}")
             proc_doc.narrate(ts, text, outcome)
     finally:
+        agent.close()
         done.set()
 
