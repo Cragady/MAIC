@@ -196,6 +196,36 @@ class TuiTest(unittest.TestCase):
         text = tui.wait_for("nvim: nothing to interrupt (MAIC is idle)")
         self.assertIn("│ a draft", text)
 
+    def test_keymap_check_after_a_lazy_lock_change(self):
+        # A changed lazy-lock.json makes MAIC run the keymap check once in the background (headless nvim with this
+        # home's own nvim config) and report the collisions the last run did not have.
+        if not shutil.which("nvim"):
+            self.skipTest("nvim is not on PATH")
+        cfg = tempfile.mkdtemp(prefix="maic-tui-keys-", dir=self.home)
+        shutil.copytree(os.path.join(self.home, "config", "maic"), os.path.join(cfg, "maic"))
+        os.makedirs(os.path.join(cfg, "nvim"))
+        init, lock = os.path.join(cfg, "nvim", "init.lua"), os.path.join(cfg, "nvim", "lazy-lock.json")
+        with open(init, "w") as f:
+            f.write("vim.keymap.set('t', '<C-w>', '<C-\\\\><C-n><C-w>', { desc = 'window from a terminal' })\n")
+        with open(lock, "w") as f:
+            f.write('{ "lazy.nvim": { "branch": "main", "commit": "1111111" } }\n')
+        env = dict(self.env, XDG_CONFIG_HOME=cfg, XDG_STATE_HOME=tempfile.mkdtemp(prefix="maic-tui-state-", dir=self.home))
+        first = self.start(env=env)
+        text = first.wait_for("nvim keymaps, checked for the first time: 1 collide: maic nvim keymaps", timeout=60)
+        self.assertIn("MAIC never gets <C-w>", text)
+        with open(init, "a") as f:
+            f.write("vim.keymap.set('t', '<C-p>', '<C-\\\\><C-n>p', { desc = 'paste from a terminal' })\n")
+        with open(lock, "w") as f:
+            f.write('{ "lazy.nvim": { "branch": "main", "commit": "2222222" } }\n')
+        second = self.start(env=env)
+        text = second.wait_for("a plugin update added keymaps that collide: maic nvim keymaps", timeout=60)
+        self.assertIn("MAIC never gets <C-p>", text)
+        self.assertNotIn("MAIC never gets <C-w>", text)  # known since the last run
+        third = self.start(env=env)  # the same lock file: no second run
+        time.sleep(3)
+        third.settle()
+        self.assertNotIn("collide", third.text())
+
     def test_quit_prints_the_transcript_line(self):
         tui = self.start()
         tui.send(":q<cr>", settle=False)
