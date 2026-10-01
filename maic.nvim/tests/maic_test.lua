@@ -1,5 +1,6 @@
 -- maic.nvim's own tests: nvim --headless -u NONE -i NONE -n -l maic.nvim/tests/maic_test.lua
 -- Exit 0 when every check passes. Run by MAIC's ctest `nvim` (cli/tests/nvim_test.cpp).
+vim.g.mapleader = " "
 local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
 vim.opt.rtp:prepend(root)
 vim.cmd("runtime plugin/maic.lua")
@@ -97,6 +98,37 @@ expect(maic.config.open == "float" and maic.config.cmd == "maic" and maic.config
 expect(maic.defaults.keymaps.send == "<leader>ms" and maic.defaults.open == "vsplit", "and leaves the defaults table as it was")
 maic.setup({ keymaps = true })
 expect(mapped("<leader>mm") and mapped("<leader>ms"), "keymaps = true is the defaults")
+
+io.write("never overwrite a mapping\n")
+local notes = {}
+local real_notify = vim.notify
+vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
+maic.setup({ keymaps = false })
+vim.keymap.set("n", "<leader>mq", "<cmd>echo 'mine'<cr>", { desc = "my quickfix" })
+vim.keymap.set("n", "<leader>mdx", "<cmd>echo 'longer'<cr>")
+maic.setup({})
+vim.wait(500, function() return #notes > 0 end)
+expect(vim.fn.maparg("<leader>mq", "n", false, true).desc == "my quickfix", "a key someone else holds keeps their mapping")
+expect(not mapped("<leader>md") and mapped("<leader>mD") and mapped("<leader>mm"), "a key that is a prefix of another mapping is skipped too, the rest are set")
+expect(#notes == 1 and notes[1].level == vim.log.levels.WARN, "the skipped keys are reported in one warning")
+local msg = notes[1] and notes[1].msg or ""
+expect(msg:find("<leader>mq (normal) skipped, held by \"my quickfix\"", 1, true) ~= nil and msg:find("<leader>md (normal) skipped, held by <Space>mdx", 1, true) ~= nil,
+  "naming the key, the mode and what holds it: " .. msg)
+maic.setup({})
+vim.wait(200)
+expect(#notes == 1, "once per session: a second setup() says nothing new")
+maic.setup({ keymaps = { quickfix = "<leader>mq" } })
+vim.wait(500, function() return #notes > 1 end)
+expect(vim.fn.maparg("<leader>mq", "n", false, true).desc == "MAIC: send the quickfix list", "a key the user names in opts is set anyway")
+expect(#notes == 2 and notes[2].msg:find("<leader>mq (normal), your keymaps.quickfix, shadows \"my quickfix\"", 1, true) ~= nil,
+  "and reported as shadowing what held it: " .. (notes[2] and notes[2].msg or ""))
+vim.g.maic_keymap_check = 1
+maic.setup({ keymaps = { toggle = "<leader>zt" } })
+expect(not mapped("<leader>zt") and not mapped("<leader>mm"), "with g:maic_keymap_check set, setup() plans the keys and sets none")
+vim.g.maic_keymap_check = nil
+pcall(vim.keymap.del, "n", "<leader>mq")
+vim.keymap.del("n", "<leader>mdx")
+vim.notify = real_notify
 
 for _, j in ipairs(vim.api.nvim_list_chans()) do
   if j.mode == "terminal" then pcall(vim.fn.jobstop, j.id) end

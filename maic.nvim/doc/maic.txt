@@ -165,6 +165,23 @@ Set by |maic.setup()|; the name is the key in the `keymaps` table.
     workspace_diagnostics   <leader>mD    normal   :MaicDiagnostics!
     quickfix                <leader>mq    normal   |:MaicQuickfix|
 
+                                                       *maic-never-overwrite*
+maic.nvim never overwrites a mapping. Before it sets a default key it asks
+|maparg()| and |mapcheck()| for that mode: when another mapping holds the key,
+or shares a prefix with it (so one of the two would wait 'timeoutlen'), the
+key is skipped. Every skipped key is reported once per session in one
+|vim.notify()| warning, naming the key, the mode and what holds it: the
+mapping's description or right-hand side and the script and line that set
+it. Mappings made from Lua name their file only when nvim runs with -V1;
+otherwise the warning says "Lua". >
+    maic.nvim never overwrites a mapping:
+      <leader>mq (normal) skipped, held by "Quickfix list" from ~/.config/nvim/lua/keys.lua:12
+<
+A key you name in `keymaps` is set even when something holds it, since you
+chose it, and is reported the same way as shadowing what held it. The keys
+maic.nvim sets in its own buffers are buffer-local and never touch your
+global mappings. |:checkhealth| maic lists every key.
+
 ==============================================================================
 6. EVENTS                                                      *maic-events*
 

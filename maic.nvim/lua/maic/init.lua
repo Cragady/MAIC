@@ -286,15 +286,45 @@ function M.planned(opts)
   return out
 end
 
+-- Keys left alone or shadowed, said once per session in one vim.notify (:h maic-never-overwrite).
+local reported, pending = {}, {}
+local function report(line)
+  if reported[line] then return end
+  reported[line] = true
+  pending[#pending + 1] = line
+  if #pending > 1 then return end
+  vim.schedule(function()
+    vim.notify("maic.nvim never overwrites a mapping:\n  " .. table.concat(pending, "\n  ")
+      .. "\nName another key in setup({ keymaps = { ... } }); :checkhealth maic lists every key.", vim.log.levels.WARN)
+    pending = {}
+  end)
+end
+
+-- Sets `k` unless another mapping holds its key (a default is then skipped and reported; a key the user named is
+-- set and reported). `buf`: buffer-local there, with nowait. True when it was set.
+local function map(k, buf)
+  local K = require("maic.keymaps")
+  local clash = K.clash(k.mode, k.lhs, buf)
+  local where = ("%s (%s%s)"):format(k.lhs, K.mode_name(k.mode), buf and ", MAIC's buffer" or "")
+  if clash and not clash.shadow and not k.explicit then
+    report(where .. " skipped, held by " .. clash.holder)
+    return false
+  end
+  if clash and k.explicit then report(where .. ", your keymaps." .. k.name .. ", shadows " .. clash.holder) end
+  vim.keymap.set(k.mode, k.lhs, k.rhs, { desc = k.desc, silent = true, buffer = buf, nowait = buf ~= nil })
+  return true
+end
+
 local set = {} -- the global keymaps the last setup() made, so a second setup() replaces them
 
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), opts or {})
   for _, k in ipairs(set) do pcall(vim.keymap.del, k.mode, k.lhs) end
   set = {}
+  -- `maic nvim keymaps` runs the user's config with this set: plan the keys, set none, say nothing.
+  if vim.g.maic_keymap_check == 1 then return end
   for _, k in ipairs(M.planned(opts)) do
-    vim.keymap.set(k.mode, k.lhs, k.rhs, { desc = k.desc, silent = true })
-    set[#set + 1] = k
+    if map(k) then set[#set + 1] = k end
   end
 end
 

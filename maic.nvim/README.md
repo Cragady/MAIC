@@ -88,6 +88,8 @@ Set by `setup()` unless `keymaps = false`; the first column is the name in the `
 | `workspace_diagnostics` | `<leader>mD` | normal | `:MaicDiagnostics!` |
 | `quickfix` | `<leader>mq` | normal | `:MaicQuickfix` |
 
+maic.nvim never overwrites a mapping. Before it sets a default key it checks `maparg()` and `mapcheck()` in that mode; when another mapping holds the key or shares a prefix with it, the key is skipped, and every skipped key is reported once per session in one warning naming the key, the mode and what holds it (its description and the script and line that set it). A key you name in `keymaps` is set anyway, since you chose it, and reported as shadowing what held it.
+
 ## Lua
 
 `require("maic")` also has `send_text(text)` (returns `"rpc"`, `"paste"` or nil), `command(":cmd")` (runs a command in a connected MAIC as if typed), `channel()`, `open(args)`, `toggle()`, and the formatters `format_snippet`, `format_diagnostics`, `format_quickfix`.
