@@ -24,9 +24,17 @@ class NvimHost;
 //   maic.notice(text)        show a line in the conversation window (or print, headless)
 //   maic.nvim                when MAIC runs inside a connected nvim (docs/nvim.md): exec(lua, ...), buffers(),
 //                            diagnostics(path?), current(), all run in the host
+//
+// LuaLibs::Restricted is the state a project's settings file runs in (docs/settings.md): base, string, table,
+// math and bit; os with only getenv, time, date and clock; load and loadstring for text chunks only; no io,
+// package, require, dofile, loadfile, debug, collectgarbage, ffi, jit, newproxy, setfenv, getfenv or
+// string.dump; `maic` holds only workspace, version, home and hostname. The JIT is off and a chunk that runs
+// longer than 2 s is stopped with an error at its line. Reaching for a missing library is an error at its line.
+enum class LuaLibs { Full, Restricted };
+
 class Lua {
 public:
-    explicit Lua(std::filesystem::path workspace, std::function<void(const std::string&)> notice = {});
+    explicit Lua(std::filesystem::path workspace, std::function<void(const std::string&)> notice = {}, LuaLibs libs = LuaLibs::Full);
     ~Lua();
     Lua(const Lua&) = delete;
     Lua& operator=(const Lua&) = delete;
@@ -50,6 +58,7 @@ public:
     struct State;  // public for the C callbacks; not part of the interface
 
 private:
+    int load_chunk(const std::string& code, const std::string& chunk_name);  // luaL_loadbuffer, text only when restricted
     State* st_;
 };
 

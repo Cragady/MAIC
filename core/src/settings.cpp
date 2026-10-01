@@ -1,16 +1,17 @@
 #include "maic/settings.hpp"
 
-#include "maic/instructions.hpp"
 #include "maic/lua.hpp"
 #include "maic/paths.hpp"
 #include "maic/session.hpp"
 #include "maic/theme.hpp"
+#include "maic/trust.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <regex>
 #include <stdexcept>
 
 namespace maic {
@@ -269,9 +270,20 @@ fs::path settings_path() {
 
 namespace {
 
+// The global file's own choice of Lua, read from its text: it has to be known before the file runs, so it counts
+// only when written literally (global_lua = "restricted").
+bool asks_restricted(const fs::path& lua_path) {
+    std::ifstream in(lua_path, std::ios::binary);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    static const std::regex re(R"((^|[\s,{;])global_lua\s*=\s*["']restricted["'])");
+    return std::regex_search(text, re);
+}
+
 // Applies one settings location over `s`: `<stem>.lua` when it exists (a chunk returning a table), else
-// `<stem>.json`. Scalars replace, providers merge by name, styles merge by role.
-void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspace) {
+// `<stem>.json`. Scalars replace, providers merge by name, styles merge by role. `global` is the user's own
+// file: its Lua has the full library unless it says global_lua = "restricted", and only it sets global_lua and
+// the trust_* keys. A project's file always runs in restricted Lua (a settings file is data).
+void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspace, bool global) {
     fs::path lua_path = json_path;
     lua_path.replace_extension(".lua");
     json j;
@@ -279,11 +291,16 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
     std::error_code ec;
     if (fs::is_regular_file(lua_path, ec)) {
         path = lua_path;
+        bool restricted = !global || asks_restricted(lua_path);
         try {
-            Lua lua(workspace);
+            Lua lua(workspace, {}, restricted ? LuaLibs::Restricted : LuaLibs::Full);
             j = lua.eval_table_file(lua_path);
         } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("settings: ") + e.what());
+            std::string what = e.what();
+            throw std::runtime_error("settings: " + (what.find(lua_path.string()) == std::string::npos ? lua_path.string() + ": " : "") + what);
+        }
+        if (global && j.is_object() && j.value("global_lua", "") == "restricted" && !restricted) {
+            throw std::runtime_error(lua_path.string() + ": global_lua = \"restricted\" counts only written literally, since it decides how the file runs");
         }
     } else {
         std::ifstream in(json_path);
@@ -297,6 +314,33 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
     }
     s.sources.push_back(path);
     try {
+        if (global) {
+            s.global_lua = j.value("global_lua", s.global_lua);
+            if (s.global_lua != "full" && s.global_lua != "restricted") throw std::runtime_error(path.string() + ": global_lua must be \"full\" or \"restricted\"");
+            s.trust_strictness = j.value("trust_strictness", s.trust_strictness);
+            if (!valid_trust_level(s.trust_strictness)) throw std::runtime_error(path.string() + ": trust_strictness must be \"strict\", \"standard\" or \"relaxed\"");
+            if (j.contains("trust_identities") && j["trust_identities"].is_array()) s.trust_identities = j["trust_identities"].get<std::vector<std::string>>();
+            json levels = j.value("trust_levels", json::object());
+            for (const auto& [dir, level] : levels.items()) {
+                if (!level.is_string() || !valid_trust_level(level.get<std::string>())) throw std::runtime_error(path.string() + ": trust_levels." + dir + " must be \"strict\", \"standard\" or \"relaxed\"");
+                s.trust_levels[dir] = level.get<std::string>();
+            }
+            json chain = j.value("instructions", json::object());
+            if (chain.contains("project_markers") && chain["project_markers"].is_array()) s.project_markers = chain["project_markers"].get<std::vector<std::string>>();
+            for (auto& m : s.project_markers) {
+                while (m.size() > 1 && m.back() == '/') m.pop_back();
+            }
+            s.instructions_bound = chain.value("bound", s.instructions_bound);
+            if (s.instructions_bound != "project" && s.instructions_bound != "home") throw std::runtime_error(path.string() + ": instructions.bound must be \"project\" or \"home\"");
+        } else if (j.is_object()) {
+            for (const auto& [key, v] : j.items()) {
+                if (key == "global_lua" || key.rfind("trust_", 0) == 0) s.warnings.push_back(path.string() + ": " + key + " is ignored: only your global settings file sets it");
+            }
+            json chain = j.value("instructions", json::object());
+            for (const char* key : {"project_markers", "bound"}) {
+                if (chain.is_object() && chain.contains(key)) s.warnings.push_back(path.string() + ": instructions." + key + " is ignored: only your global settings file sets it");
+            }
+        }
         s.model = j.value("model", s.model);
         s.mode = j.value("mode", s.mode);
         s.think = j.value("think", s.think);
@@ -499,22 +543,14 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
 
 Settings load_settings(const fs::path& workspace) {
     Settings s;
-    apply_file(s, settings_path(), workspace);
-    // Project layers: from just under $HOME down to the workspace, like instruction files.
-    std::error_code ec;
-    fs::path home = fs::weakly_canonical(std::getenv("HOME"), ec);
-    fs::path ws = fs::weakly_canonical(workspace, ec);
-    std::vector<fs::path> dirs;
-    for (fs::path d = ws; !d.empty(); d = d.parent_path()) {
-        if (d == home) break;
-        dirs.push_back(d);
-        auto rel = d.lexically_relative(home);
-        if (rel.empty() || *rel.begin() == "..") break;  // not under $HOME
-        if (d == d.root_path()) break;
-    }
-    for (auto it = dirs.rbegin(); it != dirs.rend(); ++it) {
-        apply_file(s, *it / ".maic" / "settings.json", workspace);
-        apply_file(s, *it / ".maic" / "settings.local.json", workspace);
+    apply_file(s, settings_path(), workspace, true);
+    set_trust_config({s.trust_strictness, s.trust_identities, s.trust_levels, s.project_markers, s.instructions_bound});
+    // Project layers: the config chain (the project root, or just under $HOME, down to the workspace), like
+    // instruction files, each only once its directory is trusted (docs/harness.md, Trust).
+    for (const auto& d : config_chain(workspace)) {
+        if (!trusted(d)) continue;
+        apply_file(s, d / ".maic" / "settings.json", workspace, false);
+        apply_file(s, d / ".maic" / "settings.local.json", workspace, false);
     }
     // An agent's model, small_model and the names inside presets may be preset names; presets from every
     // layer are known only now.
@@ -559,9 +595,11 @@ std::string resolve_system_prompt(const std::string& value) {
 fs::path resolve_sessions_home(const Settings& settings, const fs::path& workspace) {
     std::string home = settings.sessions_home;
     if (home == "auto") {
+        // Where transcripts go is not a matter of trust: a MAIC.md on the chain counts whether or not it is trusted.
         bool project = false;
-        for (const auto& f : load_instructions(workspace, settings.instruction_files)) {
-            if (f.path != global_instructions_path()) project = true;
+        std::error_code ec;
+        for (const auto& d : config_chain(workspace)) {
+            for (const auto& name : settings.instruction_files) project = project || fs::is_regular_file(d / name, ec);
         }
         home = project ? "project" : "general";
     }

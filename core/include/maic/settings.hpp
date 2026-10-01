@@ -32,10 +32,11 @@ struct Style {
 const std::map<std::string, Style>& default_styles();
 
 // Layered settings, every key optional:
-//   1. $XDG_CONFIG_HOME/maic/settings.lua (default ~/.config/maic/settings.lua)
-//   2. <dir>/.maic/settings.lua and then <dir>/.maic/settings.local.lua for every directory from just under
-//      $HOME down to the workspace; the nearest file wins. settings.lua is meant to be committed with a
-//      project, settings.local.lua is personal.
+//   1. $XDG_CONFIG_HOME/maic/settings.lua (default ~/.config/maic/settings.lua), the user's own
+//   2. <dir>/.maic/settings.lua and then <dir>/.maic/settings.local.lua for every trusted directory on the
+//      config chain, from the project root (or just under $HOME) down to the workspace (maic/trust.hpp); the
+//      nearest file wins. settings.lua is meant to be
+//      committed with a project, settings.local.lua is personal. They run in restricted Lua (maic/lua.hpp).
 // At each location a .json file with the same stem is the fallback when no .lua exists.
 // `maic server`: where it listens, which directories remote sessions may open, and the TLS pair.
 struct ServerSettings {
@@ -168,6 +169,17 @@ struct Settings {
     std::string reviewer_model;     // a pinned reviewer ("" = the preset's reviewer, else small_model; see reviewer_pick)
     long reviewer_budget_tokens = 0;  // the reviewer's own token cap; past it, what it would review is asked. 0 = none
     bool dumb_auto_ok = false;      // true: no warning when entering auto mode under a dumb harness
+    // Read from the global file only (a project's copy is ignored with a warning; docs/settings.md):
+    std::string global_lua = "full";         // "restricted": the global settings.lua runs like a project's (written literally)
+    std::string trust_strictness = "standard";  // the default trust tier: strict, standard, relaxed (docs/harness.md, Trust)
+    std::vector<std::string> trust_identities;  // author emails that are yours; empty: git config --global user.email
+    std::map<std::string, std::string> trust_levels;  // a tier per directory ("~/dev2/app" = "relaxed")
+    // `instructions = { project_markers = {...}, bound = ... }`: project settings and instruction files are read
+    // from the workspace up to the project root (the nearest directory holding a marker), or up to $HOME with
+    // bound "home" or outside any project (maic/trust.hpp, config_chain).
+    std::vector<std::string> project_markers = {".git", ".maic", "MAIC.md"};
+    std::string instructions_bound = "project";
+    std::vector<std::string> warnings;        // keys a project file set that only the global file may
     ServerSettings server;
 
     const Style& style(const std::string& name) const;

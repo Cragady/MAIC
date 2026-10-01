@@ -6,11 +6,13 @@
 extern "C" {
 #include <lauxlib.h>
 #include <lua.h>
+#include <luajit.h>
 #include <lualib.h>
 }
 
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -32,6 +34,8 @@ struct Lua::State {
     std::function<void(const std::string&)> notice;
     std::string output;  // print() collects here during a run
     std::shared_ptr<NvimHost> nvim;  // set_lua_nvim_host's, when one was set at creation
+    bool restricted = false;
+    std::chrono::steady_clock::time_point deadline;  // restricted: when the running chunk is stopped
 };
 
 namespace {
@@ -71,6 +75,8 @@ int l_print(lua_State* L) {
         line += tostr(L, i);
     }
     line += '\n';
+    // Restricted (a project's settings file): kept out of the terminal.
+    if (s.restricted) return s.output += line, 0;
     // With a notice sink (the TUI) output is collected for the caller; headless it goes straight out, in order
     // with io.write.
     if (s.notice) s.output += line;
@@ -167,17 +173,114 @@ int l_nvim_current(lua_State* L) {
     return nvim_call(L, [](NvimHost& h) { return host_current(h); });
 }
 
+constexpr auto kRestrictedLimit = std::chrono::seconds(2);
+const char* const kStateKey = "maic.lua";
+
+void restricted_hook(lua_State* L, lua_Debug*) {
+    lua_getfield(L, LUA_REGISTRYINDEX, kStateKey);
+    auto* s = static_cast<Lua::State*>(lua_touserdata(L, -1));
+    lua_pop(L, 1);
+    if (std::chrono::steady_clock::now() < s->deadline) return;
+    luaL_where(L, 0);
+    lua_pushstring(L, "stopped: restricted settings Lua may run for 2 s (an endless loop?)");
+    lua_concat(L, 2);
+    lua_error(L);
+}
+
+// __index of _G and os in a restricted state: upvalue 1 is the prefix ("" or "os."), upvalue 2 the set of
+// names that are an error (nil: every name).
+int l_blocked(lua_State* L) {
+    if (!lua_isnil(L, lua_upvalueindex(2))) {
+        lua_pushvalue(L, 2);
+        lua_rawget(L, lua_upvalueindex(2));
+        if (!lua_toboolean(L, -1)) return lua_pushnil(L), 1;
+    }
+    const char* key = lua_tostring(L, 2);
+    return luaL_error(L, "%s%s is not available in restricted settings Lua (a project's settings file; docs/settings.md)", lua_tostring(L, lua_upvalueindex(1)), key ? key : "?");
+}
+
+// load and loadstring for a restricted state: a text chunk in a string, compiled into the same globals.
+int l_load_text(lua_State* L) {
+    size_t len = 0;
+    const char* code = luaL_checklstring(L, 1, &len);
+    if (len > 0 && code[0] == LUA_SIGNATURE[0]) return luaL_error(L, "load: bytecode is not allowed in restricted settings Lua");
+    if (luaL_loadbufferx(L, code, len, luaL_optstring(L, 2, "=(load)"), "t") != 0) {
+        lua_pushnil(L);
+        lua_insert(L, -2);
+        return 2;
+    }
+    return 1;
+}
+
+void set_blocked_index(lua_State* L, const char* prefix, std::initializer_list<const char*> names) {
+    lua_newtable(L);
+    lua_pushstring(L, prefix);
+    if (names.size() == 0) lua_pushnil(L);
+    else {
+        lua_newtable(L);
+        for (const char* n : names) {
+            lua_pushboolean(L, 1);
+            lua_setfield(L, -2, n);
+        }
+    }
+    lua_pushcclosure(L, l_blocked, 2);
+    lua_setfield(L, -2, "__index");
+    lua_pushboolean(L, 0);
+    lua_setfield(L, -2, "__metatable");
+    lua_setmetatable(L, -2);
+}
+
+void open_restricted(lua_State* L, Lua::State* st) {
+    for (auto [name, open] : {std::pair<const char*, lua_CFunction>{"", luaopen_base}, {LUA_STRLIBNAME, luaopen_string}, {LUA_TABLIBNAME, luaopen_table},
+                              {LUA_MATHLIBNAME, luaopen_math}, {LUA_BITLIBNAME, luaopen_bit}, {LUA_OSLIBNAME, luaopen_os}}) {
+        lua_pushcfunction(L, open);
+        lua_pushstring(L, name);
+        lua_call(L, 1, 0);
+    }
+    for (const char* g : {"dofile", "loadfile", "collectgarbage", "gcinfo", "newproxy", "setfenv", "getfenv"}) {
+        lua_pushnil(L);
+        lua_setglobal(L, g);
+    }
+    for (const char* g : {"load", "loadstring"}) {
+        lua_pushcfunction(L, l_load_text);
+        lua_setglobal(L, g);
+    }
+    lua_getglobal(L, LUA_STRLIBNAME);
+    lua_pushnil(L);
+    lua_setfield(L, -2, "dump");
+    lua_pop(L, 1);
+    // os keeps the clock and the environment; any other os.* is an error.
+    lua_getglobal(L, LUA_OSLIBNAME);
+    lua_newtable(L);
+    for (const char* f : {"getenv", "time", "date", "clock"}) {
+        lua_getfield(L, -2, f);
+        lua_setfield(L, -2, f);
+    }
+    set_blocked_index(L, "os.", {});
+    lua_setglobal(L, LUA_OSLIBNAME);
+    lua_pop(L, 1);
+    lua_pushvalue(L, LUA_GLOBALSINDEX);
+    set_blocked_index(L, "", {"io", "package", "require", "module", "dofile", "loadfile", "debug", "collectgarbage", "gcinfo", "ffi", "jit", "newproxy", "setfenv", "getfenv"});
+    lua_pop(L, 1);
+    lua_pushlightuserdata(L, st);
+    lua_setfield(L, LUA_REGISTRYINDEX, kStateKey);
+    luaJIT_setmode(L, 0, LUAJIT_MODE_ENGINE | LUAJIT_MODE_OFF);  // the count hook must see every loop
+    lua_sethook(L, restricted_hook, LUA_MASKCOUNT, 1000);
+}
+
 }  // namespace
 
 void set_lua_nvim_host(std::shared_ptr<NvimHost> host) {
     lua_nvim_host() = std::move(host);
 }
 
-Lua::Lua(fs::path workspace, std::function<void(const std::string&)> notice) : st_(new State) {
+Lua::Lua(fs::path workspace, std::function<void(const std::string&)> notice, LuaLibs libs) : st_(new State) {
     st_->workspace = std::move(workspace);
     st_->notice = std::move(notice);
+    st_->restricted = libs == LuaLibs::Restricted;
     lua_State* L = st_->L = luaL_newstate();
-    luaL_openlibs(L);
+    if (st_->restricted) open_restricted(L, st_);
+    else luaL_openlibs(L);
     // print() goes to the caller, not stdout, so the TUI can show it.
     lua_pushlightuserdata(L, st_);
     lua_pushcclosure(L, l_print, 1);
@@ -196,6 +299,10 @@ Lua::Lua(fs::path workspace, std::function<void(const std::string&)> notice) : s
         gethostname(host, sizeof(host) - 1);
         lua_pushstring(L, host);
         lua_setfield(L, -2, "hostname");
+    }
+    if (st_->restricted) {
+        lua_setglobal(L, "maic");
+        return;
     }
     for (auto [name, fn] : {std::pair<const char*, lua_CFunction>{"read", l_read}, {"write", l_write}, {"shell", l_shell}, {"notice", l_notice}}) {
         lua_pushlightuserdata(L, st_);
@@ -223,7 +330,7 @@ Lua::~Lua() {
 Lua::Result Lua::run(const std::string& code, const std::string& chunk_name) {
     lua_State* L = st_->L;
     st_->output.clear();
-    int rc = luaL_loadbuffer(L, code.data(), code.size(), chunk_name.c_str());
+    int rc = load_chunk(code, chunk_name);
     if (rc == 0) rc = lua_pcall(L, 0, LUA_MULTRET, 0);
     if (rc != 0) {
         std::string err = lua_tostring(L, -1) ? lua_tostring(L, -1) : "unknown error";
@@ -325,14 +432,41 @@ void json_to_lua(lua_State* L, const nlohmann::json& j) {
     }
 }
 
+int Lua::load_chunk(const std::string& code, const std::string& chunk_name) {
+    if (!st_->restricted) return luaL_loadbuffer(st_->L, code.data(), code.size(), chunk_name.c_str());
+    st_->deadline = std::chrono::steady_clock::now() + kRestrictedLimit;
+    if (!code.empty() && code[0] == LUA_SIGNATURE[0]) {
+        lua_pushstring(st_->L, ((chunk_name[0] == '@' ? chunk_name.substr(1) : chunk_name) + ": bytecode is not allowed in restricted settings Lua").c_str());
+        return LUA_ERRSYNTAX;
+    }
+    return luaL_loadbufferx(st_->L, code.data(), code.size(), chunk_name.c_str(), "t");
+}
+
+namespace {
+
+// Lua shortens a long file name in an error ("...ome/x/.maic/settings.lua:2: ..."); this puts the whole one back.
+std::string full_chunk_name(std::string err, const std::string& chunk_name) {
+    if (chunk_name.empty() || chunk_name[0] != '@' || err.rfind("...", 0) != 0) return err;
+    std::string path = chunk_name.substr(1);
+    size_t colon = err.find(':');
+    while (colon != std::string::npos) {
+        std::string shown = err.substr(3, colon - 3);
+        if (path.size() >= shown.size() && path.compare(path.size() - shown.size(), shown.size(), shown) == 0) return path + err.substr(colon);
+        colon = err.find(':', colon + 1);
+    }
+    return err;
+}
+
+}  // namespace
+
 nlohmann::json Lua::eval_table(const std::string& code, const std::string& chunk_name) {
     lua_State* L = st_->L;
-    int rc = luaL_loadbuffer(L, code.data(), code.size(), chunk_name.c_str());
+    int rc = load_chunk(code, chunk_name);
     if (rc == 0) rc = lua_pcall(L, 0, 1, 0);
     if (rc != 0) {
         std::string err = lua_tostring(L, -1) ? lua_tostring(L, -1) : "unknown error";
         lua_pop(L, 1);
-        throw std::runtime_error(err);
+        throw std::runtime_error(full_chunk_name(err, chunk_name));
     }
     if (!lua_istable(L, -1)) {
         lua_pop(L, 1);

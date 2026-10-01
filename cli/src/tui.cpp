@@ -21,6 +21,7 @@
 #include "maic/theme.hpp"
 #include "maic/tools.hpp"
 #include "maic/tripwire.hpp"
+#include "maic/trust.hpp"
 #include "style.hpp"
 #include "view.hpp"
 
@@ -1979,6 +1980,15 @@ void App::run_command(const std::string& line) {
                 }
             }
             if (!found) post(Kind::Error, "unknown service: " + arg + (arg.empty() ? " (:up NAME)" : " (see :status)"));
+        } else if (cmd == "trust" || cmd == "untrust") {
+            std::istringstream words(arg);
+            std::vector<std::string> args;
+            for (std::string w; words >> w;) args.push_back(w);
+            try {
+                post(Kind::Notice, trust_command(cmd, args, agent_.harness().workspace()));
+            } catch (const std::exception& e) {
+                post(Kind::Error, e.what());
+            }
         } else if (cmd == "settings") {
             std::string out = "settings files in effect (nearest last, wins):";
             for (const auto& p : settings_.sources) out += "\n  " + p.string();
@@ -2400,7 +2410,13 @@ int run_tui(const TuiOptions& options) {
     std::string host_refused;
     std::shared_ptr<HostNvim> host = HostNvim::from_env(host_refused);
     set_lua_nvim_host(host);
+    // Trust is settled before any project file is read: asked on the terminal, before the screen is drawn.
+    std::filesystem::path ws = std::filesystem::current_path();
+    if (isatty(STDIN_FILENO) && isatty(STDOUT_FILENO)) ask_trust(ws, std::cin, std::cout);
+    std::vector<std::string> trust_lines = trust_notices(ws);
+    for (const auto& n : settle_trust(ws)) trust_lines.push_back(n);
     Settings settings = load_settings();
+    trust_lines.insert(trust_lines.end(), settings.warnings.begin(), settings.warnings.end());
     if (options.model) settings.model = *options.model;
     apply_preset(settings, settings.model);
     settings.model = resolve_model_alias(settings.model);
@@ -2445,6 +2461,7 @@ int run_tui(const TuiOptions& options) {
         if (!r.empty()) app.startup_notice(r);
     }
     app.welcome();
+    for (const auto& n : trust_lines) app.startup_notice(n);
     app.attach_context(options.context);
     for (const auto& im : options.images) app.attach_image(im);
     if (!first.empty()) app.send(first);

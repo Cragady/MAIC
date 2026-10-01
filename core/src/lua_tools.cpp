@@ -3,6 +3,7 @@
 #include "lua_json.hpp"
 #include "maic/nvim_host.hpp"
 #include "maic/sandbox.hpp"
+#include "maic/trust.hpp"
 
 extern "C" {
 #include <lauxlib.h>
@@ -315,6 +316,7 @@ LuaToolSet load_lua_tools(const fs::path& workspace) {
     for (const fs::path& dir : {workspace / ".maic" / "tools", global_tools_dir()}) {
         std::error_code ec;
         if (!fs::is_directory(dir, ec)) continue;
+        if (dir != global_tools_dir() && !trusted(workspace)) continue;  // an untrusted project's tools are never loaded
         std::vector<fs::path> files;
         for (const auto& e : fs::directory_iterator(dir, ec)) {
             if (e.is_regular_file(ec) && e.path().extension() == ".lua") files.push_back(e.path());

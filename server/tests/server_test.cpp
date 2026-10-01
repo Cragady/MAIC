@@ -3,6 +3,7 @@
 
 #include "auth.hpp"
 #include "maic/paths.hpp"
+#include "maic/trust.hpp"
 #include "server.hpp"
 #include "tls.hpp"
 
@@ -429,6 +430,35 @@ int main() {
         expect(res && res->status == 200 && json::parse(res->body)["tls"] == true, "an HTTPS client that pins the certificate gets through");
         secure.stop();
         serving_tls.join();
+    }
+
+    section("trust from a remote device needs step-up");
+    {
+        fs::path dir = root / "ws" / "remote-proj";
+        fs::create_directories(dir);
+        std::ofstream(dir / "MAIC.md") << "rules\n";
+        int status = 0;
+        json r = api.post("/api/trust", {{"path", dir.string()}, {"action", "trust"}}, &status);
+        std::string unavailable = "step-up verification is not available until accounts land (docs/design/accounts.md)";
+        expect(status == 403 && r.value("error", "") == unavailable && !trusted(dir), "with no verifier a request is refused");
+        r = api.post("/api/trust", {{"path", dir.string()}, {"action", "trust"}, {"step_up", "123456"}}, &status);
+        expect(status == 403 && r.value("error", "") == unavailable && !trusted(dir), "a proof changes nothing until accounts land");
+        set_step_up_verifier([](const std::string& device, const std::string& proof) { return device == "phone" && proof == "123456"; });
+        r = api.post("/api/trust", {{"path", dir.string()}, {"action", "trust"}, {"step_up", "999999"}}, &status);
+        expect(status == 403 && r.value("error", "") == "step-up verification failed" && !trusted(dir), "a wrong proof is refused");
+        r = api.post("/api/trust", {{"path", dir.string()}, {"action", "trust"}}, &status);
+        expect(status == 403 && r.value("error", "").find("a step_up proof is required") != std::string::npos, "no proof is refused");
+        r = api.post("/api/trust", {{"path", dir.string()}, {"action", "trust"}, {"level", "relaxed"}, {"step_up", "123456"}}, &status);
+        expect(status == 200 && r.value("done", "") == "trusted " + dir.string() && trusted(dir) && trust_status(project_dir(dir)).level == "relaxed",
+               "a verified device trusts it, with a tier");
+        r = api.post("/api/trust", {{"path", dir.string()}, {"action", "untrust"}, {"step_up", "123456"}}, &status);
+        expect(status == 200 && !trusted(dir), "and can take it back");
+        std::string audit = slurp(trust_audit_path());
+        expect(audit.find("device=phone action=trust path=" + dir.string() + " refused: " + unavailable) != std::string::npos &&
+                   audit.find("device=phone action=trust path=" + dir.string() + " level=relaxed done") != std::string::npos &&
+                   audit.find("device=phone action=untrust path=" + dir.string() + " done") != std::string::npos,
+               "each request is an audit line naming the device");
+        set_step_up_verifier({});
     }
 
     section("no remote unlock");

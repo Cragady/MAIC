@@ -11,6 +11,7 @@
 #include "maic/session.hpp"
 #include "maic/status.hpp"
 #include "maic/tripwire.hpp"
+#include "maic/trust.hpp"
 
 #include "maic/http.hpp"
 #include <nlohmann/json.hpp>
@@ -503,6 +504,19 @@ struct Server::Impl {
             s->agent.mode = *mode;
             s->push({{"type", "mode"}, {"mode", std::string(mode_name(*mode))}});
             reply(res, session_json(*s));
+        });
+
+        // Trust from a paired device (docs/harness.md, Trust): only with a step-up proof the registered verifier
+        // accepts. Until accounts exist none is registered and every request is refused. Each request, done or
+        // refused, is a line in <state>/trust-audit.log naming the device.
+        srv->Post("/api/trust", [this](const httplib::Request& req, httplib::Response& res) {
+            json body = body_of(req);
+            try {
+                std::string done = remote_trust_change(token_name(req).value_or("-"), body.value("step_up", ""), body.value("action", ""), body.value("path", ""), body.value("level", ""));
+                reply(res, {{"done", done}});
+            } catch (const std::runtime_error& e) {
+                throw HttpError{403, e.what()};
+            }
         });
 
         // The pairing exchange, on the LAN only: the phone proves it saw the code `maic server pair` printed and
