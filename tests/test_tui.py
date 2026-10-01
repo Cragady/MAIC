@@ -5,7 +5,7 @@
 
 Exit 77 when neither pyte nor uv is available, which ctest reports as a skip. Every case starts its own maic in
 a throwaway home (XDG_* under a temp dir, --no-record, the dumb harness, no instruction files), 120x40."""
-import os, shutil, subprocess, sys, unittest
+import os, shutil, subprocess, sys, tempfile, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAIC = os.environ.get("MAIC_BIN", os.path.join(HERE, "..", "build", "cli", "maic"))
@@ -136,6 +136,51 @@ class TuiTest(unittest.TestCase):
         tui.send(":theme no-such-theme<cr>")
         self.assertIn("no theme no-such-theme", tui.text())
         self.assertEqual(fg_of("harness armed"), "b8bb26")  # a failed switch keeps the current theme
+
+    def test_bracketed_paste_goes_into_the_input(self):
+        # maic.nvim's fallback when MAIC is not connected: the text arrives as a bracketed paste, in normal mode too.
+        tui = self.start()
+        tui.send("\x1b[200~fix this:\nx = 1\x1b[201~")
+        text = tui.text()
+        self.assertIn("│ fix this:", text)
+        self.assertIn("  x = 1", text)
+        self.assertIn("pasted 2 lines into the input", text)
+        self.assertNotIn("echo:", text)
+
+    def test_inside_a_host_nvim(self):
+        nvim = shutil.which("nvim")
+        if not nvim:
+            self.skipTest("nvim is not on PATH")
+        sock = os.path.join(tempfile.mkdtemp(prefix="maic-tui-nvim-", dir=self.home), "nvim.sock")
+        plugin = os.path.join(HERE, "..", "maic.nvim")
+        host = subprocess.Popen([nvim, "--headless", "-u", "NONE", "-i", "NONE", "-n", "--listen", sock, "--cmd", "set rtp+=" + plugin],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (host.kill(), host.wait()))
+        for _ in range(500):
+            if os.path.exists(sock):
+                break
+            time.sleep(0.02)
+
+        def remote(expr):
+            return subprocess.run([nvim, "--headless", "--server", sock, "--remote-expr", expr], capture_output=True, text=True, timeout=10).stdout.strip()
+
+        # Not an ancestor of maic: refused, with the reason on screen.
+        refused = self.start(env=dict(self.env, NVIM=sock))
+        self.assertIn("nvim: not connecting to $NVIM", refused.text())
+        self.assertNotIn(" nvim ·", refused.text())
+        # The test-only pair of variables lets it connect.
+        tui = self.start(env=dict(self.env, NVIM=sock, MAIC_TESTING="1", MAIC_NVIM_TRUST_SOCKET="1"))
+        tui.wait_for("nvim: connected to the nvim MAIC runs in")
+        self.assertIn(" nvim ·", tui.text())  # the status strip
+        remote("luaeval('require(\"maic\").send_text(\"from nvim\")')")
+        tui.wait_for("│ from nvim")
+        self.assertNotIn("echo: from nvim", tui.text())  # never sent by itself
+        with open(os.path.join(self.ws, "notes.txt"), "w") as f:
+            f.write("hello\n")
+        tui.send("<esc>:e notes.txt<cr>")
+        self.assertEqual(remote("expand('%:t')"), "notes.txt")
+        remote("luaeval('require(\"maic\").command(\":rename from the plugin\")')")
+        tui.wait_for("titled: from the plugin")
 
     def test_quit_prints_the_transcript_line(self):
         tui = self.start()

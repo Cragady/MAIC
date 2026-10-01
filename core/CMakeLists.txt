@@ -13,6 +13,7 @@ add_library(maic_core
     src/lua.cpp
     src/lua_tools.cpp
     src/markdown.cpp
+    src/nvim_host.cpp
     src/openai.cpp
     src/paths.cpp
     src/profile.cpp

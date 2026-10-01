@@ -51,6 +51,10 @@ struct ChildEvents : AgentEvents {
     void on_tool_call(const std::string& summary) override { parent.on_tool_call("↳ " + profile + ": " + summary); }
     void on_tool_result(const std::string& text, bool ok) override { parent.on_tool_result(text, ok); }
     void on_notice(const std::string& text) override { parent.on_notice(profile + ": " + text); }
+    void on_tool_started(const std::string& tool, const std::string& path, const std::string& summary) override {
+        parent.on_tool_started(tool, path, profile + ": " + summary);
+    }
+    void on_file_written(const std::filesystem::path& path, const std::string& tool) override { parent.on_file_written(path, tool); }
     ApprovalAnswer ask(const ApprovalRequest& request) override {
         ApprovalRequest r = request;
         r.summary = profile + ": " + request.summary;
@@ -656,10 +660,10 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
                         if (!head.empty()) sink(head, false);
                         head.clear();
                     };
-                    reply = chat(provider, options, with_prefill, schemas_, strip, abort);
+                    reply = chat(provider, options, with_prefill, offered_schemas(), strip, abort);
                     if (!decided && !head.empty()) sink(head, false);  // a reply shorter than the prefill
                 } else {
-                    reply = chat(provider, options, messages_, schemas_, sink, abort);
+                    reply = chat(provider, options, messages_, offered_schemas(), sink, abort);
                 }
             } catch (...) {
                 abort = true;
@@ -756,6 +760,14 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
 
     std::string summary = tool_summary(call.name, call.arguments);
     events.on_tool_call(summary);
+    {
+        std::string named;
+        for (const char* key : {"path", "from"}) {
+            if (named.empty() && call.arguments.is_object() && call.arguments.contains(key) && call.arguments[key].is_string()) named = call.arguments[key];
+        }
+        std::string canonical = canonical_tool_name(call.name);
+        events.on_tool_started(canonical.empty() ? call.name : canonical, named, summary);
+    }
 
     if (tripwire_state()) {
         return result("BLOCKED: the harness tripwire is tripped. Nothing can run until the user unlocks it.", false);
@@ -765,6 +777,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
     }
 
     std::string name = canonical_tool_name(call.name);
+    if (name.empty() && host_tool() && snake_tool_name(call.name) == "diagnostics") name = "diagnostics";
     const LuaTool* lua = name.empty() ? find_tool(call.name) : nullptr;
     if (lua) name = lua->name;
     const ScriptTool* script = name.empty() ? find_script_tool(call.name) : nullptr;
@@ -795,8 +808,17 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         for (const auto& t : harness_.profile()->tools) allowed += (allowed.empty() ? "" : ", ") + t;
         return result("DENIED: the " + profile_name_ + " profile has no " + name + " tool. Its tools are: " + allowed + ".", false);
     }
-    bool harness_action = !lua && !script && name != "question" && name != "todo" && name != "delegate";
+    bool harness_action = !lua && !script && name != "question" && name != "todo" && name != "delegate" && name != "diagnostics";
     std::vector<Action> actions;
+    if (name == "diagnostics") {
+        // A read of the file, or of the workspace for all of them.
+        try {
+            std::string path = call.arguments.is_object() ? call.arguments.value("path", "") : "";
+            actions = {{Action::Kind::Read, path.empty() ? harness_.workspace() : harness_.resolve(path), "", {}, "diagnostics"}};
+        } catch (const std::exception& e) {
+            return result(std::string("error: ") + e.what(), false);
+        }
+    }
     if (harness_action) {
         try {
             actions = tool_actions(harness_, name, call.arguments);
@@ -880,14 +902,19 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         // Every maic.* call inside the tool is one action, authorised exactly like a built-in and logged with it.
         record["file"] = lua->file.string();
         record["actions"] = nlohmann::json::array();
+        std::vector<std::filesystem::path> written;
         Authorise gate = [&](const Action& a, const std::string& s, const std::string& preview) {
             nlohmann::json sub = {{"action", s}};
             Decision d = authorise(a, name, s, preview, origin, events, sub);
-            if (d.verdict == Verdict::Allow && a.kind == Action::Kind::Write) save_undo_point(a.path, s + " (" + name + ")");
+            if (d.verdict == Verdict::Allow && a.kind == Action::Kind::Write) {
+                save_undo_point(a.path, s + " (" + name + ")");
+                written.push_back(a.path);
+            }
             record["actions"].push_back(sub);
             return d;
         };
-        ToolResult r = run_lua_tool(*lua, call.arguments, harness_, gate, cancel);
+        ToolResult r = run_lua_tool(*lua, call.arguments, harness_, gate, cancel, std::chrono::seconds(60), nvim_.get());
+        for (const auto& p : written) events.on_file_written(p, name);
         return result(r.text, r.ok);
     }
     if (script) {
@@ -905,12 +932,20 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         return result(r.text, r.ok);
     }
 
+    if (name == "diagnostics") {
+        Decision d = authorise(actions[0], name, summary, "", origin, events, record);
+        if (d.verdict != Verdict::Allow) return result(d.reason, false);
+        ToolResult r = run_diagnostics(call.arguments, actions[0]);
+        return result(r.text, r.ok);
+    }
+
     // Every path the call touches is judged before anything runs: a move out of the workspace asks on its
     // destination, a patch with one file under /etc trips before any file is written.
     std::string preview = tool_preview(harness_, name, call.arguments);
     Decision d{Verdict::Allow, ""};
     for (const auto& a : actions) {
-        d = authorise(a, name, summary, preview, origin, events, record);
+        std::optional<std::string> proposed = a.kind == Action::Kind::Write ? tool_proposed(harness_, name, call.arguments, a.path) : std::nullopt;
+        d = authorise(a, name, summary, preview, origin, events, record, std::move(proposed));
         if (d.verdict != Verdict::Allow) return result(d.reason, false);
     }
     if (name != "move_file") {
@@ -920,6 +955,11 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
     }
     ToolResult r = run_tool(harness_, name, call.arguments, d.read_only_sandbox, cancel);
     if (r.ok && name == "move_file") push_undo({actions[0].path, std::nullopt, summary, actions[1].path});
+    if (r.ok) {
+        for (const auto& a : actions) {
+            if (a.kind == Action::Kind::Write) events.on_file_written(a.path, name);
+        }
+    }
     if (r.ok && name == "read_file") {
         std::string extra = nested_instructions(actions[0].path);
         if (!extra.empty()) r.text += "\n" + extra;
@@ -927,8 +967,32 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
     return result(r.text, r.ok);
 }
 
+bool Agent::host_tool() const {
+    return nvim_ && nvim_->connected() && !find_tool("diagnostics") && !find_script_tool("diagnostics") && harness_.tool_allowed("diagnostics");
+}
+
+nlohmann::json Agent::offered_schemas() const {
+    if (!host_tool()) return schemas_;
+    nlohmann::json out = schemas_;
+    out.push_back(diagnostics_tool_schema());
+    return out;
+}
+
+ToolResult Agent::run_diagnostics(const nlohmann::json& args, const Action& action) {
+    bool whole = !args.is_object() || args.value("path", "").empty();
+    try {
+        nlohmann::json found = host_diagnostics(*nvim_, whole ? std::filesystem::path() : action.path);
+        std::string text = format_diagnostics(found, harness_.workspace(), whole);
+        if (!text.empty()) text.pop_back();
+        if (text.empty()) return {true, whole ? "no diagnostics in the files open in nvim" : "no diagnostics for " + action.path.string() + " (nvim reports them only for files it has open)"};
+        return {true, text};
+    } catch (const std::exception& e) {
+        return {false, std::string("error: nvim: ") + e.what()};
+    }
+}
+
 Decision Agent::authorise(const Action& action, const std::string& tool, const std::string& summary, const std::string& preview,
-                          Origin origin, AgentEvents& events, nlohmann::json& record) {
+                          Origin origin, AgentEvents& events, nlohmann::json& record, std::optional<std::string> proposed) {
     // The harness protects itself: its settings, its locks, its server tokens and its lock helper are not the
     // agent's to change. Under the smart harness this trips the machine lock (a request from another agent
     // that tries it is exactly what the global lock is for); the dumb harness asks.
@@ -967,7 +1031,7 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     if (d.verdict == Verdict::Ask) {
         std::string key = Harness::approval_key(action);
         std::string covers = key.rfind("shell:", 0) == 0 ? "the program `" + key.substr(6) + "`" : key.rfind("write:", 0) == 0 ? "writes to this file" : "reads of this file";
-        ApprovalAnswer answer = events.ask({tool, summary, d.reason, origin, covers, preview});
+        ApprovalAnswer answer = events.ask({tool, summary, d.reason, origin, covers, preview, action.path, std::move(proposed)});
         record["approval"] = approval_name(answer.choice);
         if (!answer.feedback.empty()) record["feedback"] = answer.feedback;
         switch (answer.choice) {
@@ -1038,6 +1102,7 @@ ToolResult Agent::run_delegate(const nlohmann::json& args, Origin origin, AgentE
     child.harness_.set_permission(harness_.permission());
     child.harness_.set_forbid(harness_.forbid());
     child.harness_.set_confined(harness_.confined());
+    child.nvim_ = nvim_;
     child.set_profile(profile);
     if (budget_tokens > 0) {
         // The child's tokens count against this session, so it never gets more than what is left.

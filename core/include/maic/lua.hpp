@@ -4,9 +4,12 @@
 
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <string>
 
 namespace maic {
+
+class NvimHost;
 
 // LuaJIT, built from the pinned vendor/lua-pins tree, for things that are easier to script than to type:
 // `:lua` in a session, `maic lua FILE`, and (later) tools written in Lua. This runs as the user, with the
@@ -19,6 +22,8 @@ namespace maic {
 //   maic.write(path, text)   create or overwrite a file
 //   maic.shell(cmd)          run cmd in the user's shell; returns output, exit code
 //   maic.notice(text)        show a line in the conversation window (or print, headless)
+//   maic.nvim                when MAIC runs inside a connected nvim (docs/nvim.md): exec(lua, ...), buffers(),
+//                            diagnostics(path?), current(), all run in the host
 class Lua {
 public:
     explicit Lua(std::filesystem::path workspace, std::function<void(const std::string&)> notice = {});
@@ -47,5 +52,10 @@ public:
 private:
     State* st_;
 };
+
+// The host nvim for the user's own Lua (the session's settings files, :lua, :luafile): every state created while
+// one is set gets `maic.nvim`. The sandboxed tool states never see it (they get their own read-only pair).
+// nullptr clears it.
+void set_lua_nvim_host(std::shared_ptr<NvimHost> host);
 
 }  // namespace maic

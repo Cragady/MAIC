@@ -1,6 +1,7 @@
 #include "maic/lua.hpp"
 
 #include "lua_json.hpp"
+#include "maic/nvim_host.hpp"
 
 extern "C" {
 #include <lauxlib.h>
@@ -30,6 +31,7 @@ struct Lua::State {
     fs::path workspace;
     std::function<void(const std::string&)> notice;
     std::string output;  // print() collects here during a run
+    std::shared_ptr<NvimHost> nvim;  // set_lua_nvim_host's, when one was set at creation
 };
 
 namespace {
@@ -122,7 +124,54 @@ int l_notice(lua_State* L) {
     return 0;
 }
 
+std::shared_ptr<NvimHost>& lua_nvim_host() {
+    static std::shared_ptr<NvimHost> host;
+    return host;
+}
+
+// maic.nvim.*: the host's answer as a Lua value, an error raised as a Lua error.
+int nvim_call(lua_State* L, const std::function<nlohmann::json(NvimHost&)>& call) {
+    auto& s = self(L);
+    std::string err;
+    nlohmann::json result;
+    if (!s.nvim || !s.nvim->connected()) err = "maic.nvim: the nvim host is gone";
+    else {
+        try {
+            result = call(*s.nvim);
+        } catch (const std::exception& e) {
+            err = std::string("maic.nvim: ") + e.what();
+        }
+    }
+    if (!err.empty()) return luaL_error(L, "%s", err.c_str());
+    json_to_lua(L, result);
+    return 1;
+}
+
+int l_nvim_exec(lua_State* L) {
+    std::string code = luaL_checkstring(L, 1);
+    nlohmann::json args = nlohmann::json::array();
+    for (int i = 2; i <= lua_gettop(L); ++i) args.push_back(lua_to_json(L, i));
+    return nvim_call(L, [&](NvimHost& h) { return h.exec_lua(code, args); });
+}
+
+int l_nvim_buffers(lua_State* L) {
+    return nvim_call(L, [](NvimHost& h) { return host_buffers(h); });
+}
+
+int l_nvim_diagnostics(lua_State* L) {
+    std::string path = lua_isnoneornil(L, 1) ? "" : resolve(self(L), luaL_checkstring(L, 1)).string();
+    return nvim_call(L, [&](NvimHost& h) { return host_diagnostics(h, path); });
+}
+
+int l_nvim_current(lua_State* L) {
+    return nvim_call(L, [](NvimHost& h) { return host_current(h); });
+}
+
 }  // namespace
+
+void set_lua_nvim_host(std::shared_ptr<NvimHost> host) {
+    lua_nvim_host() = std::move(host);
+}
 
 Lua::Lua(fs::path workspace, std::function<void(const std::string&)> notice) : st_(new State) {
     st_->workspace = std::move(workspace);
@@ -152,6 +201,16 @@ Lua::Lua(fs::path workspace, std::function<void(const std::string&)> notice) : s
         lua_pushlightuserdata(L, st_);
         lua_pushcclosure(L, fn, 1);
         lua_setfield(L, -2, name);
+    }
+    st_->nvim = lua_nvim_host();
+    if (st_->nvim && st_->nvim->connected()) {
+        lua_newtable(L);
+        for (auto [name, fn] : {std::pair<const char*, lua_CFunction>{"exec", l_nvim_exec}, {"buffers", l_nvim_buffers}, {"diagnostics", l_nvim_diagnostics}, {"current", l_nvim_current}}) {
+            lua_pushlightuserdata(L, st_);
+            lua_pushcclosure(L, fn, 1);
+            lua_setfield(L, -2, name);
+        }
+        lua_setfield(L, -2, "nvim");
     }
     lua_setglobal(L, "maic");
 }

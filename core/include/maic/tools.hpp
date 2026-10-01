@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -25,6 +26,10 @@ std::string tool_summary(const std::string& name, const nlohmann::json& args);
 // For the approval prompt: what a write would change, as - / + lines (capped); for a delete, what goes; for a
 // patch, the patch. "" otherwise.
 std::string tool_preview(const Harness& harness, const std::string& name, const nlohmann::json& args);
+
+// For the approval prompt's diff in a host nvim: what `path` would hold after a write_file, edit_file,
+// multi_edit or apply_patch call. nullopt for any other tool, a deletion, or a call that would fail.
+std::optional<std::string> tool_proposed(const Harness& harness, const std::string& name, const nlohmann::json& args, const std::filesystem::path& path);
 
 // Rename, or copy and remove when the two paths are on different filesystems. Also how undo reverses a move.
 std::error_code move_path(const std::filesystem::path& from, const std::filesystem::path& to);

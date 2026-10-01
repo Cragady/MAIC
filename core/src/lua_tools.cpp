@@ -1,6 +1,7 @@
 #include "maic/lua_tools.hpp"
 
 #include "lua_json.hpp"
+#include "maic/nvim_host.hpp"
 #include "maic/sandbox.hpp"
 
 extern "C" {
@@ -35,6 +36,7 @@ struct Ctx {
     const std::atomic<bool>* cancel;
     std::chrono::steady_clock::time_point deadline;
     std::string output;  // print()
+    NvimHost* nvim;
 };
 
 Ctx& ctx(lua_State* L) {
@@ -195,7 +197,52 @@ int l_json_decode(lua_State* L) {
     return 1;
 }
 
-void open_maic(lua_State* L, const Harness& harness) {
+// maic.nvim.diagnostics(path?) and maic.nvim.buffers(): reads, judged like read_file of the path (or of the
+// workspace for the whole list), answering only for files in the workspace.
+int nvim_answer(lua_State* L, const std::function<nlohmann::json(NvimHost&)>& call) {
+    Ctx& c = ctx(L);
+    std::string err;
+    nlohmann::json result;
+    if (!c.nvim->connected()) err = "maic.nvim: the nvim host is gone";
+    else {
+        try {
+            result = call(*c.nvim);
+        } catch (const std::exception& e) {
+            err = std::string("maic.nvim: ") + e.what();
+        }
+    }
+    if (!err.empty()) return fail(L, err);
+    json_to_lua(L, result);
+    return 1;
+}
+
+nlohmann::json in_workspace(const Harness& harness, const nlohmann::json& entries) {
+    nlohmann::json out = nlohmann::json::array();
+    for (const auto& e : entries) {
+        fs::path rel = fs::path(e.value("path", "")).lexically_relative(harness.workspace());
+        if (!rel.empty() && *rel.begin() != "..") out.push_back(e);
+    }
+    return out;
+}
+
+int l_nvim_diagnostics(lua_State* L) {
+    Ctx& c = ctx(L);
+    std::string path = lua_isnoneornil(L, 1) ? "" : luaL_checkstring(L, 1);
+    fs::path p = path.empty() ? c.harness->workspace() : c.harness->resolve(path);
+    gate(L, {Action::Kind::Read, p, "", {}, "diagnostics"}, "diagnostics " + (path.empty() ? std::string("(workspace)") : path), "");
+    return nvim_answer(L, [&](NvimHost& h) {
+        nlohmann::json all = host_diagnostics(h, path.empty() ? fs::path() : p);
+        return path.empty() ? in_workspace(*c.harness, all) : all;
+    });
+}
+
+int l_nvim_buffers(lua_State* L) {
+    Ctx& c = ctx(L);
+    gate(L, {Action::Kind::Read, c.harness->workspace(), "", {}, "buffers"}, "buffers (nvim)", "");
+    return nvim_answer(L, [&](NvimHost& h) { return in_workspace(*c.harness, host_buffers(h)); });
+}
+
+void open_maic(lua_State* L, const Harness& harness, NvimHost* nvim) {
     lua_pushcfunction(L, l_print);
     lua_setglobal(L, "print");
     lua_newtable(L);
@@ -205,6 +252,14 @@ void open_maic(lua_State* L, const Harness& harness) {
                            {"shell", l_shell}, {"json_encode", l_json_encode}, {"json_decode", l_json_decode}}) {
         lua_pushcfunction(L, f);
         lua_setfield(L, -2, name);
+    }
+    if (nvim && nvim->connected()) {
+        lua_newtable(L);
+        lua_pushcfunction(L, l_nvim_diagnostics);
+        lua_setfield(L, -2, "diagnostics");
+        lua_pushcfunction(L, l_nvim_buffers);
+        lua_setfield(L, -2, "buffers");
+        lua_setfield(L, -2, "nvim");
     }
     lua_setglobal(L, "maic");
 }
@@ -280,8 +335,8 @@ LuaToolSet load_lua_tools(const fs::path& workspace) {
 }
 
 ToolResult run_lua_tool(const LuaTool& tool, const nlohmann::json& args, const Harness& harness, const Authorise& authorise,
-                        const std::atomic<bool>& cancel, std::chrono::seconds timeout) {
-    Ctx c{&tool, &harness, &authorise, &cancel, std::chrono::steady_clock::now() + timeout, ""};
+                        const std::atomic<bool>& cancel, std::chrono::seconds timeout, NvimHost* nvim) {
+    Ctx c{&tool, &harness, &authorise, &cancel, std::chrono::steady_clock::now() + timeout, "", nvim};
     lua_State* L = sandboxed_state();
     struct Close {
         lua_State* L;
@@ -289,7 +344,7 @@ ToolResult run_lua_tool(const LuaTool& tool, const nlohmann::json& args, const H
     } close{L};
     lua_pushlightuserdata(L, &c);
     lua_setfield(L, LUA_REGISTRYINDEX, kCtxKey);
-    open_maic(L, harness);
+    open_maic(L, harness, nvim);
     lua_sethook(L, hook, LUA_MASKCOUNT, kHookEvery);
 
     // What was printed comes before the returned value; after an error it follows the message, so the message
