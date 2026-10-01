@@ -29,7 +29,7 @@ from diction.whisper import maic_bin
 
 # A neutral working directory for the claude process, so it picks up no project's instructions. The original kept
 # it beside diction.py; an installed copy's directory may not be writable, so it lives in the state directory.
-AGENT_CWD = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "diction" / "agent-cwd"
+AGENT_CWD = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "maic" / "diction" / "agent-cwd"
 # How many of the newest passages each claude-cli message carries, as the original's Procedure.context().
 CLAUDE_CONTEXT = 25
 

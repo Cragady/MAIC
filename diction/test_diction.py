@@ -310,7 +310,7 @@ class Pipeline(unittest.TestCase):
         starts = [e for e in log if e["event"] == "start"]
         self.assertEqual(len(starts), 1, "one process for the session's scribe key, reused")
         self.assertEqual(starts[0]["argv"], legacy_argv(SYSTEM_PROMPT_INSERT, "haiku"))
-        self.assertEqual(starts[0]["cwd"], str(self.tmp / "state" / "diction" / "agent-cwd"))
+        self.assertEqual(starts[0]["cwd"], str(self.tmp / "state" / "maic" / "diction" / "agent-cwd"))
         self.assertEqual([e["said"] for e in log if e["event"] == "message"], said)
         self.assertIn("<steps>\n1. Open the shared inbox.\n</steps>", log[-2]["payload"])
         self.assertEqual(log[-1]["event"], "eof", "stdin closed and the process ended on shutdown")
