@@ -29,6 +29,7 @@ struct TuiOptions {
     std::vector<std::string> ban_patterns;    // --ban-pattern REGEX, repeatable
     nlohmann::json sampling = nlohmann::json::object();  // --sampling KEY=VALUE and --xtc, over the settings
     std::optional<std::string> harness;       // --harness smart|dumb
+    bool bare = false;                        // --bare: nothing from nvim (also MAIC_BARE=1, bare = true)
     bool accept_dumb_auto = false;            // --accept-dumb-auto                  // sent as the first turn (maic -p "..." --interactive); "-" reads stdin
 };
 

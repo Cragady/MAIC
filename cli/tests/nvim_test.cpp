@@ -503,6 +503,21 @@ int main() {
         expect(eventually(client, 15000), "maic started in a terminal of this nvim passes the ancestry check and connects as client \"maic\" with its pid");
         other->exec_lua("vim.fn.jobstop(vim.g.maic_job)", json::array());
         expect(eventually([&] { return !client(); }, 10000), "and disconnects when it exits");
+
+        // --bare and MAIC_BARE=1: the same maic, the same host, no connection. Ready is the welcome on its screen.
+        auto bare = [&](const json& argv, const json& env) {
+            pid = other->exec_lua("local argv, env = ... vim.cmd('enew!') local job = vim.fn.jobstart(argv, { term = true, env = env }) vim.g.maic_job = job vim.g.maic_buf = vim.api.nvim_get_current_buf() "
+                                  "return vim.fn.jobpid(job)",
+                                  json::array({argv, env}));
+            bool ready = eventually([&] {
+                return other->exec_lua("return table.concat(vim.api.nvim_buf_get_lines(vim.g.maic_buf, 0, -1, false), '\\n'):find('harness armed', 1, true) ~= nil", json::array()) == true;
+            }, 15000);
+            bool connected = eventually(client, 1500);
+            other->exec_lua("vim.fn.jobstop(vim.g.maic_job) vim.cmd('enew!')", json::array());
+            return ready && !connected;
+        };
+        expect(bare(json::array({MAIC_BINARY, "--no-record", "--no-instructions", "--bare"}), json::object()), "maic --bare inside the host does not connect");
+        expect(bare(json::array({MAIC_BINARY, "--no-record", "--no-instructions"}), json{{"MAIC_BARE", "1"}}), "nor does maic with MAIC_BARE=1");
     }
 
     section("Esc in MAIC's terminal");

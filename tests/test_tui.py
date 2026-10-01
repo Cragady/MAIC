@@ -226,6 +226,17 @@ class TuiTest(unittest.TestCase):
         third.settle()
         self.assertNotIn("collide", third.text())
 
+    def test_bare_shows_in_the_strip(self):
+        tui = self.start("--bare")
+        self.assertIn(" bare · harness armed", tui.text())
+        tui.send(":theme nvim:habamax<cr>")
+        self.assertIn("this MAIC is bare", tui.text())
+        tui.send(":nvim<cr>")
+        self.assertIn("nvim: bare (--bare, MAIC_BARE=1 or bare = true)", tui.text())
+        plain = self.start(env=dict(self.env, MAIC_BARE="1"))
+        self.assertIn(" bare · harness armed", plain.text())
+        self.assertNotIn(" bare ·", self.start().text())
+
     def test_quit_prints_the_transcript_line(self):
         tui = self.start()
         tui.send(":q<cr>", settle=False)

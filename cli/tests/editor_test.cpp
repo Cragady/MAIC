@@ -842,6 +842,9 @@ int main() {
         expect(std::find(h.begin(), h.end(), "sessions") != h.end() && std::find(h.begin(), h.end(), "session") != h.end(), "help topics and commands complete");
         expect(help_text("").find(":w") != std::string::npos && help_text("").find("modes") != std::string::npos, ":h alone is an index");
         expect(help_text("w").find("*:w*") == 0, ":h w is the :w page");
+        expect(help_text("bare").find("*bare*") == 0 && help_text("bare").find("MAIC_BARE=1") != std::string::npos && help_text("bare").find("--ui nvim") != std::string::npos,
+               ":h bare names --bare, MAIC_BARE=1 and the future --ui nvim");
+        expect(help_text("nvim").find(":h bare") != std::string::npos && help_text("nvim").find(":MaicInterrupt") != std::string::npos, ":h nvim points at :h bare and names :MaicInterrupt");
         expect(help_text(":w") == help_text("w") && help_text("write") == help_text("w"), "a colon or an alias also finds it");
         expect(help_text("Ctrl-W").find("*conversation*") == 0 && help_text("<C-w>") == help_text("ctrl-w"), "key names normalise");
         expect(help_text("Alt+Enter").find("Sends") != std::string::npos && help_text("M-CR") == help_text("alt-enter"), "Alt+Enter in several spellings");

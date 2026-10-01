@@ -130,6 +130,7 @@ struct Settings {
     std::string theme = "default";  // a theme by name (docs/themes.md); `:theme NAME` switches live
     std::string theme_error;        // why the theme could not be loaded (the built-in default is then in effect)
     bool follow_nvim_theme = true;  // inside a connected host nvim (maic.nvim): the theme follows its colorscheme live
+    bool bare = false;              // nothing from nvim: no host, no nvim highlighter or theme, no lazy-lock notice or keymap check (--bare, MAIC_BARE=1)
     std::string colors = "auto";    // colour depth: auto, truecolor, 256 or 16
     std::vector<std::string> instruction_files = {"MAIC.md", "AGENTS.md"};
     bool load_instructions = true;  // false: no MAIC.md / AGENTS.md anywhere

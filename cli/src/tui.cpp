@@ -624,11 +624,11 @@ void App::welcome() {
     for (const auto& f : agent_.instructions()) files += (files.empty() ? "" : ", ") + f.path.string();
     if (!settings_.theme_error.empty()) view_.append(Kind::Error, settings_.theme_error + "; the default theme is in use (:theme reload after fixing it)");
     if (session_tripped()) view_.append(Kind::Error, "this session is tripped (its own lock, from an earlier run): :unlock removes it");
-    if (settings_.lazy_lock_notice) {
+    if (settings_.lazy_lock_notice && !settings_.bare) {
         lazy_lock_ = std::make_unique<LazyLockWatch>(lazy_lock_path(settings_.lazy_lock));
         if (std::string n = lazy_lock_notice(lazy_lock_->check()); !n.empty()) view_.append(Kind::Notice, n);
     }
-    maybe_check_keymaps(lazy_lock_ ? lazy_lock_->check() : lazy_lock_state(lazy_lock_path(settings_.lazy_lock)));
+    if (!settings_.bare) maybe_check_keymaps(lazy_lock_ ? lazy_lock_->check() : lazy_lock_state(lazy_lock_path(settings_.lazy_lock)));
     view_.append(Kind::Notice, "session transcript: " + log_path() + (files.empty() ? "" : "\ninstructions: " + files));
     if (!agent_.tools().empty() || !agent_.script_tools().empty()) {
         std::string names;
@@ -728,7 +728,7 @@ Element App::render_input(size_t width, int& rows) {
 // nvim gets 50 ms per keystroke; when its reply is late the built-in highlighter paints this frame and the
 // reply's arrival redraws. When nvim is missing or breaks, one notice says so and the built-in one stays.
 std::vector<StyledLine> App::input_lines(const std::string& text) {
-    if (settings_.highlight == "nvim" && !nvim_hl_failed_) {
+    if (settings_.highlight == "nvim" && !settings_.bare && !nvim_hl_failed_) {
         if (!nvim_hl_) nvim_hl_ = std::make_unique<NvimHighlighter>("nvim", [this] { screen_.PostEvent(Event::Custom); });
         auto lines = nvim_hl_->highlight(text, std::chrono::milliseconds(50));
         if (lines) return *lines;
@@ -762,7 +762,7 @@ std::vector<std::string> App::palette_entries() {
     auto matches = match_commands(cmd);
     if (!matches.empty() && matches.front()->name == "theme") {
         for (const auto& t : list_themes()) ctx.themes.push_back(t.name);
-        if (partial.rfind("nvim:", 0) == 0) ctx.nvim_colors = nvim_colors();
+        if (partial.rfind("nvim:", 0) == 0 && !settings_.bare) ctx.nvim_colors = nvim_colors();
     }
     return complete_argument(matches.empty() ? cmd : matches.front()->name, partial, ctx);
 }
@@ -818,6 +818,11 @@ void App::theme_command(const std::string& arg) {
     if (follow_theme_ && arg != "reload") {
         follow_theme_ = false;
         post(Kind::Notice, "no longer following nvim's colorscheme this session (:nvim theme follows it again)");
+    }
+    if (arg.rfind("nvim:", 0) == 0 && settings_.bare) {
+        post(Kind::Error, ":theme nvim:NAME runs nvim, and this MAIC is bare (--bare, MAIC_BARE=1 or bare = true): it uses nothing from nvim. "
+                          "Themes saved from nvim before are MAIC's own files and still load: :theme nvim-NAME");
+        return;
     }
     if (arg.rfind("nvim:", 0) == 0) {
         std::string scheme = arg.substr(5);
@@ -921,6 +926,9 @@ void App::nvim_command(const std::string& arg) {
                            "  User autocmds MaicTurnStart, MaicToolCall, MaicApproval, MaicFileWritten, MaicTurnEnd fire there\n"
                            "  the model has the diagnostics tool; your Lua has maic.nvim\n"
                            "  theme: " + std::string(follow_theme_ ? "follows its colorscheme (" + settings_.theme + ")" : "your own (" + settings_.theme + "); :nvim theme follows nvim's"));
+    } else if (settings_.bare) {
+        post(Kind::Notice, "nvim: bare (--bare, MAIC_BARE=1 or bare = true): MAIC uses nothing from nvim. No host connection even inside nvim, the built-in "
+                           "highlighter, no theme from nvim, no lazy-lock notice and no keymap check; your settings, themes, Lua and tools load as usual. :h bare");
     } else if (host_) {
         post(Kind::Notice, "nvim: the host this session connected to is gone");
     } else {
@@ -1050,6 +1058,7 @@ Element App::render_top_status() {
     right.push_back(text(agent_.model + (agent_.think ? " +think" : "")));
     right.push_back(text(agent_.remote() ? " REMOTE" : " local") | decorate(settings_.style(agent_.remote() ? "remote" : "status_dim")));
     if (host_up()) right.push_back(text(" nvim") | decorate(settings_.style("status_dim")));
+    if (settings_.bare) right.push_back(text(" bare") | decorate(settings_.style("status_dim")));
     right.push_back(text(" · ") | decorate(settings_.style("status_dim")));
     if (tripwire_state()) right.push_back(text("HARNESS TRIPPED") | decorate(settings_.style("harness_tripped")));
     else right.push_back(text("harness armed") | decorate(settings_.style("harness_armed")));
@@ -1796,6 +1805,7 @@ void App::run_command(const std::string& line) {
                 post(Kind::Notice, on ? "tool output shown in full (za folds one, zM all)" : "tool output folded to a preview (za unfolds one, zR all)");
             } else if (key == "highlight" || key == "hl") {
                 if (value != "nvim" && value != "builtin") post(Kind::Error, ":set highlight nvim|builtin");
+                else if (value == "nvim" && settings_.bare) post(Kind::Error, "highlight nvim runs nvim, and this MAIC is bare (--bare, MAIC_BARE=1 or bare = true); the built-in highlighter stays");
                 else {
                     settings_.highlight = value;
                     nvim_hl_.reset();
@@ -2396,11 +2406,20 @@ void App::shutdown() {
 }  // namespace
 
 int run_tui(const TuiOptions& options) {
-    // The host nvim first, so the settings files' Lua can use maic.nvim (docs/nvim.md).
+    // The host nvim first, so the settings files' Lua can use maic.nvim (docs/nvim.md); never when bare. `bare = true`
+    // in a settings file is known only once they are read, so then the host is dropped right after.
+    const char* bare_env = std::getenv("MAIC_BARE");
+    bool bare = options.bare || (bare_env && std::string(bare_env) == "1");
     std::string host_refused;
-    std::shared_ptr<HostNvim> host = HostNvim::from_env(host_refused);
+    std::shared_ptr<HostNvim> host = bare ? nullptr : HostNvim::from_env(host_refused);
     set_lua_nvim_host(host);
     Settings settings = load_settings();
+    if (options.bare) settings.bare = true;
+    if (settings.bare) {
+        set_lua_nvim_host(nullptr);
+        host.reset();
+        host_refused.clear();
+    }
     if (options.model) settings.model = *options.model;
     apply_preset(settings, settings.model);
     settings.model = resolve_model_alias(settings.model);

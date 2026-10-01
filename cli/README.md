@@ -22,6 +22,7 @@ maic --prefix "Sure thing! "                              # every reply starts w
 maic --rule "Always answer in French"                      # a standing instruction, reminded every turn (:h rule)
 maic --model opus-5.5                                      # a preset: model, 1M context, thinking on; reviews on Haiku 4.5
 maic --xtc 0.5,0.1 --sampling min_p=0.05 --ban-pattern @~/bans/tics.re   # samplers and bans for one run
+maic --bare                        # nothing from nvim: no host connection, highlighter, theme, lazy-lock notice or keymap check (:h bare)
 maic help headless                 # the verbose page for all of the above (same as :h headless in a session)
 maic help | grep vendor            # help goes to stdout, so it pipes; maic help topics lists every page
 maic lua                           # a LuaJIT REPL in this directory with the maic table loaded
@@ -55,7 +56,7 @@ maic server status                 # the configuration, the relay link (connecte
   INSERT   ↑12 (G follows)                                       Ctrl-W k: conversation · :help
 ```
 
-The strip above the input shows the agent mode, the model, whether it is local or `REMOTE`, `nvim` while MAIC is connected to the nvim it runs inside (below), the harness state, queued messages and whether the agent is working. The bottom line shows the vim mode, the focused window, your position, and the last message.
+The strip above the input shows the agent mode, the model, whether it is local or `REMOTE`, `nvim` while MAIC is connected to the nvim it runs inside (below), `bare` when it was started with `--bare`, the harness state, queued messages and whether the agent is working. The bottom line shows the vim mode, the focused window, your position, and the last message.
 
 ## Keys
 
@@ -81,6 +82,8 @@ The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"
 ## Inside nvim (maic.nvim)
 
 `maic.nvim/` is the nvim plugin: `:Maic` runs MAIC in a terminal split, float or tab, `:MaicSend` puts the buffer's path or a range (as a fenced snippet with path and line numbers) into MAIC's input, `:MaicDiagnostics` and `:MaicQuickfix` send those lists ([maic.nvim/README.md](../maic.nvim/README.md)). From MAIC's side, nvim sets `$NVIM` for every job, and MAIC connects back to that socket as a msgpack-rpc client, but only when it is a Unix socket of this user whose nvim is one of MAIC's own parent processes (anything else is refused with the reason at start). Connected, `:e FILE` and `e` at an approval open files in the editing window, `d` shows a write's proposed change as a diff, the theme follows nvim's colorscheme live (`follow_nvim_theme`), User autocmds (`MaicTurnStart`, `MaicToolCall`, `MaicApproval`, `MaicFileWritten`, `MaicTurnEnd`) fire there, an approved write runs `:checktime`, your Lua gets `maic.nvim.*`, and the model gets the read-only `diagnostics` tool; `:MaicInterrupt` (`<leader>mc`) there stops a running turn as Ctrl-C does. The rules: [docs/nvim.md](../docs/nvim.md).
+
+`maic --bare` (also `MAIC_BARE=1`, or `bare = true` in settings) starts MAIC with nothing from nvim: no `$NVIM` host even inside nvim's terminal, the built-in highlighter, no theme from nvim (`:theme nvim:NAME` is refused and says why), no lazy-lock notice or marker, no keymap check. MAIC's own settings, themes (saved `nvim-NAME.lua` files included), Lua and script tools load as usual; the strip shows `bare`. See `:h bare`.
 
 `maic nvim keymaps [--all] [-u FILE]` runs maic.nvim's keymap check (what `:checkhealth maic` shows) in a headless nvim with your own config, after `User VeryLazy`, and prints the collisions with their fixes: keys maic.nvim had to skip, keys MAIC's own input needs in its terminal (Esc, Ctrl-W, Ctrl-P, Shift-Tab, Ctrl-Z, Ctrl-C, Alt-Enter) that a terminal-mode mapping takes, and llama.vim's keys. Exit 0 none, 1 collisions, 2 nvim could not run; `maic doctor` has a one-line summary. MAIC keeps the result under its state directory and, when `lazy-lock.json` changes, runs the check once more and says at start if a plugin update added a collision.
 

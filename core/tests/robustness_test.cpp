@@ -521,6 +521,15 @@ int main() {
         expect(s.context_2 == 8192, "context_2 defaults to 8192");
         write_file(proj / ".maic" / "settings.local.json", R"({"model": "local/model", "context_2": 16384, "style": {"user": {"bold": true}}})");
         expect(load_settings(proj).context_2 == 16384, "context_2 is read from a layer");
+        unsetenv("MAIC_BARE");
+        expect(!load_settings(proj).bare, "bare is off by default");
+        setenv("MAIC_BARE", "1", 1);
+        expect(load_settings(proj).bare, "MAIC_BARE=1 sets bare");
+        setenv("MAIC_BARE", "0", 1);
+        expect(!load_settings(proj).bare, "MAIC_BARE=0 does not");
+        unsetenv("MAIC_BARE");
+        write_file(proj / ".maic" / "settings.local.json", R"({"model": "local/model", "bare": true, "style": {"user": {"bold": true}}})");
+        expect(load_settings(proj).bare, "bare = true is read from a layer");
         write_file(proj / ".maic" / "settings.local.json", R"({"model": "local/model", "style": {"user": {"bold": true}}})");
         expect(resolve_sessions_home(s, proj).filename() == "general", "no MAIC.md: auto resolves to general");
         write_file(proj / "MAIC.md", "# proj\n");

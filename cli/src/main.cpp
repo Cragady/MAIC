@@ -72,6 +72,8 @@ void usage(std::ostream& out = std::cerr) {
                  "       --harness smart|dumb               smart (default): a model reviews commands and writes the rules would let\n"
                  "                                          through without asking; dumb: the rule list alone (maic help harness)\n"
                  "       --accept-dumb-auto                 skip the warning when combining --harness dumb with --mode auto\n"
+                 "       --bare                             nothing from nvim: no $NVIM host, no nvim highlighter or theme, no lazy-lock\n"
+                 "                                          notice or keymap check (also MAIC_BARE=1, bare = true; maic help bare)\n"
                  "       --record / --no-record             keep a transcript or not (interactive: yes by default, or \"record\" in\n"
                  "                                          settings; -p: none by default)\n"
                  "       --append / --no-append             with -c/-r: write into the old session file, or into a new one that\n"
@@ -1071,6 +1073,7 @@ int main(int argc, char** argv) {
             }
             else if (a == "--harness") tui.harness = headless.harness = value("--harness");
             else if (a == "--accept-dumb-auto") tui.accept_dumb_auto = headless.accept_dumb_auto = true;
+            else if (a == "--bare") tui.bare = true;
             else if (a == "--xtc") {
                 // --xtc P or --xtc P,T (threshold defaults to 0.1)
                 std::string v = value("--xtc");
