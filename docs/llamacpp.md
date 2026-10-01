@@ -28,7 +28,7 @@ models = { ["qwen-4b-side"] = { model = "llamacpp-2/Qwen3.5-4B-Q4_K_M", context 
 
 ## Sharing an 8 GB card with ComfyUI
 
-They take turns. `maic up comfyui` (the service is marked `needs_gpu`) first asks each llama server to unload whatever model it holds and says so; the servers stay up and reload the model on the next request, once ComfyUI has let go of its weights. A load that fails with a CUDA out-of-memory means the other side still holds the card: `maic gpu` shows who, `maic gpu free` releases every side without stopping anything, and a failed `maic up` says exactly that instead of an exit code.
+They take turns. `maic up comfyui` (the service is marked `needs_gpu`) first asks each llama server to unload whatever model it holds and says so; the servers stay up and reload the model on the next request, once ComfyUI has let go of its weights. `maic up whisper` does the same and also asks a running ComfyUI to unload its models (ComfyUI's `/free`; it reloads them on its next run). whisper-server has no unload, so a running whisper is named instead (`maic down whisper` releases it). A load that fails with a CUDA out-of-memory means the other side still holds the card: `maic gpu` shows who, `maic gpu free` releases every side that can let go without stopping anything (the llama servers and ComfyUI), and a failed `maic up` says exactly that instead of an exit code.
 
 ## One model, two entries
 

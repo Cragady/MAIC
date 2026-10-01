@@ -59,9 +59,10 @@ bool is_llama_server(const std::string& service_name);
 // /infill to llama.vim, with no chat provider.
 bool is_fim_server(const std::string& service_name);
 
-// Before starting `def`: when it needs the GPU and a llama server holds a model, unload it. A llama server
-// itself loads nothing at start, so starting one never evicts the other. Returns a notice ("" when nothing
-// had to happen).
+// Before starting `def`: when it needs the GPU, every llama server unloads what it holds and a running ComfyUI
+// (when `def` is not ComfyUI) is asked to unload its models; a running whisper, which cannot unload without
+// stopping, is named. A llama server itself loads nothing at start, so starting one never evicts the other.
+// Returns a notice ("" when nothing had to happen).
 std::string free_gpu_for(const ServiceDef& def, const std::vector<ServiceDef>& services);
 
 // Who holds the card, without nvidia-smi where possible: each llama server's resident models and ComfyUI's
@@ -87,7 +88,8 @@ struct GpuReport {
 };
 GpuReport gpu_report(const std::vector<ServiceDef>& services);
 // Frees what can be freed without stopping anything: a llama server unloads its models, ComfyUI unloads its
-// models and releases cached memory (its /free route). `what` is "all", a llama server's name or "comfyui".
+// models and releases cached memory (its /free route); whisper cannot, and says so. `what` is "all", a llama
+// server's name, "whisper" or "comfyui".
 std::string gpu_free(const std::vector<ServiceDef>& services, const std::string& what = "all");
 
 // One model as a server holds it, for the budget sentence.

@@ -67,6 +67,15 @@ std::string comfyui_queue(const std::string& base_url) {
     return "queue: " + std::to_string(running) + " running, " + std::to_string(pending) + " pending";
 }
 
+// ComfyUI's /free: unload its models and release cached memory; it reloads them on its next run.
+bool comfyui_free(const ServiceDef& def) {
+    httplib::Client c(local_url(def));
+    c.set_connection_timeout(2);
+    c.set_read_timeout(30);
+    auto res = c.Post("/free", R"({"unload_models":true,"free_memory":true})", "application/json");
+    return res && res->status == 200;
+}
+
 std::string first_line(const char* command) {
     FILE* p = popen(command, "r");
     if (!p) return "";
@@ -212,8 +221,14 @@ std::string free_gpu_for(const ServiceDef& def, const std::vector<ServiceDef>& s
         if (freed.empty()) continue;
         out += (out.empty() ? "unloaded " : "; ") + joined(freed) + " from " + other.name;
     }
-    if (out.empty()) return "";
-    return out + " to free the GPU for " + def.name + " (they reload on the next request)";
+    if (const auto* cf = by_name(services, "comfyui"); cf && def.name != "comfyui" && service_status(*cf).state == ServiceState::Running && comfyui_free(*cf)) {
+        out += std::string(out.empty() ? "" : "; ") + "asked comfyui to unload its models";
+    }
+    if (!out.empty()) out += " to free the GPU for " + def.name + " (they reload on the next request)";
+    if (const auto* w = by_name(services, "whisper"); w && def.name != "whisper" && service_status(*w).state == ServiceState::Running) {
+        out += std::string(out.empty() ? "" : "; ") + "whisper still holds its model (maic down whisper releases it)";
+    }
+    return out;
 }
 
 GpuReport gpu_report(const std::vector<ServiceDef>& services) {
@@ -288,7 +303,7 @@ std::string GpuReport::text() const {
 
 std::string gpu_free(const std::vector<ServiceDef>& services, const std::string& what) {
     std::string out;
-    bool known = what == "all" || what == "comfyui";
+    bool known = what == "all" || what == "comfyui" || what == "whisper";
     for (const auto& def : services) {
         if (!is_llama_server(def.name) || (what != "all" && what != def.name)) continue;
         known = true;
@@ -301,16 +316,20 @@ std::string gpu_free(const std::vector<ServiceDef>& services, const std::string&
     }
     if (what == "all" || what == "comfyui") {
         if (const auto* cf = by_name(services, "comfyui"); cf && service_status(*cf).state == ServiceState::Running) {
-            httplib::Client c(local_url(*cf));
-            c.set_connection_timeout(2);
-            c.set_read_timeout(30);
-            auto res = c.Post("/free", R"({"unload_models":true,"free_memory":true})", "application/json");
-            out += res && res->status == 200 ? "comfyui: models unloaded and caches released\n" : "comfyui: /free failed\n";
+            out += comfyui_free(*cf) ? "comfyui: models unloaded and caches released\n" : "comfyui: /free failed\n";
         } else if (what == "comfyui") {
             out += "comfyui: not running\n";
         }
     }
-    if (!known) throw std::runtime_error("maic gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|comfyui]");
+    if (what == "all" || what == "whisper") {
+        // whisper-server has no unload: it holds its model for as long as it runs.
+        if (const auto* w = by_name(services, "whisper"); w && service_status(*w).state == ServiceState::Running) {
+            out += "whisper: holds its model while it runs; maic down whisper releases it\n";
+        } else if (what == "whisper") {
+            out += "whisper: not running\n";
+        }
+    }
+    if (!known) throw std::runtime_error("maic gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui]");
     return out;
 }
 

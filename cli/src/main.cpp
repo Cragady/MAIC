@@ -111,8 +111,8 @@ void usage(std::ostream& out = std::cerr) {
                  "  up <service...|all>        start services\n"
                  "  down <service...|all>      stop services MAIC started\n"
                  "  logs <service> [lines]     the end of a service's log (default 40 lines; docker logs for a container)\n"
-                 "  gpu [free [all|llamacpp|llamacpp-2|llamacpp-fim|comfyui]]   who holds the card (each llama server's resident model, ComfyUI's\n"
-                 "                             VRAM) and whether two models fit it; free unloads models without stopping anything\n"
+                 "  gpu [free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui]]   who holds the card (each llama server's resident model,\n"
+                 "                             whisper's, ComfyUI's VRAM) and whether they fit; free unloads models without stopping anything\n"
                  "  path [NAME] [--copy]       every place maic knows (workspace, sessions, models, workflows, ...) or one path;\n"
                  "                             --copy puts it on the clipboard; a unique prefix is enough\n"
                  "  cd NAME [--subshell]       print a place's directory (cd \"$(maic cd NAME)\"; a file's parent); --subshell (-s)\n"
@@ -257,14 +257,14 @@ int cmd_gpu(const std::vector<std::string>& args) {
         maic::GpuReport report = maic::gpu_report(services);
         std::cout << report.text();
         if (std::string fit = maic::gpu_budget(report, maic::load_settings()); !fit.empty()) std::cout << fit << "\n";
-        std::cout << "maic gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|comfyui] releases memory without stopping anything\n";
+        std::cout << "maic gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui] releases memory without stopping anything\n";
         return 0;
     }
     if (args[0] == "free") {
         std::cout << maic::gpu_free(services, args.size() > 1 ? args[1] : "all");
         return 0;
     }
-    throw std::runtime_error("maic gpu [show | free [all|llamacpp|llamacpp-2|llamacpp-fim|comfyui]]");
+    throw std::runtime_error("maic gpu [show | free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui]]");
 }
 
 std::string human_bytes(uintmax_t b);

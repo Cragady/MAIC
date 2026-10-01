@@ -1187,8 +1187,9 @@ int main() {
         side_def.name = "llamacpp-2";
         side_def.port = port2;
         side_def.needs_gpu = true;
+        // This process stands in for the servers: its pid and start time (field 22 of /proc/self/stat).
+        std::string self_pid;
         {
-            // This process stands in for both servers: its pid and start time (field 22 of /proc/self/stat).
             std::ifstream in("/proc/self/stat");
             std::string stat((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
             std::string after = stat.substr(stat.rfind(')') + 2);
@@ -1197,8 +1198,9 @@ int main() {
             for (int i = 0; i < 19; ++i) fields >> f;  // fields 3..21
             std::string start_time;
             fields >> start_time;
-            for (const auto* name : {"llamacpp", "llamacpp-2"}) write_file(gpu_state / "maic" / "run" / (std::string(name) + ".pid"), std::to_string(getpid()) + " " + start_time + "\n");
+            self_pid = std::to_string(getpid()) + " " + start_time + "\n";
         }
+        for (const auto* name : {"llamacpp", "llamacpp-2"}) write_file(gpu_state / "maic" / "run" / (std::string(name) + ".pid"), self_pid);
         std::vector<ServiceDef> two = {main_def, side_def, comfy};
         GpuReport both = gpu_report(two);
         expect(both.servers.size() == 2 && both.servers[0].running && both.servers[0].models == std::vector<std::string>{"Qwen3.5-4B-Q4_K_M"} &&
@@ -1212,8 +1214,43 @@ int main() {
         std::string one = gpu_free(two, "llamacpp-2");
         expect(unloaded1.size() == 1 && unloaded2.size() == 1 && one.find("llamacpp-2: unloaded Qwen3.5-9B") == 0, "maic gpu free llamacpp-2 unloads the side server only: " + one);
         threw = false;
-        try { gpu_free(two, "llamacpp-3"); } catch (const std::exception& e) { threw = std::string(e.what()).find("llamacpp-2") != std::string::npos; }
+        try { gpu_free(two, "llamacpp-3"); } catch (const std::exception& e) { threw = std::string(e.what()).find("llamacpp-2|llamacpp-fim|whisper|comfyui") != std::string::npos; }
         expect(threw, "an unknown name lists the choices");
+
+        // whisper and ComfyUI take turns too. Starting whisper frees the llama servers and asks a running ComfyUI
+        // to unload; whisper-server has no unload, so starting ComfyUI names it and gpu free only says so.
+        httplib::Server cf;
+        int frees = 0;
+        cf.Post("/free", [&](const httplib::Request&, httplib::Response& res) {
+            ++frees;
+            res.set_content("{}", "application/json");
+        });
+        int cf_port = cf.bind_to_any_port("127.0.0.1");
+        std::thread tcf([&] { cf.listen_after_bind(); });
+        cf.wait_until_ready();
+        ServiceDef comfy_up = comfy, whisper_def;
+        comfy_up.port = cf_port;
+        whisper_def.name = "whisper";
+        whisper_def.needs_gpu = true;
+        whisper_def.port = closed_port();
+        for (const auto* name : {"comfyui", "whisper"}) write_file(gpu_state / "maic" / "run" / (std::string(name) + ".pid"), self_pid);
+        std::vector<ServiceDef> all_five = {main_def, side_def, comfy_up, whisper_def};
+        unloaded1.clear();
+        unloaded2.clear();
+        std::string for_whisper = free_gpu_for(whisper_def, all_five);
+        expect(unloaded1.size() == 1 && unloaded2.size() == 1 && frees == 1 &&
+                   for_whisper.find("from llamacpp-2; asked comfyui to unload its models to free the GPU for whisper") != std::string::npos && for_whisper.find("whisper still") == std::string::npos,
+               "starting whisper frees both llama servers and asks ComfyUI to unload: " + for_whisper);
+        std::string for_comfy = free_gpu_for(comfy_up, all_five);
+        expect(frees == 1 && for_comfy.find("whisper still holds its model (maic down whisper releases it)") != std::string::npos,
+               "starting ComfyUI does not ask itself, and names the running whisper: " + for_comfy);
+        size_t before_free = unloaded1.size();
+        std::string fw = gpu_free(all_five, "whisper");
+        expect(fw == "whisper: holds its model while it runs; maic down whisper releases it\n" && frees == 1 && unloaded1.size() == before_free, "maic gpu free whisper only says what it holds: " + fw);
+        std::string fall = gpu_free(all_five, "all");
+        expect(frees == 2 && fall.find("comfyui: models unloaded") != std::string::npos && fall.find("whisper: holds its model") != std::string::npos, "maic gpu free covers every side: " + fall);
+        cf.stop();
+        tcf.join();
         r1.stop();
         r2.stop();
         t1.join();

@@ -263,7 +263,7 @@ The scribe's model is a GGUF under `<models_dir>/llamacpp/`, as for MAIC itself 
 | scribe, the 4B on the side server at 8k (text only) | 3.0 GB |
 | scribe, the 4B at 16k | 3.6 GB |
 
-So whisper plus a 4B scribe is about 5 GB and fits with ComfyUI stopped. A third model does not: with the agent's own 4B at 16k on 8081 and the scribe's on 8082 as well, the estimate is 8.3 GB before each process's own CUDA overhead, so either let the scribe share the main server's model (`--agent-model llamacpp/Qwen3.5-4B-Q4_K_M` while that is the session's model, which evicts nothing) or take the turbo q5_0 model and lower `context_2`. `whisper-server` holds its model from the moment it starts; `maic down whisper` gives the memory back. It is marked `needs_gpu`, so `maic up whisper` first asks the llama servers to unload what they hold, as ComfyUI does; they reload on the next request.
+So whisper plus a 4B scribe is about 5 GB and fits with ComfyUI stopped. A third model does not: with the agent's own 4B at 16k on 8081 and the scribe's on 8082 as well, the estimate is 8.3 GB before each process's own CUDA overhead, so either let the scribe share the main server's model (`--agent-model llamacpp/Qwen3.5-4B-Q4_K_M` while that is the session's model, which evicts nothing) or take the turbo q5_0 model and lower `context_2`. `whisper-server` holds its model from the moment it starts; `maic down whisper` gives the memory back. It is marked `needs_gpu`, so `maic up whisper` first asks the llama servers to unload what they hold, as ComfyUI does, and asks a running ComfyUI to unload its models; each reloads on its next request. `maic gpu free whisper` cannot unload it and says so.
 
 ## Privacy
 
