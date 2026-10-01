@@ -79,14 +79,17 @@ BanFilter::~BanFilter() {
 
 // The regex stage. `text` has passed the literal stage; what comes back may be shown. Everything from
 // rscan_ on is searched; a match that starts in text already shown cannot be unshown, so the cut lands at
-// the first unshown byte instead.
-std::string BanFilter::through_patterns(std::string text, bool final) {
+// the first unshown byte instead. `release_all` gives out the held window too (a literal cut, the end of
+// the reply); `at_end` says the reply really ended there. `^` and `$` mean the reply's own start and end:
+// once text has left the front of the buffer `^` cannot match, and `$` matches only at_end.
+std::string BanFilter::through_patterns(std::string text, bool release_all, bool at_end) {
     if (res_.empty()) {
         clean_ += text;
         return text;
     }
     rtext_ += text;
     std::string out;
+    int anchors = (rfront_ ? 0 : REG_NOTBOL) | (at_end ? 0 : REG_NOTEOL);
     for (;;) {
         bool found = false;
         size_t best_s = 0, best_e = 0;
@@ -94,7 +97,7 @@ std::string BanFilter::through_patterns(std::string text, bool final) {
             regmatch_t m[1];
             m[0].rm_so = static_cast<regoff_t>(rscan_);
             m[0].rm_eo = static_cast<regoff_t>(rtext_.size());
-            if (regexec(&re, rtext_.c_str(), 1, m, REG_STARTEND) != 0) continue;
+            if (regexec(&re, rtext_.c_str(), 1, m, REG_STARTEND | anchors) != 0) continue;
             size_t s = static_cast<size_t>(m[0].rm_so), e = static_cast<size_t>(m[0].rm_eo);
             if (e == s) continue;  // an empty match bans nothing
             if (!found || s < best_s) found = true, best_s = s, best_e = e;
@@ -112,11 +115,12 @@ std::string BanFilter::through_patterns(std::string text, bool final) {
         rscan_ = best_s + bans_.replacement.size();
     }
     // Keep the last `window` bytes until more text arrives or the reply ends; a match could still grow there.
-    size_t keep = final ? 0 : std::min(rtext_.size(), static_cast<size_t>(bans_.window));
+    size_t keep = release_all ? 0 : std::min(rtext_.size(), static_cast<size_t>(bans_.window));
     size_t give = rtext_.size() - keep;
     out += rtext_.substr(0, give);
     clean_ += rtext_.substr(0, give);
     rtext_.erase(0, give);
+    if (give > 0) rfront_ = false;
     rscan_ = rscan_ > give ? rscan_ - give : 0;
     return out;
 }
@@ -138,7 +142,7 @@ std::string BanFilter::release(size_t n) {
 
 std::string BanFilter::feed(std::string_view delta) {
     if (!hit_.empty()) return "";  // cut already; nothing more is shown
-    if (longest_ == 0) return through_patterns(std::string(delta), false);
+    if (longest_ == 0) return through_patterns(std::string(delta), false, false);
     held_.append(delta);
     std::string out;
     size_t at = 0;
@@ -150,8 +154,8 @@ std::string BanFilter::feed(std::string_view delta) {
                 if (!replace_) {
                     out += release(at);
                     held_.clear();
-                    std::string shown = through_patterns(out, true);
-                    hit_ = ban;  // after the regex stage, so its own cut (if any) is reported instead
+                    std::string shown = through_patterns(out, true, false);
+                    if (hit_.empty()) hit_ = ban;  // a regex cut inside the released text comes first and is the one reported
                     return shown;
                 }
                 out += release(at);
@@ -170,17 +174,17 @@ std::string BanFilter::feed(std::string_view delta) {
         }
         if (could_start) {
             out += release(at);  // show what is before it, keep the rest until it resolves
-            return through_patterns(out, false);
+            return through_patterns(out, false, false);
         }
         ++at;
     }
     out += release(held_.size());
-    return through_patterns(out, false);
+    return through_patterns(out, false, false);
 }
 
 std::string BanFilter::flush() {
     if (!hit_.empty()) return "";
-    return through_patterns(release(held_.size()), true);
+    return through_patterns(release(held_.size()), true, true);
 }
 
 }  // namespace maic

@@ -51,5 +51,6 @@ Where an outside approach and MAIC's rules cannot both hold, MAIC's rules win an
 | bubblewrap (system package, called as a program) | LGPL-2.0+ | the command sandbox; not linked, only executed |
 | nvim (the user's own install, optional, called as a program) | Apache-2.0 and the Vim license | `highlight = "nvim"`, the input highlighter, and `:e`; not linked, only executed |
 | glibc regex (`regcomp`) | LGPL, system library | `search_files` |
+| pyte (fetched by `uv run --with pyte`, tests only) | LGPL-3.0 | the terminal emulator behind `tests/tui_driver.py`; not linked, not shipped |
 
 No code has been copied from another project into MAIC's sources.

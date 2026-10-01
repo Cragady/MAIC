@@ -2,6 +2,7 @@
 # Builds a tagged release of maic into ~/program-files/maic/<tag>/ and points ~/bin/maic at it.
 # Usage: scripts/release.sh v0.1.0-beta.2        (tags HEAD if the tag does not exist yet)
 #        scripts/release.sh                      (reinstalls the tag HEAD is on, if any)
+# Runs scripts/check.sh (configure, build, ctest, the python suites) first and refuses to release when it fails.
 # The dev build in build/ is untouched, so the installed copy stays stable while development continues.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -16,6 +17,10 @@ if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
         echo "commit or stash your changes before tagging $tag" >&2
         exit 1
     fi
+fi
+# The gate first, on the dev build: a release is never cut from a tree whose build or tests fail.
+scripts/check.sh || { echo "release: scripts/check.sh failed; nothing tagged or installed" >&2; exit 1; }
+if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
     git tag -a "$tag" -m "maic $tag"
     echo "tagged $tag"
 fi

@@ -64,7 +64,7 @@ public:
 private:
     bool matches(const std::string& text, size_t at, const std::string& ban) const;
     std::string release(size_t n);
-    std::string through_patterns(std::string text, bool final);
+    std::string through_patterns(std::string text, bool release_all, bool at_end);
 
     Bans bans_;
     bool replace_;
@@ -76,6 +76,7 @@ private:
     std::vector<std::string> bad_;
     std::string rtext_;    // text past the literal stage, not yet released by the regex stage
     size_t rscan_ = 0;     // rtext_ before this is known clean
+    bool rfront_ = true;   // rtext_ still begins where the reply began, so `^` may match
 };
 
 }  // namespace maic
