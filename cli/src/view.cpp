@@ -48,7 +48,7 @@ bool attached(Kind k) {
     return k == Kind::ToolOk || k == Kind::ToolErr;
 }
 
-// A subagent's tool call ("↳ scout: ...") sits indented under the delegate call that started it.
+// A subagent's tool call ("↳ explore: ...") sits indented under the task call that started it.
 const char* marker(const Entry& e) {
     if (e.kind == Kind::Tool && e.text.rfind("↳", 0) == 0) return "  ";
     return prefix(e.kind);

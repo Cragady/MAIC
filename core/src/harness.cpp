@@ -4,7 +4,7 @@
 #include <fnmatch.h>
 
 #include "maic/paths.hpp"
-#include "maic/profile.hpp"
+#include "maic/agent_def.hpp"
 
 #include <cstdlib>
 #include <regex>
@@ -291,7 +291,7 @@ Decision Harness::check(const Action& action, Mode mode, Origin origin) const {
         case Action::Kind::Read: d = check_read(action.path, mode); break;
     }
     if (origin == Origin::Remote && confined_) return {Verdict::Deny, "isolated session: no remote requests"};
-    if (profile_) d = check_profile(action, d);
+    if (agent_def_) d = check_agent_def(action, d);
     // The permission block comes after the fixed rules: a trip or a denial above is not its to lift, and an
     // allow entry never speaks for a remote origin.
     if (d.verdict == Verdict::Allow || d.verdict == Verdict::Ask) {
@@ -321,18 +321,18 @@ bool Harness::permitted(const std::vector<std::string>& entries, const Action& a
     return false;
 }
 
-void Harness::set_profile(const Profile& profile) {
-    profile_ = std::make_shared<const Profile>(profile);
+void Harness::set_agent_def(const AgentDef& agent) {
+    agent_def_ = std::make_shared<const AgentDef>(agent);
 }
 
 bool Harness::tool_allowed(const std::string& name) const {
-    return !profile_ || profile_->allows_tool(name);
+    return !agent_def_ || agent_def_->allows_tool(name);
 }
 
-Decision Harness::check_profile(const Action& action, Decision d) const {
+Decision Harness::check_agent_def(const Action& action, Decision d) const {
     if (d.verdict == Verdict::Deny || d.verdict == Verdict::Trip) return d;
-    const Profile& p = *profile_;
-    std::string who = "the " + p.name + " profile";
+    const AgentDef& p = *agent_def_;
+    std::string who = "the " + p.name + " agent";
     switch (action.kind) {
         case Action::Kind::Write:
             if (p.read_only()) return {Verdict::Deny, who + " is read-only"};

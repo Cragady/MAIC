@@ -2,13 +2,14 @@
 
 #include "maic/bans.hpp"
 #include "maic/llm.hpp"
-#include "maic/profile.hpp"
+#include "maic/agent_def.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -48,17 +49,54 @@ struct ServerSettings {
 
 // A model preset: one short name that sets the model, its context window, the reviewer the smart harness
 // uses with it, and whether to think. `maic --model opus-5.5`, `:model opus-5.5`. Built-in ones can be
-// overridden and new ones added under `models` in settings.
+// changed field by field and new ones added under `models` in settings.
+// The rest is about the models it works with: `subagents` lists the presets a subagent of this model may run
+// on (higher or lower tiers; the model itself is always allowed), and `limited` marks a model the user's plan
+// caps, which the picks below step aside from. docs/settings.md has the rules.
 struct ModelPreset {
     std::string name;      // "opus-5.5"
     std::string model;     // "anthropic/claude-opus-5-5"
     int context = 0;       // tokens; 0 = the provider's own figure
-    std::string reviewer;  // "same", "" (unchanged), or a provider/model
+    std::string reviewer;  // "same" (the model itself), a preset or provider/model, or "" (the small model)
     int think = -1;        // -1 unchanged, 0 off, 1 on
+    int tier = 0;          // higher is stronger, and costs more
+    bool limited = false;  // the user's plan caps this model's usage
+    std::vector<std::string> subagents;  // presets a subagent may run on
+    std::string subagent;  // the preferred pick: "same", a preset, or "" for the rule (subagent_pick)
+    std::string on_limit;  // where a subagent continues when this model hits its usage limit; "" for the rule
 };
 std::vector<ModelPreset> default_presets();
 // Finds a preset by name, ignoring case and treating spaces, dots and underscores like hyphens ("Opus 5.5").
 std::optional<ModelPreset> find_preset(const std::vector<ModelPreset>& presets, const std::string& query);
+// The preset whose model is exactly `model` ("anthropic/claude-fable-5-1").
+std::optional<ModelPreset> preset_for_model(const std::vector<ModelPreset>& presets, const std::string& model);
+// Sets the preset's context window on its provider (and nothing when it has none).
+void set_preset_window(std::vector<Provider>& providers, const ModelPreset& preset);
+
+// The presets on `p`'s subagents list, `p` included, strongest first.
+std::vector<ModelPreset> subagent_presets(const std::vector<ModelPreset>& presets, const ModelPreset& p);
+
+// A chosen model and why, for transcripts and the TUI. `model` is "" when nothing is left to choose.
+struct ModelPick {
+    std::string preset;  // "" when the model is not a preset
+    std::string model;
+    std::string reason;
+};
+// A subagent's model under a parent on `p`: its `subagent` setting; else the same model when it is not limited;
+// else the strongest non-limited preset on its list below its tier, else the strongest non-limited one, else
+// the same model.
+ModelPick subagent_pick(const std::vector<ModelPreset>& presets, const ModelPreset& p);
+// Where a subagent on `p` continues after a usage limit: `on_limit`, else the rule above without "same".
+std::optional<ModelPreset> on_limit_pick(const std::vector<ModelPreset>& presets, const ModelPreset& p);
+// opencode's small_model for a session on `p` when settings name none: a local model is its own (free and
+// already loaded); otherwise the lowest-tier non-limited preset on its list, else the model itself.
+ModelPick default_small_model(const std::vector<ModelPreset>& presets, const std::vector<Provider>& providers, const ModelPreset& p);
+// The smart harness's reviewer for a session on `model`, first match wins: `pin` (reviewer_model), the
+// preset's `reviewer`, `small_model`, the default small model, the model itself. A pick in `failed` (models
+// that hit their usage limit this session) falls back to the failed preset's on_limit, else the cheapest
+// non-limited preset on the list, never above the tier that failed; "" when none is left.
+ModelPick reviewer_pick(const std::vector<ModelPreset>& presets, const std::vector<Provider>& providers, const std::string& model,
+                        const std::string& pin, const std::string& small_model, const std::set<std::string>& failed);
 
 struct Settings {
     std::string model = "llamacpp/current";  // the vendored llama-server serves the linked GGUF as `current`
@@ -76,7 +114,9 @@ struct Settings {
     std::string models_dir;
     int context = 16384;       // the local server's context window in tokens (--ctx-size for llama.cpp) and the readout
     int context_2 = 8192;      // the same for the side server (services/llamacpp-2.json, ${MAIC_CONTEXT_2})
-    std::string title_model;   // names a session after its first turn ("" = off; e.g. "qwen3.5:4b")
+    // opencode's small_model: the cheap model for auxiliary calls. It titles a session after its first turn
+    // ("" = no titles) and is the reviewer's default. `title_model` is its older name.
+    std::string small_model;
     long budget_tokens = 0;    // per-session token budget, 0 = unlimited
     bool timestamps = false;   // a time beside each conversation entry
     bool record = true;
@@ -105,7 +145,7 @@ struct Settings {
     // `permission`: allow / ask / deny over `tool:argument` patterns (docs/harness.md); layers add up. MAIC's own helpers
     // are pre-approved. The old `allow` key still works: its command patterns land here as `run_shell:` entries.
     Permission permission{{"run_shell:maic-storyboard*", "run_shell:maic-workflow-edit*", "run_shell:maic-danbooru-tags*", "run_shell:maic-panel-check*", "run_shell:maic path*", "run_shell:maic status*", "run_shell:maic artifacts*", "run_shell:maic sessions*"}, {}, {}};
-    std::vector<Profile> profiles = default_profiles();  // `profiles` in settings adds or narrows, by name
+    std::vector<AgentDef> agents = default_agent_defs();  // `agents` in settings (older: `profiles`) adds or narrows, by name
     Bans bans;                      // strings, patterns and tokens the model must not produce (docs/bans.md)
     nlohmann::json sampling = nlohmann::json::object();  // sampler keys for every provider; a provider's options.sampling overrides
     std::string tripwire = "machine";  // "machine": the root-owned lock (default); "session": a lock beside this transcript, no sudo; "isolated": session lock and the machine lock ignored (needs allow_isolated)
@@ -113,7 +153,8 @@ struct Settings {
     std::string browser = "default";   // default | firefox | chrome: what `maic open SERVICE` uses
     std::string remote;                // a maic-server you subscribe to (https://host:7373); `maic open` prefers its services when it is up
     std::string harness = "smart";  // "smart": a model reviews commands and writes the rules would allow; "dumb": rules only
-    std::string reviewer_model;     // the reviewer ("" = the session's model)
+    std::string reviewer_model;     // a pinned reviewer ("" = the preset's reviewer, else small_model; see reviewer_pick)
+    long reviewer_budget_tokens = 0;  // the reviewer's own token cap; past it, what it would review is asked. 0 = none
     bool dumb_auto_ok = false;      // true: no warning when entering auto mode under a dumb harness
     ServerSettings server;
 

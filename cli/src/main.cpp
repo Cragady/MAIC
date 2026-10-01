@@ -122,7 +122,7 @@ void usage(std::ostream& out = std::cerr) {
                  "  sessions state ID          one screen: turns, tool calls per tool, files touched, tokens and budget,\n"
                  "                             compactions, forks and subagents\n"
                  "  sessions time ID [--slowest N]   how long each turn took, and the slowest tool calls\n"
-                 "  sessions name ID [--model M]   title it with the title model (title_model in settings), as the auto-title does\n"
+                 "  sessions name ID [--model M]   title it with the small model (small_model in settings), as the auto-title does\n"
                  "  sessions inject ID (--text T | --file F|-) [--at N] [--role user|system] [--home general|project|NAME]\n"
                  "                             a new session: ID's first N records (a pointer) plus one note, marked as injected\n"
                  "  sessions graft ID --onto TARGET [--at N] [--home ...]   a new session: TARGET's first N records (a pointer),\n"
@@ -418,7 +418,7 @@ void print_sessions(const std::vector<maic::SessionInfo>& sessions) {
             last_day = day;
         }
         std::string where = std::filesystem::path(s.workspace).filename().string();
-        std::cout << indent << "  " << (indent.empty() ? "" : "↳ ") << i + 1 << ". " << hm << "  " << (s.profile.empty() ? "" : s.profile + ": ")
+        std::cout << indent << "  " << (indent.empty() ? "" : "↳ ") << i + 1 << ". " << hm << "  " << (s.agent.empty() ? "" : s.agent + ": ")
                   << (s.title.empty() ? (s.first_prompt.empty() ? "(no prompt yet)" : s.first_prompt) : s.title)
                   << "  [" << where << "]  " << s.turns << " turn" << (s.turns == 1 ? "" : "s") << (maic::session_running(s) ? "  RUNNING" : "")
                   << (maic::session_lock_reason(s) ? "  LOCKED" : "") << "\n"
@@ -632,7 +632,7 @@ int cmd_sessions_state(const std::vector<std::string>& args) {
     if (maic::session_lock_reason(s)) std::cout << "  LOCKED";
     std::cout << "\n";
     if (!s.parent.empty()) std::cout << "resumed from " << s.parent << " (first " << s.parent_records << " records)\n";
-    if (!s.delegated_from.empty()) std::cout << "subagent of " << s.delegated_from << " under profile " << s.profile << "\n";
+    if (!s.delegated_from.empty()) std::cout << "subagent of " << s.delegated_from << " as the " << s.agent << " agent\n";
     std::cout << st.records << " records in this file, " << st.first_time << " to " << st.last_time << "\n"
               << st.turns << " turn" << (st.turns == 1 ? "" : "s") << ", " << st.replies << " repl" << (st.replies == 1 ? "y" : "ies") << ", "
               << st.tool_calls << " tool call" << (st.tool_calls == 1 ? "" : "s");
@@ -663,7 +663,7 @@ int cmd_sessions_state(const std::vector<std::string>& args) {
     std::string forks, children;
     for (const auto& other : maic::list_sessions()) {
         if (other.parent == s.id) forks += (forks.empty() ? "" : ", ") + other.id + " (at " + std::to_string(other.parent_records) + ")";
-        if (other.delegated_from == s.id) children += (children.empty() ? "" : ", ") + other.id + " (" + other.profile + ")";
+        if (other.delegated_from == s.id) children += (children.empty() ? "" : ", ") + other.id + " (" + other.agent + ")";
     }
     if (!forks.empty()) std::cout << "forks: " << forks << "\n";
     if (!children.empty()) std::cout << "subagents: " << children << "\n";
@@ -703,8 +703,8 @@ int cmd_sessions_name(const std::vector<std::string>& args) {
     auto s = need_session(id);
     if (maic::session_running(s)) throw std::runtime_error(s.id + " is running: :rename inside it, or wait until it ends");
     maic::Settings settings = maic::load_settings();
-    std::string model = o.count("--model") ? o["--model"] : settings.title_model;
-    if (model.empty()) throw std::runtime_error("no title_model in settings; pass --model MODEL (maic help settings)");
+    std::string model = o.count("--model") ? o["--model"] : settings.small_model;
+    if (model.empty()) throw std::runtime_error("no small_model in settings; pass --model MODEL (maic help settings)");
     auto [provider, name] = maic::resolve_model(settings.providers, model);
     bool local_session = s.model.empty() || !maic::resolve_model(settings.providers, s.model).first.remote();
     if (provider.remote() && local_session) {

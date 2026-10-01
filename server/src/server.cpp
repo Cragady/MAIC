@@ -230,7 +230,10 @@ struct Server::Impl {
         s->agent.providers = st.providers;
         s->agent.set_forbid(st.forbid);
         s->agent.set_permission(st.permission);
-        s->agent.profiles = st.profiles;
+        s->agent.agents = st.agents;
+        s->agent.presets = st.presets;
+        s->agent.small_model = st.small_model;
+        s->agent.reviewer_budget_tokens = st.reviewer_budget_tokens;
         s->agent.mode = mode;
         s->agent.think = st.think;
         s->agent.compaction.at = st.compact_at;

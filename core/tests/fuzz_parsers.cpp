@@ -138,6 +138,7 @@ const std::vector<std::string> anthropic_lines = {
 const std::vector<std::string> jsonl_lines = {
     R"({"type":"start","time":"2026-10-01T04:00:00+0000","workspace":"/tmp/ws","host":"box","pid":123,"model":"llamacpp/current","mode":"manual"})",
     R"({"type":"start","parent":"20261001-040000-tui-1","profile":"scout"})",
+    R"({"type":"start","parent":"20261001-040000-tui-1","agent":"explore","model_reason":"fable-5.1 is limited"})",
     R"({"type":"user","text":"hello there","provider":"llamacpp","model":"llamacpp/current","remote":false,"mode":"auto","origin":"local"})",
     R"({"type":"assistant","text":"hi"})",
     R"({"type":"msg","role":"system","content":"sys"})",

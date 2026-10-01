@@ -11,7 +11,7 @@
 
 namespace maic {
 
-struct Profile;
+struct AgentDef;
 
 // How much the agent may do without asking. Cycled with Shift-Tab in the CLI.
 enum class Mode {
@@ -93,10 +93,10 @@ public:
     void set_allow(const std::vector<std::string>& patterns);  // replaces the run_shell entries of permission.allow
     std::vector<std::string> allow() const;
     bool allowed_by_list(const std::string& command) const;
-    // A subagent's profile: a write outside its write_paths, a read outside the workspace when it may not, a
-    // tool off its list and, for a read-only profile, anything that could write are denied, the profile named.
-    void set_profile(const Profile& profile);
-    const Profile* profile() const { return profile_.get(); }
+    // A subagent's agent: a write outside its write_paths, a read outside the workspace when it may not, a
+    // tool off its list and, for a read-only agent, anything that could write are denied, the agent named.
+    void set_agent_def(const AgentDef& agent);
+    const AgentDef* agent_def() const { return agent_def_.get(); }
     bool tool_allowed(const std::string& name) const;
     // A repeat of this action is harmless (a read, a read-only or allow-listed command): refuse, never trip.
     bool harmless(const Action& action) const;
@@ -116,12 +116,12 @@ private:
     Decision check_shell(const std::string& command, Mode mode) const;
     Decision check_write(const std::filesystem::path& p, Mode mode) const;
     Decision check_read(const std::filesystem::path& p, Mode mode) const;
-    Decision check_profile(const Action& action, Decision d) const;
+    Decision check_agent_def(const Action& action, Decision d) const;
     bool permitted(const std::vector<std::string>& entries, const Action& action) const;
 
     std::filesystem::path workspace_;
     Permission permission_;
-    std::shared_ptr<const Profile> profile_;
+    std::shared_ptr<const AgentDef> agent_def_;
     std::vector<std::string> forbid_;
     std::vector<std::pair<std::string, regex_t>> forbid_res_;  // compiled /regex/ entries, by their text
     bool confined_ = false;

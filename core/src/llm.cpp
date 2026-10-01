@@ -182,7 +182,7 @@ Message chat(const Provider& provider, const ChatOptions& options, const std::ve
         try {
             return chat_once(provider, options, messages, tools, sink, cancel);
         } catch (const ApiError& e) {
-            bool retryable = e.status == 429 || e.status == 408 || e.status == 409 || e.status >= 500;
+            bool retryable = (e.status == 429 && !is_usage_limit(e)) || e.status == 408 || e.status == 409 || e.status >= 500;
             if (!retryable || streamed || attempt >= options.retries) throw;
             wait_ms = e.retry_after_ms;
             why = "HTTP " + std::to_string(e.status);
@@ -201,6 +201,23 @@ Message chat(const Provider& provider, const ChatOptions& options, const std::ve
         }
         if (!sleep_unless_cancelled(wait_ms, cancel)) throw Cancelled();
     }
+}
+
+bool is_usage_limit(const ApiError& e) {
+    std::string m = e.what(), t = e.type;
+    for (auto* s : {&m, &t}) {
+        for (auto& c : *s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    auto has = [&](const char* w) { return m.find(w) != std::string::npos; };
+    if (e.status == 402 || t == "insufficient_quota" || has("insufficient_quota")) return true;
+    if (e.status == 400 && has("credit balance is too low")) return true;  // Anthropic, prepaid credit gone
+    if (e.status != 429) return false;
+    // A 429 is a usage limit when it says the allowance is gone; "rate limit ... per minute" and "slow down"
+    // are the kind that clears by itself.
+    for (const char* w : {"usage limit", "reached your", "usage-credits", "quota", "credits", "exhausted", "billing"}) {
+        if (has(w)) return true;
+    }
+    return false;
 }
 
 std::string generate_title(const Provider& provider, const std::string& model, const std::string& first_prompt) {
@@ -237,7 +254,15 @@ std::string api_error(const std::string& provider, const HttpResult& r) {
 }
 
 void throw_api_error(const std::string& provider, const HttpResult& r) {
-    throw ApiError(r.status, api_error(provider, r), r.retry_after_ms);
+    // Anthropic: {"error": {"type": "rate_limit_error", ...}}; OpenAI: {"error": {"type"/"code": "insufficient_quota", ...}}.
+    std::string type;
+    auto j = nlohmann::json::parse(r.error_body, nullptr, false);
+    if (j.is_object() && j.contains("error") && j["error"].is_object()) {
+        const auto& e = j["error"];
+        if (e.contains("type") && e["type"].is_string()) type = e["type"];
+        if ((type.empty() || type == "error") && e.contains("code") && e["code"].is_string()) type = e["code"];
+    }
+    throw ApiError(r.status, api_error(provider, r), r.retry_after_ms, type);
 }
 
 HttpResult stream_post(const std::string& base_url, const std::string& path,

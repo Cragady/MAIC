@@ -17,18 +17,23 @@ namespace maic {
 
 std::vector<ModelPreset> default_presets() {
     // Context sizes are the figures Micaiah gave or the provider's documented ones; a settings `models` entry
-    // overrides any of them. Anthropic's reviewer is Sonnet 5 rather than the model itself: a cheaper second
-    // reader is what Anthropic recommends for a review step, and the harness never needs the biggest model.
+    // changes any of them. The Anthropic presets leave `reviewer` empty, so the harness reviews on the small
+    // model (Haiku): a one-line verdict needs no more. The local ones review with themselves, already loaded.
+    // Fable is marked limited because Fable plans commonly carry a usage cap (Micaiah's does): its subagents
+    // and its reviewer step aside to a model without one. A local preset hands subagents only to local presets,
+    // so a local session's data stays on the machine unless the user adds a cloud preset to its list.
+    const std::vector<std::string> cloud = {"fable-5.1", "opus-5.5", "sonnet-5", "haiku-4.5"};
+    const std::vector<std::string> local = {"qwen-9b", "qwen-9b-vision", "qwen-4b"};
     return {
-        {"opus-5.5", "anthropic/claude-opus-5-5", 1000000, "anthropic/claude-sonnet-5", 1},
-        {"fable-5.1", "anthropic/claude-fable-5-1", 1000000, "anthropic/claude-sonnet-5", 1},
-        {"sonnet-5", "anthropic/claude-sonnet-5", 1000000, "same", 1},
-        {"haiku-4.5", "anthropic/claude-haiku-4-5-20251001", 200000, "same", 0},
-        {"qwen-4b", "llamacpp/Qwen3.5-4B-Q4_K_M", 16384, "same", 0},
+        {"opus-5.5", "anthropic/claude-opus-5-5", 1000000, "", 1, 40, false, cloud},
+        {"fable-5.1", "anthropic/claude-fable-5-1", 1000000, "", 1, 50, true, cloud},
+        {"sonnet-5", "anthropic/claude-sonnet-5", 1000000, "", 1, 30, false, cloud},
+        {"haiku-4.5", "anthropic/claude-haiku-4-5-20251001", 200000, "", 0, 20, false, cloud},
+        {"qwen-4b", "llamacpp/Qwen3.5-4B-Q4_K_M", 16384, "same", 0, 10, false, local},
         // The 9B twice: text-only (a folder with a link to the weights and no projector) at 16k, and with its
         // vision projector at 8k, the most an 8 GB card holds for it.
-        {"qwen-9b", "llamacpp/Qwen3.5-9B-Q4_K_M-text", 16384, "same", 0},
-        {"qwen-9b-vision", "llamacpp/Qwen3.5-9B-Q4_K_M", 8192, "same", 0},
+        {"qwen-9b", "llamacpp/Qwen3.5-9B-Q4_K_M-text", 16384, "same", 0, 12, false, local},
+        {"qwen-9b-vision", "llamacpp/Qwen3.5-9B-Q4_K_M", 8192, "same", 0, 12, false, local},
     };
 }
 
@@ -37,6 +42,21 @@ std::string preset_key(std::string q) {
     for (auto& c : q) c = (c == ' ' || c == '_' || c == '.') ? '-' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (q.rfind("claude-", 0) == 0) q = q.substr(7);
     return q;
+}
+
+// The strongest non-limited preset other than `p` on its list, below its tier if one is; nullopt when none.
+std::optional<ModelPreset> step_aside(const std::vector<ModelPreset>& presets, const ModelPreset& p) {
+    std::optional<ModelPreset> below, any;
+    for (const auto& q : subagent_presets(presets, p)) {
+        if (q.limited || q.name == p.name) continue;
+        if (!any) any = q;
+        if (!below && q.tier < p.tier) below = q;
+    }
+    return below ? below : any;
+}
+
+ModelPick pick_of(const ModelPreset& p, std::string reason) {
+    return {p.name, p.model, std::move(reason)};
 }
 }  // namespace
 
@@ -55,6 +75,93 @@ std::optional<ModelPreset> find_preset(const std::vector<ModelPreset>& presets, 
         if (pc == compact) return p;
     }
     return std::nullopt;
+}
+
+std::optional<ModelPreset> preset_for_model(const std::vector<ModelPreset>& presets, const std::string& model) {
+    for (const auto& p : presets) {
+        if (p.model == model) return p;
+    }
+    return std::nullopt;
+}
+
+void set_preset_window(std::vector<Provider>& providers, const ModelPreset& preset) {
+    if (preset.context <= 0) return;
+    std::string name = resolve_model(providers, preset.model).first.name;
+    for (auto& pr : providers) {
+        if (pr.name == name) pr.options["context_window"] = preset.context;
+    }
+}
+
+std::vector<ModelPreset> subagent_presets(const std::vector<ModelPreset>& presets, const ModelPreset& p) {
+    std::vector<ModelPreset> out = {p};
+    for (const auto& n : p.subagents) {
+        auto q = find_preset(presets, n);
+        if (q && std::none_of(out.begin(), out.end(), [&](const ModelPreset& o) { return o.name == q->name; })) out.push_back(*q);
+    }
+    std::stable_sort(out.begin(), out.end(), [](const ModelPreset& a, const ModelPreset& b) { return a.tier > b.tier; });
+    return out;
+}
+
+ModelPick subagent_pick(const std::vector<ModelPreset>& presets, const ModelPreset& p) {
+    if (!p.subagent.empty()) {
+        if (preset_key(p.subagent) == "same") return pick_of(p, p.name + "'s subagent setting");
+        if (auto q = find_preset(presets, p.subagent)) return pick_of(*q, p.name + "'s subagent setting");
+    }
+    if (!p.limited) return pick_of(p, "the same model");
+    if (auto q = step_aside(presets, p)) return pick_of(*q, p.name + " is limited");
+    return pick_of(p, p.name + " is limited, but every model on its list is too");
+}
+
+std::optional<ModelPreset> on_limit_pick(const std::vector<ModelPreset>& presets, const ModelPreset& p) {
+    if (!p.on_limit.empty()) {
+        if (auto q = find_preset(presets, p.on_limit); q && q->name != p.name) return q;
+    }
+    return step_aside(presets, p);
+}
+
+ModelPick default_small_model(const std::vector<ModelPreset>& presets, const std::vector<Provider>& providers, const ModelPreset& p) {
+    if (!resolve_model(providers, p.model).first.remote()) return pick_of(p, "a local model reviews itself");
+    auto list = subagent_presets(presets, p);
+    for (auto it = list.rbegin(); it != list.rend(); ++it) {
+        if (!it->limited) return pick_of(*it, "the small model (the lowest non-limited tier on " + p.name + "'s list)");
+    }
+    return pick_of(p, "the model itself (nothing on its list is unlimited)");
+}
+
+ModelPick reviewer_pick(const std::vector<ModelPreset>& presets, const std::vector<Provider>& providers, const std::string& model,
+                        const std::string& pin, const std::string& small_model, const std::set<std::string>& failed) {
+    auto self = preset_for_model(presets, model);
+    auto named = [&](const std::string& m, std::string reason) {
+        auto q = find_preset(presets, m);
+        if (!q) q = preset_for_model(presets, m);
+        return q ? pick_of(*q, std::move(reason)) : ModelPick{"", m, std::move(reason)};
+    };
+    ModelPick pick;
+    if (!pin.empty()) pick = named(pin, "reviewer_model");
+    else if (self && self->reviewer == "same") pick = pick_of(*self, self->name + "'s reviewer setting (itself)");
+    else if (self && !self->reviewer.empty()) pick = named(self->reviewer, self->name + "'s reviewer setting");
+    else if (!small_model.empty()) pick = named(small_model, "small_model");
+    else if (self) pick = default_small_model(presets, providers, *self);
+    else pick = {"", model, "the session's model"};
+    if (!failed.count(pick.model)) return pick;
+
+    std::string who = pick.preset.empty() ? pick.model : pick.preset;
+    auto failed_preset = preset_for_model(presets, pick.model);
+    if (!failed_preset) return {"", "", who + " hit its usage limit and is not a preset with a fallback"};
+    int cap = failed_preset->tier;
+    for (const auto& m : failed) {
+        if (auto q = preset_for_model(presets, m)) cap = std::min(cap, q->tier);
+    }
+    auto usable = [&](const ModelPreset& q) { return !q.limited && !failed.count(q.model) && q.tier <= cap; };
+    std::string reason = who + " hit its usage limit";
+    if (!failed_preset->on_limit.empty()) {
+        if (auto q = find_preset(presets, failed_preset->on_limit); q && usable(*q)) return pick_of(*q, reason + " (its on_limit)");
+    }
+    auto list = subagent_presets(presets, self ? *self : *failed_preset);
+    for (auto it = list.rbegin(); it != list.rend(); ++it) {
+        if (usable(*it)) return pick_of(*it, reason);
+    }
+    return {"", "", reason + " and nothing cheaper is left"};
 }
 
 namespace fs = std::filesystem;
@@ -207,7 +314,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.models_dir = j.value("models_dir", s.models_dir);
         s.context = std::max(1024, j.value("context", s.context));
         s.context_2 = std::max(1024, j.value("context_2", s.context_2));
-        s.title_model = j.value("title_model", s.title_model);
+        s.small_model = j.value("small_model", j.value("title_model", s.small_model));  // title_model: the older name
         s.budget_tokens = j.value("budget_tokens", s.budget_tokens);
         s.timestamps = j.value("timestamps", s.timestamps);
         s.compact_at = j.value("compact_at", s.compact_at);
@@ -240,49 +347,58 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             entries("ask", s.permission.ask);
             entries("deny", s.permission.deny);
         }
-        json profile_table = j.value("profiles", json::object());
-        if (!profile_table.is_object()) throw std::runtime_error(path.string() + ": profiles must be a table of profiles by name");
-        std::vector<Profile> builtins = default_profiles();
-        for (const auto& [name, pj] : profile_table.items()) {
-            if (!pj.is_object()) throw std::runtime_error(path.string() + ": profiles." + name + " must be a table");
-            const Profile* builtin = find_profile(builtins, name);
-            Profile p = builtin ? *builtin : Profile{name};
-            std::string where = path.string() + ": profiles." + name;
-            if (pj.contains("mode")) {
-                auto m = parse_mode(pj["mode"].get<std::string>());
-                if (!m) throw std::runtime_error(where + ".mode must be manual, auto-read, edit, auto or plan");
-                if (builtin && narrower_mode(*m, builtin->mode) != *m) throw std::runtime_error(where + ": mode " + std::string(mode_name(*m)) + " is wider than the built-in " + name + " (" + std::string(mode_name(builtin->mode)) + "); a profile can only narrow");
-                p.mode = *m;
-            }
-            if (pj.contains("write_paths")) p.write_paths = pj["write_paths"].get<std::vector<std::string>>();
-            if (pj.contains("read_outside")) {
-                p.read_outside = pj["read_outside"].get<bool>();
-                if (builtin && p.read_outside && !builtin->read_outside) throw std::runtime_error(where + ": the built-in " + name + " does not read outside the workspace; a profile can only narrow");
-            }
-            if (pj.value("network", false)) throw std::runtime_error(where + ": no profile has the network yet");
-            if (pj.contains("budget_tokens")) {
-                p.budget_tokens = pj["budget_tokens"].get<long>();
-                if (builtin && builtin->budget_tokens > 0 && (p.budget_tokens <= 0 || p.budget_tokens > builtin->budget_tokens)) throw std::runtime_error(where + ": budget_tokens above the built-in " + name + "'s " + std::to_string(builtin->budget_tokens) + "; a profile can only narrow");
-            }
-            if (pj.contains("max_steps")) {
-                p.max_steps = pj["max_steps"].get<int>();
-                if (p.max_steps < 1 || (builtin && p.max_steps > builtin->max_steps)) throw std::runtime_error(where + ": max_steps must be between 1 and " + std::to_string(builtin ? builtin->max_steps : Profile{}.max_steps));
-            }
-            if (pj.contains("tools")) {
-                p.tools = pj["tools"].get<std::vector<std::string>>();
-                if (builtin && !builtin->tools.empty()) {
-                    for (const auto& t : p.tools) {
-                        if (!builtin->allows_tool(t)) throw std::runtime_error(where + ": the built-in " + name + " has no " + t + " tool; a profile can only narrow");
+        std::vector<AgentDef> builtins = default_agent_defs();
+        for (const char* key : {"profiles", "agents"}) {  // `profiles` is the older spelling
+            json agent_table = j.value(key, json::object());
+            if (!agent_table.is_object()) throw std::runtime_error(path.string() + ": " + key + " must be a table of agents by name");
+            for (const auto& [given, pj] : agent_table.items()) {
+                std::string name = agent_def_name(given);
+                std::string where = path.string() + ": " + key + "." + given;
+                if (!pj.is_object()) throw std::runtime_error(where + " must be a table");
+                const AgentDef* builtin = find_agent_def(builtins, name);
+                AgentDef p = builtin ? *builtin : AgentDef{name};
+                if (pj.contains("mode")) {
+                    auto m = parse_mode(pj["mode"].get<std::string>());
+                    if (!m) throw std::runtime_error(where + ".mode must be manual, auto-read, edit, auto or plan");
+                    if (builtin && narrower_mode(*m, builtin->mode) != *m) throw std::runtime_error(where + ": mode " + std::string(mode_name(*m)) + " is wider than the built-in " + name + " (" + std::string(mode_name(builtin->mode)) + "); an agent can only narrow");
+                    p.mode = *m;
+                }
+                if (pj.contains("role")) {
+                    auto r = parse_role(pj["role"].get<std::string>());
+                    if (!r) throw std::runtime_error(where + ".role must be primary, subagent or all");
+                    p.role = *r;
+                }
+                p.description = pj.value("description", p.description);
+                if (pj.contains("write_paths")) p.write_paths = pj["write_paths"].get<std::vector<std::string>>();
+                if (pj.contains("read_outside")) {
+                    p.read_outside = pj["read_outside"].get<bool>();
+                    if (builtin && p.read_outside && !builtin->read_outside) throw std::runtime_error(where + ": the built-in " + name + " does not read outside the workspace; an agent can only narrow");
+                }
+                if (pj.value("network", false)) throw std::runtime_error(where + ": no agent has the network yet");
+                if (pj.contains("budget_tokens")) {
+                    p.budget_tokens = pj["budget_tokens"].get<long>();
+                    if (builtin && builtin->budget_tokens > 0 && (p.budget_tokens <= 0 || p.budget_tokens > builtin->budget_tokens)) throw std::runtime_error(where + ": budget_tokens above the built-in " + name + "'s " + std::to_string(builtin->budget_tokens) + "; an agent can only narrow");
+                }
+                if (pj.contains("max_steps")) {
+                    p.max_steps = pj["max_steps"].get<int>();
+                    if (p.max_steps < 1 || (builtin && p.max_steps > builtin->max_steps)) throw std::runtime_error(where + ": max_steps must be between 1 and " + std::to_string(builtin ? builtin->max_steps : AgentDef{}.max_steps));
+                }
+                if (pj.contains("tools")) {
+                    p.tools = pj["tools"].get<std::vector<std::string>>();
+                    if (builtin && !builtin->tools.empty()) {
+                        for (const auto& t : p.tools) {
+                            if (!builtin->allows_tool(t)) throw std::runtime_error(where + ": the built-in " + name + " has no " + t + " tool; an agent can only narrow");
+                        }
                     }
                 }
+                if (pj.contains("reviewer")) p.reviewer = pj["reviewer"].get<bool>();
+                p.model = pj.value("model", p.model);
+                bool replaced = false;
+                for (auto& existing : s.agents) {
+                    if (existing.name == name) existing = p, replaced = true;
+                }
+                if (!replaced) s.agents.push_back(p);
             }
-            if (pj.contains("reviewer")) p.reviewer = pj["reviewer"].get<bool>();
-            p.model = pj.value("model", p.model);
-            bool replaced = false;
-            for (auto& existing : s.profiles) {
-                if (existing.name == name) existing = p, replaced = true;
-            }
-            if (!replaced) s.profiles.push_back(p);
         }
         if (j.contains("rules") && j["rules"].is_array()) {
             for (const auto& r : j["rules"]) if (r.is_string() && !r.get<std::string>().empty()) s.rules.push_back(r.get<std::string>());
@@ -299,6 +415,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         }
         if (s.harness != "smart" && s.harness != "dumb") throw std::runtime_error(path.string() + ": harness must be \"smart\" or \"dumb\", not \"" + s.harness + "\"");
         s.reviewer_model = j.value("reviewer_model", s.reviewer_model);
+        s.reviewer_budget_tokens = j.value("reviewer_budget_tokens", s.reviewer_budget_tokens);
         s.dumb_auto_ok = j.value("dumb_auto_ok", s.dumb_auto_ok);
         if (j.contains("bans")) {
             Bans b = Bans::from_json(j["bans"]);
@@ -324,13 +441,28 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         json preset_table = j.value("models", json::object());  // a named copy: iterating a temporary dangles
         for (const auto& [name, pj] : preset_table.items()) {
             if (!pj.is_object()) continue;
-            ModelPreset mp{name, pj.value("model", ""), pj.value("context", 0), pj.value("reviewer", "same"), pj.contains("think") ? (pj["think"].get<bool>() ? 1 : 0) : -1};
-            if (mp.model.empty()) throw std::runtime_error(path.string() + ": models." + name + " needs a model");
-            bool replaced = false;
+            // An existing preset changes field by field; a new one needs a model.
+            ModelPreset* mp = nullptr;
             for (auto& existing : s.presets) {
-                if (existing.name == name) existing = mp, replaced = true;
+                if (existing.name == name) mp = &existing;
             }
-            if (!replaced) s.presets.push_back(mp);
+            if (!mp) {
+                if (pj.value("model", "").empty()) throw std::runtime_error(path.string() + ": models." + name + " needs a model");
+                s.presets.push_back({name});
+                mp = &s.presets.back();
+            }
+            mp->model = pj.value("model", mp->model);
+            mp->context = pj.value("context", mp->context);
+            mp->reviewer = pj.value("reviewer", mp->reviewer);
+            if (pj.contains("think")) mp->think = pj["think"].get<bool>() ? 1 : 0;
+            mp->tier = pj.value("tier", mp->tier);
+            mp->limited = pj.value("limited", mp->limited);
+            if (pj.contains("subagents")) {
+                mp->subagents.clear();
+                for (const auto& n : pj["subagents"]) mp->subagents.push_back(n.get<std::string>());  // an empty Lua table arrives as {}
+            }
+            mp->subagent = pj.value("subagent", mp->subagent);
+            mp->on_limit = pj.value("on_limit", mp->on_limit);
         }
         json providers = j.value("providers", json::object());
         for (const auto& [name, pj] : providers.items()) {
@@ -381,10 +513,20 @@ Settings load_settings(const fs::path& workspace) {
         apply_file(s, *it / ".maic" / "settings.json", workspace);
         apply_file(s, *it / ".maic" / "settings.local.json", workspace);
     }
-    // A profile's model may be a preset's name; presets from every layer are known only now.
-    for (auto& p : s.profiles) {
+    // An agent's model, small_model and the names inside presets may be preset names; presets from every
+    // layer are known only now.
+    for (auto& p : s.agents) {
         if (p.model.empty()) continue;
         if (auto preset = find_preset(s.presets, p.model)) p.model = preset->model;
+    }
+    if (auto preset = find_preset(s.presets, s.small_model)) s.small_model = preset->model;
+    for (const auto& p : s.presets) {
+        auto known = [&](const std::string& n, const char* field) {
+            if (!find_preset(s.presets, n)) throw std::runtime_error("models." + p.name + "." + field + ": no preset named " + n);
+        };
+        for (const auto& n : p.subagents) known(n, "subagents");
+        if (!p.subagent.empty() && p.subagent != "same") known(p.subagent, "subagent");
+        if (!p.on_limit.empty()) known(p.on_limit, "on_limit");
     }
     // The theme is read once every layer has had its say; a broken one leaves the built-in default and the reason.
     try {
@@ -488,7 +630,8 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"//context", "context window in tokens for the local llama.cpp server (${MAIC_CONTEXT} in service files) and the usage readout; --ctx N and :ctx N override"},
         {"context_2", d.context_2},
         {"//context_2", "the same for the side server llamacpp-2 on port 8082 (${MAIC_CONTEXT_2}); --ctx2 N and :ctx2 N override"},
-        {"title_model", d.title_model},
+        {"small_model", d.small_model},
+        {"//small_model", "opencode's small_model: a cheap model (a preset or provider/model) that titles each session after its first turn and is the reviewer's default; empty: no titles, and the reviewer uses the session preset's lowest non-limited tier (haiku-4.5 for the Anthropic presets, the model itself for a local one). title_model is its older name"},
         {"budget_tokens", d.budget_tokens},
         {"timestamps", d.timestamps},
         {"compact_at", d.compact_at},
@@ -500,11 +643,11 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"prefill", d.prefill},
         {"rules", nlohmann::json::array()},
         {"permission", {{"allow", nlohmann::json::array()}, {"ask", nlohmann::json::array()}, {"deny", nlohmann::json::array()}}},
-        {"profiles", nlohmann::json::object()},
+        {"agents", nlohmann::json::object()},
         {"forbid", nlohmann::json::array()},
         {"//forbid", "terms no tool call may contain, in any letter case; write /.../ for a POSIX extended regex. A search, a command, a path or any argument with one is halted before it runs, under the dumb harness too. Added to the built-in list. :forbid in a session"},
         {"//permission", "allow / ask / deny lists of \"tool:pattern\" (run_shell:pytest *, write_file:src/**, read_file:/etc/**; write: and read: for any such tool). deny wins over ask over allow; allow runs without asking or review in every mode but plan. Trip patterns, secrets and system paths are checked first and are not touched. MAIC's own helpers (maic-storyboard*, maic-workflow-edit*, maic-panel-check*, maic path* ...) are always allowed. Layers add up. :allow in a session"},
-        {"//profiles", "subagent profiles by name, adding to or narrowing the built-in orchestrator, builder, scout and reviewer: profiles = { scout = { budget_tokens = 20000 }, docs = { mode = \"edit\", write_paths = { \"docs/**\" }, tools = { \"read_file\", \"edit_file\", \"write_file\" }, model = \"qwen-4b\" } }. Fields: mode, write_paths, read_outside, budget_tokens, max_steps, tools, reviewer, model. A built-in can only be narrowed. docs/settings.md"},
+        {"//agents", "agents by name (opencode's term), adding to or narrowing the built-in build, plan, general and explore: agents = { explore = { budget_tokens = 20000 }, docs = { mode = \"edit\", role = \"subagent\", write_paths = { \"docs/**\" }, tools = { \"read_file\", \"edit_file\", \"write_file\" }, model = \"qwen-4b\" } }. Fields: mode, role (primary, subagent, all: who may run it; the task tool runs subagent and all), description, write_paths, read_outside, budget_tokens, max_steps, tools, reviewer, model. A built-in can only be narrowed. profiles is the older name for this key. docs/settings.md"},
         {"//rules", "standing one-line instructions (\"always answer in French\"); they ride with system_prompt at both ends of the system prompt and in the per-turn note. :rule in a session, --rule on the command line"},
         {"//prefill", "text every reply starts with, sent as the opening of the assistant turn; a guarantee where a system prompt is a request"},
         {"harness", d.harness},
@@ -518,6 +661,9 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"//tripwire", "machine: a trip sets the root-owned lock every MAIC process respects, unlock asks for sudo; session: a trip locks this session only (a file beside its transcript), :unlock removes it without sudo. A project's .maic/settings.lua can choose per project"},
         {"//harness", "smart: a model reads the conversation and reviews every command or write the rules would allow without asking (auto, edit); dumb: the rule list alone"},
         {"reviewer_model", d.reviewer_model},
+        {"//reviewer_model", "pins the reviewer; empty: the preset's reviewer, else small_model (docs/settings.md)"},
+        {"reviewer_budget_tokens", d.reviewer_budget_tokens},
+        {"//reviewer_budget_tokens", "the reviewer's own token cap (it also counts toward budget_tokens); past it every action it would review is asked. 0: none"},
         {"dumb_auto_ok", d.dumb_auto_ok},
         {"bans", {{"strings", nlohmann::json::array()}, {"patterns", nlohmann::json::array()}, {"tokens", nlohmann::json::array()}, {"retries", 3}, {"replacement", "[banned]"}, {"ignore_case", false}, {"window", 64}}},
         {"//bans", "strings and POSIX regex patterns the model must not say (cut and re-asked, then replaced); tokens (ids, or text) become logit_bias on OpenAI-compatible providers. docs/bans.md"},
@@ -528,7 +674,7 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"server", {{"listen", d.server.listen}, {"workspaces", json::array()}, {"cert", ""}, {"key", ""}, {"relay", ""}, {"relay_cert", ""}}},
         {"providers", providers},
         {"models", json::object()},
-        {"//models", "presets by short name, adding to or overriding the built-in ones (opus-5.5, sonnet-5, haiku-4.5, fable-5.1, qwen-4b, qwen-9b, qwen-9b-vision): models = { [\"opus-5.5\"] = { model = \"anthropic/claude-opus-5-5\", context = 1000000, reviewer = \"anthropic/claude-sonnet-5\", think = true } }. reviewer \"same\" means the model reviews itself; context sizes are your plan's figures. A model on the side server: [\"qwen-4b-side\"] = { model = \"llamacpp-2/Qwen3.5-4B-Q4_K_M\", context = 8192 }"},
+        {"//models", "presets by short name, adding to the built-in ones (opus-5.5, sonnet-5, haiku-4.5, fable-5.1, qwen-4b, qwen-9b, qwen-9b-vision) or changing them field by field: models = { [\"opus-5.5\"] = { limited = true } }. Fields: model (needed for a new name), context, reviewer (\"same\" = itself, empty = small_model), think, tier (higher is stronger), limited (your plan caps it: subagents and the reviewer step aside), subagents (presets a subagent may run on), subagent (\"same\" or a preset; empty = the rule), on_limit (where a subagent continues after a usage limit). A model on the side server: [\"qwen-4b-side\"] = { model = \"llamacpp-2/Qwen3.5-4B-Q4_K_M\", context = 8192 }. docs/settings.md"},
         {"style", json::object()},
         {"//style", "single roles over the theme, merged into it: style = { user = { fg = \"#ff8800\" } } keeps the theme's bold. Every role and its default: themes/default.lua"},
     };

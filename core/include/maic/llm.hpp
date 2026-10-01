@@ -74,7 +74,7 @@ std::string generate_title(const Provider& provider, const std::string& model, c
 struct ChatOptions {
     std::string model;  // without the provider prefix
     bool think = false;
-    // Retry on 429, 5xx and connection failures, only while nothing has been streamed yet: 2 s, doubling,
+    // Retry on 429 (not a usage limit), 5xx and connection failures, only while nothing has been streamed yet: 2 s, doubling,
     // 25% jitter, 30 s cap, Retry-After honoured. `notice` hears about each wait.
     int retries = 3;
     int retry_base_ms = 2000;
@@ -90,12 +90,20 @@ struct Cancelled : std::runtime_error {
     Cancelled() : std::runtime_error("cancelled") {}
 };
 
-// A provider answered with an error status. `retry_after_ms` is from the Retry-After header when present.
+// A provider answered with an error status. `retry_after_ms` is from the Retry-After header when present;
+// `type` is the provider's own error type or code ("rate_limit_error", "insufficient_quota"), "" when it gave none.
 struct ApiError : std::runtime_error {
     int status;
     int retry_after_ms;
-    ApiError(int status, std::string message, int retry_after_ms = 0) : std::runtime_error(std::move(message)), status(status), retry_after_ms(retry_after_ms) {}
+    std::string type;
+    ApiError(int status, std::string message, int retry_after_ms = 0, std::string type = "")
+        : std::runtime_error(std::move(message)), status(status), retry_after_ms(retry_after_ms), type(std::move(type)) {}
 };
+
+// The plan's usage limit or credit is used up (Fable's "You've reached your Fable limit", OpenAI's
+// insufficient_quota, a 402), as opposed to a per-minute rate limit that clears by itself. chat() does not
+// retry one: waiting does not bring a used-up limit back.
+bool is_usage_limit(const ApiError& e);
 
 // The host could not be reached or the connection dropped before any response arrived.
 struct TransportError : std::runtime_error {

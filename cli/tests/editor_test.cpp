@@ -2,6 +2,7 @@
 #include "check.hpp"
 
 #include "commands.hpp"
+#include "maic/agent.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -851,15 +852,36 @@ int main() {
             std::string name = apply_preset(sp, "Opus 5.5");
             bool ctx = false;
             for (const auto& p : sp.providers) ctx = ctx || (p.name == "anthropic" && p.options.value("context_window", 0) == 1000000);
-            expect(name == "opus-5.5" && sp.model == "anthropic/claude-opus-5-5" && sp.reviewer_model == "anthropic/claude-sonnet-5" && sp.think && ctx,
-                   "applying the Opus preset sets the model, the reviewer, thinking and the context window");
+            expect(name == "opus-5.5" && sp.model == "anthropic/claude-opus-5-5" && sp.reviewer_model.empty() && sp.think && ctx,
+                   "applying the Opus preset sets the model, thinking and the context window, and leaves reviewer_model (the user's pin) alone");
             Settings sl;
             apply_preset(sl, "qwen-9b");
-            expect(sl.model == "llamacpp/Qwen3.5-9B-Q4_K_M-text" && sl.reviewer_model == "llamacpp/Qwen3.5-9B-Q4_K_M-text" && sl.context == 16384, "a local preset also sets the server's context size and reviews with itself");
+            expect(sl.model == "llamacpp/Qwen3.5-9B-Q4_K_M-text" && sl.context == 16384, "a local preset also sets the server's context size");
+            std::string listing = preset_lines(Settings{});
+            expect(listing.find("\n  fable-5.1  anthropic/claude-fable-5-1  tier 50, limited, context 1000000, subagents on opus-5.5 (fable-5.1 is limited), reviewer haiku-4.5") != std::string::npos &&
+                       listing.find("\n  opus-5.5  anthropic/claude-opus-5-5  tier 40, context 1000000, subagents on itself, reviewer haiku-4.5") != std::string::npos &&
+                       listing.find("\n  qwen-4b  llamacpp/Qwen3.5-4B-Q4_K_M  tier 10, context 16384, subagents on itself, reviewer itself") != std::string::npos,
+                   ":model lists each preset with its tier, limited, where its subagents run and its reviewer:" + listing);
+            expect(help_text("profile").find("*agent*") == 0 && help_text("delegate").find("*task*") == 0 && help_text("agent") == help_text("profile"),
+                   ":h profile finds the agent page and :h delegate the task page");
+            {
+                std::filesystem::path empty = std::filesystem::temp_directory_path() / ("maic-editor-agent-" + std::to_string(getpid()));
+                std::filesystem::create_directories(empty);
+                Agent fable(empty, "anthropic/claude-fable-5-1");
+                ApiError limit(429, "anthropic returned HTTP 429: You've reached your Fable limit. Run /usage-credits to continue or switch models with /model.", 0, "rate_limit_error");
+                expect(failure_text(fable, limit).find("\nfable-5.1 hit its usage limit; `:model opus-5.5` continues on the next tier (its on_limit)") != std::string::npos,
+                       "a usage limit on the session's model says which :model continues, and switches nothing: " + failure_text(fable, limit));
+                ApiError slow(429, "anthropic returned HTTP 429: slow down", 0, "rate_limit_error");
+                expect(failure_text(fable, slow).find("usage limit") == std::string::npos, "a plain rate limit says nothing about it");
+                std::filesystem::remove_all(empty);
+            }
+            Settings pin;
+            pin.reviewer_model = "anthropic/claude-sonnet-5";
+            expect(preset_lines(pin).find("tier 40, context 1000000, subagents on itself, reviewer sonnet-5") != std::string::npos, "the listing follows a reviewer_model pin");
             Settings sn;
             expect(apply_preset(sn, "llamacpp/current").empty() && sn.model == Settings{}.model, "a plain model name is not a preset and changes nothing");
             Settings ss;
-            ss.presets.push_back({"qwen-4b-side", "llamacpp-2/Qwen3.5-4B-Q4_K_M", 4096, "same", -1});
+            ss.presets.push_back({"qwen-4b-side", "llamacpp-2/Qwen3.5-4B-Q4_K_M", 4096, "same", -1});  // tier, limited and the lists default
             apply_preset(ss, "qwen-4b-side");
             bool side_window = false;
             for (const auto& p : ss.providers) side_window = side_window || (p.name == "llamacpp-2" && p.options.value("context_window", 0) == 4096);

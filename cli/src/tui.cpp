@@ -207,6 +207,9 @@ public:
         agent_.think = settings_.think;
         agent_.review_with_model = settings_.harness != "dumb";
         agent_.reviewer_model = settings_.reviewer_model;
+        agent_.small_model = settings_.small_model;
+        agent_.reviewer_budget_tokens = settings_.reviewer_budget_tokens;
+        agent_.presets = settings_.presets;
         dumb_auto_ok_ = settings_.dumb_auto_ok;
         if (auto m = parse_mode(settings_.mode)) {
             // Auto under a dumb harness is confirmed first; until then the session starts one step safer.
@@ -241,7 +244,7 @@ public:
         agent_.prefill = resolve_system_prompt(settings_.prefill);
         agent_.rules = settings_.rules;
         agent_.set_permission(settings_.permission);
-        agent_.profiles = settings_.profiles;
+        agent_.agents = settings_.agents;
         agent_.set_forbid(settings_.forbid);
         set_tripwire_scope(settings_.tripwire, log_->path().string() + ".tripped");
         if (settings_.tripwire == "isolated") agent_.set_confined(true);
@@ -1310,10 +1313,10 @@ void App::set_title(const std::string& title) {
 // After the first turn, ask a small model for a title when settings name one. A remote title model is never
 // used for a local session, so nothing leaves the machine that would not have anyway.
 void App::maybe_title(const std::string& first_prompt) {
-    if (titled_ || settings_.title_model.empty() || cancel_.load()) return;
+    if (titled_ || settings_.small_model.empty() || cancel_.load()) return;
     titled_ = true;
     try {
-        auto [provider, name] = resolve_model(agent_.providers, settings_.title_model);
+        auto [provider, name] = resolve_model(agent_.providers, settings_.small_model);
         if (provider.remote() && !agent_.remote()) return;
         std::string t = generate_title(provider, name, first_prompt);
         if (t.empty()) return;
@@ -1407,7 +1410,6 @@ void App::set_model(const std::string& model_in) {
     agent_.model = model;
     if (!preset.empty()) {
         agent_.providers = settings_.providers;
-        agent_.reviewer_model = settings_.reviewer_model;
         agent_.think = settings_.think;
         set_context(agent_.providers, settings_.context);
         set_context(agent_.providers, settings_.context_2, "llamacpp-2");
@@ -1421,9 +1423,10 @@ void App::set_model(const std::string& model_in) {
         }
     }
     apply_sampling();
+    ModelPick reviewer = agent_.reviewer().pick;
     std::string note = "model: " + model + " (" + provider.name + ", " + provider.kind + ")" +
                        (preset.empty() ? "" : "  preset " + preset + ": context " + std::to_string(settings_.providers.empty() ? 0 : provider.options.value("context_window", 0)) +
-                                                  ", reviewer " + (agent_.reviewer_model.empty() ? model : agent_.reviewer_model) + ", thinking " + (agent_.think ? "on" : "off"));
+                                                  ", reviewer " + (reviewer.model.empty() ? "off" : reviewer.preset.empty() ? reviewer.model : reviewer.preset) + ", thinking " + (agent_.think ? "on" : "off"));
     if (provider.remote()) {
         post(Kind::Error, note + "\nREMOTE: prompts, files the agent reads and command output will be sent to " + provider.base_url);
     } else {
@@ -1470,10 +1473,13 @@ void App::run_command(const std::string& line) {
             else post(Kind::Error, "modes: manual, auto-read, edit, auto, plan");
         } else if (cmd == "harness") {
             if (arg.empty()) {
-                post(Kind::Notice, agent_.review_with_model
-                                       ? "harness: smart. A model (" + (agent_.reviewer_model.empty() ? agent_.model : agent_.reviewer_model) +
-                                             ") reads the conversation and reviews every command or write the rules would allow without asking. `:harness dumb` turns that off."
-                                       : "harness: dumb. The rule list alone decides; nothing reads the conversation. `:harness smart` brings the reviewer back.");
+                Agent::ReviewerInfo r = agent_.reviewer();
+                std::string spent = ", " + std::to_string(r.tokens) + " tokens so far" + (settings_.reviewer_budget_tokens > 0 ? " of " + std::to_string(settings_.reviewer_budget_tokens) : "");
+                post(Kind::Notice, !agent_.review_with_model ? "harness: dumb. The rule list alone decides; nothing reads the conversation. `:harness smart` brings the reviewer back."
+                                   : r.pick.model.empty()
+                                       ? "harness: smart, but the reviewer is off for this session (" + r.pick.reason + spent + "): every action it would review is asked."
+                                       : "harness: smart. A model (" + r.pick.model + ", " + r.pick.reason + spent +
+                                             ") reads the conversation and reviews every command or write the rules would allow without asking. `:harness dumb` turns that off.");
             } else if (arg == "smart") {
                 agent_.review_with_model = true;
                 post(Kind::Notice, "harness: smart (reviewer on)");
@@ -1491,8 +1497,7 @@ void App::run_command(const std::string& line) {
             }
         } else if (cmd == "model") {
             if (arg.empty()) {
-                std::string list = "model: " + agent_.model + "\npresets (:model NAME):";
-                for (const auto& p : settings_.presets) list += "\n  " + p.name + "  " + p.model + "  context " + std::to_string(p.context) + ", reviewer " + (p.reviewer == "same" ? "itself" : p.reviewer);
+                std::string list = "model: " + agent_.model + "\npresets (:model NAME):" + preset_lines(settings_);
                 list += "\nproviders:";
                 for (const auto& p : agent_.providers) list += "\n  " + p.name + "/<model>  (" + p.kind + ", " + p.base_url + (p.remote() ? ", REMOTE)" : ")");
                 post(Kind::Notice, list);
