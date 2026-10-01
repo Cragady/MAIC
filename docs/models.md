@@ -120,6 +120,8 @@ The llama.vim spec for lazy.nvim:
             model_fim = 'current',  -- the coder `maic models install ID --link` chose
             keymap_fim_trigger = '<M-f>',      -- off the leader in insert mode (below)
             keymap_fim_accept_word = '<M-]>',
+            keymap_inst_accept = '',           -- completion only: leave normal mode alone (below)
+            keymap_inst_cancel = '',
         }
     end,
 }
@@ -128,6 +130,14 @@ The llama.vim spec for lazy.nvim:
 **The keys, and why two of them move.** llama.vim's defaults put two insert-mode keys under the leader: `<leader>llf` asks for a suggestion and `<leader>ll]` accepts its first word. With a Space leader those are insert-mode mappings that start with a space, so every space typed in insert mode waits `timeoutlen` (or the next key) before it appears, and typing " ll" waits again; the trigger is mapped in every buffer on `InsertEnter`. `<M-f>` and `<M-]>` are chords that type nothing. `maic nvim keymaps` (`:checkhealth maic` in nvim) checks llama.vim's keys against your mappings; against `nvim -u NONE` with this spec and llama.vim (master, e1ca1cc) loaded with a Space leader, it finds both free in nvim 0.12 in insert mode and reports the defaults as the typing delay above. Without a mapping nvim treats an Alt chord in insert mode as Esc followed by the key, so `<M-]>` does that when no suggestion shows.
 
 `<Tab>` and `<S-Tab>` stay. llama.vim maps them (with `<M-]>`, `<C-L>` and `<C-H>`) buffer-local in insert mode only while a suggestion shows, and removes them with `iunmap <buffer>` when it hides the suggestion (`fim_render` and `fim_hide` in `autoload/llama.vim`). The rest of the time nvim 0.12's own insert-mode `<Tab>` / `<S-Tab>` (jump to the next or previous snippet field when a snippet is active, else the key itself) work as before; while a suggestion is showing inside an active snippet, `<Tab>` accepts the suggestion instead of jumping. The `iunmap <buffer>` also removes a buffer-local insert-mode `<Tab>` of another plugin, which the check reports. In normal mode llama.vim maps `<Tab>` (accept an instruction's result, otherwise it feeds `<Tab>`, the jump forward that is also Ctrl-I) and `<Esc>` (cancel an instruction, otherwise nothing) globally for as long as it is enabled, not only while an instruction runs; a normal-mode `<Esc>` of your own (`:nohlsearch`, say) and llama.vim's replace each other in load order, so set `keymap_inst_cancel = ''` to keep yours.
+
+**Normal-mode `<Tab>` and `<Esc>`, and why the spec turns them off.** Besides its insert-mode keys, llama.vim maps normal-mode `<Tab>` (accept) and `<Esc>` (cancel) for its instruction mode, and it maps them globally for as long as it is enabled, not only while an instruction runs. Outside an instruction `<Tab>` falls back to a plain `<Tab>` and `<Esc>` does nothing. Three things follow:
+
+1. **Load order decides who wins.** If you or a plugin map normal-mode `<Esc>` or `<Tab>`, one mapping silently replaces the other, depending on which loads last. The likeliest case is `<Esc>` for clearing search highlights (`:nohlsearch`), which kickstart.nvim and LazyVim both ship: either the highlight clearing stops working or llama.vim's instruction cancel does, and nothing says which.
+2. **`<Tab>` is also `<C-i>`.** Most terminals send the same keycode for both, so a global `<Tab>` mapping also captures `<C-i>` (jump forward in the jumplist). llama.vim's fallback keeps `<C-i>` working, but anything later mapped on `<C-i>` or normal-mode `<Tab>` (a buffer-switching plugin, say) fights with it the same way as in point 1.
+3. **They serve a feature completion does not use.** The two keys belong to instruction mode (select code, type an instruction, accept or cancel the rewrite). Fill-in-the-middle completion uses only the insert-mode keys above, and those exist only while a suggestion shows.
+
+So for completion alone, the spec sets `keymap_inst_accept = ''` and `keymap_inst_cancel = ''`, which leaves normal mode untouched. If you want instruction mode, give those two keys values of your own, or keep llama.vim's and accept the above. Either way, a collision is named by both sides in `:checkhealth maic` and `maic nvim keymaps`, and a lazy.nvim update that introduces one is reported at MAIC's next start (the keymap re-check after a `lazy-lock.json` change; see [nvim.md](nvim.md)).
 
 `model_fim` needs a llama.vim recent enough to have it (it is in the current README). Keep it `current`: the server loads only the model MAIC asks for, so another folder's name is refused ("model is not loaded").
 
