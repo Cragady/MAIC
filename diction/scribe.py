@@ -238,8 +238,13 @@ def server_answers(base_url: str) -> bool:
     return True
 
 
+# The `claude` CLI's aliases, which --agent-model took when the scribe was a claude process.
+LEGACY_SCRIBES = {"haiku": "haiku-4.5", "sonnet": "sonnet-5", "opus": "opus-5.5"}
+
+
 def resolve_agent(name: str) -> dict:
     """--agent-model through `maic model resolve`: {provider, kind, base_url, model, context, remote, ...}.
+    The legacy aliases haiku, sonnet and opus mean the MAIC presets in LEGACY_SCRIBES.
 
     A name without a provider (a preset such as the default qwen-4b) that lands on the main llama server goes to the
     side server instead whenever that one answers, so dictation never evicts the model a session is using.
@@ -254,6 +259,7 @@ def resolve_agent(name: str) -> dict:
             raise RuntimeError((r.stderr.strip() or r.stdout.strip()).removeprefix("maic: "))
         return json.loads(r.stdout)
 
+    name = LEGACY_SCRIBES.get(name.lower(), name)
     spec = resolve(name)
     if "/" not in name and spec["provider"] == "llamacpp":
         side = resolve(f"llamacpp-2/{spec['model']}")

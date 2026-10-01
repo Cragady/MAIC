@@ -2,11 +2,11 @@
 
 Narrate out loud; get it written down, cleaned up, and correctable by voice.
 
-Continuous mic capture -> WebRTC VAD splits on pauses -> whisper.cpp's `whisper-server` (`distil-large-v3`, CUDA) transcribes each utterance -> a scribe model on `llama-server` writes it into a markdown file.
+Continuous mic capture -> WebRTC VAD splits on pauses -> whisper.cpp's `whisper-server` (`distil-large-v3`, CUDA) transcribes each utterance -> a scribe model writes it into a markdown file: Claude Haiku by default, as always, or a local model on `llama-server` (see Presets).
 
 The three stages run concurrently, so speech is never dropped while an earlier utterance is still being transcribed or written up.
 
-diction is Micaiah's tool. It lived in cai-tools with faster-whisper and a headless `claude` process as the scribe; it moved into MAIC on 2026-10-01 as the top-level `diction/` package, and both engines were rebuilt on the llama.cpp family. Everything else (the modes, the voice commands, the tap gesture, the files it writes, the flags) works as it did. The text below is her README, carried over and updated where the engines changed.
+diction is Micaiah's tool. It lived in cai-tools with faster-whisper and a headless `claude` process as the scribe; it moved into MAIC on 2026-10-01 as the top-level `diction/` package, and both engines were rebuilt on the llama.cpp family. Everything else (the modes, the voice commands, the tap gesture, the files it writes, the flags) works as it did, and with nothing set it runs the pair it always ran: Claude Haiku as the scribe and `distil-large-v3` for speech. The text below is her README, carried over and updated where the engines changed.
 
 ## Three modes
 
@@ -34,6 +34,47 @@ Resuming an existing document keeps that document's own shape, whatever flag you
     maic help diction            # diction's own --help
 
 `maic diction` hands its arguments to diction untouched and exits with diction's exit code.
+
+## Presets
+
+A preset names a scribe and a whisper model together:
+
+    maic diction                       # the default preset: as diction always ran
+    maic diction --preset local        # everything on this machine
+    DICTION_PRESET=local-small maic diction
+    maic diction presets               # each preset, and whether its models are ready
+
+| Preset | Scribe | Whisper | VRAM | The narration's text goes to |
+| :--- | :--- | :--- | :--- | :--- |
+| `default` | `haiku-4.5` (Claude Haiku) | `distil-large-v3` | about 1.7 GB, whisper alone | Anthropic, as before; diction says so at start |
+| `local` | `llamacpp-2/Qwen3.5-9B-Q4_K_M-text` (the 9B text entry, no image processing, on the side server at 8k) | `large-v3-turbo-q5_0` | about 7.3 GB: needs the card to itself | nowhere: it stays on this machine |
+| `local-small` | `llamacpp-2/Qwen3.5-4B-Q4_K_M` (the 4B on the side server at 8k) | `large-v3-turbo-q5_0` | about 4.7 GB: fits beside a parked ComfyUI | nowhere: it stays on this machine |
+
+The audio never leaves the machine under any preset. The side server's window is `context_2`, 8192 unless settings change it (`core/include/maic/settings.hpp`, and `${MAIC_CONTEXT_2}` in `services/llamacpp-2.json`), which is the 8k above. The VRAM figures are estimates in the manner of `maic gpu`.
+
+Each of the two models is chosen on its own, highest first:
+
+    -m NAME / --agent-model NAME        the flag
+    DICTION_MODEL / DICTION_AGENT_MODEL the environment
+    the chosen preset                   --preset NAME, else DICTION_PRESET
+    the default preset
+
+So `maic diction --preset local -m distil-large-v3` keeps the local scribe and takes the bigger whisper model, and with nothing set at all diction is Claude Haiku and `distil-large-v3`. An unknown preset name is an error that lists the ones there are.
+
+**Your own presets** go in `~/.config/diction/config.toml`, each with any of `scribe`, `whisper` and `note`:
+
+    [presets.local]
+    whisper = "distil-large-v3"         # the built-in local, with the bigger whisper model
+
+    [presets.night]
+    scribe = "qwen-4b"
+    note = "the 4B wherever it is loaded"
+
+A preset named like a built-in one overrides it field by field; a field a preset leaves out comes from `default`.
+
+**`diction presets`** lists every preset with its scribe, its whisper model and its note, marks the chosen one, and checks each without a network call: whether the whisper file is under `<models_dir>/whisper/` (else `not installed: maic models install whisper-NAME`); for a local scribe, whether its GGUF is under `<models_dir>/llamacpp/` (else `maic models install qwen3.5-9b-text` or `qwen3.5-4b`) and whether its server answers on loopback (else `maic up llamacpp-2`); for a cloud scribe, only whether its API key variable is set or a key command is configured.
+
+**The old scribe names still work.** `--agent-model haiku`, `sonnet` and `opus`, the `claude` aliases diction used to take, mean the MAIC presets `haiku-4.5`, `sonnet-5` and `opus-5.5`. Anything else goes through `maic model resolve` as below.
 
 ## Normal and insert
 
@@ -130,8 +171,11 @@ Thinking is off for a local scribe (`chat_template_kwargs.enable_thinking=false`
     -o/--out FILE        output file (default: <cwd-name>.md)
     -t/--title TITLE     document title
     -d/--device SRC      mic source (default: auto, falls back if default is dead)
-    -m/--model NAME      whisper ggml model (default: current, what whisper-server loaded)
-    --agent-model NAME   scribe: a MAIC preset or provider/model (default: qwen-4b)
+    --preset NAME        a scribe and a whisper model together (default: default)
+    -m/--model NAME      whisper ggml model (default: the preset's, distil-large-v3;
+                         current is whatever whisper-server loaded)
+    --agent-model NAME   scribe: a MAIC preset or provider/model (default: the
+                         preset's, haiku-4.5)
     --silence MS         pause length that ends an utterance (default: 700)
     --aggressiveness 0-3 VAD strictness; raise in a noisy room (default: 2)
     --min-utterance MS   drop blips shorter than this (default: 200) -- raise if
@@ -153,12 +197,12 @@ Thinking is off for a local scribe (`chat_template_kwargs.enable_thinking=false`
 
 | Flag | Before | Now |
 | :--- | :--- | :--- |
-| `-m/--model` (`DICTION_MODEL`) | a faster-whisper model name, `distil-large-v3` by default, downloaded on first use | a whisper.cpp ggml file: a path, or a name under `<models_dir>/whisper/` tried as `NAME`, `NAME.bin` and `ggml-NAME.bin` (so `distil-large-v3` still works when `ggml-distil-large-v3.bin` is there). Default `current`: whatever `whisper-server` loaded at start, the file `maic vendor use whisper FILE` linked. Naming another file loads it into the running server (its `/load` route) before the mic opens; the server keeps it until it restarts or another `-m` swaps it |
-| `--agent-model` (`DICTION_AGENT_MODEL`) | a `claude` model alias, `haiku` by default | a MAIC preset (`qwen-4b`, the default; `qwen-9b`; `haiku-4.5`; any preset in settings) or `provider/model` (`llamacpp/Qwen3.5-4B-Q4_K_M`, `llamacpp-2/...`, `deepseek/deepseek-chat`), resolved by `maic model resolve NAME`, which prints the provider, kind, base URL, model and context as JSON |
+| `-m/--model` (`DICTION_MODEL`) | a faster-whisper model name, `distil-large-v3` by default, downloaded on first use | a whisper.cpp ggml file: a path, or a name under `<models_dir>/whisper/` tried as `NAME`, `NAME.bin` and `ggml-NAME.bin` (so `distil-large-v3` still works when `ggml-distil-large-v3.bin` is there). Default: the preset's, `distil-large-v3` as before; it is not downloaded on first use any more, and a missing one says `maic models install whisper-NAME`. `current` means whatever `whisper-server` loaded at start, the file `maic vendor use whisper FILE` linked. Naming another file loads it into the running server (its `/load` route) before the mic opens; the server keeps it until it restarts or another `-m` swaps it |
+| `--agent-model` (`DICTION_AGENT_MODEL`) | a `claude` model alias, `haiku` by default | a MAIC preset (`haiku-4.5`, the default preset's, as before; `qwen-4b`; `qwen-9b`; any preset in settings) or `provider/model` (`llamacpp/Qwen3.5-4B-Q4_K_M`, `llamacpp-2/...`, `deepseek/deepseek-chat`), resolved by `maic model resolve NAME`, which prints the provider, kind, base URL, model and context as JSON. The old aliases `haiku`, `sonnet` and `opus` still work |
 
-**Dictation never evicts the main model.** A name without a provider (the default `qwen-4b`, or any preset) that lands on the main llama server is sent to the side server `llamacpp-2` instead whenever that one answers, with the same model name and the side server's own window. With `maic up llamacpp-2` running, the session on 8081 keeps its model while you dictate. Without it, the scribe uses the main server, and a model other than the one it holds replaces it there. Written out as `llamacpp/MODEL`, the scribe stays on the main server on purpose.
+**Dictation never evicts the main model.** A name without a provider (`qwen-4b`, or any other preset) that lands on the main llama server is sent to the side server `llamacpp-2` instead whenever that one answers, with the same model name and the side server's own window. With `maic up llamacpp-2` running, the session on 8081 keeps its model while you dictate. Without it, the scribe uses the main server, and a model other than the one it holds replaces it there. Written out as `llamacpp/MODEL`, the scribe stays on the main server on purpose.
 
-A cloud preset works too (an Anthropic or OpenAI-compatible provider with its key in the environment variable the provider names); diction then prints one line at start naming the provider, see Privacy below.
+A cloud scribe, the default preset's Claude Haiku or any Anthropic or OpenAI-compatible provider, takes its key from the environment variable the provider names (`ANTHROPIC_API_KEY` for Anthropic) or its key command; without one diction stops before listening and says which variable to set, or `--preset local`. With one, it prints one line at start naming the provider, see Privacy below.
 
 ## Raw alongside processed
 
@@ -234,9 +278,14 @@ maic vendor model whisper https://huggingface.co/distil-whisper/distil-large-v3-
 maic vendor model whisper https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin \
     2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987
 maic up whisper                  # whisper-server on 127.0.0.1:8083
-maic up llamacpp-2               # the scribe's server (or maic up llamacpp; see "Dictation never evicts the main model")
+export ANTHROPIC_API_KEY=...     # the default preset's scribe, Claude Haiku
 maic diction
+
+maic up llamacpp-2               # instead, for --preset local or local-small: the scribe's server
+maic diction --preset local
 ```
+
+`maic diction presets` says what each preset still needs.
 
 The models, with their SHA-256 as Hugging Face's API gives them (`?blobs=true` on the tree listing):
 
@@ -246,11 +295,11 @@ The models, with their SHA-256 as Hugging Face's API gives them (`?blobs=true` o
 | [`ggml-large-v3-turbo-q5_0.bin`](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin) (ggerganov/whisper.cpp) | 0.53 GB | `394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2` | the small-VRAM choice: large-v3-turbo quantized to 5 bits, about a third of the memory |
 | [`ggml-silero-v6.2.0.bin`](https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin) (ggml-org/whisper-vad) | 0.9 MB | `2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987` | Silero VAD, required by the service |
 
-`maic vendor model whisper URL SHA256` downloads into `<models_dir>/whisper/`, refuses to keep a file whose hash does not match, and links a speech model as `current.bin`; the Silero file is kept under its own name, which `services/whisper.json` loads. A file you already have: put it under `<models_dir>/whisper/` and `maic vendor use whisper FILE`. Switching models is `vendor use` again and `maic down whisper && maic up whisper`, or `-m` for one session.
+`maic vendor model whisper URL SHA256` downloads into `<models_dir>/whisper/`, refuses to keep a file whose hash does not match, and links a speech model as `current.bin`; the Silero file is kept under its own name, which `services/whisper.json` loads. A file you already have: put it under `<models_dir>/whisper/` and `maic vendor use whisper FILE`. `current.bin` is what `whisper-server` loads when it starts; each session then asks for the preset's model (or `-m`'s, or `DICTION_MODEL`'s) and loads it into the running server when it holds another, so it pays to link the one you use most: `distil-large-v3` for the default preset, `large-v3-turbo-q5_0` for the local ones. `-m current` takes whatever the server holds.
 
 **The Silero VAD is the second gate.** WebRTC VAD opens utterances on breathing and room noise, and Whisper reliably hallucinates stock phrases into that silence, with `no_speech_prob` as low as 0.10, so the usual confidence thresholds do not catch it. faster-whisper ran Silero on every utterance (`vad_filter=True`); `whisper-server` does the same with `--vad`, using faster-whisper's settings (no minimum speech length, 2 s minimum silence, 400 ms padding). The stock-phrase list in diction stays as the last gate.
 
-The scribe's model is a GGUF under `<models_dir>/llamacpp/`, as for MAIC itself ([llamacpp.md](llamacpp.md)): the default preset `qwen-4b` is `Qwen3.5-4B-Q4_K_M`.
+A local scribe's model is a GGUF under `<models_dir>/llamacpp/`, as for MAIC itself ([llamacpp.md](llamacpp.md)): `local` takes the 9B's text entry `Qwen3.5-9B-Q4_K_M-text` (a folder with a link to the weights and no projector, as llamacpp.md describes), `local-small` takes `Qwen3.5-4B-Q4_K_M`, and `--agent-model qwen-4b` is the 4B too.
 
 ## The card: an 8 GB GPU
 
@@ -261,15 +310,18 @@ The scribe's model is a GGUF under `<models_dir>/llamacpp/`, as for MAIC itself 
 | whisper, distil-large-v3 | 1.7 GB |
 | whisper, large-v3-turbo q5_0 | 0.8 GB |
 | scribe, the 4B on the side server at 8k (text only) | 3.0 GB |
+| scribe, the 9B text entry on the side server at 8k | 6.5 GB |
 | scribe, the 4B at 16k | 3.6 GB |
 
 So whisper plus a 4B scribe is about 5 GB and fits with ComfyUI stopped. A third model does not: with the agent's own 4B at 16k on 8081 and the scribe's on 8082 as well, the estimate is 8.3 GB before each process's own CUDA overhead, so either let the scribe share the main server's model (`--agent-model llamacpp/Qwen3.5-4B-Q4_K_M` while that is the session's model, which evicts nothing) or take the turbo q5_0 model and lower `context_2`. `whisper-server` holds its model from the moment it starts; `maic down whisper` gives the memory back. It is marked `needs_gpu`, so `maic up whisper` first asks the llama servers to unload what they hold, as ComfyUI does; they reload on the next request.
 
 ## Privacy
 
-**Dictation now never leaves the machine.** The old scribe was a `claude` process: every utterance's text went to Anthropic. Now the audio goes to `whisper-server` on 127.0.0.1:8083 and the text to `llama-server` on 127.0.0.1:8081 or 8082, both MAIC's own builds (whisper.cpp without its downloader, llama.cpp without TLS), both bound to loopback. The audio itself never left before either (faster-whisper ran in-process) and still does not.
+**The audio never leaves the machine.** It goes to `whisper-server` on 127.0.0.1:8083, MAIC's own build of whisper.cpp without its downloader, bound to loopback. It never left before either (faster-whisper ran in-process).
 
-The exception is one you choose: `--agent-model` naming a cloud preset or provider (`haiku-4.5`, `anthropic/...`, `deepseek/...`, `openrouter/...`). diction then prints, before it starts listening, one line naming the provider and saying that the text of every utterance goes to it; the audio stays here.
+**The text goes where the preset says.** The default preset is diction as it always ran: the scribe is Claude Haiku, so every utterance's text goes to Anthropic, as it did when the scribe was a `claude` process. diction prints, before it starts listening, one line naming the provider and saying that the text of every utterance goes to it. The same holds for any cloud scribe you name (`--agent-model sonnet`, `anthropic/...`, `deepseek/...`, `openrouter/...`).
+
+`--preset local` and `--preset local-small` keep the text here too: it goes to `llama-server` on 127.0.0.1:8082 (or 8081), MAIC's own build of llama.cpp without TLS, bound to loopback. With either, dictation never leaves the machine.
 
 Nothing else reaches the network. `-m` resolves model files on disk; `maic vendor model` is the only download, and only when you type it. The one Python dependency, `webrtcvad-wheels`, is fetched by `uv` the first time the mic is used and then run from uv's cache with `--offline`, so a normal start makes no outbound connection.
 
@@ -312,6 +364,7 @@ Dependencies, before and after:
     diction/pipeline.py     the transcriber stage: whisper, stock-phrase gate, mode switching
     diction/whisper.py      the whisper-server client
     diction/scribe.py       the system prompts, the chat client, the context budget
+    diction/presets.py      the presets, their precedence, `diction presets`
     diction/document.py     the document and apply_reply
     diction/journal.py      the raw and session logs
     diction/ui.py           colours and the status line

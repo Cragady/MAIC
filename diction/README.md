@@ -1,6 +1,6 @@
 # diction
 
-Narrate out loud; get it written down, cleaned up, and correctable by voice. Micaiah's dictation tool: the mic, `whisper-server` and a scribe model on `llama-server`, all on this machine.
+Narrate out loud; get it written down, cleaned up, and correctable by voice. Micaiah's dictation tool: the mic, `whisper-server` and a scribe model, Claude Haiku by default as always, or with `--preset local` one on `llama-server`, so that nothing leaves the machine.
 
     maic diction            # or: cai diction
     maic help diction       # its flags

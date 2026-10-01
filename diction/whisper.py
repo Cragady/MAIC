@@ -57,7 +57,13 @@ def resolve_model(name: str) -> Path | None:
         if cand.is_file():
             return cand.resolve()
     have = sorted(f.name for f in root.glob("*.bin") if f.name != "current.bin") if root.is_dir() else []
-    raise RuntimeError(f"no whisper model '{name}' (looked in {root}; there: {', '.join(have) or 'nothing'})")
+    raise RuntimeError(f"no whisper model '{name}' (looked in {root}; there: {', '.join(have) or 'nothing'}); "
+                       f"{missing(name)}")
+
+
+def missing(name: str) -> str:
+    """What to say about a model that is not there: a catalog name says how to get it."""
+    return "not installed" if "/" in name or name.endswith(".bin") else f"not installed: maic models install whisper-{name}"
 
 
 def display_name(path: Path | None) -> str:

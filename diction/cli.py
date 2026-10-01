@@ -3,8 +3,10 @@
 
 Captures the default microphone continuously, splits it into utterances on
 natural pauses, has whisper-server (whisper.cpp, on loopback) transcribe each,
-and hands the text to a scribe model on llama-server that maintains the
-document: cleaned prose, a numbered procedure, or the raw transcript.
+and hands the text to a scribe model that maintains the document: cleaned
+prose, a numbered procedure, or the raw transcript. The scribe and the whisper
+model come from a preset (diction/presets.py): by default Claude Haiku and
+distil-large-v3, as diction always ran.
 
 Three stages run concurrently so speech is never dropped while an earlier
 utterance is still being transcribed or written up.
@@ -35,6 +37,7 @@ from diction.pipeline import ModeState, transcriber
 from diction.scribe import (SYSTEM_PROMPT_INSERT, SYSTEM_PROMPT_NORMAL, SYSTEM_PROMPT_STEPS, Scribe,
                             resolve_agent, scribe)
 from diction.ui import BOLD, DIM, OFF, RED, YELLOW, print_recap, say
+from diction import presets
 from diction import whisper as whisper_mod
 
 HERE = Path(__file__).resolve().parent
@@ -109,19 +112,28 @@ def slugify(text: str) -> str:
 def run(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="diction", description="Narrate a task; get a written procedure.")
     ap.add_argument("command", nargs="?", default="start",
-                    choices=["start", "devices", "taptest"])
+                    choices=["start", "devices", "taptest", "presets"],
+                    help="start (default); devices: list mics; taptest: tune the tap gesture; "
+                         "presets: list the presets and whether their models are ready")
     ap.add_argument("-o", "--out", help="procedure markdown file (default: <cwd-name>.md)")
     ap.add_argument("-t", "--title", help="document title (default: derived from filename)")
     ap.add_argument("-d", "--device", help="pulse/pipewire source name (default: system default)")
-    ap.add_argument("-m", "--model", default=os.environ.get("DICTION_MODEL", "current"),
+    ap.add_argument("--preset", metavar="NAME",
+                    help="a scribe and a whisper model under one name: default (Claude Haiku and "
+                         "distil-large-v3, as diction always ran; the text goes to Anthropic), local "
+                         "(the Qwen3.5 9B on llamacpp-2 and large-v3-turbo-q5_0), local-small (the 4B), "
+                         "or a [presets.NAME] of config.toml. Also DICTION_PRESET. -m and "
+                         "--agent-model, and DICTION_MODEL and DICTION_AGENT_MODEL, override its parts")
+    ap.add_argument("-m", "--model",
                     help="whisper ggml model: a file, or a name under <models_dir>/whisper/ "
-                         "(distil-large-v3 finds ggml-distil-large-v3.bin). Default: current, the "
-                         "model whisper-server loaded (maic vendor use whisper FILE); another one is "
-                         "loaded into the running server")
-    ap.add_argument("--agent-model", default=os.environ.get("DICTION_AGENT_MODEL", "qwen-4b"),
+                         "(distil-large-v3 finds ggml-distil-large-v3.bin), or current, the model "
+                         "whisper-server loaded; another one is loaded into the running server. "
+                         "Default: DICTION_MODEL, else the preset's (distil-large-v3)")
+    ap.add_argument("--agent-model", metavar="NAME",
                     help="the scribe: a MAIC preset or provider/model, as `maic model resolve` "
-                         "reads it (default: qwen-4b, on the side server llamacpp-2 when it "
-                         "answers, so the main model stays loaded)")
+                         "reads it; haiku, sonnet and opus still mean Claude's. A preset name that "
+                         "lands on the main llama server goes to the side server llamacpp-2 when it "
+                         "answers. Default: DICTION_AGENT_MODEL, else the preset's (haiku-4.5)")
     ap.add_argument("--silence", type=int, default=700, help="ms of silence that ends an utterance")
     ap.add_argument("--aggressiveness", type=int, default=2, choices=[0, 1, 2, 3],
                     help="VAD strictness; raise it in a noisy room")
@@ -198,6 +210,10 @@ def run(argv: list[str]) -> int:
         list_devices()
         return 0
 
+    cfg = load_config()
+    if args.command == "presets":
+        return presets.show(cfg, args.preset)
+
     try:
         gap_lo, gap_hi = (int(x) for x in args.tap_gap.split("-", 1))
     except ValueError:
@@ -205,7 +221,7 @@ def run(argv: list[str]) -> int:
         return 1
 
     if args.command == "taptest":
-        logdir, _ = resolve_logdir(args, load_config(), Path.cwd())
+        logdir, _ = resolve_logdir(args, cfg, Path.cwd())
         logdir.mkdir(parents=True, exist_ok=True)
         tap_test(pick_source(args.device),
                  TapDetector(ratio=args.tap_ratio, floor=args.tap_floor,
@@ -237,22 +253,27 @@ def run(argv: list[str]) -> int:
                 print(f"{RED}  {f}: --from-wav needs 16 kHz mono 16-bit PCM{OFF}")
                 return 1
 
+    try:
+        preset, scribe_name, whisper_arg = presets.choose(args.preset, args.agent_model, args.model, cfg)
+    except ValueError as e:
+        print(f"{RED}  {e}{OFF}")
+        return 1
     agent = None
     if not args.no_agent:
         try:
-            agent = resolve_agent(args.agent_model)
+            agent = resolve_agent(scribe_name)
         except Exception as e:
             print(f"{RED}  scribe: {e}{OFF}")
             return 1
     agent_label = "off" if agent is None else f"{agent['provider']}/{agent['model']}"
     try:
-        whisper_path = whisper_mod.resolve_model(args.model)
+        whisper_path = whisper_mod.resolve_model(whisper_arg)
     except Exception as e:
         print(f"{RED}  {e}{OFF}")
         return 1
     whisper_name = whisper_mod.display_name(whisper_path)
 
-    logdir, log_src = resolve_logdir(args, load_config(), cwd)
+    logdir, log_src = resolve_logdir(args, cfg, cwd)
     try:
         logdir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -270,7 +291,8 @@ def run(argv: list[str]) -> int:
     try:
         agent_scribe = None if agent is None else Scribe(agent, args.agent_timeout, errlog, prompts)
     except Exception as e:
-        print(f"{RED}  scribe: {e}{OFF}")
+        hint = " (or --preset local, which keeps it on this machine)" if agent.get("remote") else ""
+        print(f"{RED}  scribe: {e}{hint}{OFF}")
         return 1
 
     print(f"{BOLD}{build_id()}{OFF} {DIM}→{OFF} {out}")
@@ -279,7 +301,7 @@ def run(argv: list[str]) -> int:
         if args.recap:
             print_recap(proc_doc.recap(args.recap), f"{DIM}\u2502{OFF}",
                         f"where you left off:")
-    print(f"{DIM}  whisper: {whisper_name} · scribe: "
+    print(f"{DIM}  preset: {preset} · whisper: {whisper_name} · scribe: "
           f"{agent_label} · mode: "
           f"{'raw transcript' if args.no_agent else mode_state.get()}{OFF}")
     if agent is not None and agent.get("remote"):
