@@ -201,16 +201,6 @@ std::vector<SessionInfo> list_sessions(const std::optional<fs::path>& workspace)
     return out;
 }
 
-fs::path rehome_session(const SessionInfo& session, const std::string& home) {
-    fs::path dir = home == "project" ? sessions_home("project:" + session.workspace) : sessions_home(home);
-    fs::create_directories(dir);
-    fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace);
-    fs::path target = dir / session.path.filename();
-    if (fs::exists(target) && !fs::equivalent(target, session.path)) throw std::runtime_error(target.string() + " already exists");
-    fs::rename(session.path, target);
-    return target;
-}
-
 std::optional<SessionInfo> find_session(const std::string& id_or_path) {
     std::error_code ec;
     if (fs::is_regular_file(id_or_path, ec)) {
@@ -634,13 +624,18 @@ void move_session_file(const fs::path& from, const fs::path& to, bool copy) {
     }
 }
 
+void make_home(const fs::path& dir) {
+    fs::create_directories(dir);
+    std::error_code ec;
+    fs::permissions(dir.parent_path(), fs::perms::owner_all, fs::perm_options::replace, ec);
+    fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace, ec);
+}
+
 }  // namespace
 
 fs::path SessionLog::relocate(const fs::path& dest_dir, const std::string& reason) {
-    fs::create_directories(dest_dir);
+    make_home(dest_dir);
     std::error_code ec;
-    fs::permissions(dest_dir.parent_path(), fs::perms::owner_all, fs::perm_options::replace, ec);
-    fs::permissions(dest_dir, fs::perms::owner_all, fs::perm_options::replace, ec);
     fs::path from, to, pending;
     {
         std::lock_guard lock(mu_);
@@ -679,6 +674,82 @@ fs::path SessionLog::relocate(const fs::path& dest_dir, const std::string& reaso
     }
     write("rehomed", {{"from", from.string()}, {"to", to.string()}, {"reason", reason}});
     return to;
+}
+
+std::vector<RehomeMove> plan_rehome(const std::vector<RehomeTarget>& targets, const std::string& home) {
+    std::vector<SessionInfo> all = list_sessions();
+    std::vector<std::string> problems;
+    std::vector<RehomeMove> plan;
+    std::set<std::string> planned;
+    std::error_code ec;
+    for (const auto& t : targets) {
+        std::optional<SessionInfo> named;
+        if (fs::is_regular_file(t.id, ec)) {
+            named = find_session(t.id);
+        } else {
+            std::vector<const SessionInfo*> matches;
+            for (const auto& s : all) {
+                if (s.id == t.id) {
+                    matches = {&s};
+                    break;
+                }
+                if (s.id.rfind(t.id, 0) == 0) matches.push_back(&s);
+            }
+            if (matches.size() == 1) named = *matches[0];
+            else if (matches.empty()) problems.push_back("no session matching '" + t.id + "' (maic sessions)");
+            else {
+                std::string ids;
+                for (const auto* m : matches) ids += "\n      " + m->id + "  [" + m->home + "]";
+                problems.push_back("'" + t.id + "' matches " + std::to_string(matches.size()) + " sessions; give more of the id:" + ids);
+            }
+        }
+        if (!named) continue;
+        fs::path dir = home == "project" ? sessions_home("project:" + named->workspace) : sessions_home(home);
+        std::vector<SessionInfo> moving;
+        if (t.subagents != Subagents::Only) moving.push_back(*named);
+        if (t.subagents != Subagents::Stay) {
+            // Its subagents wherever they are, and theirs.
+            std::vector<std::string> parents = {named->id};
+            std::set<std::string> seen = {named->id};
+            while (!parents.empty()) {
+                std::string parent = parents.back();
+                parents.pop_back();
+                for (const auto& s : all) {
+                    if (s.kind != "sub" || s.delegated_from != parent || !seen.insert(s.id).second) continue;
+                    moving.push_back(s);
+                    parents.push_back(s.id);
+                }
+            }
+        }
+        for (const auto& s : moving) {
+            if (!planned.insert(s.path.string()).second) continue;
+            fs::path to = dir / s.path.filename();
+            if (fs::equivalent(s.path.parent_path(), dir, ec)) {
+                plan.push_back({s, s.path});
+                continue;
+            }
+            if (session_running(s)) problems.push_back(s.id + " is running (pid " + std::to_string(s.pid) + "): a live session moves only by :init inside it; wait until it ends");
+            else if (session_lock_reason(s)) problems.push_back(s.id + " has its tripwire lock set beside it; `maic unlock session " + s.id + "` first");
+            else if (fs::exists(to, ec)) problems.push_back(to.string() + " already exists");
+            plan.push_back({s, to});
+        }
+    }
+    if (!problems.empty()) {
+        std::string text = "nothing moved:";
+        for (const auto& p : problems) text += "\n  " + p;
+        throw std::runtime_error(text);
+    }
+    return plan;
+}
+
+void rehome_session(const RehomeMove& move) {
+    if (move.to == move.session.path) return;
+    make_home(move.to.parent_path());
+    move_session_file(move.session.path, move.to, false);
+    nlohmann::json record = {{"type", "rehomed"}, {"time", now("%Y-%m-%dT%H:%M:%S%z")}, {"from", move.session.path.string()}, {"to", move.to.string()}, {"reason", "rehome"}};
+    if (!append_synced(move.to, record.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + '\n')) {
+        throw std::runtime_error("moved " + move.session.id + " to " + move.to.string() + ", but could not add its rehomed record");
+    }
 }
 
 std::vector<std::string> recover_relocations(const std::string& id) {

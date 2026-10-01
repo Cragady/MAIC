@@ -135,7 +135,9 @@ void usage(std::ostream& out = std::cerr) {
                  "  artifacts                  where MAIC and its services keep transcripts, logs and outputs\n"
                  "  artifacts clean OWNER/NAME [--older-than DAYS] [--yes]\n"
                  "  sessions                   list session transcripts (where started, where last opened)\n"
-                 "  sessions rehome ID [project|general|NAME]   move a transcript to another home (default: project)\n"
+                 "  sessions rehome ID [ID...] [project|general|NAME] [--subagent | --subagent-only] [--children-of ID] [-n]\n"
+                 "                             move transcripts to another home (default: project); their subagent sessions\n"
+                 "                             stay unless --subagent (them too) or --subagent-only (only them); -n: the plan\n"
                  "  sessions path ID           print a transcript's path\n"
                  "  sessions export ID [FILE]  the transcript as markdown (stdout without FILE)\n"
                  "  sessions import FILE [--as claude-ai|claude-code|auto] [--home general|project|NAME] [--conversation UUID]\n"
@@ -874,6 +876,49 @@ int cmd_sessions_time(const std::vector<std::string>& args) {
     return 0;
 }
 
+// maic sessions rehome ID [ID...] [HOME] [--subagent | --subagent-only] [--children-of ID] [--dry-run]
+int cmd_sessions_rehome(const std::vector<std::string>& args) {
+    std::string use = "maic sessions rehome ID [ID...] [project|general|NAME] [--subagent | --subagent-only] [--children-of ID] [--dry-run]";
+    std::vector<std::string> words, parents;
+    maic::Subagents subagents = maic::Subagents::Stay;
+    bool dry = false;
+    for (size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "--subagent" || args[i] == "--subagent-only") {
+            maic::Subagents want = args[i] == "--subagent" ? maic::Subagents::Too : maic::Subagents::Only;
+            if (subagents != maic::Subagents::Stay && subagents != want) throw std::runtime_error("--subagent and --subagent-only exclude each other");
+            subagents = want;
+        } else if (args[i] == "--children-of") {
+            if (i + 1 >= args.size()) throw std::runtime_error("--children-of needs a session id");
+            parents.push_back(args[++i]);
+        } else if (args[i] == "--dry-run" || args[i] == "-n") dry = true;
+        else if (args[i][0] != '-') words.push_back(args[i]);
+        else throw std::runtime_error(use);
+    }
+    // HOME is the last word; one ID alone goes to its project, as it always has.
+    std::string home = "project";
+    if (words.size() > 1 || (words.size() == 1 && !parents.empty())) {
+        home = words.back();
+        words.pop_back();
+    }
+    if (words.empty() && parents.empty()) throw std::runtime_error(use);
+    std::vector<maic::RehomeTarget> targets;
+    for (const auto& w : words) targets.push_back({w, subagents});
+    for (const auto& p : parents) targets.push_back({p, maic::Subagents::Only});
+    size_t moving = 0;
+    for (const auto& m : maic::plan_rehome(targets, home)) {
+        if (m.to == m.session.path) {
+            std::cout << m.session.id << " is already in " << m.session.home << "/\n";
+            continue;
+        }
+        if (!dry) maic::rehome_session(m);
+        std::cout << m.session.path.string() << " -> " << m.to.string() << "\n";
+        ++moving;
+    }
+    if (dry) std::cout << "dry run: nothing moved (" << moving << " file" << (moving == 1 ? "" : "s") << " would move)\n";
+    else if (moving == 0) std::cout << "nothing to move\n";
+    return 0;
+}
+
 // maic sessions name ID [--model MODEL]
 int cmd_sessions_name(const std::vector<std::string>& args) {
     auto [id, o] = session_args(args, {"--model"}, {}, "maic sessions name ID [--model MODEL]");
@@ -1473,32 +1518,27 @@ int main(int argc, char** argv) {
             if (!cargs.empty() && cargs[0] == "time") return cmd_sessions_time(cargs);
             if (!cargs.empty() && cargs[0] == "name") return cmd_sessions_name(cargs);
             if (!cargs.empty() && cargs[0] == "read") return cmd_sessions_read(cargs);
-            if (cargs.size() >= 2 && (cargs[0] == "rehome" || cargs[0] == "path" || cargs[0] == "export")) {
+            if (!cargs.empty() && cargs[0] == "rehome") return cmd_sessions_rehome(cargs);
+            if (cargs.size() >= 2 && (cargs[0] == "path" || cargs[0] == "export")) {
                 auto s = maic::find_session(cargs[1]);
                 if (!s) throw std::runtime_error("no session matching '" + cargs[1] + "' (maic sessions)");
                 if (cargs[0] == "path") {
                     std::cout << s->path.string() << "\n";
                     return 0;
                 }
-                if (cargs[0] == "export") {
-                    std::string md = maic::export_markdown(*s, maic::load_session(s->path));
-                    if (cargs.size() >= 3 && cargs[2] != "-") {
-                        std::ofstream out(cargs[2]);
-                        out << md;
-                        std::cout << "wrote " << cargs[2] << "\n";
-                    } else {
-                        std::cout << md;
-                    }
-                    return 0;
+                std::string md = maic::export_markdown(*s, maic::load_session(s->path));
+                if (cargs.size() >= 3 && cargs[2] != "-") {
+                    std::ofstream out(cargs[2]);
+                    out << md;
+                    std::cout << "wrote " << cargs[2] << "\n";
+                } else {
+                    std::cout << md;
                 }
-                std::string home = cargs.size() >= 3 ? cargs[2] : "project";
-                auto target = maic::rehome_session(*s, home);
-                std::cout << "moved to " << target.string() << "\n";
                 return 0;
             }
             std::cout << maic::sessions_dir().string() << "\n";
             print_sessions(maic::list_sessions());
-            std::cout << "resume: maic -r ID or maic -r PATH (maic -c: newest from this directory) · move: maic sessions rehome ID [project|general|NAME]\n";
+            std::cout << "resume: maic -r ID or maic -r PATH (maic -c: newest from this directory) · move: maic sessions rehome ID [ID...] [project|general|NAME]\n";
             return 0;
         }
         if (cmd == "artifacts") return cmd_artifacts(cargs);

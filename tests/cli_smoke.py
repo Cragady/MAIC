@@ -5,7 +5,7 @@ cannot see (they link httplib themselves). Usage: cli_smoke.py PATH_TO_MAIC
 
 Also a module for test_tui.py (the fake, the throwaway home), and `cli_smoke.py --serve` runs the fake alone,
 printing its port."""
-import http.server, json, os, subprocess, sys, tempfile, threading, time
+import http.server, json, os, socket, subprocess, sys, tempfile, threading, time
 
 
 class Fake(http.server.BaseHTTPRequestHandler):
@@ -183,6 +183,7 @@ def main():
                  and json.loads(restored.splitlines()[-1]).get("type") == "rewritten")
     print(("ok" if backup_ok else "FAIL") + ": maic sessions redact --in-place keeps a copy that cai trans-fairy-write list-backups and restore see" +
           ("" if backup_ok else "\n" + r.stdout + r.stderr + lb.stdout + lb.stderr + rs.stdout + rs.stderr))
+    rehome_ok = rehome_smoke(maic, env, home)
     # `maic settings read diction`: {} without the file, the table as JSON, a refused call with file:line.
     diction_lua = os.path.join(home, "config", "maic", "diction.lua")
     r = subprocess.run([maic, "settings", "read", "diction"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
@@ -198,7 +199,86 @@ def main():
     print(("ok" if read_ok else "FAIL") + ": maic settings read diction" + ("" if read_ok else "\n" + r.stdout[-1500:] + r.stderr[-1500:]))
     models_ok = models_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and read_ok and models_ok else 1)
+    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and rehome_ok and read_ok and models_ok else 1)
+
+
+def rehome_smoke(maic, env, home):
+    """`maic sessions rehome`: subagent sessions move only when asked, several targets, --children-of, an ambiguous
+    prefix and a running session refused with nothing moved, --dry-run, and forks and subagents loading after each move."""
+    sessions = os.path.join(env["XDG_STATE_HOME"], "maic", "sessions")
+    general = os.path.join(sessions, "general")
+    results = []
+
+    def write(name, recs, where=general):
+        os.makedirs(where, mode=0o700, exist_ok=True)
+        with open(os.path.join(where, name + ".jsonl"), "w") as f:
+            for rec in recs:
+                f.write(json.dumps(dict(rec, time="2026-01-02T12:00:00+0000")) + "\n")
+
+    def start(**kw):
+        return dict({"type": "start", "workspace": home, "model": "fake/fake", "mode": "manual", "host": "h", "pid": 1}, **kw)
+
+    def msg(text):
+        return {"type": "msg", "role": "user", "content": text}
+
+    def where(sid):
+        found = [d for d, _, files in os.walk(sessions) if sid + ".jsonl" in files]
+        return os.path.relpath(found[0], sessions) if len(found) == 1 else found
+
+    def last(sid):
+        with open(os.path.join(sessions, where(sid), sid + ".jsonl")) as f:
+            return json.loads(f.read().splitlines()[-1])
+
+    def run(*args):
+        return subprocess.run([maic, "sessions", *args], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+
+    def report(ok, what, *rs):
+        print(("ok" if ok else "FAIL") + ": " + what + ("" if ok else "\n" + "\n".join(r.stdout[-1500:] + r.stderr[-1500:] for r in rs)))
+        results.append(ok)
+
+    def loads(*ids):
+        return all(run("read", i).returncode == 0 for i in ids)
+
+    P, C, G, F = "20260102-120000-tui-11", "20260102-120001-sub-12", "20260102-120002-sub-13", "20260102-120003-tui-14"
+    write(P, [start(), msg("the fennec girl's ears"), {"type": "user", "text": "the fennec girl's ears"}])
+    write(C, [start(parent=P, agent="explore"), msg("find a reference"), {"type": "user", "text": "find a reference"}])
+    write(G, [start(parent=C, agent="explore"), msg("look closer"), {"type": "user", "text": "look closer"}])
+    write(F, [{"type": "resumed_from", "id": P, "path": os.path.join(general, P + ".jsonl"), "records": 3}, msg("and her tail?")],
+          os.path.join(sessions, "forks"))
+
+    r = run("rehome", P, "rh", "-n")
+    report(r.returncode == 0 and " -> " + os.path.join(sessions, "rh", P + ".jsonl") in r.stdout and "dry run: nothing moved (1 file would move)" in r.stdout
+           and where(P) == "general", "rehome -n prints the plan and moves nothing", r)
+    r = run("rehome", P[:-1], "rh")
+    report(r.returncode == 0 and where(P) == "rh" and where(C) == "general" and where(G) == "general" and last(P).get("type") == "rehomed"
+           and last(P).get("reason") == "rehome" and last(P).get("from") == os.path.join(general, P + ".jsonl") and loads(F, C, G)
+           and "subagent of " + P in run("state", C).stdout, "rehome moves only the named session; its subagents stay and still name it", r)
+    r = run("rehome", P, "rh2", "--subagent")
+    report(r.returncode == 0 and r.stdout.count(" -> ") == 3 and where(P) == where(C) == where(G) == "rh2" and last(C).get("reason") == "rehome"
+           and loads(F, C, G), "--subagent moves its subagents and theirs with it", r)
+    r = run("rehome", "--children-of", P, "general")
+    report(r.returncode == 0 and where(P) == "rh2" and where(C) == where(G) == "general" and loads(F, P, C, G), "--children-of moves the subagents, not the parent", r)
+    r = run("rehome", P, "rh4", "--subagent-only")
+    report(r.returncode == 0 and r.stdout.count(" -> ") == 2 and where(P) == "rh2" and where(C) == where(G) == "rh4" and loads(F, P, C, G),
+           "--subagent-only moves the subagents and leaves the named session where it is", r)
+    r = run("rehome", P, "rh4", "--subagent-only")
+    report(r.returncode == 0 and r.stdout.count("already in rh4/") == 2 and "nothing to move" in r.stdout, "subagents already there are said to be", r)
+
+    X, Y = "20260102-120004-tui-15", "20260102-120005-tui-16"
+    write(X, [start(), msg("x")])
+    write(Y, [start(), msg("y")])
+    r = run("rehome", X, Y, "rh")
+    report(r.returncode == 0 and where(X) == where(Y) == "rh", "several targets in one command", r)
+    r = run("rehome", X, "20260102-12000", "general")
+    report(r.returncode == 1 and "nothing moved:" in r.stderr and "'20260102-12000' matches 6 sessions" in r.stderr and P + "  [rh2]" in r.stderr
+           and where(X) == "rh", "an ambiguous prefix lists the candidates and nothing moves", r)
+    # This script's own process stands in for a running maic: its command line names the maic binary.
+    L = "20260102-120006-tui-17"
+    write(L, [start(pid=os.getpid(), host=socket.gethostname()), msg("live")])
+    r = run("rehome", X, L, "rh3")
+    report(r.returncode == 1 and L + " is running (pid %d)" % os.getpid() in r.stderr and where(L) == "general" and where(X) == "rh",
+           "a running session is refused with the reason and nothing moves", r)
+    return all(results)
 
 
 def models_smoke(maic, port):

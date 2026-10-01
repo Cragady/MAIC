@@ -107,8 +107,25 @@ struct SessionInfo {
 // Newest first, across every home. With `workspace`, only sessions started or last opened in that directory.
 std::vector<SessionInfo> list_sessions(const std::optional<std::filesystem::path>& workspace = std::nullopt);
 
-// Moves a session file to another home. Forks keep working: they find their parent by id.
-std::filesystem::path rehome_session(const SessionInfo& session, const std::string& home);
+// `maic sessions rehome`: what to move for one named session. Its `sub` sessions (and theirs) move only when asked:
+// Stay leaves them where they are (they still find it by id), Too moves them with it, Only moves them and not it.
+enum class Subagents { Stay, Too, Only };
+struct RehomeTarget {
+    std::string id;  // an id, a unique id prefix, or a path
+    Subagents subagents = Subagents::Stay;
+};
+struct RehomeMove {
+    SessionInfo session;
+    std::filesystem::path to;  // the session's own path when it is already there
+};
+// Resolves every target and its subagents before anything moves, and throws, naming each problem, when a target
+// matches no session or several (listed), a session to move is running or has its tripwire lock set, or its
+// destination holds a file of that name. `home`: "project" (the named session's workspace; its subagents go with
+// it), "general", or a name.
+std::vector<RehomeMove> plan_rehome(const std::vector<RehomeTarget>& targets, const std::string& home);
+// Moves one planned file the way SessionLog::relocate moves an open one, then appends a `rehomed` record {from, to,
+// reason: "rehome"} to it. Forks keep working: they find their parent by id.
+void rehome_session(const RehomeMove& move);
 
 // The `sub` sessions `path` started (they live in its home and name it as their parent).
 std::vector<std::filesystem::path> sub_sessions_of(const std::filesystem::path& path);

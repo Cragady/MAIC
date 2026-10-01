@@ -6,7 +6,10 @@
 #include "maic/redact.hpp"
 #include "maic/session.hpp"
 
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <cctype>
@@ -802,6 +805,119 @@ int main() {
         std::vector<std::string> notices = recover_relocations();
         expect(!notices.empty() && read_whole(both) == line(0) + line(1) && !fs::exists(dest / both.filename()), "a complete copy beside its source is dropped, the source finished");
         expect(recover_relocations().empty(), "nothing is left to recover");
+    }
+
+    section("maic sessions rehome: several sessions, subagent sessions on request");
+    {
+        fs::path proj = ws / "proj4";
+        fs::create_directories(proj);
+        auto rehomed_from = [](const fs::path& p) {
+            json last = records(p).back();
+            return last.value("type", "") == "rehomed" && last.value("reason", "") == "rehome" && last.value("to", "") == p.string() ? last.value("from", "") : "";
+        };
+        // A parent with a subagent that started one of its own, and a fork of the parent in another home.
+        fs::path parent, child, grandchild, forked;
+        {
+            SessionLog p("rhparent");
+            p.write("start", {{"workspace", proj.string()}});
+            p.write("msg", message_to_json({"user", "draw the fennec girl"}));
+            p.write("msg", message_to_json({"assistant", "ears first"}));
+            SessionLog c("sub", p.path().parent_path());
+            c.write("start", {{"workspace", proj.string()}, {"parent", p.path().stem().string()}, {"agent", "explore"}});
+            c.write("msg", message_to_json({"user", "find the reference"}));
+            SessionLog g("sub", p.path().parent_path());
+            g.write("start", {{"workspace", proj.string()}, {"parent", c.path().stem().string()}, {"agent", "explore"}});
+            g.write("msg", message_to_json({"user", "look in the docs"}));
+            SessionLog f = SessionLog::fork(p.path(), 3, "tui", sessions_home("rh-forks"));
+            f.write("msg", message_to_json({"user", "and the tail?"}));
+            parent = p.path(), child = c.path(), grandchild = g.path(), forked = f.path();
+        }
+        std::string pid = parent.stem().string();
+        auto all_load = [&](const fs::path& p, const fs::path& c, const fs::path& g) {
+            auto found = find_session(find_session(c.string())->delegated_from);
+            return load_session(forked).messages.size() == 3 && load_session(c).messages.size() == 1 && load_session(g).messages.size() == 1 &&
+                   found && found->path == p && load_session(p).messages.size() == 2;
+        };
+
+        auto plan = plan_rehome({{pid}}, "rh-a");
+        expect(plan.size() == 1 && plan[0].session.path == parent && plan[0].to == sessions_home("rh-a") / parent.filename() && fs::exists(parent),
+               "the plan names one file and moves nothing");
+        rehome_session(plan[0]);
+        fs::path p1 = sessions_home("rh-a") / parent.filename();
+        expect(fs::exists(p1) && !fs::exists(parent) && fs::exists(child) && fs::exists(grandchild), "by default only the named session moves; its subagents stay");
+        expect(rehomed_from(p1) == parent.string(), "a rehomed record {from, to, reason: rehome} ends the moved file");
+        expect(all_load(p1, child, grandchild), "the fork and the subagents still load, and a subagent finds its parent by id");
+
+        fs::path home_b = sessions_home("rh-b");
+        plan = plan_rehome({{pid, Subagents::Too}}, "rh-b");
+        for (const auto& m : plan) rehome_session(m);
+        fs::path p2 = home_b / parent.filename(), c2 = home_b / child.filename(), g2 = home_b / grandchild.filename();
+        expect(plan.size() == 3 && fs::exists(p2) && fs::exists(c2) && fs::exists(g2) && !fs::exists(p1) && !fs::exists(child) && !fs::exists(grandchild),
+               "--subagent: its subagents and theirs move with it, from wherever they were");
+        expect(rehomed_from(c2) == child.string() && rehomed_from(g2) == grandchild.string(), "each moved subagent gets its own rehomed record");
+        expect(all_load(p2, c2, g2), "everything loads after moving together");
+
+        plan = plan_rehome({{pid, Subagents::Only}}, "general");
+        for (const auto& m : plan) rehome_session(m);
+        expect(plan.size() == 2 && fs::exists(p2) && fs::exists(child) && fs::exists(grandchild) && !fs::exists(c2) && !fs::exists(g2),
+               "--subagent-only: the subagents move, the named session stays");
+        expect(all_load(p2, child, grandchild), "everything loads after moving the subagents alone");
+
+        // Several targets, by id, by prefix and by path, in one plan.
+        fs::path x, y;
+        {
+            SessionLog a("rhx"), b("rhy");
+            a.write("start", {{"workspace", proj.string()}});
+            b.write("start", {{"workspace", proj.string()}});
+            x = a.path(), y = b.path();
+        }
+        std::string xid = x.stem().string();
+        plan = plan_rehome({{xid.substr(0, xid.size() - 1)}, {y.string()}}, "project");
+        for (const auto& m : plan) rehome_session(m);
+        fs::path dest = sessions_home("project:" + proj.string());
+        expect(plan.size() == 2 && fs::exists(dest / x.filename()) && fs::exists(dest / y.filename()), "several targets move in one command, each to its project");
+        plan = plan_rehome({{xid}}, "project");
+        expect(plan.size() == 1 && plan[0].to == plan[0].session.path, "a session already there is planned as staying");
+
+        // An ambiguous prefix refuses the whole command, listing the candidates.
+        for (const char* name : {"20261001-130000-tui-71.jsonl", "20261001-130000-tui-72.jsonl"}) {
+            std::ofstream(sessions_home("general") / name) << json{{"type", "start"}, {"workspace", proj.string()}}.dump() << "\n";
+        }
+        std::string error;
+        try {
+            plan_rehome({{"rhparent-is-not-a-prefix"}, {(dest / x.filename()).string()}, {"20261001-130000-tui-7"}}, "general");
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+        expect(error.rfind("nothing moved:", 0) == 0 && error.find("'20261001-130000-tui-7' matches 2 sessions") != std::string::npos &&
+                   error.find("20261001-130000-tui-71  [general]") != std::string::npos && error.find("20261001-130000-tui-72  [general]") != std::string::npos &&
+                   error.find("no session matching 'rhparent-is-not-a-prefix'") != std::string::npos,
+               "an ambiguous prefix lists its candidates, an unknown id is named, and the command refuses");
+        expect(fs::exists(dest / x.filename()), "nothing moved, not even the target that resolved");
+
+        // A live session (its process is a maic on this host) is refused.
+        pid_t live = fork();
+        if (live == 0) {
+            execlp("sleep", "maic-live-test", "30", static_cast<char*>(nullptr));
+            _exit(127);
+        }
+        for (int i = 0; i < 1000 && read_whole("/proc/" + std::to_string(live) + "/cmdline").find("maic") == std::string::npos; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        char host[256] = "";
+        gethostname(host, sizeof(host) - 1);
+        fs::path running = sessions_home("general") / "20261001-140000-tui-81.jsonl";
+        std::ofstream(running) << json{{"type", "start"}, {"workspace", proj.string()}, {"pid", live}, {"host", host}}.dump() << "\n";
+        error.clear();
+        try {
+            plan_rehome({{"20261001-140000-tui-81"}}, "rh-a");
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+        kill(live, SIGKILL);
+        waitpid(live, nullptr, 0);
+        expect(error.find("20261001-140000-tui-81 is running (pid " + std::to_string(live) + ")") != std::string::npos && fs::exists(running),
+               "a running session is refused with the reason, and stays");
     }
 
     fs::remove_all(ws);

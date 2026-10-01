@@ -1673,7 +1673,8 @@ int main() {
             a3.restore(load_session(path).messages);
             a3.submit("fork turn", Origin::Local, r, no_cancel);
             auto parent_info = find_session(path.stem().string());
-            fs::path moved = rehome_session(*parent_info, "project");
+            fs::path moved = sessions_home("project:" + parent_info->workspace) / path.filename();
+            rehome_session({*parent_info, moved});
             expect(moved.parent_path().parent_path().filename() == "projects" && !fs::exists(path), "rehome moves the parent into projects/<encoded workspace>/");
             LoadedSession forked = load_session(child.path());
             bool has_pelican = false;
