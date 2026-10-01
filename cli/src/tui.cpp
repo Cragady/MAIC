@@ -560,9 +560,10 @@ void App::welcome() {
     for (const auto& f : agent_.instructions()) files += (files.empty() ? "" : ", ") + f.path.string();
     if (session_tripped()) view_.append(Kind::Error, "this session is tripped (its own lock, from an earlier run): :unlock removes it");
     view_.append(Kind::Notice, "session transcript: " + log_path() + (files.empty() ? "" : "\ninstructions: " + files));
-    if (!agent_.tools().empty()) {
+    if (!agent_.tools().empty() || !agent_.script_tools().empty()) {
         std::string names;
         for (const auto& t : agent_.tools()) names += (names.empty() ? "" : ", ") + t.name;
+        for (const auto& t : agent_.script_tools()) names += (names.empty() ? "" : ", ") + t.name;
         view_.append(Kind::Notice, "tools: " + names + "  (:tools lists them)");
     }
     for (const auto& n : agent_.tool_notices()) view_.append(Kind::Error, n);
@@ -1533,9 +1534,10 @@ void App::run_command(const std::string& line) {
             out += "session: " + log_path() + "\n";
             out += "mode: " + std::string(mode_name(agent_.mode.load())) + (busy_ ? "  (working)" : "  (idle)");
             if (size_t q = agent_.queued()) out += "  " + std::to_string(q) + " queued  -> :w now";
-            if (!agent_.tools().empty()) {
+            if (!agent_.tools().empty() || !agent_.script_tools().empty()) {
                 out += "\ntools:";
                 for (const auto& t : agent_.tools()) out += " " + t.name;
+                for (const auto& t : agent_.script_tools()) out += " " + t.name;
             }
             if (std::string todo = todo_text(); !todo.empty()) out += "\n" + todo;
             post(Kind::Notice, out);
@@ -1550,9 +1552,17 @@ void App::run_command(const std::string& line) {
                 if (desc.size() > 90) desc = desc.substr(0, 87) + "...";
                 out += "\n  " + t["function"].value("name", "") + "  " + desc;
             }
-            out += "\nhelpers: maic-workflow-edit, maic-storyboard, maic-danbooru-tags (run_shell; allow-listed)";
-            if (agent_.tools().empty()) out += "\nno user-defined tools. Put a <name>.lua in .maic/tools/ or " + global_tools_dir().string() + " (see :h tools)";
-            for (const auto& t : agent_.tools()) out += "\n  " + t.name + "  " + t.file.string() + "\n    " + t.description;
+            out += "\nhelpers: maic-workflow-edit, maic-storyboard, maic-danbooru-tags, maic-panel-check (run_shell; allow-listed)";
+            if (agent_.tools().empty() && agent_.script_tools().empty()) out += "\nno user-defined tools. Put a <name>.lua or a <name>/tool.json in .maic/tools/ or " + global_tools_dir().string() + " (see :h tools)";
+            for (const auto& t : agent_.tools()) out += "\n  " + t.name + "  (lua)  " + t.file.string() + "\n    " + t.description;
+            auto globs = [](const std::vector<std::string>& g) {
+                std::string s;
+                for (const auto& x : g) s += (s.empty() ? "" : ", ") + x;
+                return s.empty() ? "nothing" : s;
+            };
+            for (const auto& t : agent_.script_tools()) {
+                out += "\n  " + t.name + "  (" + script_tool_language(t) + ")  " + (t.dir / "tool.json").string() + "\n    " + t.description + "\n    reads " + globs(t.reads) + "; writes " + globs(t.writes);
+            }
             for (const auto& n : agent_.tool_notices()) out += "\n  " + n;
             post(Kind::Notice, out);
         } else if (cmd == "up" || cmd == "down") {

@@ -738,6 +738,93 @@ int main() {
         unsetenv("XDG_CONFIG_HOME");
     }
 
+    section("script tools through the agent: the two shipped examples");
+    {
+        fs::path cfg = ws / "cfg";
+        fs::create_directories(cfg);
+        setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
+        fs::create_directories(ws / ".maic" / "tools");
+        fs::copy(fs::path(MAIC_EXAMPLES) / "word_count", ws / ".maic" / "tools" / "word_count", fs::copy_options::recursive);
+        fs::copy(fs::path(MAIC_EXAMPLES) / "json_pick", ws / ".maic" / "tools" / "json_pick", fs::copy_options::recursive);
+        fs::create_directories(ws / ".maic" / "tools" / "writer");
+        std::ofstream(ws / ".maic" / "tools" / "writer" / "tool.json")
+            << R"({"name": "writer", "description": "writes out/result.txt", "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+                   "run": ["sh", "main.sh"], "writes": ["out/*.txt"]})";
+        std::ofstream(ws / ".maic" / "tools" / "writer" / "main.sh") << "#!/bin/sh\nmkdir -p out && cat > out/result.txt && echo written\n";
+        std::ofstream(ws / "poem.txt") << "one two three\nfour\n";
+        std::ofstream(ws / "data.json") << R"({"version": 3, "nodes": [{"title": "Panel 1 prompt"}]})";
+        FakeServer fake;
+        fake.delay_ms = 1;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        agent.review_with_model = false;
+        expect(agent.script_tools().size() == 3 && agent.tool_notices().empty(), "the examples and the writer load: " + std::to_string(agent.script_tools().size()) + " tools, " + std::to_string(agent.tool_notices().size()) + " notices");
+        Recorder r;
+        fake.tool_call = json{{"name", "word_count"}, {"arguments", {{"path", "poem.txt"}}}};
+        fake.calls_left = 1;
+        agent.submit("count", Origin::Local, r, no_cancel);
+        expect(r.results.size() == 1 && r.results[0] == "poem.txt: 2 lines, 4 words, 19 characters" && r.asked.empty(),
+               "word_count (python3) runs with the arguments on stdin and its stdout is the result: " + (r.results.empty() ? "" : r.results[0]));
+        std::string sys = fake.requests[0]["messages"][0]["content"];
+        expect(offers_tool(fake.requests[0], "word_count") && offers_tool(fake.requests[0], "json_pick") && sys.find("word_count: Counts the lines") != std::string::npos &&
+                   sys.find("a python script; may read **, may write nothing") != std::string::npos && sys.find("writer: writes out/result.txt (a sh script; may read nothing, may write out/*.txt)") != std::string::npos,
+               "the model is offered the script tools beside the built-ins and the briefing says what each may read and write");
+        const Message* tool_msg = nullptr;
+        for (const auto& m : agent.messages()) if (m.role == "tool") tool_msg = &m;
+        expect(tool_msg && !tool_msg->is_error && tool_msg->tool_name == "word_count", "the model sees a successful call of the tool");
+
+        r.results.clear();
+        fake.tool_call = json{{"name", "json_pick"}, {"arguments", {{"file", "data.json"}, {"filter", ".nodes[0].title"}}}};
+        fake.calls_left = 1;
+        agent.submit("pick", Origin::Local, r, no_cancel);
+        expect(r.results.size() == 1 && r.results[0] == "Panel 1 prompt", "json_pick (sh with jq) returns the picked value: " + (r.results.empty() ? "" : r.results[0]));
+
+        r.results.clear();
+        fake.tool_call = json{{"name", "json_pick"}, {"arguments", {{"file", "data.json"}}}};
+        fake.calls_left = 1;
+        agent.submit("pick badly", Origin::Local, r, no_cancel);
+        expect(r.results.size() == 1 && r.results[0] == "error: missing required argument filter", "arguments are checked against the manifest's schema before anything runs: " + (r.results.empty() ? "" : r.results[0]));
+
+        r.results.clear();
+        fake.tool_call = json{{"name", "json_pick"}, {"arguments", {{"file", "missing.json"}, {"filter", ".x"}}}};
+        fake.calls_left = 1;
+        agent.submit("pick missing", Origin::Local, r, no_cancel);
+        expect(r.results.size() == 1 && r.results[0].rfind("exit code 1", 0) == 0 && r.results[0].find("no such file: missing.json") != std::string::npos,
+               "a failing script gives the model its exit code and stderr: " + (r.results.empty() ? "" : r.results[0]));
+
+        // The declared write is judged before the script starts: auto mode allows a write inside the workspace.
+        r.results.clear();
+        r.calls.clear();
+        fake.tool_call = json{{"name", "writer"}, {"arguments", {{"text", "kept"}}}};
+        fake.calls_left = 1;
+        agent.submit("write", Origin::Local, r, no_cancel);
+        expect(r.results.size() == 1 && r.results[0] == "written" && fs::exists(ws / "out" / "result.txt"), "a tool with a declared write gets a writable workspace in auto mode: " + (r.results.empty() ? "" : r.results[0]));
+        // In manual mode the same declaration is asked about, with the tool named, and a No stops the script.
+        agent.mode = Mode::Manual;
+        r.results.clear();
+        r.reply = {Approval::No, "not now"};
+        fs::remove(ws / "out" / "result.txt");
+        fake.tool_call = json{{"name", "writer"}, {"arguments", {{"text", "again"}}}};
+        fake.calls_left = 1;
+        agent.submit("write again", Origin::Local, r, no_cancel);
+        expect(r.asked.size() == 1 && r.asked[0].tool == "writer" && r.asked[0].summary.find("writes " + (ws / "out").string()) == 0, "the declared write is the approval prompt, naming the tool: " + (r.asked.empty() ? "" : r.asked[0].summary));
+        expect(r.results.size() == 1 && r.results[0] == "DENIED by the user, who says: not now" && !fs::exists(ws / "out" / "result.txt"), "a No is the result and the script never ran");
+        // word_count declares reads only, so in manual mode it runs without a prompt (reads inside the workspace are allowed).
+        r.results.clear();
+        r.asked.clear();
+        fake.tool_call = json{{"name", "word_count"}, {"arguments", {{"path", "poem.txt"}}}};
+        fake.calls_left = 1;
+        agent.submit("count again", Origin::Local, r, no_cancel);
+        expect(r.results.size() == 1 && r.results[0].find("4 words") != std::string::npos && r.asked.empty(), "a reads-only tool runs unasked in manual mode");
+        const Message* last_tool = nullptr;
+        for (const auto& m : agent.messages()) if (m.role == "tool") last_tool = &m;
+        expect(last_tool && last_tool->tool_name == "word_count", "the result goes back under the tool's name");
+        fs::remove_all(ws / ".maic");
+        fs::remove_all(ws / "out");
+        unsetenv("XDG_CONFIG_HOME");
+    }
+
     section("operator instructions set mid-conversation");
     {
         FakeServer fake;

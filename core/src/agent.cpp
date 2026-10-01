@@ -65,8 +65,16 @@ Agent::Agent(std::filesystem::path workspace, std::string model) : model(std::mo
     LuaToolSet set = load_lua_tools(harness_.workspace());
     tools_ = std::move(set.tools);
     tool_notices_ = std::move(set.notices);
+    std::vector<std::string> taken;
+    for (const auto& t : tools_) taken.push_back(t.name);
+    ScriptToolSet scripts = load_script_tools(harness_.workspace(), taken);
+    script_tools_ = std::move(scripts.tools);
+    tool_notices_.insert(tool_notices_.end(), scripts.notices.begin(), scripts.notices.end());
     schemas_ = tool_schemas();
     for (const auto& t : tools_) {
+        schemas_.push_back({{"type", "function"}, {"function", {{"name", t.name}, {"description", t.description}, {"parameters", t.parameters}}}});
+    }
+    for (const auto& t : script_tools_) {
         schemas_.push_back({{"type", "function"}, {"function", {{"name", t.name}, {"description", t.description}, {"parameters", t.parameters}}}});
     }
 }
@@ -95,10 +103,18 @@ std::string mode_rule(Mode mode) {
 }
 
 std::string Agent::user_tools_text() const {
-    if (tools_.empty()) return "";
-    std::string out = "The user added tools of their own, described in the tool list like the others: ";
-    for (size_t i = 0; i < tools_.size(); ++i) out += (i ? ", " : "") + tools_[i].name;
-    return out + ". Call them like any other tool.\n";
+    if (tools_.empty() && script_tools_.empty()) return "";
+    std::string out = "The user added tools of their own, described in the tool list like the others; call them like any other tool.\n";
+    for (const auto& t : tools_) out += "- " + t.name + ": " + t.description + " (Lua; every file it touches is checked like a built-in call)\n";
+    for (const auto& t : script_tools_) {
+        auto list = [](const std::vector<std::string>& globs) {
+            std::string s;
+            for (const auto& g : globs) s += (s.empty() ? "" : ", ") + g;
+            return s.empty() ? "nothing" : s;
+        };
+        out += "- " + t.name + ": " + t.description + " (a " + script_tool_language(t) + " script; may read " + list(t.reads) + ", may write " + list(t.writes) + ")\n";
+    }
+    return out;
 }
 
 std::string Agent::instructions_text() const {
@@ -228,6 +244,9 @@ std::string Agent::system_prompt() const {
         "word; `maic-danbooru-tags groups show NAME` prints a whole tag group page (posture, hair, attire, image composition, ...) "
         "and `groups search WORD` finds a word across them. Check a prompt before writing it. All of these answer from local "
         "files; never run `fetch` yourself.\n"
+        "`maic-panel-check WORKFLOW N` prints panel N's prompt, negative, sampler settings and captions on one screen and flags "
+        "the usual mistakes offline (no or doubled count tag, solo with 2girls, a tag in both prompt and negative, too many tags, "
+        "unknown Danbooru tags, a caption too long for its overlay); run it after writing a panel and fix what it flags.\n"
         "\n"
         "# The harness\n"
         "Every tool call is checked before it runs. Results starting with DENIED or BLOCKED are final for that "
@@ -748,9 +767,12 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
     std::string name = canonical_tool_name(call.name);
     const LuaTool* lua = name.empty() ? find_tool(call.name) : nullptr;
     if (lua) name = lua->name;
+    const ScriptTool* script = name.empty() ? find_script_tool(call.name) : nullptr;
+    if (script) name = script->name;
     if (name.empty()) {
         std::string names = tool_names();
         for (const auto& t : tools_) names += ", " + t.name;
+        for (const auto& t : script_tools_) names += ", " + t.name;
         return result("unknown tool '" + call.name + "'. The tools are: " + names + ". Call one of those.", false);
     }
     // Forbidden terms: the whole call, name and arguments, before anything else looks at it. This is a rule,
@@ -773,13 +795,25 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         for (const auto& t : harness_.profile()->tools) allowed += (allowed.empty() ? "" : ", ") + t;
         return result("DENIED: the " + profile_name_ + " profile has no " + name + " tool. Its tools are: " + allowed + ".", false);
     }
-    bool harness_action = !lua && name != "question" && name != "todo" && name != "delegate";
+    bool harness_action = !lua && !script && name != "question" && name != "todo" && name != "delegate";
     std::vector<Action> actions;
     if (harness_action) {
         try {
             actions = tool_actions(harness_, name, call.arguments);
         } catch (const std::exception& e) {
             return result(std::string("error: ") + e.what(), false);
+        }
+    }
+    if (script) {
+        // The manifest's declarations are judged before the script starts; a write glob outside the workspace is
+        // refused here, not asked about.
+        if (std::string bad = check_arguments(script->parameters, call.arguments); !bad.empty()) return result("error: " + bad, false);
+        try {
+            actions = script_tool_actions(harness_, *script);
+        } catch (const std::exception& e) {
+            record["decision"] = "deny";
+            record["reason"] = e.what();
+            return result(std::string("DENIED: ") + e.what(), false);
         }
     }
 
@@ -854,6 +888,20 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
             return d;
         };
         ToolResult r = run_lua_tool(*lua, call.arguments, harness_, gate, cancel);
+        return result(r.text, r.ok);
+    }
+    if (script) {
+        record["manifest"] = (script->dir / "tool.json").string();
+        record["actions"] = nlohmann::json::array();
+        for (const auto& a : actions) {
+            std::string s = std::string(a.kind == Action::Kind::Write ? "writes " : "reads ") + a.path.string() + " (declared by " + name + ")";
+            nlohmann::json sub = {{"action", s}};
+            Decision d = authorise(a, name, s, "", origin, events, sub);
+            record["actions"].push_back(sub);
+            if (d.verdict != Verdict::Allow) return result(d.reason, false);
+        }
+        // The workspace is writable only for a tool that declared writes; the mode has already allowed each of them.
+        ToolResult r = run_script_tool(*script, call.arguments, harness_, script->writes.empty(), cancel);
         return result(r.text, r.ok);
     }
 
@@ -1049,6 +1097,14 @@ ToolResult Agent::run_delegate(const nlohmann::json& args, Origin origin, AgentE
 const LuaTool* Agent::find_tool(const std::string& name) const {
     std::string snake = snake_tool_name(name);
     for (const auto& t : tools_) {
+        if (t.name == name || t.name == snake) return &t;
+    }
+    return nullptr;
+}
+
+const ScriptTool* Agent::find_script_tool(const std::string& name) const {
+    std::string snake = snake_tool_name(name);
+    for (const auto& t : script_tools_) {
         if (t.name == name || t.name == snake) return &t;
     }
     return nullptr;

@@ -15,6 +15,7 @@
 #include "maic/lua.hpp"
 #include "maic/places.hpp"
 #include "maic/lua_tools.hpp"
+#include "maic/script_tools.hpp"
 #include "maic/vendor.hpp"
 #include "server.hpp"
 #include "tui.hpp"
@@ -78,7 +79,9 @@ void usage(std::ostream& out = std::cerr) {
                  "  vendor unlink NAME         stop using it (nothing is deleted)\n"
                  "  lua [FILE [args...] | -e CODE]   Lua (vendored LuaJIT) here, with the maic table; no arguments: a REPL (maic help lua)\n"
                  "  tools                      every tool the model can call: built-ins, the helpers beside maic, this\n"
-                 "                             directory's Lua tools (maic help tools)\n"
+                 "                             directory's Lua and script tools with their language and declared reads/writes\n"
+                 "  tools check                validate every tool manifest here and in ~/.config/maic/tools (exit 1 on a problem)\n"
+                 "  tools new NAME --lang python|sh|perl|node [--global]   scaffold .maic/tools/NAME/ with a manifest and a stub\n"
                  "  doctor                     what this machine has, what MAIC needs, a recommended setup\n"
                  "  status                     harness, services, where they run, quick actions\n"
                  "  up <service...|all>        start services\n"
@@ -788,6 +791,54 @@ int main(int argc, char** argv) {
             else std::cerr << "maic lua: " << r.output << (r.output.empty() || r.output.back() != '\n' ? "\n" : "");
             return r.ok ? 0 : 1;
         }
+        if (cmd == "tools" && !cargs.empty() && cargs[0] == "check") {
+            // Every manifest, good or bad, with the reason: the loader's notices plus the ones that loaded.
+            int problems = 0, seen = 0;
+            for (const auto& dir : {std::filesystem::current_path() / ".maic" / "tools", maic::global_tools_dir()}) {
+                std::error_code ec;
+                if (!std::filesystem::is_directory(dir, ec)) continue;
+                std::vector<std::filesystem::path> manifests;
+                for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
+                    if (e.is_directory(ec) && std::filesystem::is_regular_file(e.path() / "tool.json", ec)) manifests.push_back(e.path() / "tool.json");
+                }
+                std::sort(manifests.begin(), manifests.end());
+                for (const auto& m : manifests) {
+                    ++seen;
+                    try {
+                        maic::ScriptTool t = maic::read_script_tool(m);
+                        std::cout << "ok    " << m.string() << ": " << t.name << " (" << maic::script_tool_language(t) << ")\n";
+                    } catch (const std::exception& e) {
+                        ++problems;
+                        std::cout << "FAIL  " << m.string() << ": " << e.what() << "\n";
+                    }
+                }
+            }
+            auto set = maic::load_script_tools(std::filesystem::current_path());
+            for (const auto& n : set.notices) {
+                if (n.find("already defined") != std::string::npos) {
+                    ++problems;
+                    std::cout << "FAIL  " << n.substr(n.find(": ") + 2) << "\n";
+                }
+            }
+            if (seen == 0) std::cout << "no tool manifests here (.maic/tools/*/tool.json) or in " << maic::global_tools_dir().string() << "\n";
+            else std::cout << seen << " manifest" << (seen == 1 ? "" : "s") << ", " << problems << " problem" << (problems == 1 ? "" : "s") << "\n";
+            return problems ? 1 : 0;
+        }
+        if (cmd == "tools" && !cargs.empty() && cargs[0] == "new") {
+            std::string name, lang = "python";
+            bool global = false;
+            for (size_t i = 1; i < cargs.size(); ++i) {
+                if (cargs[i] == "--lang" && i + 1 < cargs.size()) lang = cargs[++i];
+                else if (cargs[i] == "--global") global = true;
+                else if (name.empty()) name = cargs[i];
+                else throw std::runtime_error("usage: maic tools new NAME --lang python|sh|perl|node [--global]");
+            }
+            if (name.empty()) throw std::runtime_error("usage: maic tools new NAME --lang python|sh|perl|node [--global]");
+            auto dir = (global ? maic::global_tools_dir() : std::filesystem::current_path() / ".maic" / "tools") / name;
+            for (const auto& f : maic::scaffold_script_tool(dir, name, lang)) std::cout << "wrote " << f.string() << "\n";
+            std::cout << "Edit the description, the parameters and the script; `maic tools check` validates it (maic help tools).\n";
+            return 0;
+        }
         if (cmd == "tools") {
             std::cout << "built-in tools (what the model can call; every one goes through the harness):\n";
             for (const auto& t : maic::tool_schemas()) {
@@ -801,7 +852,8 @@ int main(int argc, char** argv) {
             std::cout << "\nhelpers beside maic (run through run_shell; on the allow list):\n"
                          "  maic-workflow-edit    edit a ComfyUI workflow's fields without touching its wiring\n"
                          "  maic-storyboard       a story JSON into a manga workflow, one panel per turn\n"
-                         "  maic-danbooru-tags    check prompt tags against a local copy of Danbooru's vocabulary\n";
+                         "  maic-danbooru-tags    check prompt tags against a local copy of Danbooru's vocabulary\n"
+                         "  maic-panel-check      one manga panel's prompt, negative, sampler and captions, with the usual mistakes flagged\n";
             auto set = maic::load_lua_tools(std::filesystem::current_path());
             std::cout << "\nuser-defined Lua tools for this directory:\n";
             if (set.tools.empty()) {
@@ -809,6 +861,23 @@ int main(int argc, char** argv) {
             }
             for (const auto& t : set.tools) std::cout << "  " << t.name << "  " << t.file.string() << "\n    " << t.description << "\n";
             for (const auto& n : set.notices) std::cout << n << "\n";
+            std::vector<std::string> taken;
+            for (const auto& t : set.tools) taken.push_back(t.name);
+            auto scripts = maic::load_script_tools(std::filesystem::current_path(), taken);
+            std::cout << "\nscript tools for this directory (a manifest and a script per directory):\n";
+            if (scripts.tools.empty()) {
+                std::cout << "  none. maic tools new NAME --lang python|sh|perl|node scaffolds one in .maic/tools/NAME/ (maic help tools)\n";
+            }
+            auto globs = [](const std::vector<std::string>& g) {
+                std::string out;
+                for (const auto& x : g) out += (out.empty() ? "" : ", ") + x;
+                return out.empty() ? "nothing" : out;
+            };
+            for (const auto& t : scripts.tools) {
+                std::cout << "  " << t.name << "  (" << maic::script_tool_language(t) << ")  " << (t.dir / "tool.json").string() << "\n    " << t.description
+                          << "\n    reads " << globs(t.reads) << "; writes " << globs(t.writes) << "; timeout " << t.timeout_s << " s\n";
+            }
+            for (const auto& n : scripts.notices) std::cout << n << "\n";
             return 0;
         }
         if (cmd == "vendor") {

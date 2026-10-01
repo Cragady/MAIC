@@ -1,6 +1,6 @@
 # Tools
 
-What the model can call, and how to add a tool of your own in Lua. Every tool, built in or yours, goes through the harness described in [harness.md](harness.md): tripwire check, policy for the mode, your approval when policy says ask, then the sandbox for commands. Nothing a tool does gets around that.
+What the model can call, and how to add a tool of your own: in Lua, or as a script in any language behind a manifest. Every tool, built in or yours, goes through the harness described in [harness.md](harness.md): tripwire check, policy for the mode, your approval when policy says ask, then the sandbox for commands. Nothing a tool does gets around that.
 
 ## Built in
 
@@ -96,6 +96,63 @@ A Lua tool call is logged like any tool call, with its file and, under `actions`
 
 A complete example ships in [tools/examples/word-count.lua](../tools/examples/word-count.lua); copy it into `.maic/tools/` to try it.
 
+## Your own tools, in any language: script tools
+
+A script tool is a directory, `.maic/tools/<name>/` in the workspace or `~/.config/maic/tools/<name>/`, holding `tool.json` and the script it names. Both directories are read when a session starts, after the Lua tools; workspace tools come first, and a name that repeats a built-in, a Lua tool or an earlier script tool is skipped with a notice.
+
+```json
+{
+  "name": "word_count",
+  "description": "Counts the lines, words and characters of a text file in the workspace. Use it instead of wc in run_shell.",
+  "parameters": {
+    "type": "object",
+    "properties": { "path": { "type": "string", "description": "File to count, relative to the workspace" } },
+    "required": ["path"],
+    "additionalProperties": false
+  },
+  "run": ["python3", "main.py"],
+  "timeout_s": 10,
+  "network": false,
+  "reads": ["**"],
+  "writes": []
+}
+```
+
+| Field | Meaning |
+| :--- | :--- |
+| `name` | snake_case: a lowercase letter, then lowercase letters, digits and underscores. Not a built-in's name. This is what the model calls. |
+| `description` | What it does and when it applies; the model reads it to decide. |
+| `parameters` | A JSON schema for the arguments (`type: object`). Checked when the manifest loads (`maic tools check` reports a bad one) and again on every call: a missing required argument, a wrong type, a value outside an `enum`, an unknown argument under `additionalProperties: false` is an error the model reads, and the script never starts. Leave it out for a tool that takes nothing. |
+| `run` | The program and its arguments, as a list. The program must be on `PATH` (or be a path: `./tool` is looked up in the tool's directory). An argument that names a file in the tool's directory is passed as its absolute path, so `["python3", "main.py"]` works whatever the working directory. |
+| `timeout_s` | Seconds before the script is killed (its whole process group). Default 60, at most 600. |
+| `network` | `false`, or left out. `true` is refused when the manifest loads: "per-tool network grants are not implemented yet". |
+| `reads`, `writes` | Globs, relative to the workspace (`docs/**`, `out/*.txt`, `**`) or absolute. What the harness judges before the script starts; see below. |
+
+How a call runs: MAIC checks the arguments against the schema, then builds one action per declared glob, a read at the glob's fixed prefix (`docs/**/*.md` is a read of `docs`, `**` is a read of the workspace, `/etc/hosts` is a read of that file) and a write likewise, and hands each to the same step a built-in call goes through: policy for the mode, the session's "always" answers, your approval, the second reader. A write glob whose prefix is outside the workspace is refused outright ("a script tool writes only inside the workspace"), never asked. So in manual mode a tool that declares `writes` is asked about before it starts, with the tool named and the directory it will write under, and one that declares reads inside the workspace only runs unasked; in auto mode both run; in plan mode a tool with writes is refused. When every action is allowed the script runs inside the same bubblewrap sandbox as `run_shell`: the whole filesystem read-only, secrets hidden, no network, no privilege escalation, the workspace writable only when `writes` is non-empty (read-only otherwise, so a tool that declared nothing cannot change a file even by accident), and the workspace as its working directory. The arguments arrive as one JSON object on stdin. What the script prints to stdout is the result, capped like command output (the head and tail are kept when it is long). A non-zero exit fails the call: the model sees `exit code N`, the output so far and `stderr:` with what the script complained about; on success stderr is dropped. At `timeout_s` the process group is killed and the model is told.
+
+The declarations are what the harness sees, not a fence: inside the sandbox a script can read whatever `run_shell` could, and a tool with any `writes` at all gets the whole workspace writable, like `run_shell`. Declare what the tool actually touches, narrowly, so the approval prompt tells the truth; the model is told the declared reads and writes in its briefing.
+
+### Languages
+
+Anything `run` can name. Two lines each:
+
+* **Python**: `"run": ["python3", "main.py"]`; `args = json.load(sys.stdin)`, `print(...)`. The shipped [tools/examples/word_count](../tools/examples/word_count).
+* **Shell**: `"run": ["sh", "main.sh"]`; `args=$(cat)`, pull fields out with `jq -r .field`. The shipped [tools/examples/json_pick](../tools/examples/json_pick), which wraps `jq`.
+* **Perl**: `"run": ["perl", "main.pl"]`; `use JSON::PP; local $/; my $args = decode_json(<STDIN>);` (JSON::PP ships with Perl).
+* **TypeScript**: `"run": ["deno", "run", "main.ts"]` and `const args = JSON.parse(await new Response(Deno.stdin.readable).text());` (give deno no `--allow-*` flags; the sandbox is MAIC's), or **JavaScript** with `"run": ["node", "main.js"]` reading `process.stdin`.
+* **Go**: build the binary into the tool's directory and name it: `"run": ["./tool"]`; `json.NewDecoder(os.Stdin).Decode(&args)`. No interpreter needed at run time.
+* **WASM**: `"run": ["wasmtime", "tool.wasm"]` when `wasmtime` is installed; a WASI module reads stdin and writes stdout like any program, and MAIC's sandbox is around the runtime as well.
+
+`maic tools new NAME --lang python|sh|perl|node` scaffolds `.maic/tools/NAME/` with a manifest and a stub that echoes its arguments (`--global` puts it under `~/.config/maic/tools/`); edit the description, the parameters and the script. `maic tools check` validates every manifest here and in the global directory (well-formed schema, `run[0]` on `PATH`, a legal name, no duplicate) and exits 1 when something is wrong. `maic tools` lists script tools with their language, manifest and declared reads and writes; `:tools` does the same in a session.
+
+### Examples
+
+[tools/examples/word_count](../tools/examples/word_count) (`python3`) counts a file; it declares `reads: ["**"]` and nothing else, so it runs unasked in every mode but needs no writable workspace. [tools/examples/json_pick](../tools/examples/json_pick) (`sh` with `jq`) returns one value from a JSON file by a jq filter; `reads: ["**/*.json"]`. Copy either directory into `.maic/tools/` to try it: `maic -p "use word_count on README.md"`.
+
+### In the transcript
+
+A script tool call is logged like any tool call, with its manifest and, under `actions`, each declared read and write with the harness's decision and your answer.
+
 ## Where this is going
 
-Tools in other languages (Perl, Python, TypeScript, Go, WASM, shell) as manifests plus scripts, and per-tool network grants: [roadmap.md](roadmap.md), "Tools and the polyglot spokes".
+Per-tool network grants, so a manifest can ask for the network and the harness can judge that too: [roadmap.md](roadmap.md) and the planned list in [harness.md](harness.md). Until then `network: true` is refused when the manifest loads.
