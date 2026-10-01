@@ -88,6 +88,7 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 | `enter_sends` | `true`: in insert mode Enter sends a one-line input, Shift+Enter or Alt+Enter inserts the line break, and an input that already has several lines keeps Enter as a line break. Default `false`, the vim-like behaviour: Enter is always a line break and Alt+Enter or `:w` sends. `:set enter_sends on\|off` for a session. |
 | `server` | `maic server`: `listen` (default `127.0.0.1:7373`; any other address turns TLS on), `workspaces` (directories a remote session may open; default `~/dev2`, else the current directory), `cert` and `key` (a PEM pair; empty makes a self-signed one under `~/.local/state/maic/server/`). See [remote.md](remote.md). |
 | `sessions_home` | Where new transcripts go. `auto` (default): under `sessions/projects/<encoded workspace>/` when the workspace has a `MAIC.md` (or one is in effect from a parent directory), else `sessions/general/`. Or force it: `general`, `project`, or any name (`sessions/<name>/`). A project can set this in its `.maic/settings.json`; `maic sessions rehome` moves existing transcripts. |
+| `init_move_outside_reads` | `:init` moves the running session into the project's home without asking when it wrote nothing outside the project and read at most this many files outside it (default `3`); with more, it asks. See [sessions.md](sessions.md#homes). |
 
 ## Model presets and tiers
 

@@ -468,6 +468,31 @@ int main() {
     r = run("sleep 30");
     expect(r.timed_out, "timeout kills a runaway command");
 
+    std::cout << ":cd moves the root\n";
+    {
+        fs::path a = ws / "cd-a", b = ws / "cd-b";
+        fs::create_directories(a / "sub");
+        fs::create_directories(b);
+        Harness c(a);
+        c.set_workspace(b);
+        expect(c.workspace() == fs::weakly_canonical(b) && c.resolve("x.txt") == fs::weakly_canonical(b) / "x.txt", "relative paths resolve in the new root");
+        expect(c.check({Action::Kind::Write, b / "x.txt", ""}, Mode::Edit, Origin::Local).verdict == Verdict::Allow, "a write inside the new root is inside");
+        auto old = c.check({Action::Kind::Write, a / "x.txt", ""}, Mode::Edit, Origin::Local);
+        expect(old.verdict == Verdict::Ask && old.reason.find("outside") != std::string::npos, "the old root is outside now");
+        Harness d(a);
+        d.set_confined(true);
+        d.set_workspace(a / "sub");
+        bool refused = false;
+        try {
+            d.set_workspace(b);
+        } catch (const std::runtime_error& e) {
+            refused = std::string(e.what()).find("confined to " + fs::weakly_canonical(a).string()) != std::string::npos;
+        }
+        expect(refused && d.workspace() == fs::weakly_canonical(a / "sub"), "a confined session moves within its start directory, and is refused outside it");
+        d.set_workspace(a);
+        expect(d.workspace() == fs::weakly_canonical(a), "back to the start directory itself is fine");
+    }
+
     fs::remove_all(ws);
     return finish();
 }

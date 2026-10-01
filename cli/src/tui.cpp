@@ -47,12 +47,14 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <thread>
 
@@ -257,8 +259,10 @@ public:
         agent_.set_nvim_host(host_);
         apply_sampling();
         view_.set_timestamps(settings_.timestamps);
+        for (const auto& n : log_->recovered()) view_.append(Kind::Notice, n);
+        for (const auto& n : recover_relocations()) view_.append(Kind::Notice, n);
         if (resume) {
-            LoadedSession old = load_session(*resume, fork_at.value_or(~size_t(0)));
+            LoadedSession old = load_session(append && settings_.record ? log_->path() : *resume, fork_at.value_or(~size_t(0)));
             for (const auto& t : old.transcript) {
                 if (t.type == "user") view_.append(Kind::User, t.text);
                 else if (t.type == "assistant") view_.append(Kind::Assistant, t.text);
@@ -277,6 +281,9 @@ public:
     }
 
     ~App() override { shutdown(); }
+
+    // The settings as a start in `workspace` would read them, command-line flags included (:cd).
+    std::function<Settings(const std::filesystem::path&)> settings_at;
 
     void welcome();
     void startup_notice(const std::string& t) { view_.append(Kind::Notice, t); }
@@ -568,6 +575,7 @@ private:
     ScreenInteractive& screen_;
     Settings settings_;
     std::unique_ptr<SessionLog> log_;
+    std::filesystem::path previous_ws_;  // the workspace before the last :cd
     std::string log_path() const { return log_->path().string() + (settings_.record ? "" : "  (temporary: --no-record)"); }
     Agent agent_;
     std::string register_;
@@ -1016,6 +1024,11 @@ Element App::render_top_status() {
     if (lua_mode_) right.push_back(text(" · LUA MODE (:chat returns)") | decorate(settings_.style("shell")));
     if (!agent_.review_with_model) right.push_back(text(" · DUMB HARNESS") | decorate(settings_.style("error")));
     if (agent_.harness().confined()) right.push_back(text(" · ISOLATED") | decorate(settings_.style("notice")));
+    if (!previous_ws_.empty()) {
+        std::string ws = agent_.harness().workspace().string(), home = std::getenv("HOME");
+        if (ws.rfind(home + "/", 0) == 0) ws = "~" + ws.substr(home.size());
+        right.push_back(text(" · in " + ws) | decorate(settings_.style("status_dim")));
+    }
     if (lazy_lock_ && lazy_lock_->marker()) right.push_back(text(" · lock≠") | decorate(settings_.style("notice")));
     right.push_back(text(" "));
     return hbox({hbox(left), filler(), hbox(right)}) | decorate(settings_.style("status"));
@@ -1939,11 +1952,127 @@ void App::run_command(const std::string& line) {
             std::filesystem::path ws = agent_.harness().workspace();
             std::string made = init_project(ws);
             post(Kind::Notice, made.empty() ? "already initialised: MAIC.md and .maic/settings.lua exist" : made);
+            // The session joins the project's transcripts when it worked here throughout (docs/sessions.md, Homes).
+            InitMove m = init_move_check(log_->path(), ws, settings_.record, static_cast<size_t>(std::max(0, settings_.init_move_outside_reads)));
+            std::filesystem::path dest = sessions_home("project:" + ws.string());
+            std::string id = log_->path().stem().string(), here = log_->path().parent_path().lexically_relative(sessions_dir()).string();
+            std::string there = dest.lexically_relative(sessions_dir()).string() + "/";
+            auto move = [this, dest, id, here, there](const std::string& why) {
+                try {
+                    std::filesystem::path old_lock = log_->path().string() + ".tripped";
+                    std::filesystem::path to = log_->relocate(dest, "init");
+                    set_tripwire_scope(settings_.tripwire, to.string() + ".tripped");
+                    std::error_code ec;
+                    if (std::filesystem::exists(old_lock, ec)) std::filesystem::rename(old_lock, to.string() + ".tripped", ec);  // a trip while it moved
+                    post(Kind::Notice, "this session moved to " + there + why + "; `maic sessions rehome " + id + " " + here + "` moves it back");
+                } catch (const std::exception& e) {
+                    post(Kind::Error, "this session stays in " + here + "/: " + e.what());
+                }
+            };
+            if (m.verdict == InitMove::Move) {
+                move(" (" + m.reason + ")");
+            } else if (m.verdict == InitMove::Ask) {
+                std::lock_guard lock(mu_);
+                if (confirm_) {
+                    post(Kind::Notice, "this session stays in " + here + "/ for now (" + m.reason + "); `maic sessions rehome " + id + " project` moves it");
+                } else {
+                    confirm_ = PendingConfirm{" move this session? ",
+                                              {"this session read " + std::to_string(m.outside_reads) + " and wrote " + std::to_string(m.outside_writes) +
+                                                   " files outside the project; move it into the project's home anyway?",
+                                               "[y] move it to " + there + "   [n] leave it in " + here + "/   (later: maic sessions rehome " + id + " project)"},
+                                              [this, move, id, here](bool yes) {
+                                                  if (yes) move("");
+                                                  else post(Kind::Notice, "this session stays in " + here + "/; `maic sessions rehome " + id + " project` moves it later");
+                                              }};
+                    screen_.PostEvent(Event::Custom);
+                }
+            } else if (!settings_.record) {
+                post(Kind::Notice, "this session stays out of the project's home: " + m.reason);
+            }
             if (!std::filesystem::exists(ws / "MAIC.md") || std::filesystem::file_size(ws / "MAIC.md") < 200) {
                 submit("Look over this project (list the top level, read the README and build files) and write a MAIC.md at the workspace root: "
                        "what the project is, how it is built and tested, the conventions to follow, and anything an agent should know before editing. "
                        "Keep it under 60 lines. Use write_file for MAIC.md only.", false);
             }
+        } else if (cmd == "cd") {
+            std::filesystem::path ws = agent_.harness().workspace();
+            if (arg.empty()) {
+                post(Kind::Notice, "workspace: " + ws.string() + (previous_ws_.empty() ? "" : "\n:cd - returns to " + previous_ws_.string()));
+                return;
+            }
+            if (!idle()) return;
+            std::filesystem::path to = cd_target(arg, ws, previous_ws_, known_places(settings_, ws, services(), log_->path()));
+            if (to == ws) {
+                post(Kind::Notice, "already in " + ws.string());
+                return;
+            }
+            Settings next = settings_at(to);
+            agent_.set_workspace(to, Origin::Local);
+            std::filesystem::current_path(to);
+            previous_ws_ = ws;
+            // What a start there would read, but the session's safety stays its own: a directory never changes these.
+            const std::set<std::string> keep = {"tripwire", "allow_isolated", "forbid", "record", "harness", "dumb_auto_ok"};
+            next.tripwire = settings_.tripwire;
+            next.allow_isolated = settings_.allow_isolated;
+            next.forbid = settings_.forbid;
+            next.record = settings_.record;
+            next.harness = settings_.harness;
+            next.dumb_auto_ok = settings_.dumb_auto_ok;
+            std::vector<std::string> changed, kept;
+            std::set<std::string> keys;
+            for (const auto& [k, v] : settings_.layered.items()) keys.insert(k);
+            for (const auto& [k, v] : next.layered.items()) keys.insert(k);
+            for (const auto& k : keys) {
+                if (k.rfind("//", 0) == 0 || settings_.layered.value(k, nlohmann::json()) == next.layered.value(k, nlohmann::json())) continue;
+                (keep.count(k) ? kept : changed).push_back(k);
+            }
+            settings_ = std::move(next);
+            auto has = [&](const char* k) { return std::find(changed.begin(), changed.end(), k) != changed.end(); };
+            if (has("providers") || has("context") || has("context_2")) {
+                agent_.providers = settings_.providers;
+                set_context(agent_.providers, settings_.context);
+                set_context(agent_.providers, settings_.context_2, "llamacpp-2");
+            }
+            if (has("models")) agent_.presets = settings_.presets;
+            if (has("think")) agent_.think = settings_.think;
+            if (has("reviewer_model")) agent_.reviewer_model = settings_.reviewer_model;
+            if (has("small_model") || has("title_model")) agent_.small_model = settings_.small_model;
+            if (has("reviewer_budget_tokens")) agent_.reviewer_budget_tokens = settings_.reviewer_budget_tokens;
+            if (has("budget_tokens")) agent_.budget_tokens = settings_.budget_tokens;
+            if (has("compact_at")) agent_.compaction.at = settings_.compact_at;
+            if (has("compact_keep_results")) agent_.compaction.keep_results = settings_.compact_keep_results;
+            if (has("system_prompt")) agent_.set_system_prefix(resolve_system_prompt(settings_.system_prompt));
+            if (has("prefill")) agent_.prefill = resolve_system_prompt(settings_.prefill);
+            if (has("rules")) agent_.set_rules(settings_.rules);
+            if (has("permission")) agent_.set_permission(settings_.permission);
+            if (has("agents")) agent_.agents = settings_.agents;
+            if (has("bans")) agent_.bans = settings_.bans;
+            if (has("markdown")) view_.set_markdown(settings_.markdown);
+            if (has("leader")) editor_.set_leader(settings_.leader), view_.set_leader(settings_.leader);
+            if (has("enter_sends")) editor_.set_enter_sends(settings_.enter_sends);
+            if (has("timestamps")) view_.set_timestamps(settings_.timestamps);
+            if (has("instruction_files") || has("load_instructions")) {
+                agent_.set_instruction_names(settings_.instruction_files);
+                agent_.load_instruction_files = settings_.load_instructions;
+                agent_.reload_instructions();
+            }
+            apply_sampling();
+            auto list = [](const std::vector<std::string>& v) {
+                std::string out;
+                for (const auto& x : v) out += (out.empty() ? "" : ", ") + x;
+                return out;
+            };
+            std::vector<std::string> files;
+            for (const auto& f : agent_.instructions()) files.push_back(f.path.string());
+            post(Kind::Notice, "workspace: " + to.string() + "  (was " + ws.string() + "; :cd - returns)" +
+                                   (files.empty() ? "\ninstructions: none there" : "\ninstructions: " + list(files)) +
+                                   (changed.empty() ? "\nsettings: unchanged" : "\nsettings changed: " + list(changed)) +
+                                   (kept.empty() ? "" : "\nkept as they were (a directory never changes them mid-session): " + list(kept)));
+            // Last: these can ask or fail on their own, and the move itself is done.
+            if (has("mode")) {
+                if (auto md = parse_mode(settings_.mode)) request_mode(*md);
+            }
+            if (has("model")) set_model(settings_.model);
         } else if (cmd == "ban") {
             std::istringstream a(arg);
             std::string sub;
@@ -2343,12 +2472,11 @@ void App::shutdown() {
 
 }  // namespace
 
-int run_tui(const TuiOptions& options) {
-    // The host nvim first, so the settings files' Lua can use maic.nvim (docs/nvim.md).
-    std::string host_refused;
-    std::shared_ptr<HostNvim> host = HostNvim::from_env(host_refused);
-    set_lua_nvim_host(host);
-    Settings settings = load_settings();
+namespace {
+
+// The settings files for `workspace` with the command line's flags over them.
+Settings tui_settings(const TuiOptions& options, const std::filesystem::path& workspace) {
+    Settings settings = load_settings(workspace);
     if (options.model) settings.model = *options.model;
     apply_preset(settings, settings.model);
     settings.model = resolve_model_alias(settings.model);
@@ -2365,6 +2493,17 @@ int run_tui(const TuiOptions& options) {
     for (const auto& [k, v] : options.sampling.items()) settings.sampling[k] = v;
     if (options.harness) settings.harness = *options.harness;
     if (options.accept_dumb_auto) settings.dumb_auto_ok = true;
+    return settings;
+}
+
+}  // namespace
+
+int run_tui(const TuiOptions& options) {
+    // The host nvim first, so the settings files' Lua can use maic.nvim (docs/nvim.md).
+    std::string host_refused;
+    std::shared_ptr<HostNvim> host = HostNvim::from_env(host_refused);
+    set_lua_nvim_host(host);
+    Settings settings = tui_settings(options, std::filesystem::current_path());
     if (settings.harness != "smart" && settings.harness != "dumb") {
         std::cerr << "maic: --harness must be smart or dumb\n";
         return 2;
@@ -2383,6 +2522,7 @@ int run_tui(const TuiOptions& options) {
     std::string first = options.initial_prompt;
     if (first == "-") first.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
     App app(screen, settings, options.resume, options.append, options.fork_at, host, host_refused);
+    app.settings_at = [&options](const std::filesystem::path& ws) { return tui_settings(options, ws); };
     if (options.ctx) {
         // --ctx: the local server is restarted to match before the first message.
         std::string r = restart_llamacpp_if_changed();

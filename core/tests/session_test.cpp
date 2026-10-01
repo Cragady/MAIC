@@ -8,12 +8,15 @@
 
 #include <sys/stat.h>
 
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <thread>
 
 namespace fs = std::filesystem;
 using namespace maic;
@@ -584,6 +587,221 @@ int main() {
         std::string plain = render_text(ls);
         expect(plain.find("[tool]") == std::string::npos && plain.find("[notice] compacted (prune)") != std::string::npos && plain.find("[assistant]\ndone") != std::string::npos,
                "without tools: turns and notices only");
+    }
+
+    section(":init moving a session: who is eligible");
+    {
+        fs::path proj = ws / "proj", elsewhere = ws / "elsewhere";
+        fs::create_directories(proj);
+        fs::create_directories(elsewhere);
+        fs::path in_general = sessions_home("general") / "20261001-120000-tui-1.jsonl";
+        auto start = [](const fs::path& w) { return json{{"type", "start"}, {"workspace", w.string()}}; };
+        auto tool = [](const std::string& name, json args, bool ok = true) { return json{{"type", "tool"}, {"tool", name}, {"arguments", args}, {"ok", ok}}; };
+        auto read_of = [&](const std::string& p) { return tool("read_file", {{"path", p}}); };
+        std::vector<json> clean = {start(proj), read_of("README.md"), tool("write_file", {{"path", "src/a.cpp"}, {"content", "x"}}), tool("run_shell", {{"command", "make"}})};
+
+        InitMove m = init_move_check(in_general, clean, proj, true, 3);
+        expect(m.verdict == InitMove::Move && m.outside_reads == 0 && m.outside_writes == 0 && m.reason == "it worked here throughout",
+               "work inside the workspace only: it moves");
+        m = init_move_check(in_general, clean, proj, false, 3);
+        expect(m.verdict == InitMove::Stay && m.reason.find("not recorded") != std::string::npos, "an unrecorded session stays, and says why");
+        m = init_move_check(sessions_home("project:" + proj.string()) / "x.jsonl", clean, proj, true, 3);
+        expect(m.verdict == InitMove::Stay && m.reason.find("already in projects/") != std::string::npos, "a session already in the project home stays");
+
+        std::vector<json> wrote = clean;
+        wrote.push_back(tool("edit_file", {{"path", (elsewhere / "b.txt").string()}, {"old_string", "a"}, {"new_string", "b"}}));
+        m = init_move_check(in_general, wrote, proj, true, 3);
+        expect(m.verdict == InitMove::Ask && m.outside_writes == 1 && m.reason == "it read 0 and wrote 1 files outside the project", "one write outside: it asks");
+        std::vector<json> denied = clean;
+        denied.push_back(tool("delete_file", {{"path", (elsewhere / "b.txt").string()}}, false));
+        expect(init_move_check(in_general, denied, proj, true, 3).verdict == InitMove::Move, "a write that was refused or failed is not work done");
+        std::vector<json> moved = clean;
+        moved.push_back(tool("move_file", {{"from", "src/a.cpp"}, {"to", (elsewhere / "a.cpp").string()}}));
+        m = init_move_check(in_general, moved, proj, true, 3);
+        expect(m.verdict == InitMove::Ask && m.outside_writes == 1, "a move out of the workspace counts its outside end");
+        std::vector<json> shelled = clean;
+        shelled.push_back(tool("run_shell", {{"command", "make"}, {"workdir", elsewhere.string()}}));
+        expect(init_move_check(in_general, shelled, proj, true, 3).outside_writes == 1, "a command run in a directory outside counts as a write there");
+        std::vector<json> lua = clean;
+        lua.push_back({{"type", "tool"}, {"tool", "my_lua"}, {"arguments", json::object()}, {"ok", true},
+                       {"actions", {{{"action", "write_file " + (elsewhere / "c.txt").string()}, {"decision", "allow"}},
+                                    {{"action", "read_file notes.md"}, {"decision", "allow"}}}}});
+        m = init_move_check(in_general, lua, proj, true, 3);
+        expect(m.outside_writes == 1 && m.outside_reads == 0, "a Lua tool's actions are judged one by one");
+
+        std::vector<json> reads = clean;
+        for (const char* f : {"1", "2", "3"}) reads.push_back(read_of((elsewhere / f).string()));
+        reads.push_back(read_of((elsewhere / "1").string()));
+        m = init_move_check(in_general, reads, proj, true, 3);
+        expect(m.verdict == InitMove::Move && m.outside_reads == 3, "three files read outside (one of them twice) is under the threshold");
+        reads.push_back(tool("list_dir", {{"path", (elsewhere / "4").string()}}));
+        m = init_move_check(in_general, reads, proj, true, 3);
+        expect(m.verdict == InitMove::Ask && m.outside_reads == 4 && m.outside_writes == 0, "a fourth is over it: it asks");
+        expect(init_move_check(in_general, reads, proj, true, 10).verdict == InitMove::Move, "the threshold is the setting's");
+
+        // :cd: judged against the current workspace, whatever was in effect when the work was done.
+        json cd = {{"type", "workspace"}, {"from", elsewhere.string()}, {"to", proj.string()}};
+        m = init_move_check(in_general, {start(elsewhere), cd, read_of("README.md")}, proj, true, 3);
+        expect(m.verdict == InitMove::Move && m.outside_reads == 0, "started elsewhere, :cd here before any work: it moves");
+        m = init_move_check(in_general, {start(elsewhere), tool("write_file", {{"path", "notes.md"}, {"content", "x"}}), read_of("a"), read_of("b"), cd, read_of("README.md")},
+                            proj, true, 3);
+        expect(m.verdict == InitMove::Ask && m.outside_writes == 1 && m.outside_reads == 2, "work in A, :cd to B: the work in A counts as outside, with the counts");
+        m = init_move_check(in_general, {start(proj), start(elsewhere), read_of("x"), start(proj)}, proj, true, 3);
+        expect(m.verdict == InitMove::Move && m.outside_reads == 1, "a resume elsewhere is judged the same way: its relative paths resolve there");
+        m = init_move_check(in_general, {start(ws), read_of("proj/README.md"), json{{"type", "workspace"}, {"to", proj.string()}}}, proj, true, 3);
+        expect(m.verdict == InitMove::Move && m.outside_reads == 0, "work before a :cd still counts as inside when its paths fall inside this workspace");
+    }
+
+    section(":init moving a session: the move");
+    {
+        fs::path proj = ws / "proj2";
+        fs::create_directories(proj);
+        fs::path dest = sessions_home("project:" + proj.string());
+        auto seqs = [](const fs::path& p) {
+            std::vector<int> out;
+            for (const auto& j : records(p)) {
+                if (j.value("type", "") == "n") out.push_back(j.value("seq", -1));
+            }
+            return out;
+        };
+        auto in_order = [](const std::vector<int>& v, int n) {
+            if (static_cast<int>(v.size()) != n) return false;
+            for (int i = 0; i < n; ++i) {
+                if (v[static_cast<size_t>(i)] != i) return false;
+            }
+            return true;
+        };
+
+        // The copy path, with a writer appending all the while: records written during the move go to the pending
+        // file and come back in order, once each.
+        auto log = std::make_unique<SessionLog>("copied");
+        fs::path from = log->path();
+        log->write("start", {{"workspace", proj.string()}});
+        constexpr int total = 400;
+        std::atomic<int> written{0};
+        std::thread writer([&] {
+            for (int i = 0; i < total; ++i) {
+                log->write("n", {{"seq", i}});
+                written = i + 1;
+                if (i % 5 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        });
+        while (written < 50) std::this_thread::yield();
+        bool pending_used = false;
+        fs::path pending = dest / (from.filename().string() + ".pending");
+        log->relocate_by_copy = true;
+        log->while_relocating = [&] {
+            int at = written;
+            while (written < std::min(total, at + 30)) std::this_thread::yield();
+            pending_used = fs::file_size(pending) > 0;
+        };
+        fs::path to = log->relocate(dest, "init");
+        writer.join();
+        log->write("after", {});
+        expect(pending_used, "records written while it moved went to <id>.jsonl.pending");
+        expect(to == dest / from.filename() && log->path() == to && fs::exists(to), "the session is in the project home, and the log writes there");
+        expect(!fs::exists(from) && !fs::exists(pending) && !fs::exists(to.string() + ".moving"), "the source, the pending file and the copy's temporary name are gone");
+        expect(in_order(seqs(to), total), "every record is in the moved file exactly once, in order");
+        json rehomed;
+        for (const auto& j : records(to)) {
+            if (j.value("type", "") == "rehomed") rehomed = j;
+        }
+        expect(rehomed.value("from", "") == from.string() && rehomed.value("to", "") == to.string() && rehomed.value("reason", "") == "init",
+               "a rehomed record names where it came from, where it went and why");
+        expect(records(to).back().value("type", "") == "after" && mode_is_0600(to), "regular writes continue on the new path; the copy is 0600");
+        bool listed = false;
+        for (const auto& info : list_sessions()) {
+            if (info.id == from.stem().string()) listed = info.home == "projects/" + project_home_name(proj) && info.path == to;
+        }
+        expect(listed, "maic sessions lists it in its new home");
+        log.reset();
+
+        // The rename path: same filesystem, the same inode, nothing to buffer for long.
+        SessionLog r("renamed");
+        r.write("start", {{"workspace", proj.string()}});
+        r.write("n", {{"seq", 0}});
+        struct stat before{}, after{};
+        stat(r.path().c_str(), &before);
+        fs::path rfrom = r.path(), rto = r.relocate(dest, "init");
+        r.write("n", {{"seq", 1}});
+        stat(rto.c_str(), &after);
+        expect(before.st_ino == after.st_ino && !fs::exists(rfrom) && in_order(seqs(rto), 2), "on one filesystem it is a rename: the same file, no copy");
+        bool refused = false;
+        try {
+            r.relocate(dest, "init");
+        } catch (const std::exception& e) {
+            refused = std::string(e.what()).find("already exists") != std::string::npos;
+        }
+        expect(refused && r.path() == rto && fs::exists(rto), "a move onto an existing file is refused and the session stays put");
+
+        // Subagent sessions it started move with it; another session's do not.
+        SessionLog parent("parent");
+        parent.write("start", {{"workspace", proj.string()}});
+        SessionLog child("sub", parent.path().parent_path()), stranger("sub", parent.path().parent_path());
+        child.write("start", {{"workspace", proj.string()}, {"parent", parent.path().stem().string()}, {"agent", "explore"}});
+        stranger.write("start", {{"workspace", proj.string()}, {"parent", "someone-else"}, {"agent", "explore"}});
+        expect(sub_sessions_of(parent.path()) == std::vector<fs::path>{child.path()}, "sub_sessions_of finds the subagent sessions it started");
+        fs::path cfrom = child.path(), sfrom = stranger.path();
+        parent.relocate(dest, "init");
+        expect(fs::exists(dest / cfrom.filename()) && !fs::exists(cfrom) && fs::exists(sfrom), "its subagents move along; another session's stay");
+
+        // A fork in another home keeps loading its parent after the parent moved (by id).
+        SessionLog base("base");
+        base.write("start", {{"workspace", proj.string()}});
+        base.write("msg", message_to_json({"user", "the fennec's ears"}));
+        base.write("msg", message_to_json({"assistant", "a third of her height"}));
+        SessionLog fork = SessionLog::fork(base.path(), 3, "tui", sessions_home("elsewhere"));
+        fork.write("msg", message_to_json({"user", "and the tail?"}));
+        base.relocate(dest, "init");
+        LoadedSession ls = load_session(fork.path());
+        expect(ls.messages.size() == 3 && ls.messages[0].content == "the fennec's ears", "a fork in another home still loads its moved parent");
+    }
+
+    section(":init moving a session: recovery after a crash");
+    {
+        fs::path proj = ws / "proj3";
+        fs::create_directories(proj);
+        fs::path dest = sessions_home("project:" + proj.string());
+        fs::create_directories(dest);
+        auto line = [](int seq) { return json{{"type", "n"}, {"seq", seq}, {"time", "2026-10-01T12:00:00+0000"}}.dump() + "\n"; };
+        auto write_text = [](const fs::path& p, const std::string& text) { std::ofstream(p, std::ios::binary) << text; };
+
+        // Moved, but the pending records were never appended.
+        fs::path target = dest / "20261001-120001-tui-2.jsonl";
+        write_text(target, line(0) + line(1));
+        write_text(target.string() + ".pending", line(2) + line(3));
+        SessionLog a = SessionLog::reopen(target);
+        expect(a.recovered().size() == 1 && a.recovered()[0].find("2 records") != std::string::npos, "reopening finds the leftover pending file and says so");
+        expect(read_whole(target) == line(0) + line(1) + line(2) + line(3) && !fs::exists(target.string() + ".pending"), "its records are appended, the pending file removed");
+
+        // Appended already, but the pending file was never removed: nothing is doubled.
+        fs::path twice = dest / "20261001-120002-tui-3.jsonl";
+        write_text(twice, line(0) + line(1) + line(2));
+        write_text(twice.string() + ".pending", line(1) + line(2));
+        SessionLog::reopen(twice);
+        expect(read_whole(twice) == line(0) + line(1) + line(2) && !fs::exists(twice.string() + ".pending"), "records the file already ends with are not added twice");
+
+        // The move never finished: the source is still in general/, the pending records go there.
+        fs::path source = sessions_home("general") / "20261001-120003-tui-4.jsonl";
+        write_text(source, line(0));
+        fs::path moved_name = dest / source.filename();
+        write_text(moved_name.string() + ".pending", line(1));
+        write_text(moved_name.string() + ".moving", line(0).substr(0, 7));
+        SessionLog b = SessionLog::reopen(source);
+        expect(read_whole(source) == line(0) + line(1) && !fs::exists(moved_name.string() + ".pending"), "an unfinished move: the records go back to the source");
+        expect(!fs::exists(moved_name.string() + ".moving") && !fs::exists(moved_name), "a leftover .moving beside an intact source is discarded");
+        bool said = false;
+        for (const auto& n : b.recovered()) said = said || n.find("discarded an unfinished copy") != std::string::npos;
+        expect(said, "with a notice");
+
+        // Copied and renamed into place, but the source was not yet removed: the copy goes, the source keeps the records.
+        fs::path both = sessions_home("general") / "20261001-120004-tui-5.jsonl";
+        write_text(both, line(0));
+        write_text(dest / both.filename(), line(0));
+        write_text((dest / both.filename()).string() + ".pending", line(1));
+        std::vector<std::string> notices = recover_relocations();
+        expect(!notices.empty() && read_whole(both) == line(0) + line(1) && !fs::exists(dest / both.filename()), "a complete copy beside its source is dropped, the source finished");
+        expect(recover_relocations().empty(), "nothing is left to recover");
     }
 
     fs::remove_all(ws);

@@ -108,6 +108,7 @@ struct Settings {
     // Where new transcripts go: "auto" (project when the workspace has a MAIC.md, else general), "general",
     // "project", or a name under sessions/.
     std::string sessions_home = "auto";
+    int init_move_outside_reads = 3;  // :init moves a session into the project home without asking when it read at most this many files outside
     std::string leader = " ";
     std::string highlight = "builtin";  // the input's highlighter: "builtin", or "nvim" (an embedded nvim --embed, when it is installed)
     bool enter_sends = false;           // Enter sends a one-line input in insert mode (Shift+Enter / Alt+Enter then insert a newline)
@@ -123,6 +124,7 @@ struct Settings {
     double compact_at = 0.75;      // auto-compact at this share of the context window; 0 turns it off
     int compact_keep_results = 4;  // tool results that never get pruned (the most recent)
     std::vector<std::filesystem::path> sources;  // the files that were read, in order
+    nlohmann::json layered = nlohmann::json::object();  // every file's table merged in order, for :cd to say what changed
     std::vector<Provider> providers = default_providers();
     std::vector<ModelPreset> presets = default_presets();  // `models` in settings adds or overrides by name
     std::map<std::string, Style> styles;  // by role, in effect: built-in default < theme < style_overrides (docs/settings.md)

@@ -1046,6 +1046,26 @@ int main() {
             none = std::string(e.what()).find("no place named") == 0;
         }
         expect(none, "an unknown name lists the places");
+
+        // :cd's targets.
+        fs::path a = ws / "cd-a", b = ws / "cd-a" / "b";
+        fs::create_directories(b);
+        fs::path cwa = fs::weakly_canonical(a), cwb = fs::weakly_canonical(b);
+        expect(cd_target(b.string(), ws, {}, places) == cwb, "an absolute path");
+        expect(cd_target("b", a, {}, places) == cwb && cd_target("..", b, {}, places) == cwa, "a path relative to the workspace, .. included");
+        expect(cd_target("~", ws, {}, places) == fs::weakly_canonical(std::getenv("HOME")), "~ is the home directory");
+        expect(cd_target("-", b, a, places) == a, "- is the previous workspace");
+        expect(cd_target("workspace", a, {}, places) == fs::weakly_canonical(ws), "a place name, when no directory of that name is here");
+        auto refused = [&](const std::string& arg, const fs::path& previous, const std::string& why) {
+            try {
+                cd_target(arg, a, previous, places);
+            } catch (const std::exception& e) {
+                return std::string(e.what()).find(why) != std::string::npos;
+            }
+            return false;
+        };
+        expect(refused("nowhere-at-all", {}, "no directory " + (a / "nowhere-at-all").string()), "a missing directory is refused with the path");
+        expect(refused("-", {}, "no previous workspace") && refused("session", {}, "not a directory"), "no previous one, or a place that is a file, is refused");
         std::string zsh = shell_init("zsh"), bash = shell_init("bash"), fish = shell_init("fish");
         expect(zsh.find("mcd()") != std::string::npos && zsh.find("compdef") != std::string::npos && bash.find("complete -F") != std::string::npos && fish.find("function mcd") != std::string::npos,
                "shell-init gives mcd with completion for zsh, bash and fish");

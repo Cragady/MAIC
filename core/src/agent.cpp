@@ -154,6 +154,19 @@ void Agent::set_system_prefix(const std::string& text) {
                                 : "# Operator instructions (take precedence over everything before)\n" + now});
 }
 
+void Agent::set_workspace(const std::filesystem::path& dir, Origin origin) {
+    if (origin == Origin::Remote) throw std::runtime_error("the workspace is changed by the local user only");
+    std::filesystem::path from = harness_.workspace();
+    harness_.set_workspace(dir);
+    reload_instructions();
+    if (log_) log_->write("workspace", {{"from", from.string()}, {"to", harness_.workspace().string()}});
+    if (messages_.empty()) return;
+    prompted_instructions_ = instructions_text();
+    push({"system", "The workspace moved from " + from.string() + " to " + harness_.workspace().string() +
+                        ": relative paths resolve there now and the harness scopes your work to it." +
+                        (prompted_instructions_.empty() ? " No standing instructions apply there." : " Standing instructions in effect there:" + prompted_instructions_)});
+}
+
 void Agent::set_rules(std::vector<std::string> new_rules) {
     rules = std::move(new_rules);
     if (messages_.empty()) return;

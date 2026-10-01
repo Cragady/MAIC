@@ -257,7 +257,7 @@ Harness::~Harness() {
     for (auto& re : forbid_res_) regfree(&re.second);
 }
 
-Harness::Harness(fs::path workspace) : workspace_(fs::weakly_canonical(workspace)) {
+Harness::Harness(fs::path workspace) : workspace_(fs::weakly_canonical(workspace)), start_(workspace_) {
     fs::path home = std::getenv("HOME");
     for (const char* p : {".ssh", ".gnupg", ".aws", ".kube", ".docker", ".password-store", ".local/share/keyrings", ".ollama"}) {
         secret_paths_.push_back(home / p);
@@ -284,6 +284,12 @@ fs::path Harness::resolve(const std::string& path) const {
         p = workspace_ / p;
     }
     return fs::weakly_canonical(p);
+}
+
+void Harness::set_workspace(const fs::path& dir) {
+    fs::path to = fs::weakly_canonical(dir);
+    if (confined_ && !under(to, start_)) throw std::runtime_error("this session is confined to " + start_.string() + " (tripwire = \"isolated\"); " + to.string() + " is outside it");
+    workspace_ = to;
 }
 
 bool Harness::is_secret(const fs::path& p) const {

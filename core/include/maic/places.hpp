@@ -28,6 +28,11 @@ std::vector<Place> known_places(const Settings& settings, const std::filesystem:
 // candidates when the prefix is ambiguous, or with the list when nothing matches.
 const Place& find_place(const std::vector<Place>& places, const std::string& query);
 
+// Where `:cd ARG` goes: a directory (absolute, `~` or `~/...`, or relative to `workspace`), else a place by name
+// whose path is a directory; "-" is `previous`. Throws with the reason when it is none of these.
+std::filesystem::path cd_target(const std::string& arg, const std::filesystem::path& workspace, const std::filesystem::path& previous,
+                                const std::vector<Place>& places);
+
 // Shell functions for `eval "$(maic shell-init)"`: mcd NAME (cd there), mpath NAME (print), mcp NAME (copy),
 // with completion of the names for zsh and bash. `shell` is "zsh", "bash" or "fish".
 std::string shell_init(const std::string& shell);

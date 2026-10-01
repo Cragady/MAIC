@@ -186,6 +186,54 @@ class TuiTest(unittest.TestCase):
         remote("luaeval('require(\"maic\").command(\":rename from the plugin\")')")
         tui.wait_for("titled: from the plugin")
 
+    def test_cd_moves_the_workspace(self):
+        sub = os.path.join(self.ws, "cd-sub")
+        os.makedirs(os.path.join(sub, ".maic"), exist_ok=True)
+        with open(os.path.join(sub, ".maic", "settings.lua"), "w") as f:
+            f.write("return { timestamps = true }\n")
+        tui = self.start()
+        tui.send(":cd cd-sub<cr>")
+        text = tui.wait_for("settings changed: timestamps")
+        self.assertIn("workspace: " + sub, text)
+        self.assertIn(" · in " + sub, text)  # the status strip
+        tui.send(":pwd<cr>")
+        tui.wait_for(":cd - returns to " + self.ws)
+        tui.send(":cd -<cr>")
+        tui.wait_for("workspace: " + self.ws + "  (was " + sub)
+        tui.send(":cd no-such-dir<cr>")
+        tui.wait_for("no directory " + os.path.join(self.ws, "no-such-dir"))
+
+    def test_cd_waits_until_idle(self):
+        os.makedirs(os.path.join(self.ws, "cd-busy"), exist_ok=True)
+        tui = self.start()
+        tui.send("islow: take your time<esc>:w<cr>", settle=False)
+        tui.wait_for("working…")
+        tui.send(":cd cd-busy<cr>", settle=False)
+        tui.wait_for(":cd has to wait until the agent is idle")
+
+    def test_init_moves_a_recorded_session(self):
+        proj = os.path.realpath(os.path.join(self.home, "init-proj"))
+        os.makedirs(proj)
+        tui = Tui([MAIC, "--harness", "dumb", "--no-instructions"], env=self.env, cwd=proj)
+        self.addCleanup(tui.close)
+        tui.wait_for(STRIP)
+        tui.send(":init<cr>", settle=False)
+        encoded = proj.replace("/", "-").replace(" ", "-")
+        text = tui.wait_for("this session moved to projects/")
+        self.assertIn("(it worked here throughout)", text.replace("\n", " "))
+        home = os.path.join(self.home, "state", "maic", "sessions", "projects", encoded)
+        moved = [f for f in os.listdir(home) if f.endswith(".jsonl")]
+        self.assertEqual(len(moved), 1)
+        self.assertEqual([f for f in os.listdir(home) if not f.endswith(".jsonl")], [])  # no .pending or .moving left
+        tui.wait_for("echo: Look over this project")  # the MAIC.md prompt still runs, into the moved file
+        with open(os.path.join(home, moved[0])) as f:
+            self.assertIn('"type":"rehomed"', f.read().replace(" ", ""))
+
+    def test_init_leaves_an_unrecorded_session(self):
+        tui = self.start()
+        tui.send(":init<cr>")
+        tui.wait_for("this session stays out of the project's home: it is not recorded")
+
     def test_quit_prints_the_transcript_line(self):
         tui = self.start()
         tui.send(":q<cr>", settle=False)

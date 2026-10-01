@@ -78,6 +78,9 @@ public:
     Harness& operator=(const Harness&) = delete;
 
     const std::filesystem::path& workspace() const { return workspace_; }
+    // :cd. Everything judged against the workspace follows `dir`. A confined harness moves only within the
+    // directory it started in; outside it this throws with the reason.
+    void set_workspace(const std::filesystem::path& dir);
 
     // Resolves a tool-supplied path against the workspace, following symlinks and `..`.
     std::filesystem::path resolve(const std::string& path) const;
@@ -126,6 +129,7 @@ private:
     bool permitted(const std::vector<std::string>& entries, const Action& action, bool each_segment = false) const;
 
     std::filesystem::path workspace_;
+    std::filesystem::path start_;  // the workspace it was made with: a confined harness stays under it
     Permission permission_;
     std::shared_ptr<const AgentDef> agent_def_;
     std::vector<std::string> forbid_;
