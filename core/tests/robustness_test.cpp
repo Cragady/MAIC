@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <sstream>
 #include <thread>
 
 namespace fs = std::filesystem;
@@ -516,6 +517,10 @@ int main() {
         for (const auto& p : s.providers) lab = lab || (p.name == "lab" && p.kind == "openai");
         expect(lab && s.providers.size() == default_providers().size() + 1, "providers merge by name");
         expect(s.style("user").fg == "red" && s.style("user").bold, "styles merge across layers");
+        expect(s.context_2 == 8192, "context_2 defaults to 8192");
+        write_file(proj / ".maic" / "settings.local.json", R"({"model": "local/model", "context_2": 16384, "style": {"user": {"bold": true}}})");
+        expect(load_settings(proj).context_2 == 16384, "context_2 is read from a layer");
+        write_file(proj / ".maic" / "settings.local.json", R"({"model": "local/model", "style": {"user": {"bold": true}}})");
         expect(resolve_sessions_home(s, proj).filename() == "general", "no MAIC.md: auto resolves to general");
         write_file(proj / "MAIC.md", "# proj\n");
         expect(resolve_sessions_home(s, proj).parent_path().filename() == "projects", "a MAIC.md moves auto to the project home");
@@ -702,6 +707,33 @@ int main() {
         expect(svc && svc->port == 8081 && pair("--host", "127.0.0.1") && pair("--port", "8081") && pair("--models-dir", root.string()) && pair("--models-max", "1") && arg("--jinja"),
                "services/llamacpp.json: loopback, port 8081, router mode over the models root, one resident model, jinja templates");
         expect(svc && lc && svc->requires_paths.size() == 1 && svc->requires_paths[0] == root, "the service requires the models root");
+        {
+            // The side server: the same router over the same GGUFs, on 8082, with its own context variable.
+            const ServiceDef* side = nullptr;
+            for (const auto& s : services) {
+                if (s.name == "llamacpp-2") side = &s;
+            }
+            auto spair = [&](const std::string& a, const std::string& b) {
+                for (size_t i = 0; side && i + 1 < side->command.size(); ++i) {
+                    if (side->command[i] == a && side->command[i + 1] == b) return true;
+                }
+                return false;
+            };
+            expect(side && side->port == 8082 && spair("--port", "8082") && spair("--models-dir", root.string()) && spair("--models-max", "1") && side->needs_gpu,
+                   "services/llamacpp-2.json: port 8082, the same models root, one resident model, marked needs_gpu");
+            expect(side && spair("--ctx-size", std::getenv("MAIC_CONTEXT_2") ? std::getenv("MAIC_CONTEXT_2") : "8192"), "the side server takes its context size from ${MAIC_CONTEXT_2}, 8192 by default");
+            expect(side && side->requires_paths.size() == 1 && side->requires_paths[0] == root, "the side server requires the same models root");
+            expect(is_llama_server("llamacpp") && is_llama_server("llamacpp-2") && !is_llama_server("comfyui"), "both are llama servers, ComfyUI is not");
+            unsetenv("MAIC_CONTEXT_2");
+            expect(expand_vars("${MAIC_CONTEXT_2}") == "8192", "${MAIC_CONTEXT_2} expands to 8192 when nothing sets it");
+            setenv("MAIC_CONTEXT_2", "4096", 1);
+            expect(expand_vars("${MAIC_CONTEXT_2}") == "4096" && expand_vars("${MAIC_CONTEXT}") != "4096", "and to the environment's value, independently of ${MAIC_CONTEXT}");
+            unsetenv("MAIC_CONTEXT_2");
+            ServiceDef sdef = *side;
+            sdef.port = closed_port();
+            std::string shint = unreachable_hint(Provider{"llamacpp-2", "openai", "http://127.0.0.1:" + std::to_string(sdef.port) + "/v1", "", "", json::object()}, {sdef});
+            expect(shint.find("maic up llamacpp-2") != std::string::npos, "a failed call to the side server says how to start it: " + shint);
+        }
         // The same definition on a port nothing listens on, so this passes whatever is running on 8081 here.
         ServiceDef def = *svc;
         def.port = closed_port();
@@ -948,6 +980,8 @@ int main() {
 
     section("freeing the GPU for a service");
     {
+        fs::path gpu_state = ws / "xdg-state-gpu";
+        setenv("XDG_STATE_HOME", gpu_state.c_str(), 1);
         httplib::Server srv;
         std::vector<std::string> unloaded;
         srv.Get("/v1/models", [](const httplib::Request&, httplib::Response& res) {
@@ -996,13 +1030,112 @@ int main() {
         expect(explain_exit(dead, {lc}).empty(), "an unrecognised log explains nothing");
         fs::remove(service_log_path(dead));
         GpuReport g;
-        g.llamacpp_running = true;
-        g.llamacpp_models = {"Big"};
+        g.servers = {{"llamacpp", true, {"Big"}}, {"llamacpp-2", false, {}}};
         g.comfyui_running = true;
         g.comfyui_vram_used = 3L << 30;
         g.comfyui_vram_total = 8L << 30;
         std::string t = g.text();
-        expect(t.find("holds Big") != std::string::npos && t.find("3.0 GB used of 8.0 GB") != std::string::npos, "the report names the holder and the figures: " + t);
+        expect(t.find("llamacpp: holds Big") != std::string::npos && t.find("llamacpp-2: not running") != std::string::npos && t.find("3.0 GB used of 8.0 GB") != std::string::npos,
+               "the report names each server, the holder and the figures: " + t);
+
+        // Two fake routers, one per server, each holding a model; MAIC's pid files say it started them.
+        auto router = [](httplib::Server& r, const std::string& held, std::vector<std::string>& unloads) {
+            r.Get("/v1/models", [held](const httplib::Request&, httplib::Response& res) {
+                res.set_content(json{{"data", {{{"id", held}, {"status", {{"value", "loaded"}}}}}}}.dump(), "application/json");
+            });
+            r.Post("/models/unload", [&unloads](const httplib::Request& req, httplib::Response& res) {
+                unloads.push_back(json::parse(req.body)["model"]);
+                res.set_content(R"({"success":true})", "application/json");
+            });
+        };
+        httplib::Server r1, r2;
+        std::vector<std::string> unloaded1, unloaded2;
+        router(r1, "Qwen3.5-4B-Q4_K_M", unloaded1);
+        router(r2, "Qwen3.5-9B-Q4_K_M-text", unloaded2);
+        int port1 = r1.bind_to_any_port("127.0.0.1"), port2 = r2.bind_to_any_port("127.0.0.1");
+        std::thread t1([&] { r1.listen_after_bind(); }), t2([&] { r2.listen_after_bind(); });
+        r1.wait_until_ready();
+        r2.wait_until_ready();
+        ServiceDef main_def, side_def;
+        main_def.name = "llamacpp";
+        main_def.port = port1;
+        side_def.name = "llamacpp-2";
+        side_def.port = port2;
+        side_def.needs_gpu = true;
+        {
+            // This process stands in for both servers: its pid and start time (field 22 of /proc/self/stat).
+            std::ifstream in("/proc/self/stat");
+            std::string stat((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            std::string after = stat.substr(stat.rfind(')') + 2);
+            std::istringstream fields(after);
+            std::string f;
+            for (int i = 0; i < 19; ++i) fields >> f;  // fields 3..21
+            std::string start_time;
+            fields >> start_time;
+            for (const auto* name : {"llamacpp", "llamacpp-2"}) write_file(gpu_state / "maic" / "run" / (std::string(name) + ".pid"), std::to_string(getpid()) + " " + start_time + "\n");
+        }
+        std::vector<ServiceDef> two = {main_def, side_def, comfy};
+        GpuReport both = gpu_report(two);
+        expect(both.servers.size() == 2 && both.servers[0].running && both.servers[0].models == std::vector<std::string>{"Qwen3.5-4B-Q4_K_M"} &&
+               both.servers[1].running && both.servers[1].models == std::vector<std::string>{"Qwen3.5-9B-Q4_K_M-text"},
+               "gpu_report lists the model resident in each server");
+        std::string freed = free_gpu_for(comfy, two);
+        expect(unloaded1 == std::vector<std::string>{"Qwen3.5-4B-Q4_K_M"} && unloaded2 == std::vector<std::string>{"Qwen3.5-9B-Q4_K_M-text"} &&
+               freed.find("from llamacpp;") != std::string::npos && freed.find("from llamacpp-2") != std::string::npos, "starting ComfyUI frees both servers: " + freed);
+        expect(free_gpu_for(side_def, two).empty() && unloaded1.size() == 1, "starting a llama server evicts nothing from the other");
+        unloaded2.clear();
+        std::string one = gpu_free(two, "llamacpp-2");
+        expect(unloaded1.size() == 1 && unloaded2.size() == 1 && one.find("llamacpp-2: unloaded Qwen3.5-9B") == 0, "maic gpu free llamacpp-2 unloads the side server only: " + one);
+        threw = false;
+        try { gpu_free(two, "llamacpp-3"); } catch (const std::exception& e) { threw = std::string(e.what()).find("llamacpp-2") != std::string::npos; }
+        expect(threw, "an unknown name lists the choices");
+        r1.stop();
+        r2.stop();
+        t1.join();
+        t2.join();
+        fs::remove_all(gpu_state / "maic" / "run");
+
+        // The budget: GGUF sizes on disk plus an estimated KV cache, against the card.
+        fs::path mroot = ws / "budget-models";
+        fs::create_directories(mroot / "Qwen3.5-4B-Q4_K_M");
+        auto sized = [](const fs::path& p, long bytes) {
+            std::ofstream(p, std::ios::binary) << "GGUF";
+            fs::resize_file(p, bytes);
+        };
+        sized(mroot / "Qwen3.5-4B-Q4_K_M" / "Qwen3.5-4B-Q4_K_M.gguf", 2560L << 20);  // 2.5 GB
+        sized(mroot / "Qwen3.5-4B-Q4_K_M" / "mmproj-F16.gguf", 512L << 20);          // loaded with it
+        sized(mroot / "Qwen3.5-9B-Q4_K_M-text.gguf", 5376L << 20);                   // 5.25 GB, a bare file
+        long four = model_footprint({"Qwen3.5-4B-Q4_K_M", 16384}, mroot);
+        expect(four == (3072L << 20) + static_cast<long>(16384 * 0.065 * 1024 * 1024), "a 4B at 16k: the folder's GGUFs plus 65 MB per 1k tokens");
+        long nine = model_footprint({"Qwen3.5-9B-Q4_K_M-text", 8192}, mroot);
+        expect(nine == (5376L << 20) + static_cast<long>(8192 * 0.13 * 1024 * 1024), "a 9B at 8k: the file plus 130 MB per 1k tokens");
+        expect(model_footprint({"nope", 8192}, mroot) == -1, "a model that is not under the root has no footprint");
+        std::string fit = budget_sentence({{"Qwen3.5-4B-Q4_K_M", 16384}, {"Qwen3.5-4B-Q4_K_M", 8192}}, mroot, 8L << 30, false, -1);
+        expect(fit == "4B at 16k (4.0 GB est.) + 4B at 8k (3.5 GB est.) = 7.6 GB of 8.0 GB: fits with ComfyUI stopped", "two 4Bs on an 8 GB card: " + fit);
+        fit = budget_sentence({{"Qwen3.5-4B-Q4_K_M", 16384}, {"Qwen3.5-9B-Q4_K_M-text", 8192}}, mroot, 8L << 30, false, -1);
+        expect(fit.find("4B at 16k (4.0 GB est.) + 9B at 8k (6.3 GB est.) = 10.3 GB of 8.0 GB: does not fit") == 0, "a 4B and a 9B do not: " + fit);
+        fit = budget_sentence({{"Qwen3.5-4B-Q4_K_M", 8192}}, mroot, 8L << 30, true, 2L << 30);
+        expect(fit.find("= 3.5 GB of 8.0 GB: fits beside ComfyUI (2.0 GB in use)") != std::string::npos, "one model beside a running ComfyUI: " + fit);
+        fit = budget_sentence({{"Qwen3.5-4B-Q4_K_M", 16384}, {"Qwen3.5-4B-Q4_K_M", 8192}}, mroot, 8L << 30, true, 3L << 30);
+        expect(fit.find("fits only with ComfyUI stopped (it holds 3.0 GB)") != std::string::npos, "or only once ComfyUI lets go: " + fit);
+        fit = budget_sentence({{"Qwen3.5-4B-Q4_K_M", 8192}}, mroot, -1, false, -1);
+        expect(fit.find("= 3.5 GB estimated; the card's size is unknown") != std::string::npos, "no card figure: the estimate alone, labelled: " + fit);
+        expect(budget_sentence({{"nope", 8192}}, mroot, 8L << 30, false, -1).empty(), "nothing to say about models that are not there");
+        fs::remove_all(mroot);
+
+        // The story-chat workflow's deep pass points at the side server.
+        std::ifstream wf(root_dir() / "vendor" / "comfyui-maic-llamacpp" / "example_workflows" / "story-chat-llamacpp.json");
+        json w = json::parse(wf, nullptr, false);
+        std::string deep_url, deep_title, quick_url;
+        for (const auto& n : w.value("nodes", json::array())) {
+            if (n.value("type", "") != "MaicLlmServer") continue;
+            std::string title = n.value("title", "");
+            if (title.rfind("Deep", 0) == 0) deep_url = n["widgets_values"][0], deep_title = title;
+            if (title.rfind("Quick", 0) == 0) quick_url = n["widgets_values"][0];
+        }
+        expect(deep_url == "http://127.0.0.1:8082/v1" && deep_title == "Deep model (llamacpp-2)" && quick_url == "http://127.0.0.1:8081/v1",
+               "the workflow's deep MaicLlmServer node is on 8082 and says so; the quick one stays on 8081");
+        unsetenv("XDG_STATE_HOME");
     }
 
     section("model presets");

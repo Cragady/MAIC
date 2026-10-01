@@ -67,6 +67,7 @@ struct Settings {
     std::string leader = " ";
     std::string models_dir;
     int context = 16384;       // the local server's context window in tokens (--ctx-size for llama.cpp) and the readout
+    int context_2 = 8192;      // the same for the side server (services/llamacpp-2.json, ${MAIC_CONTEXT_2})
     std::string title_model;   // names a session after its first turn ("" = off; e.g. "qwen3.5:4b")
     long budget_tokens = 0;    // per-session token budget, 0 = unlimited
     bool timestamps = false;   // a time beside each conversation entry

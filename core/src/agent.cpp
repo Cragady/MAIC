@@ -932,7 +932,18 @@ Decision Agent::review(const Action& action, const std::string& summary, const s
                      (last_words.empty() ? "" : "Agent's last words: " + last_words + "\n") + "\nThe action: " + summary + "\n" + what + "\n\nYour one line:"},
     };
     try {
-        auto [provider, name] = resolve_model(providers, reviewer_model.empty() ? model : reviewer_model);
+        std::string reviewer = reviewer_model;
+        if (reviewer.empty()) {
+            // The side llama server, when it is up, reviews with the same model so the main server keeps its
+            // model resident; otherwise the session's model reviews itself.
+            auto [main_provider, main_name] = resolve_model(providers, model);
+            if (main_provider.name == "llamacpp") {
+                for (const auto& p : providers) {
+                    if (p.name == "llamacpp-2" && server_answers(p)) reviewer = "llamacpp-2/" + main_name;
+                }
+            }
+        }
+        auto [provider, name] = resolve_model(providers, reviewer.empty() ? model : reviewer);
         ChatOptions opt{name, false};
         opt.retries = 1;
         std::atomic<bool> no{false};

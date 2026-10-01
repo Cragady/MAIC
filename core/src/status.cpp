@@ -4,9 +4,11 @@
 
 #include <nlohmann/json.hpp>
 
-#include <fstream>
-
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <deque>
+#include <fstream>
 
 #include "maic/tripwire.hpp"
 #include "maic/vendor.hpp"
@@ -71,7 +73,7 @@ std::string missing_requirement(const ServiceDef& def) {
     std::error_code ec;
     for (const auto& path : def.requires_paths) {
         if (std::filesystem::exists(path, ec)) continue;
-        if (def.name == "llamacpp") {
+        if (is_llama_server(def.name)) {
             return def.name + " needs a models directory: put a GGUF under " + path.string() + " or run maic vendor model llamacpp URL SHA256 (models_dir in settings moves it)";
         }
         return def.name + " needs " + path.string() + " (is the drive mounted?)";
@@ -105,17 +107,8 @@ std::vector<std::string> unload_resident(const std::string& base_url) {
     return done;
 }
 
-std::string free_gpu_for(const ServiceDef& def, const std::vector<ServiceDef>& services) {
-    if (!def.needs_gpu || def.name == "llamacpp") return "";
-    for (const auto& other : services) {
-        if (other.name != "llamacpp" || service_status(other).state != ServiceState::Running) continue;
-        auto freed = unload_resident("http://127.0.0.1:" + std::to_string(other.port));
-        if (freed.empty()) return "";
-        std::string names;
-        for (const auto& f : freed) names += (names.empty() ? "" : ", ") + f;
-        return "unloaded " + names + " from llamacpp to free the GPU for " + def.name + " (it reloads on the next request)";
-    }
-    return "";
+bool is_llama_server(const std::string& service_name) {
+    return service_name == "llamacpp" || service_name.rfind("llamacpp-", 0) == 0;
 }
 
 namespace {
@@ -130,17 +123,42 @@ std::string gib(long bytes) {
     snprintf(b, sizeof(b), "%.1f GB", static_cast<double>(bytes) / (1024.0 * 1024 * 1024));
     return b;
 }
+std::string joined(const std::vector<std::string>& names) {
+    std::string out;
+    for (const auto& n : names) out += (out.empty() ? "" : ", ") + n;
+    return out;
+}
+std::string local_url(const ServiceDef& def) {
+    return "http://127.0.0.1:" + std::to_string(def.port);
+}
 }  // namespace
+
+std::string free_gpu_for(const ServiceDef& def, const std::vector<ServiceDef>& services) {
+    if (!def.needs_gpu || is_llama_server(def.name)) return "";
+    std::string out;
+    for (const auto& other : services) {
+        if (!is_llama_server(other.name) || service_status(other).state != ServiceState::Running) continue;
+        auto freed = unload_resident(local_url(other));
+        if (freed.empty()) continue;
+        out += (out.empty() ? "unloaded " : "; ") + joined(freed) + " from " + other.name;
+    }
+    if (out.empty()) return "";
+    return out + " to free the GPU for " + def.name + " (they reload on the next request)";
+}
 
 GpuReport gpu_report(const std::vector<ServiceDef>& services) {
     GpuReport r;
-    if (const auto* lc = by_name(services, "llamacpp"); lc && service_status(*lc).state == ServiceState::Running) {
-        r.llamacpp_running = true;
-        r.llamacpp_models = resident_models("http://127.0.0.1:" + std::to_string(lc->port));
+    for (const auto& def : services) {
+        if (!is_llama_server(def.name)) continue;
+        GpuReport::Server s;
+        s.name = def.name;
+        s.running = service_status(def).state == ServiceState::Running;
+        if (s.running) s.models = resident_models(local_url(def));
+        r.servers.push_back(s);
     }
     if (const auto* cf = by_name(services, "comfyui"); cf && service_status(*cf).state == ServiceState::Running) {
         r.comfyui_running = true;
-        httplib::Client c("http://127.0.0.1:" + std::to_string(cf->port));
+        httplib::Client c(local_url(*cf));
         c.set_connection_timeout(2);
         c.set_read_timeout(5);
         if (auto res = c.Get("/system_stats"); res && res->status == 200) {
@@ -155,21 +173,25 @@ GpuReport gpu_report(const std::vector<ServiceDef>& services) {
             }
         }
     }
+    r.card_total = r.comfyui_vram_total;
+    if (r.card_total <= 0) {
+        // nvidia-smi reports MiB; a missing or broken nvidia-smi prints nothing.
+        if (FILE* p = popen("nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1", "r")) {
+            char buf[64] = "";
+            if (fgets(buf, sizeof(buf), p) && std::atol(buf) > 0) r.card_total = std::atol(buf) * 1024L * 1024L;
+            pclose(p);
+        }
+    }
     return r;
 }
 
 std::string GpuReport::text() const {
     std::string out;
-    if (llamacpp_running) {
-        out += "llamacpp: ";
-        if (llamacpp_models.empty()) out += "running, no model resident\n";
-        else {
-            out += "holds ";
-            for (size_t i = 0; i < llamacpp_models.size(); ++i) out += (i ? ", " : "") + llamacpp_models[i];
-            out += " (maic gpu free llamacpp unloads; it reloads on the next request)\n";
-        }
-    } else {
-        out += "llamacpp: not running\n";
+    for (const auto& s : servers) {
+        out += s.name + ": ";
+        if (!s.running) out += "not running\n";
+        else if (s.models.empty()) out += "running, no model resident\n";
+        else out += "holds " + joined(s.models) + " (maic gpu free " + s.name + " unloads; it reloads on the next request)\n";
     }
     if (comfyui_running) {
         out += "comfyui: running";
@@ -183,19 +205,20 @@ std::string GpuReport::text() const {
 
 std::string gpu_free(const std::vector<ServiceDef>& services, const std::string& what) {
     std::string out;
-    if (what == "all" || what == "llamacpp") {
-        if (const auto* lc = by_name(services, "llamacpp"); lc && service_status(*lc).state == ServiceState::Running) {
-            auto freed = unload_resident("http://127.0.0.1:" + std::to_string(lc->port));
-            std::string names;
-            for (const auto& f : freed) names += (names.empty() ? "" : ", ") + f;
-            out += freed.empty() ? "llamacpp: nothing was resident\n" : "llamacpp: unloaded " + names + "\n";
-        } else if (what == "llamacpp") {
-            out += "llamacpp: not running\n";
+    bool known = what == "all" || what == "comfyui";
+    for (const auto& def : services) {
+        if (!is_llama_server(def.name) || (what != "all" && what != def.name)) continue;
+        known = true;
+        if (service_status(def).state == ServiceState::Running) {
+            auto freed = unload_resident(local_url(def));
+            out += def.name + ": " + (freed.empty() ? "nothing was resident" : "unloaded " + joined(freed)) + "\n";
+        } else if (what == def.name) {
+            out += def.name + ": not running\n";
         }
     }
     if (what == "all" || what == "comfyui") {
         if (const auto* cf = by_name(services, "comfyui"); cf && service_status(*cf).state == ServiceState::Running) {
-            httplib::Client c("http://127.0.0.1:" + std::to_string(cf->port));
+            httplib::Client c(local_url(*cf));
             c.set_connection_timeout(2);
             c.set_read_timeout(30);
             auto res = c.Post("/free", R"({"unload_models":true,"free_memory":true})", "application/json");
@@ -204,8 +227,98 @@ std::string gpu_free(const std::vector<ServiceDef>& services, const std::string&
             out += "comfyui: not running\n";
         }
     }
-    if (what != "all" && what != "llamacpp" && what != "comfyui") throw std::runtime_error("maic gpu free [all|llamacpp|comfyui]");
+    if (!known) throw std::runtime_error("maic gpu free [all|llamacpp|llamacpp-2|comfyui]");
     return out;
+}
+
+namespace {
+
+// The GGUF a router id names: <root>/<id>.gguf, or the model file in <root>/<id>/ (the mmproj beside it is
+// loaded with it, so its size counts too). 0 when neither exists.
+long gguf_bytes(const std::string& id, const std::filesystem::path& root) {
+    std::error_code ec;
+    if (long n = static_cast<long>(std::filesystem::file_size(root / (id + ".gguf"), ec)); !ec) return n;
+    long total = 0;
+    for (const auto& f : std::filesystem::directory_iterator(root / id, ec)) {
+        if (f.path().extension() != ".gguf") continue;
+        long n = static_cast<long>(std::filesystem::file_size(f.path(), ec));  // follows a link to the real weights
+        if (!ec) total += n;
+    }
+    return total;
+}
+
+// "Qwen3.5-4B-Q4_K_M" -> 4.0; 0 when the name carries no parameter count.
+double params_b(const std::string& id) {
+    for (size_t i = 0; i < id.size(); ++i) {
+        if (id[i] != 'B' || i == 0 || !std::isdigit(static_cast<unsigned char>(id[i - 1]))) continue;
+        if (i + 1 < id.size() && std::isalnum(static_cast<unsigned char>(id[i + 1]))) continue;
+        size_t start = i;
+        while (start > 0 && (std::isdigit(static_cast<unsigned char>(id[start - 1])) || id[start - 1] == '.')) --start;
+        if (start > 0 && std::isalnum(static_cast<unsigned char>(id[start - 1]))) continue;  // "Q4_K_M" style, not a size
+        return std::atof(id.substr(start, i - start).c_str());
+    }
+    return 0;
+}
+
+std::string size_label(const std::string& id) {
+    double b = params_b(id);
+    if (b <= 0) return id;
+    char buf[32];
+    snprintf(buf, sizeof(buf), b == static_cast<long>(b) ? "%.0fB" : "%.1fB", b);
+    return buf;
+}
+
+std::string k_tokens(int context) {
+    return std::to_string(context / 1024) + "k";
+}
+
+}  // namespace
+
+long model_footprint(const ModelPlan& plan, const std::filesystem::path& models_root) {
+    long weights = gguf_bytes(plan.id, models_root);
+    if (weights <= 0) return -1;
+    double per_token_mb = params_b(plan.id) > 6 ? 0.13 : 0.065;
+    return weights + static_cast<long>(plan.context * per_token_mb * 1024 * 1024);
+}
+
+std::string budget_sentence(const std::vector<ModelPlan>& plans, const std::filesystem::path& models_root, long card_total, bool comfyui_running, long comfyui_used) {
+    std::string terms;
+    long total = 0;
+    for (const auto& plan : plans) {
+        long bytes = model_footprint(plan, models_root);
+        if (bytes < 0) continue;
+        total += bytes;
+        terms += (terms.empty() ? "" : " + ") + size_label(plan.id) + " at " + k_tokens(plan.context) + " (" + gib(bytes) + " est.)";
+    }
+    if (terms.empty()) return "";
+    std::string out = terms + " = " + gib(total);
+    if (card_total <= 0) return out + " estimated; the card's size is unknown (ComfyUI's /system_stats or nvidia-smi would tell)";
+    out += " of " + gib(card_total) + ": ";
+    if (total > card_total) return out + "does not fit; lower context_2, or pick a smaller model for the side server";
+    if (!comfyui_running) return out + "fits with ComfyUI stopped";
+    if (comfyui_used > 0 && total + comfyui_used > card_total) return out + "fits only with ComfyUI stopped (it holds " + gib(comfyui_used) + ")";
+    return out + "fits beside ComfyUI" + (comfyui_used > 0 ? " (" + gib(comfyui_used) + " in use)" : "");
+}
+
+std::string gpu_budget(const GpuReport& report, const Settings& settings, long card_total_fallback) {
+    std::vector<ModelPlan> plans;
+    std::string main_model;
+    for (const auto& s : report.servers) {
+        ModelPlan plan;
+        plan.context = s.name == "llamacpp" ? settings.context : settings.context_2;
+        if (!s.models.empty()) {
+            plan.id = s.models.front();
+        } else {
+            std::string want = s.name == "llamacpp" ? resolve_model_alias(settings.model) : settings.reviewer_model;
+            auto slash = want.find('/');
+            if (slash != std::string::npos && want.substr(0, slash) == s.name) plan.id = want.substr(slash + 1);
+            else if (s.name != "llamacpp") plan.id = main_model;  // the smart harness reviews on the side server with the main model
+        }
+        if (s.name == "llamacpp") main_model = plan.id;
+        if (!plan.id.empty()) plans.push_back(plan);
+    }
+    long card = report.card_total > 0 ? report.card_total : card_total_fallback;
+    return budget_sentence(plans, llamacpp_models_root(), card, report.comfyui_running, report.comfyui_vram_used);
 }
 
 std::string explain_exit(const ServiceDef& def, const std::vector<ServiceDef>& services) {
@@ -222,12 +335,11 @@ std::string explain_exit(const ServiceDef& def, const std::vector<ServiceDef>& s
     if (has("out of memory") || has("CUDA_ERROR_OUT_OF_MEMORY") || has("cudaErrorMemoryAllocation") || has("failed to allocate")) {
         GpuReport g = gpu_report(services);
         std::string who;
-        if (!g.llamacpp_models.empty()) {
-            who = "llamacpp holds ";
-            for (size_t i = 0; i < g.llamacpp_models.size(); ++i) who += (i ? ", " : "") + g.llamacpp_models[i];
-        } else if (g.comfyui_running && def.name != "comfyui") {
-            who = "comfyui holds its models";
+        for (const auto& s : g.servers) {
+            if (s.models.empty() || s.name == def.name) continue;
+            who += (who.empty() ? "" : ", ") + s.name + " holds " + joined(s.models);
         }
+        if (who.empty() && g.comfyui_running && def.name != "comfyui") who = "comfyui holds its models";
         return "CUDA out of memory: the card is full" + (who.empty() ? std::string(" (maic gpu shows who holds it)") : " (" + who + "). maic gpu free releases it, then maic up " + def.name + " again");
     }
     if (has("Address already in use")) return "port " + std::to_string(def.port) + " is already in use: another copy is running, or something else took the port (maic status)";

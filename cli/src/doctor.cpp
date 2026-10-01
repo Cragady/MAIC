@@ -5,6 +5,7 @@
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
+#include "maic/status.hpp"
 #include "maic/vendor.hpp"
 #include "maic/session.hpp"
 
@@ -150,14 +151,16 @@ int run_doctor() {
         line("vendored " + e.name + " (" + e.ref + ")", st.installed, st.installed ? st.target : st.note);
         if (e.name == "llamacpp" && st.installed) line("llama.cpp model", !st.model.empty(), st.model.empty() ? "maic vendor use llamacpp PATH" : st.model);
     }
-    bool llamacpp_up = false;
+    std::vector<ServiceDef> services;
     try {
-        for (const auto& s : load_services(root_dir() / "services")) {
-            if (s.name == "llamacpp") llamacpp_up = service_status(s).state != ServiceState::Stopped;
-        }
+        services = load_services(root_dir() / "services");
     } catch (const std::exception&) {
     }
-    line("llamacpp running", llamacpp_up, llamacpp_up ? "" : "maic up llamacpp");
+    for (const auto& s : services) {
+        if (!is_llama_server(s.name)) continue;
+        bool up = service_status(s).state != ServiceState::Stopped;
+        line(s.name + " running", up, up ? "" : "maic up " + s.name + (s.name == "llamacpp" ? "" : " (the side server: a second resident model for the deep pass and the reviewer)"));
+    }
     bool clip = has_program("wl-copy") || has_program("xclip") || has_program("xsel");
     line("clipboard tool (wl-copy / xclip / xsel)", clip, clip ? "" : "yanks still reach the terminal through OSC 52");
     line("nvim (for :e)", has_program("nvim"), "");
@@ -192,6 +195,10 @@ int run_doctor() {
     std::cout << "  quick model (" << quick << " at Q4_K_M):  " << (has_model(models, quick) ? "installed" : "maic vendor model llamacpp URL SHA256") << "\n";
     std::cout << "  deep model (" << deep << " at Q4_K_M):   " << (has_model(models, deep) ? "installed" : "maic vendor model llamacpp URL SHA256") << "\n";
     if (settings.model != "llamacpp/current") std::cout << "  your settings choose \"" << settings.model << "\"; the default is llamacpp/current\n";
+    // Two servers, two resident models: whether the pair fits the card, from the GGUF sizes and the contexts.
+    if (std::string fit = gpu_budget(gpu_report(services), settings, gpu.vram_mb > 0 ? static_cast<long>(gpu.vram_mb) * 1024 * 1024 : -1); !fit.empty()) {
+        std::cout << "  two servers: " << fit << "\n";
+    }
     if (!fs::exists(settings_path())) std::cout << "  no settings file yet: maic settings init\n";
     if (!fs::exists(global_instructions_path())) std::cout << "  no global MAIC.md yet: " << global_instructions_path().string() << " (name, pronouns, standing rules)\n";
     if (avail_gb < 8) std::cout << "  only " << avail_gb << " GB of RAM is free right now; models load faster with more\n";

@@ -4,6 +4,7 @@
 #include "commands.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include "editor.hpp"
 #include "view.hpp"
 #include "maic/markdown.hpp"
@@ -719,6 +720,31 @@ int main() {
             expect(sl.model == "llamacpp/Qwen3.5-9B-Q4_K_M-text" && sl.reviewer_model == "llamacpp/Qwen3.5-9B-Q4_K_M-text" && sl.context == 16384, "a local preset also sets the server's context size and reviews with itself");
             Settings sn;
             expect(apply_preset(sn, "llamacpp/current").empty() && sn.model == Settings{}.model, "a plain model name is not a preset and changes nothing");
+            Settings ss;
+            ss.presets.push_back({"qwen-4b-side", "llamacpp-2/Qwen3.5-4B-Q4_K_M", 4096, "same", -1});
+            apply_preset(ss, "qwen-4b-side");
+            bool side_window = false;
+            for (const auto& p : ss.providers) side_window = side_window || (p.name == "llamacpp-2" && p.options.value("context_window", 0) == 4096);
+            expect(ss.model == "llamacpp-2/Qwen3.5-4B-Q4_K_M" && ss.context_2 == 4096 && ss.context == Settings{}.context && side_window,
+                   "a preset on the side server sets context_2 and that provider's window, not the main server's");
+            unsetenv("MAIC_CONTEXT");
+            unsetenv("MAIC_CONTEXT_2");
+            std::vector<Provider> provs = default_providers();
+            set_context(provs, 32768);
+            set_context(provs, 4096, "llamacpp-2");
+            int main_window = 0, side = 0;
+            for (const auto& p : provs) {
+                if (p.name == "llamacpp") main_window = p.options.value("context_window", 0);
+                if (p.name == "llamacpp-2") side = p.options.value("context_window", 0);
+            }
+            expect(std::string(std::getenv("MAIC_CONTEXT")) == "32768" && std::string(std::getenv("MAIC_CONTEXT_2")) == "4096" && main_window == 32768 && side == 4096,
+                   "set_context exports MAIC_CONTEXT for llamacpp and MAIC_CONTEXT_2 for llamacpp-2, and sizes each provider's readout");
+            unsetenv("MAIC_CONTEXT");
+            unsetenv("MAIC_CONTEXT_2");
+            CompletionContext two_servers{{"llamacpp", "llamacpp-2", "comfyui"}, {"llamacpp", "llamacpp-2", "anthropic"}};
+            auto gfree = complete_argument("gpu", "free l", two_servers);
+            expect(gfree == std::vector<std::string>{"free llamacpp", "free llamacpp-2"}, ":gpu free completes both llama servers");
+            expect(help_text("ctx2").find("*:ctx2*") == 0 && help_text("ctx2").find("llamacpp-2") != std::string::npos, ":h ctx2 is the side server's context page");
         }
         {
             // :open NAME folder / maic open --folder: a file place opens its parent, a directory itself.

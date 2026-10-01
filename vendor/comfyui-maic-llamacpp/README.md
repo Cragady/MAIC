@@ -1,6 +1,6 @@
 # comfyui-maic-llamacpp
 
-MAIC's own ComfyUI custom node: two nodes under **MAIC/llm** that chat with the `llama-server` MAIC runs (`maic up llamacpp`, `http://127.0.0.1:8081/v1`). Standard library only, one non-streaming POST per turn, loopback by default. It replaces the vendored `comfyui-ollama` nodes and their think patch; `vendor/comfyui.sh wire` links this folder into `custom_nodes/`.
+MAIC's own ComfyUI custom node: two nodes under **MAIC/llm** that chat with the `llama-server` MAIC runs (`maic up llamacpp`, `http://127.0.0.1:8081/v1`; the side server `maic up llamacpp-2` on `http://127.0.0.1:8082/v1` for a second resident model). Standard library only, one non-streaming POST per turn, loopback by default. It replaces the vendored `comfyui-ollama` nodes and their think patch; `vendor/comfyui.sh wire` links this folder into `custom_nodes/`.
 
 | Node | Inputs | Outputs |
 | :--- | :--- | :--- |
@@ -24,7 +24,7 @@ Errors are node errors with the server's reply text; an unreachable server says 
 | :--- | :--- |
 | `OllamaConnectivityV2.url` `http://127.0.0.1:11434` | `MaicLlmServer.base_url` `http://127.0.0.1:8081/v1` |
 | `.model` (a tag from the server's list) | `.model`, a free string; `current` is the linked GGUF |
-| `.keep_alive`, `.keep_alive_unit` | none; llama-server keeps its one model loaded while it runs |
+| `.keep_alive`, `.keep_alive_unit` | none; each llama-server keeps its one resident model loaded while it runs |
 | `OllamaChat.system`, `.prompt`, `.think`, `.format` | the same names, same order, same values |
 | `OllamaOptionsV2` node on `.options` | `temperature`, `top_k`, `top_p`, `min_p`, `seed` widgets; everything else through `extra_json` |
 | `.images` | `.images` |
@@ -33,7 +33,7 @@ Errors are node errors with the server's reply text; an unreachable server says 
 | always remembers | `keep_context` on (the default) |
 | outputs `result`, `thinking`, `meta`, `history` | `response`, `thinking`, `session_id`; `meta` is gone (connect the server node to each chat node) |
 
-`example_workflows/story-chat-llamacpp.json` is the old Story chat on these nodes. The deep pass is a second server node pointing at the same server, still muted: llama-server loads one GGUF, so a second model means a second `llama-server` on another port (`maic vendor` will grow that later); until then the deep pass runs on whatever `maic vendor use llamacpp` linked.
+`example_workflows/story-chat-llamacpp.json` is the old Story chat on these nodes. The quick pass talks to MAIC's main server (`http://127.0.0.1:8081/v1`); the deep pass is a second server node, "Deep model (llamacpp-2)", pointing at MAIC's side server on `http://127.0.0.1:8082/v1` (`maic up llamacpp-2`, `docs/llamacpp.md`, Two servers). Each server keeps one model resident (`--models-max 1`), so with both up the quick model and the deep model stay loaded side by side; set the deep node's `model` to the GGUF's name (`Qwen3.5-9B-Q4_K_M-text`, say) and unmute it. `maic gpu` says whether the pair fits the card. The node's own `base_url` default stays 8081.
 
 ## Test
 

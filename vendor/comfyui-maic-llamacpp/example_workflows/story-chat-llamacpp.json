@@ -203,11 +203,11 @@
         "Node name for S&R": "MaicLlmServer"
       },
       "widgets_values": [
-        "http://127.0.0.1:8081/v1",
+        "http://127.0.0.1:8082/v1",
         "current",
         300
       ],
-      "title": "Deep model (same server; second port later)"
+      "title": "Deep model (llamacpp-2)"
     },
     {
       "id": 6,

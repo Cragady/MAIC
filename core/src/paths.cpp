@@ -63,6 +63,9 @@ std::string expand_vars(std::string_view text) {
         else if (name == "MAIC_CONTEXT") {
             const char* c = std::getenv("MAIC_CONTEXT");
             out.append(c && *c ? std::string(c) : "16384");
+        } else if (name == "MAIC_CONTEXT_2") {
+            const char* c = std::getenv("MAIC_CONTEXT_2");
+            out.append(c && *c ? std::string(c) : "8192");
         } else if (name == "MAIC_MODELS") {
             // The models directory from settings (main() exports it), else a default under the state directory.
             const char* m = std::getenv("MAIC_MODELS_DIR");

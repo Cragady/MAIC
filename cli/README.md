@@ -7,6 +7,7 @@ maic vendor add llamacpp           # once: build llama.cpp (docs/llamacpp.md)
 maic vendor use llamacpp /path/to/model.gguf   # once per model: the GGUF it serves
 cd ~/some/project
 maic up llamacpp                   # once per boot
+maic up llamacpp-2                 # optional: the side server on 8082, a second resident model (docs/llamacpp.md, Two servers)
 maic                               # the agent, on llamacpp/current
 maic --model anthropic/claude-opus-5-5 --mode auto-read
 maic -c                            # continue the last session started in this directory
@@ -82,7 +83,8 @@ The system clipboard is reached through `wl-copy` or `xclip` when present, and a
 | `:instructions` | the MAIC.md / AGENTS.md files in effect |
 | `:session` / `:artifacts` | where this transcript is; where everything is kept, with sizes |
 | `:path [NAME] [copy]` / `:open NAME` | every place maic knows by a short name (`workspace`, `session`, `sessions`, `models`, `workflows`, `templates`, `vendor/llamacpp`, `comfyui/outputs`, ...); show one, copy it to the clipboard, or open it in the file manager. `maic path`, `maic open`, and `eval "$(maic shell-init)"` for `mcd NAME` in your shell. See `:h path` |
-| `:gpu [free]` | who holds the card (llama-server's resident model, ComfyUI's VRAM view); `free` unloads without stopping anything. `maic gpu` in the shell. A failed `maic up` explains a CUDA out of memory in plain words |
+| `:gpu [free [llamacpp\|llamacpp-2\|comfyui]]` | who holds the card (each llama server's resident model, ComfyUI's VRAM view) and one sentence on whether the two models fit it; `free` unloads without stopping anything. `maic gpu` in the shell. A failed `maic up` explains a CUDA out of memory in plain words |
+| `:ctx [N]` / `:ctx2 [N]` | the context window of the main llama server (`--ctx`, `context`) and of the side server `llamacpp-2` (`--ctx2`, `context_2`); setting one restarts that server when it runs with another size. See `:h ctx` |
 | `:open NAME folder` / `maic cd NAME [--subshell]` | the containing folder in the file manager; the place's directory printed for `cd "$(maic cd NAME)"`, or with `--subshell` a shell there (`exit` returns) |
 | `:open SERVICE [firefox\|chrome]` | a service's URL in the browser (`browser` in settings picks the default one; `remote` in settings opens a subscribed maic-server's copy) |
 | `:image [FILE\|clear]` | a picture for the next message; `![alt](path)` in the text or a file dragged onto the terminal is attached on send (a plain path inside a sentence stays text). `--image FILE` on the command line. Vision models only. See `:h image` |

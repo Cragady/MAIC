@@ -45,9 +45,9 @@ std::string help_text(const std::string& topic);
 // behind it (start it, link a model), from the service state on that port.
 std::string failure_text(const Agent& agent, const std::exception& e);
 
-// The context window: sizes the llamacpp provider's readout and, when the local server is running with a
-// different --ctx-size, restarts it (a notice is returned; "" when nothing had to happen).
-void set_context(std::vector<Provider>& providers, int tokens);
+// The context window of a llama server ("llamacpp" or "llamacpp-2"): exports ${MAIC_CONTEXT} or ${MAIC_CONTEXT_2}
+// for its service file and sizes the matching provider's readout.
+void set_context(std::vector<Provider>& providers, int tokens, const std::string& service = "llamacpp");
 
 // When `query` names a preset: sets settings.model, the reviewer, thinking, the provider's context_window and,
 // for a local llama.cpp model, settings.context. Returns the preset's name, "" when none matched.
@@ -61,6 +61,8 @@ std::string apply_preset(Settings& settings, const std::string& query);
 std::pair<std::string, std::string> open_command(const std::string& name, const Settings& settings, const std::filesystem::path& workspace,
                                                  const std::vector<ServiceDef>& services, const std::optional<std::filesystem::path>& session,
                                                  const std::string& browser_override = "", bool folder = false);
-std::string restart_llamacpp_if_changed();
+// When the llama server `service` is running with another command than its file now gives (a new context
+// size), restarts it. Returns a notice, "" when nothing had to happen.
+std::string restart_llamacpp_if_changed(const std::string& service = "llamacpp");
 
 }  // namespace maic

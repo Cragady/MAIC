@@ -4,7 +4,7 @@ MAIC vendors [llama.cpp](https://github.com/ggml-org/llama.cpp) and runs its `ll
 
 ## Models are files under one directory
 
-`services/llamacpp.json` runs llama-server in router mode over `<models_dir>/llamacpp/` (`models_dir` in settings; `${MAIC_MODELS}` in service files). Every GGUF there is a model whose name is the file's stem; a model with a vision projector goes in a subdirectory named after it, holding the GGUF and an `mmproj-*.gguf`, and the server picks both up. `:models` lists them, `--model llamacpp/NAME` or `:model llamacpp/NAME` selects one, and the server loads it on demand, unloading the previous one (`--models-max 1`, since an 8 GB card holds one at a time; raise it in the service file on a bigger card). `llamacpp/current`, the default, means whichever file `maic vendor use llamacpp PATH` linked; MAIC resolves it to the real name, so the status line always shows what is loaded.
+`services/llamacpp.json` runs llama-server in router mode over `<models_dir>/llamacpp/` (`models_dir` in settings; `${MAIC_MODELS}` in service files). Every GGUF there is a model whose name is the file's stem; a model with a vision projector goes in a subdirectory named after it, holding the GGUF and an `mmproj-*.gguf`, and the server picks both up. `:models` lists them, `--model llamacpp/NAME` or `:model llamacpp/NAME` selects one, and the server loads it on demand, unloading the previous one (`--models-max 1`; a second resident model is the second server, below). `llamacpp/current`, the default, means whichever file `maic vendor use llamacpp PATH` linked; MAIC resolves it to the real name, so the status line always shows what is loaded.
 
 A bare model name (`--model Qwen3.5-9B-Q4_K_M`) goes to the first provider, `llamacpp`. (A provider you configure under a name matching `[Oo]llama` is never chosen for a bare name, since its tags look like bare names; write `NAME/model` to reach it.)
 
@@ -12,9 +12,23 @@ A bare model name (`--model Qwen3.5-9B-Q4_K_M`) goes to the first provider, `lla
 
 One number, `context` (default 16384), drives both the server's `--ctx-size` (through `${MAIC_CONTEXT}` in `services/llamacpp.json`) and MAIC's usage readout and auto-compaction. Set it with `--ctx 32768` on any `maic` run (the running server is restarted to match), `maic up llamacpp --ctx 32768`, `:ctx 32768` in a session, or `context = 32768` in settings. The 4B at Q4_K_M fits 32k on an 8 GB card; the 9B is tighter. A request that still exceeds the window is compacted and retried by MAIC (see `:h compact`).
 
+## Two servers
+
+One llama-server keeps one model resident (`--models-max 1`): ask it for another and it evicts the first. When two models are wanted at the same time, the Story chat's quick and deep passes, or a reviewer beside the session's model, MAIC runs a second server. `services/llamacpp-2.json` is the same `llama-server` in router mode over the same `<models_dir>/llamacpp/`, on `127.0.0.1:8082`, with its own context size, `context_2` (default 8192; `${MAIC_CONTEXT_2}` in the service file; `--ctx2 N`, `:ctx2 N`). `maic up llamacpp-2` starts it; it loads nothing until asked, so starting it never evicts the main server's model. The provider `llamacpp-2` is shipped (`http://127.0.0.1:8082/v1`), so `llamacpp-2/Qwen3.5-4B-Q4_K_M` is a model like any other, and a preset puts a short name on it:
+
+```lua
+models = { ["qwen-4b-side"] = { model = "llamacpp-2/Qwen3.5-4B-Q4_K_M", context = 8192 } }
+```
+
+**The reviewer never evicts the main model.** With `reviewer_model = "llamacpp-2/Qwen3.5-4B-Q4_K_M"` and the session's model on 8081, the smart harness reviews on the side server and the main model stays loaded. The default does this by itself: with `reviewer_model` empty and the model on `llamacpp`, a review goes to `llamacpp-2` with the same model name whenever that server answers, and to the main server as before when it does not.
+
+**ComfyUI.** The Story chat workflow's "Deep model (llamacpp-2)" node points at 8082 and the quick one at 8081, so both models stay loaded through a run; `vendor/comfyui-maic-llamacpp/README.md` has the node details.
+
+**Does it fit?** `maic gpu` and `maic doctor` end with one sentence: each GGUF's size on disk (the mmproj beside it counts) plus a rough KV cache estimate from its context (about 65 MB per 1k tokens for a 4B, 130 for a 9B; the figure is labelled an estimate), against the card's total from ComfyUI's `/system_stats` when it is up, else `nvidia-smi`, else "unknown". For example `4B at 16k (4.0 GB est.) + 4B at 8k (3.5 GB est.) = 7.6 GB of 8.0 GB: fits with ComfyUI stopped`. The side server's window, `context_2`, is the one to lower first. `maic gpu free llamacpp-2` unloads the side server's model alone; `maic gpu free` unloads both.
+
 ## Sharing an 8 GB card with ComfyUI
 
-They take turns. `maic up comfyui` (the service is marked `needs_gpu`) first asks llama-server to unload whatever model it holds and says so; the server stays up and reloads the model on the next request, once ComfyUI has let go of its weights. A load that fails with a CUDA out-of-memory means the other side still holds the card: `maic gpu` shows who, `maic gpu free` releases both sides without stopping anything, and a failed `maic up` says exactly that instead of an exit code. Two models resident at once is roadmap item 1.
+They take turns. `maic up comfyui` (the service is marked `needs_gpu`) first asks each llama server to unload whatever model it holds and says so; the servers stay up and reload the model on the next request, once ComfyUI has let go of its weights. A load that fails with a CUDA out-of-memory means the other side still holds the card: `maic gpu` shows who, `maic gpu free` releases every side without stopping anything, and a failed `maic up` says exactly that instead of an exit code.
 
 ## One model, two entries
 
@@ -115,3 +129,4 @@ MAIC sends nothing of this to Anthropic, so a `sampling` table tuned for llama.c
 | model | `~/.local/state/maic/vendor/llamacpp/current-model.gguf` -> your GGUF |
 | service | `services/llamacpp.json`; log in `~/.local/state/maic/logs/llamacpp.log` |
 | provider | `llamacpp`, `http://127.0.0.1:8081/v1`, in `default_providers()`; `llamacpp/current` is the default model |
+| side server | `services/llamacpp-2.json` on `127.0.0.1:8082`, provider `llamacpp-2`, context `context_2`; log in `~/.local/state/maic/logs/llamacpp-2.log` |

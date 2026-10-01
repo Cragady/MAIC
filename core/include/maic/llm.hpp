@@ -103,6 +103,8 @@ using TextSink = std::function<void(std::string_view delta, bool thinking)>;
 
 // GET <base_url>/models on an OpenAI-compatible server (llama.cpp's router lists every GGUF it can load).
 std::vector<std::string> list_openai_models(const Provider& provider);
+// Whether something answers HTTP at the provider's host (GET /health, any status): a local server that is up.
+bool server_answers(const Provider& provider);
 
 // Tool schemas are given in OpenAI function format and converted per provider.
 // Throws Cancelled if `cancel` is set, std::runtime_error on transport or API errors.

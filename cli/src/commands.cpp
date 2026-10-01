@@ -233,7 +233,10 @@ const std::vector<CommandInfo>& commands() {
          "A one-line instruction the model is asked to follow: `:rule Always answer in French`, `--rule TEXT` (repeatable), `rules = { ... }` in settings (layers add up). Rules travel with the operator text: they lead and close the system prompt and are appended to each of your messages as the model sees them, which is what a small model needs once tools are attached. `:rule` lists them, `:rule remove N`, `:rule clear`; a change mid-session is appended as a system note. A rule is a request the model can still drop; when the first words of every reply must be exact, use `:prefix` instead. `:system` is the same mechanism for a whole block of operator text."},
         {"ctx", {"context-size", "context-window", "ctx-size"}, "[N]", "the context window in tokens; restarts the local server to match",
          "*:ctx* *--ctx* *context*\n"
-         "One number drives both the local llama.cpp server (`--ctx-size`, via `${MAIC_CONTEXT}` in services/llamacpp.json) and MAIC's readout and auto-compaction. `:ctx` shows it; `:ctx 32768` sets it and, if the server is running with another size, restarts it (every model it serves gets the new size). `--ctx N` on the command line does the same at startup, including `maic up llamacpp --ctx N`; `context = N` in settings makes it the default. The 4B at Q4_K_M fits 32k on an 8 GB card; the 9B is tighter."},
+         "One number drives both the local llama.cpp server (`--ctx-size`, via `${MAIC_CONTEXT}` in services/llamacpp.json) and MAIC's readout and auto-compaction. `:ctx` shows it; `:ctx 32768` sets it and, if the server is running with another size, restarts it (every model it serves gets the new size). `--ctx N` on the command line does the same at startup, including `maic up llamacpp --ctx N`; `context = N` in settings makes it the default. The 4B at Q4_K_M fits 32k on an 8 GB card; the 9B is tighter. The side server has its own number: `:h ctx2`."},
+        {"ctx2", {"context-2", "context_2"}, "[N]", "the side server's context window (llamacpp-2); restarts it to match",
+         "*:ctx2* *--ctx2* *context_2*\n"
+         "The same for the second llama server, `llamacpp-2` on port 8082 (`${MAIC_CONTEXT_2}` in services/llamacpp-2.json, default 8192): `:ctx2` shows it, `:ctx2 16384` sets it and restarts that server when it runs with another size, `--ctx2 N` at startup, `context_2 = N` in settings. Two models resident at once share the card, so the side server's window is the one to lower first; `maic gpu` says whether the pair fits. See docs/llamacpp.md, Two servers."},
         {"prefill", {"prefix", "assistant-prefill"}, "[TEXT|@FILE|off]", "every reply starts with these literal words (the model continues them)",
          "*:prefix* *:prefill* *--prefix* *--prefill* *prefill*\n"
          "Puts TEXT in the model's mouth: it is sent as the opening of the assistant turn, so the model continues from it instead of being asked to comply. Give the words themselves, not a rule about them: `:prefill Sure thing! ` makes every reply begin \"Sure thing!\"; `:prefill Always start with Sure thing!` makes every reply *be* that sentence, because the model completes an instruction-shaped opening with an end of turn. Rules go in `:system`. Where a system prompt is a request a small model may drop, this is a guarantee: the reply starts with TEXT every time. `--prefill TEXT` (or `@file`), `prefill = \"...\"` in settings, `:prefill TEXT` in a session, `:prefill off` clears, `:prefill` shows. The prefill is shown and stored as the start of the reply. Two things to know: a prefilled turn almost never calls a tool (the model is already answering), so use it for chat-style rules rather than agentic work; and with thinking on, the prefill skips the thinking, since the answer has begun. Works on llama.cpp and Anthropic."},
@@ -243,9 +246,9 @@ const std::vector<CommandInfo>& commands() {
         {"instructions", {"no-instructions", "load_instructions"}, "[on|off]", "the MAIC.md / AGENTS.md files in effect, or switch them off",
          "*:instructions* *--no-instructions*\nLists the instruction files the model sees, re-read every turn. `:instructions off` stops loading them (global, project and nested) for the next turns; `on` brings them back. `--no-instructions` on the command line or `load_instructions = false` in settings starts that way. Independent of `:system`. See `:h instructions`."},
         {"session", {}, "", "where this transcript is", "*:session*\nThis session's file and the sessions directory. See `:h sessions`."},
-        {"gpu", {"vram", "memory"}, "[free [all|llamacpp|comfyui]]", "who holds the card; free memory without stopping anything",
+        {"gpu", {"vram", "memory"}, "[free [all|llamacpp|llamacpp-2|comfyui]]", "who holds the card; free memory without stopping anything",
          "*:gpu* *maic gpu* *vram* *out of memory*\n"
-         "`:gpu` (and `maic gpu`) shows who holds the card without nvidia-smi: the model resident in llama-server, and ComfyUI's own view of VRAM used and total. `:gpu free` unloads llama-server's model (it reloads on the next request) and asks ComfyUI to unload its models and release its caches; `:gpu free llamacpp` or `:gpu free comfyui` does one side. Nothing is stopped. When a service fails to start, `maic up` reads its log and says why in plain words: a CUDA out of memory names who holds the card and this command; a port in use, a missing Python module and a driver mismatch are recognised too. Starting a service marked `needs_gpu` (ComfyUI) frees llama-server's model first by itself."},
+         "`:gpu` (and `maic gpu`) shows who holds the card: the model resident in each llama server (llamacpp on 8081, llamacpp-2 on 8082), ComfyUI's own view of VRAM used and total, and one sentence on whether the two models fit the card (each GGUF's size on disk plus an estimated KV cache for its context, against the card's total from ComfyUI or nvidia-smi). `:gpu free` unloads both servers' models (they reload on the next request) and asks ComfyUI to unload its models and release its caches; `:gpu free llamacpp`, `:gpu free llamacpp-2` or `:gpu free comfyui` does one side. Nothing is stopped. When a service fails to start, `maic up` reads its log and says why in plain words: a CUDA out of memory names who holds the card and this command; a port in use, a missing Python module and a driver mismatch are recognised too. Starting a service marked `needs_gpu` (ComfyUI) frees the llama servers' models first by itself; a llama server loads nothing at start, so starting one never evicts the other."},
         {"path", {"paths", "places", "mcd", "cd"}, "[NAME] [copy]", "a place maic knows: show it, or copy it to the clipboard",
          "*:path* *:open* *maic path* *mcd*\n"
          "MAIC keeps a registry of every place it knows by a short name: `workspace`, `session` (this transcript), `sessions`, `state`, `config`, `settings`, `instructions`, `logs`, `root`, `tools`, `models`, `models/llamacpp`, `vendor`, `vendor/<service>`, `workflows`, `templates`, and every `maic artifacts` entry as `owner/name`. A unique prefix is enough (`:path work`, `:path sess`).\n\n"
@@ -317,7 +320,7 @@ std::vector<std::string> complete_argument(const std::string& command, const std
     else if (cmd == "allow") candidates = {"remove", "list"};
     else if (cmd == "forbid") candidates = {"remove", "list"};
     else if (cmd == "image") candidates = {"clear"};
-    else if (cmd == "gpu") candidates = {"free", "free llamacpp", "free comfyui"};
+    else if (cmd == "gpu") candidates = {"free", "free llamacpp", "free llamacpp-2", "free comfyui"};
     else if (cmd == "path" || cmd == "open") candidates = {"workspace", "session", "sessions", "state", "config", "settings", "instructions", "logs", "root", "tools", "models", "vendor", "workflows", "templates", "comfyui/outputs", "comfyui/workflows", "comfyui/templates", "maic/sessions", "maic/service-logs"};
     else if (cmd == "sampling") candidates = {"xtc", "temperature", "top_k", "top_p", "min_p", "seed", "repeat_penalty", "dry_multiplier", "top_n_sigma", "unset", "reset"};
     else if (cmd == "compact") candidates = {"prune", "head", "all"};
@@ -458,27 +461,28 @@ std::string apply_preset(Settings& settings, const std::string& query) {
             if (pr.name == provider.name) pr.options["context_window"] = p->context;
         }
         if (provider.name == "llamacpp") settings.context = p->context;
+        else if (provider.name == "llamacpp-2") settings.context_2 = p->context;
     }
     return p->name;
 }
 
-void set_context(std::vector<Provider>& providers, int tokens) {
-    setenv("MAIC_CONTEXT", std::to_string(tokens).c_str(), 1);
+void set_context(std::vector<Provider>& providers, int tokens, const std::string& service) {
+    setenv(service == "llamacpp" ? "MAIC_CONTEXT" : "MAIC_CONTEXT_2", std::to_string(tokens).c_str(), 1);
     for (auto& p : providers) {
-        if (p.name == "llamacpp") p.options["context_window"] = tokens;
+        if (p.name == service) p.options["context_window"] = tokens;
     }
 }
 
-std::string restart_llamacpp_if_changed() {
+std::string restart_llamacpp_if_changed(const std::string& service) {
     for (const auto& def : load_services(root_dir() / "services")) {
-        if (def.name != "llamacpp") continue;
+        if (def.name != service) continue;
         // Restart when the size differs, and also when the running server predates command recording: the
         // user asked for this size, and an unknown one is not it.
         if (service_status(def).state != ServiceState::Running) continue;
         if (!recorded_command(def).empty() && !command_changed(def)) continue;
         stop_service(def);
         bool ready = start_service(def);
-        return "llamacpp restarted with the new context size" + std::string(ready ? "" : " (still starting)");
+        return service + " restarted with the new context size" + std::string(ready ? "" : " (still starting)");
     }
     return "";
 }
@@ -490,13 +494,13 @@ std::string failure_text(const Agent& agent, const std::exception& e) {
         if (!hint.empty()) text += "\n" + hint;
     } else if (const auto* api = dynamic_cast<const ApiError*>(&e); api && api->status == 500 && text.find("failed to load") != std::string::npos) {
         auto [provider, name] = resolve_model(agent.providers, agent.model);
-        if (provider.name == "llamacpp") {
+        if (is_llama_server(provider.name)) {
             auto services = load_services(root_dir() / "services");
             GpuReport g = gpu_report(services);
             std::string why = "llama.cpp could not load " + name + ".";
             bool oom = false;
             for (const auto& def : services) {
-                if (def.name != "llamacpp") continue;
+                if (def.name != provider.name) continue;
                 std::ifstream in(service_log_path(def));
                 std::deque<std::string> tail;
                 for (std::string line; std::getline(in, line);) {
@@ -512,15 +516,19 @@ std::string failure_text(const Agent& agent, const std::exception& e) {
                     snprintf(buf, sizeof(buf), " (ComfyUI holds %.1f GB)", static_cast<double>(g.comfyui_vram_used) / (1 << 30));
                     why += buf;
                 }
-                why += ". Free it with `maic gpu free comfyui` (or stop ComfyUI), lower the context (`:ctx 8192`), or use the smaller model; a model with a vision projector needs about 1 GB more.";
+                for (const auto& s : g.servers) {
+                    if (s.name != provider.name && !s.models.empty()) why += " (" + s.name + " holds " + s.models.front() + ")";
+                }
+                why += ". Free it with `maic gpu free` (or stop ComfyUI), lower the context (`" + std::string(provider.name == "llamacpp" ? ":ctx 8192" : ":ctx2 4096") +
+                       "`), or use the smaller model; a model with a vision projector needs about 1 GB more. `maic gpu` says what fits.";
             } else {
-                why += " `maic logs llamacpp` has the reason.";
+                why += " `maic logs " + provider.name + "` has the reason.";
             }
             text += "\n" + why;
         }
     } else if (const auto* api = dynamic_cast<const ApiError*>(&e); api && api->status == 400 && text.find("not found") != std::string::npos) {
         auto [provider, name] = resolve_model(agent.providers, agent.model);
-        if (provider.name == "llamacpp") {
+        if (is_llama_server(provider.name)) {
             text += "\nllama.cpp serves the GGUFs under " + llamacpp_models_root().string() + " by file name (:models lists them, maic vendor model fetches one)";
             if (name.find(':') != std::string::npos) text += "; a name like " + name + " is a tag, not a file name here";
         }

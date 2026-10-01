@@ -21,6 +21,7 @@ struct HeadlessOptions {
     std::optional<std::string> system;
     std::optional<std::string> prefill;
     std::optional<int> ctx;
+    std::optional<int> ctx2;  // --ctx2 N, the side server
     std::vector<std::string> rules;
     std::optional<bool> load_instructions;
     std::vector<std::string> bans;
