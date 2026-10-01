@@ -1,0 +1,3 @@
+# per-session output written next to the document being dictated
+diction-logs/
+.h-diction-logs/

@@ -46,5 +46,6 @@ ln -sfn "$prefix/bin/maic-danbooru-tags" "$HOME/bin/maic-danbooru-tags"
 # cai-tools (docs/cai.md): `maic-cai` is a link to the `cai` wrapper.
 ln -sfn "$prefix/bin/cai" "$HOME/bin/cai"
 ln -sfn "$prefix/bin/maic-cai" "$HOME/bin/maic-cai"
+ln -sfn "$prefix/bin/maic-diction" "$HOME/bin/maic-diction"
 echo "installed $("$prefix/bin/maic" --version) at $prefix; ~/bin/maic points to it"
 echo "dev build stays at build/cli/maic (run it directly while testing)"

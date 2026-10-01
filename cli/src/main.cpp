@@ -80,10 +80,14 @@ void usage(std::ostream& out = std::cerr) {
                  "  vendor add NAME            fetch, verify, build and link one (network; asks nothing else)\n"
                  "  vendor adopt NAME PATH     use an install you already have instead of fetching\n"
                  "  vendor use llamacpp PATH   the GGUF that llamacpp/current means (a file under the models directory)\n"
-                 "  vendor model llamacpp URL SHA256 [--into DIR]   download a GGUF, verify it, link it as the model\n"
+                 "  vendor use whisper FILE    the ggml model whisper-server loads (<models_dir>/whisper/current.bin)\n"
+                 "  vendor model llamacpp|whisper URL SHA256 [--into DIR]   download a model, verify it, link it as current\n"
                  "  vendor wire NAME           redo the links and, for comfyui, the maic: block of extra_model_paths.yaml\n"
                  "                             from models_dir (no network; add and adopt do this too)\n"
                  "  vendor unlink NAME         stop using it (nothing is deleted)\n"
+                 "  model resolve NAME         a preset name or provider/model as JSON: provider, kind, base_url, model, context\n"
+                 "  diction [ARGS...]          narrate out loud into a markdown document: mic, whisper-server, a local scribe\n"
+                 "                             (maic help diction is its own --help; docs/diction.md)\n"
                  "  lua [FILE [args...] | -e CODE]   Lua (vendored LuaJIT) here, with the maic table; no arguments: a REPL (maic help lua)\n"
                  "  tools                      every tool the model can call: built-ins, the helpers beside maic, this\n"
                  "                             directory's Lua and script tools with their language and declared reads/writes\n"
@@ -779,6 +783,50 @@ int cmd_sessions_read(const std::vector<std::string>& args) {
     return 0;
 }
 
+// diction's launcher: the installed one beside this binary (a release), else the repository's (a dev build).
+std::filesystem::path diction_launcher() {
+    std::error_code ec;
+    std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (!ec && std::filesystem::exists(exe.parent_path() / "maic-diction", ec)) return exe.parent_path() / "maic-diction";
+    return maic::root_dir() / "diction" / "maic-diction";
+}
+
+// Replaces this process with diction, its arguments untouched, so its exit code is the one the shell sees.
+int exec_diction(const std::vector<std::string>& args) {
+    std::filesystem::path launcher = diction_launcher();
+    std::error_code ec;
+    if (std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec); !ec) setenv("MAIC_BIN", exe.c_str(), 1);
+    std::vector<char*> argv;
+    std::string name = launcher.string();
+    argv.push_back(name.data());
+    std::vector<std::string> copy = args;
+    for (auto& a : copy) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    execv(name.c_str(), argv.data());
+    throw std::runtime_error("could not start diction at " + name);
+}
+
+// maic model resolve NAME: what a preset name or provider/model means here, for helpers outside the binary.
+int cmd_model(const std::vector<std::string>& args) {
+    if (args.size() != 2 || args[0] != "resolve") throw std::runtime_error("maic model resolve NAME   (a preset like qwen-4b, or provider/model)");
+    maic::Settings s = maic::load_settings();
+    std::string model = args[1];
+    int context = 0;
+    if (auto p = maic::find_preset(s.presets, model)) {
+        model = p->model;
+        context = p->context;
+    }
+    model = maic::resolve_model_alias(model);
+    auto [provider, name] = maic::resolve_model(s.providers, model);
+    // A local server's window is the one it was started with; a preset never claims more than that.
+    int served = provider.name == "llamacpp" ? s.context : provider.name == "llamacpp-2" ? s.context_2 : provider.options.value("context_window", 0);
+    if (!context || (served && maic::is_llama_server(provider.name) && served < context)) context = served;
+    nlohmann::json out = {{"provider", provider.name}, {"kind", provider.kind}, {"base_url", provider.base_url}, {"model", name}, {"context", context},
+                          {"remote", provider.remote()}, {"api_key_env", provider.api_key_env}, {"api_key_command", provider.api_key_command}};
+    std::cout << out.dump() << "\n";
+    return 0;
+}
+
 int cmd_settings(const std::vector<std::string>& args) {
     if (!args.empty() && args[0] == "init") {
         bool as_json = args.size() > 1 && args[1] == "--json";
@@ -823,6 +871,15 @@ int main(int argc, char** argv) {
             if (topic == "cai" && argc >= 4) exec_cai({argv[3], "--help"});
             if (topic == "cai") exec_cai({"--help"});
             if (topic == "trans-fairy" || topic == "trans-fairy-write") exec_cai({topic, "--help"});
+        }
+    }
+    // diction keeps its own flags (-m, --mode, -h, ...), so it is handed off before any of them is read here.
+    if (argc >= 2 && std::string(argv[1]) == "diction") {
+        try {
+            return exec_diction(std::vector<std::string>(argv + 2, argv + argc));
+        } catch (const std::exception& e) {
+            std::cerr << "maic: " << e.what() << "\n";
+            return 1;
         }
     }
     std::vector<std::string> args;
@@ -931,6 +988,7 @@ int main(int argc, char** argv) {
             else if (a == "--think") headless.think = true;
             else if (a == "-h" || a == "--help" || a == "help") {
                 if (i + 1 < args.size()) {
+                    if (args[i + 1] == "diction") return exec_diction({"--help"});
                     std::cout << maic::help_text(args[i + 1]) << "\n";
                     return 0;
                 }
@@ -1036,6 +1094,7 @@ int main(int argc, char** argv) {
             return rc;
         }
         if (cmd == "settings") return cmd_settings(cargs);
+        if (cmd == "model") return cmd_model(cargs);
         if (cmd == "server") {
             // --model and --mode were taken by the agent options above; the server wants them too.
             if (tui.model) cargs.insert(cargs.end(), {"--model", *tui.model});
@@ -1217,7 +1276,7 @@ int main(int argc, char** argv) {
                     std::cout << "  " << e.name << "  " << e.ref << "  "
                               << (st.installed ? "installed" : st.linked ? "linked" : "not installed") << (st.target.empty() ? "" : "  -> " + st.target) << "\n"
                               << "    " << e.description << (st.note.empty() ? "" : "\n    " + st.note) << "\n";
-                    if (e.name == "llamacpp") std::cout << "    model: " << (st.model.empty() ? "none (maic vendor use llamacpp PATH)" : st.model) << "\n";
+                    if (e.name == "llamacpp" || e.name == "whisper") std::cout << "    model: " << (st.model.empty() ? "none (maic vendor use " + e.name + " PATH)" : st.model) << "\n";
                 }
                 return 0;
             }

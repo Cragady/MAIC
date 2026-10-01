@@ -1,0 +1,10 @@
+# diction
+
+Narrate out loud; get it written down, cleaned up, and correctable by voice. Micaiah's dictation tool: the mic, `whisper-server` and a scribe model on `llama-server`, all on this machine.
+
+    maic diction            # or: cai diction
+    maic help diction       # its flags
+
+Setup, the modes, the voice commands and the tap gesture, the flags, the privacy notes and the GPU budget: [docs/diction.md](../docs/diction.md). Open items: [TODO.md](TODO.md).
+
+Tests: `python3 -m unittest -v diction.test_diction` from the repository root (ctest `diction`).

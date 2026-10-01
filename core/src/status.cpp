@@ -16,6 +16,8 @@
 
 namespace maic {
 
+namespace fs = std::filesystem;
+
 namespace {
 const ServiceDef* by_name(const std::vector<ServiceDef>& services, const std::string& name) {
     for (const auto& s : services) {
@@ -153,6 +155,12 @@ std::string missing_requirement(const ServiceDef& def) {
         if (is_llama_server(def.name)) {
             return def.name + " needs a models directory: put a GGUF under " + path.string() + " or run maic vendor model llamacpp URL SHA256 (models_dir in settings moves it)";
         }
+        if (def.name == "whisper" && path.filename().string().rfind("ggml-silero", 0) == 0) {
+            return "whisper needs its VAD model: maic vendor model whisper URL SHA256 puts " + path.filename().string() + " at " + path.parent_path().string() + " (docs/diction.md has both)";
+        }
+        if (def.name == "whisper") {
+            return "whisper needs a model: maic vendor use whisper FILE, or maic vendor model whisper URL SHA256 (docs/diction.md names one; " + path.string() + " is the link)";
+        }
         return def.name + " needs " + path.string() + " (is the drive mounted?)";
     }
     return "";
@@ -217,6 +225,18 @@ GpuReport gpu_report(const std::vector<ServiceDef>& services) {
         r.comfyui_vram_used = used;
         r.comfyui_vram_total = total;
     }
+    if (const auto* w = by_name(services, "whisper")) {
+        r.has_whisper = true;
+        r.whisper_running = service_status(*w).state == ServiceState::Running;
+        auto e = find_vendor("whisper");
+        std::error_code ec;
+        if (e && fs::is_symlink(vendor_model_link(*e), ec)) {
+            fs::path target = fs::weakly_canonical(vendor_model_link(*e), ec);
+            r.whisper_model = target.string();
+            long n = static_cast<long>(fs::file_size(target, ec));
+            if (!ec) r.whisper_bytes = n;
+        }
+    }
     r.card_total = r.comfyui_vram_total;
     if (r.card_total <= 0) {
         // nvidia-smi reports MiB; a missing or broken nvidia-smi prints nothing.
@@ -240,6 +260,12 @@ std::string GpuReport::text() const {
         out += " (maic gpu free comfyui unloads its models and caches)\n";
     } else {
         out += "comfyui: not running\n";
+    }
+    if (has_whisper) {
+        std::string model = fs::path(whisper_model).filename().string() + (whisper_bytes >= 0 ? " (" + gib(whisper_bytes) + ")" : "");
+        if (whisper_model.empty()) out += "whisper: " + std::string(whisper_running ? "running" : "not running") + ", no model linked (maic vendor use whisper FILE)\n";
+        else if (whisper_running) out += "whisper: running, holds " + model + " (maic down whisper releases it)\n";
+        else out += "whisper: not running; its model is " + model + "\n";
     }
     return out;
 }
@@ -316,6 +342,7 @@ std::string k_tokens(int context) {
 }  // namespace
 
 long model_footprint(const ModelPlan& plan, const std::filesystem::path& models_root) {
+    if (plan.bytes >= 0) return plan.bytes;
     long weights = gguf_bytes(plan.id, models_root);
     if (weights <= 0) return -1;
     double per_token_mb = params_b(plan.id) > 6 ? 0.13 : 0.065;
@@ -329,7 +356,7 @@ std::string budget_sentence(const std::vector<ModelPlan>& plans, const std::file
         long bytes = model_footprint(plan, models_root);
         if (bytes < 0) continue;
         total += bytes;
-        terms += (terms.empty() ? "" : " + ") + size_label(plan.id) + " at " + k_tokens(plan.context) + " (" + gib(bytes) + " est.)";
+        terms += (terms.empty() ? "" : " + ") + (plan.label.empty() ? size_label(plan.id) + " at " + k_tokens(plan.context) : plan.label) + " (" + gib(bytes) + " est.)";
     }
     if (terms.empty()) return "";
     std::string out = terms + " = " + gib(total);
@@ -358,6 +385,10 @@ std::string gpu_budget(const GpuReport& report, const Settings& settings, long c
         if (s.name == "llamacpp") main_model = plan.id;
         if (!plan.id.empty()) plans.push_back(plan);
     }
+    // whisper-server holds its model from start: the file plus about 300 MB of KV and compute buffers.
+    if (report.has_whisper && report.whisper_bytes >= 0) {
+        plans.push_back({"", 0, "whisper " + fs::path(report.whisper_model).stem().string(), report.whisper_bytes + (300L << 20)});
+    }
     long card = report.card_total > 0 ? report.card_total : card_total_fallback;
     return budget_sentence(plans, llamacpp_models_root(), card, report.comfyui_running, report.comfyui_vram_used);
 }
@@ -374,6 +405,7 @@ std::string explain_exit(const ServiceDef& def, const std::vector<ServiceDef>& s
             who += (who.empty() ? "" : ", ") + s.name + " holds " + joined(s.models);
         }
         if (who.empty() && g.comfyui_running && def.name != "comfyui") who = "comfyui holds its models";
+        if (g.whisper_running && def.name != "whisper") who += (who.empty() ? "" : ", ") + std::string("whisper holds its model");
         return "CUDA out of memory: the card is full" + (who.empty() ? std::string(" (maic gpu shows who holds it)") : " (" + who + "). maic gpu free releases it, then maic up " + def.name + " again");
     }
     if (has("Address already in use")) return "port " + std::to_string(def.port) + " is already in use: another copy is running, or something else took the port (maic status)";

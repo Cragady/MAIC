@@ -27,6 +27,8 @@ maic help | grep vendor            # help goes to stdout, so it pipes; maic help
 maic lua                           # a LuaJIT REPL in this directory with the maic table loaded
 maic sessions                      # every session, with a preview
 maic artifacts                     # where MAIC and its services keep transcripts, logs, outputs
+maic diction                       # dictation into ./<dir>.md through whisper-server and a local scribe (docs/diction.md); maic help diction
+maic model resolve qwen-4b         # what a preset or provider/model means here, as JSON (provider, kind, base_url, model, context)
 maic settings init                 # a documented settings file (docs/settings.md)
 maic themes                        # the themes (yours in ~/.config/maic/themes, then the shipped ones), the active one marked
 maic themes import habamax         # a neovim colorscheme as a theme file, from a headless nvim with your config (docs/themes.md)

@@ -26,5 +26,12 @@
     "ref": "b11284",
     "install": "vendor/llamacpp.sh",
     "description": "llama.cpp built out of tree (CUDA when nvcc is present, no TLS so nothing can be downloaded), llama-server on 127.0.0.1:8081 serving the GGUF that `maic vendor use llamacpp PATH` picks"
+  },
+  "whisper": {
+    "path": "vendor/whisper.cpp",
+    "url": "https://github.com/ggml-org/whisper.cpp",
+    "ref": "v1.9.4",
+    "install": "vendor/whispercpp.sh",
+    "description": "whisper.cpp built out of tree (CUDA when nvcc is present, no downloader), whisper-server on 127.0.0.1:8083 transcribing for diction with the ggml model that `maic vendor use whisper FILE` picks"
   }
 }

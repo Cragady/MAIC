@@ -11,6 +11,9 @@ MAIC can install the services it drives (llama.cpp, the model server; ComfyUI), 
 │   ├── llamacpp/
 │   │   ├── bin                -> ../llama.cpp-build/bin
 │   │   └── current-model.gguf -> the GGUF llama-server loads (maic vendor use llamacpp PATH)
+│   ├── whisper.cpp      -> the pinned submodule checkout (or an adopted one)
+│   ├── whisper.cpp-build/ its out-of-tree CMake build (bin/whisper-server, ...)
+│   ├── whisper/bin      -> ../whisper.cpp-build/bin
 ├── workflows/comfyui/   your saved ComfyUI workflows, editable (ComfyUI's own folder points here)
 ├── templates/comfyui/   your own templates: originals, shown in ComfyUI's template browser, opened as copies
 ├── sessions/            transcripts
@@ -32,8 +35,9 @@ comfyui/workflows     52.1 KB    5      ~/.local/state/maic/workflows/comfyui
 | :--- | :--- | :--- | :--- |
 | `comfyui` | `vendor/ComfyUI` | `v0.38.0` | `vendor/comfyui.sh`: uv venv with Python 3.13 (system Python untouched), CUDA 13 torch, requirements, MAIC's custom nodes linked in (`vendor/comfyui-maic-llamacpp`, the chat nodes for llama-server; `vendor/comfyui-maic-templates`, the template shelf), `extra_model_paths.yaml` from `models_dir`, workflows moved into the artifact tree |
 | `llamacpp` | `vendor/llama.cpp` | `b11284` | `vendor/llamacpp.sh`: CMake out of tree into `llama.cpp-build/`, Release, CUDA when `nvcc` is found, no TLS (the binaries cannot download models), targets `llama-server llama-cli llama-quantize llama-gguf-split`, `llamacpp/bin` link. See [llamacpp.md](llamacpp.md) |
+| `whisper` | `vendor/whisper.cpp` | `v1.9.4` | `vendor/whispercpp.sh`: CMake out of tree into `whisper.cpp-build/`, Release, CUDA when `nvcc` is found, `WHISPER_CURL` off (no downloader), no ffmpeg or SDL2, targets `whisper-server whisper-cli`, `whisper/bin` link; the model is `<models_dir>/whisper/current.bin` (`maic vendor use whisper FILE`), `services/whisper.json` serves it on 127.0.0.1:8083 for diction. See [diction.md](diction.md) |
 
-Privacy is the same as the hand-built setup: ComfyUI runs with `--disable-api-nodes --disable-auto-launch --listen 127.0.0.1`; llama-server runs with `--host 127.0.0.1` from a build without TLS, models on the external drive. Those are in `services/*.json`, not in the vendored code.
+Privacy is the same as the hand-built setup: ComfyUI runs with `--disable-api-nodes --disable-auto-launch --listen 127.0.0.1`; llama-server runs with `--host 127.0.0.1` from a build without TLS, models on the external drive; whisper-server runs with `--host 127.0.0.1` from a build without its downloader. Those are in `services/*.json`, not in the vendored code.
 
 ## Commands
 
@@ -43,6 +47,8 @@ maic vendor add comfyui          # fetch the submodule, apply patches, run the i
 maic vendor adopt comfyui ~/dev2/tools-and-things/ComfyUI     # use an install you already have
 maic vendor add llamacpp         # build the submodule out of tree (about ten minutes, no download)
 maic vendor use llamacpp /path/to/model.gguf   # the GGUF llama-server loads (llamacpp.md)
+maic vendor add whisper          # build whisper.cpp out of tree (no download); diction's speech to text
+maic vendor use whisper /path/to/ggml-model.bin  # the model whisper-server loads (diction.md)
 maic vendor wire comfyui         # redo the links and the maic: block of extra_model_paths.yaml (offline, idempotent)
 maic vendor unlink comfyui       # stop using it; nothing is deleted
 maic setup                       # a guided first run over all of this, one yes/no per step

@@ -92,7 +92,8 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [sessions.md](docs/sessions.md): the session file format, every record type, homes, forks and `--fork-at`, `maic sessions import` (claude.ai exports, Claude Code transcripts), `redact`, `export`.
 * [cai.md](docs/cai.md): cai-tools, all of it, as `cai TOOL` and `maic cai TOOL`: trans-fairy, redact, read, fabricate and the rest, on MAIC sessions as on Claude Code transcripts; `trans-fairy-write`'s backups.
 * [llamacpp.md](docs/llamacpp.md): llama.cpp, the local server: every sampler (XTC, DRY, top-n-sigma), logit bias, grammars, the models directory and `maic vendor model`.
-* [vendor.md](docs/vendor.md): the services MAIC installs for itself (llama.cpp, ComfyUI) at pinned versions, and the artifact tree.
+* [vendor.md](docs/vendor.md): the services MAIC installs for itself (llama.cpp, whisper.cpp, ComfyUI) at pinned versions, and the artifact tree.
+* [diction.md](docs/diction.md): `maic diction`, narrating out loud into a markdown document: whisper-server for the speech, a local scribe on llama-server, nothing leaving the machine.
 * [bans.md](docs/bans.md) — string, regex and token bans, XTC, and why MAIC bans after the fact rather than by constrained decoding.
 * [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.
 * [opencode-quick-wins.md](docs/opencode-quick-wins.md) — 23 small, ranked improvements to take from opencode, with file pointers.
@@ -132,7 +133,8 @@ MAIC/
 │               policy, sandbox, sessions, settings, service manager, tripwire
 ├── cli/        `maic`: the agent UI (vim keys, modes, sessions) and service/harness commands. See cli/README.md
 ├── harness/    maic-lock (root-owned tripwire helper) + its installer
-├── services/   one JSON file per service MAIC runs (llamacpp, comfyui)
+├── services/   one JSON file per service MAIC runs (llamacpp, comfyui, whisper)
+├── diction/    diction, the dictation tool (Python, standard library plus webrtcvad); `maic diction`. See docs/diction.md
 ├── vendor/     pinned submodules (llama.cpp, ComfyUI), MAIC's own ComfyUI nodes (comfyui-maic-*), install scripts, manifest.json. See docs/vendor.md
 ├── tools/      examples of user-defined tools, Lua and script (docs/tools.md), and the ComfyUI helpers
 ├── server/     maic-server: sessions over HTTP with server-sent events, the phone web client. See docs/remote.md
@@ -171,6 +173,7 @@ maic unlock                  # needs your sudo password
 maic server token new phone  # a bearer token for one device, shown once
 maic server start            # the API and web client on 127.0.0.1:7373; --listen 0.0.0.0:7373 for the LAN, with TLS
 maic server pair             # with server.relay set: pair the phone once on the LAN, then it reaches home through the relay
+maic diction                 # narrate into ./<dir>.md: needs maic up whisper and a llama server (docs/diction.md)
 ```
 
 State lives in `~/.local/state/maic/`: `run/<service>.pid` (PID plus process start time, so a reused PID is never mistaken for the service), `logs/<service>.log`, `sessions/*.jsonl`, and `server/` (token hashes, the audit log, the self-signed certificate, the relay pairing keys). Settings and standing instructions live in `~/.config/maic/` ([docs/settings.md](docs/settings.md)).
