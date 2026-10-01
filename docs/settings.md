@@ -6,7 +6,7 @@ Settings are Lua files that return a table (JSON with the same keys works too). 
 2. `<dir>/.maic/settings.lua` for each directory from just under `$HOME` down to the workspace: the project's, meant to be committed.
 3. `<dir>/.maic/settings.local.lua` next to each of those: personal overrides, keep it out of git.
 
-At each location a `settings.lua` is used when it exists, else a `settings.json` (`maic settings init --json` writes that form). Nearer files win. Scalars replace, `providers` merge by name, `style` merges by role. `:settings` in a session lists the files that were read; `maic init` (or `:init`, which also has the agent draft the `MAIC.md`) scaffolds a project's.
+At each location a `settings.lua` is used when it exists, else a `settings.json` (`maic settings init --json` writes that form). Nearer files win. Scalars replace (`theme` too), `providers` merge by name, `style` merges by role. `:settings` in a session lists the files that were read; `maic init` (or `:init`, which also has the agent draft the `MAIC.md`) scaffolds a project's.
 
 Because a settings file is code, it can decide things per machine:
 
@@ -79,6 +79,8 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 | `leader` | The vim leader key for normal and visual modes: `"space"` (default) or a single character. `<leader>y` yanks to the system clipboard, `<leader>p` pastes from it. |
 | `server` | `maic server`: `listen` (default `127.0.0.1:7373`; any other address turns TLS on), `workspaces` (directories a remote session may open; default `~/dev2`, else the current directory), `cert` and `key` (a PEM pair; empty makes a self-signed one under `~/.local/state/maic/server/`), `relay` (`https://host:port` of a `maic-relay` the server dials out to and holds open, so a phone paired with `maic server pair` reaches it from anywhere, end to end encrypted; default empty, no relay), `relay_cert` (a PEM that pins a self-signed relay certificate; empty means the system CA store). See [remote.md](remote.md). |
 | `highlight` | The input's highlighter: `"builtin"` (default, MAIC's markdown renderer) or `"nvim"`: one `nvim --embed --headless` is started on the first keystroke and asked over msgpack-rpc for treesitter's highlight captures of the text as markdown (headings, code, emphasis, links, lists, and inside fenced blocks the keywords, strings and comments of the languages nvim has parsers for). It gets 50 ms per keystroke; when nvim is missing or fails, a notice says so and the built-in one is used. `:set highlight nvim\|builtin` for a session. See `:h highlight`. |
+| `theme` | A theme by name (default `"default"`, the built-in look): `gruvbox-dark`, `gruvbox-light`, `mono`, or a file of yours in `~/.config/maic/themes/NAME.lua`. The nearest layer wins. A theme that fails to load is reported at start with its file and line and the default is used instead. `:theme NAME` switches live. See [Styles and themes](#styles-and-themes) and [themes.md](themes.md). |
+| `colors` | The colour depth: `"auto"` (default: truecolor when `COLORTERM` is `truecolor` or `24bit`, else 256 colours when `TERM` (or `COLORTERM`) contains `256`, else the 16 ANSI colours), `"truecolor"`, `"256"` or `"16"`. Below truecolor a `#rrggbb` becomes the nearest xterm-256 colour (the 6x6x6 cube and the grey ramp, by squared distance in sRGB) or the nearest of the 16. |
 | `enter_sends` | `true`: in insert mode Enter sends a one-line input, Shift+Enter or Alt+Enter inserts the line break, and an input that already has several lines keeps Enter as a line break. Default `false`, the vim-like behaviour: Enter is always a line break and Alt+Enter or `:w` sends. `:set enter_sends on\|off` for a session. |
 | `server` | `maic server`: `listen` (default `127.0.0.1:7373`; any other address turns TLS on), `workspaces` (directories a remote session may open; default `~/dev2`, else the current directory), `cert` and `key` (a PEM pair; empty makes a self-signed one under `~/.local/state/maic/server/`). See [remote.md](remote.md). |
 | `sessions_home` | Where new transcripts go. `auto` (default): under `sessions/projects/<encoded workspace>/` when the workspace has a `MAIC.md` (or one is in effect from a parent directory), else `sessions/general/`. Or force it: `general`, `project`, or any name (`sessions/<name>/`). A project can set this in its `.maic/settings.json`; `maic sessions rehome` moves existing transcripts. |
@@ -123,23 +125,92 @@ Use a provider with `:model anthropic/claude-opus-5-5`, `:model deepseek/deepsee
 
 Anthropic models get thinking on by default with `effort` controlling depth, streamed tool input, and refusal fallbacks. Their history is replayed exactly as received (thinking blocks included) and never edited, which the newer models require; mode changes and instruction updates are appended as system messages instead.
 
-## Styles
+## Styles and themes
 
-`style` maps a role to `{ "fg", "bg", "bold", "dim", "italic", "underline", "inverted" }`. Colors are FTXUI names (`black red green yellow blue magenta cyan white gray gray_dark red_light green_light yellow_light blue_light magenta_light cyan_light default`), `#rrggbb`, or a 0-255 palette index. A role you set is merged over its default, so `{"fg": "#ff8800"}` keeps the default's bold. (`italic` renders as dim: the terminal library has no italic.)
+Every colour MAIC paints is a **role**. What a role looks like comes from three layers, each over the one before:
+
+1. the built-in default (the table in `themes/default.lua`);
+2. the **theme** (`theme = "NAME"`): each role it sets replaces the default role whole, the roles it leaves out keep the default;
+3. the `style` entries in settings: each merges over the theme's role, so `style = { user = { fg = "#ff8800" } }` changes the colour and keeps the theme's bold.
+
+A style is `{ fg, bg, bold, dim, italic, underline, inverted }`. Colours are FTXUI names (`black red green yellow blue magenta cyan white gray gray_dark red_light green_light yellow_light blue_light magenta_light cyan_light default`), `#rrggbb`, or a 0-255 palette index. `italic` renders as dim (the terminal library has no italic). Writing a theme, the shipped ones and importing from neovim: [themes.md](themes.md).
 
 | Role | Used for |
 | :--- | :--- |
-| `user`, `assistant`, `thinking`, `tool`, `tool_ok`, `tool_err`, `notice`, `error`, `shell` | conversation entries by kind |
-| `md_heading`, `md_bold`, `md_italic`, `md_code`, `md_code_block`, `md_link`, `md_url`, `md_quote`, `md_bullet`, `md_rule` | markdown, layered over the entry's style |
-| `hl_heading`, `hl_code`, `hl_keyword`, `hl_string`, `hl_comment` | what the nvim highlighter's captures paint in the input (`highlight = "nvim"`); its emphasis, links, lists and quotes use the `md_*` styles |
-| `diff_added`, `diff_removed`, `diff_hunk` | added and removed lines, and `@@` or file headers, in the approval preview of an edit and in tool output that is a diff (defaults green, red, dim) |
-| `input`, `input_prompt_insert`, `input_prompt_normal` | the input box and its prompt character |
-| `separator`, `focus`, `visual`, `search`, `cursor_line` | the line above the input, the border of the focused conversation window, selections, search hits, the cursor line |
-| `status`, `status_insert`, `status_normal`, `status_visual`, `status_dim` | the status lines |
-| `mode_manual`, `mode_auto-read`, `mode_edit`, `mode_auto`, `mode_plan` | the mode name |
-| `harness_armed`, `harness_tripped`, `remote`, `approval` | harness state, the REMOTE marker, the approval box |
+| `user` | your messages in the conversation |
+| `assistant` | the model's replies |
+| `thinking` | the model's reasoning, when thinking is on |
+| `tool` | a tool call line (`▸ read_file ...`) |
+| `tool_ok` | a tool's result |
+| `tool_err` | a failed tool result; also `[n]` and `[N]` in the approval prompt |
+| `notice` | MAIC's own notes (`※`), status-strip notes, the ISOLATED marker |
+| `error` | errors (`✗`), the DUMB HARNESS marker, `[t]` in the approval prompt, a confirmation's title |
+| `shell` | a `!command` of yours and its running marker, Lua mode |
+| `md_heading` | markdown headings |
+| `md_bold` | `**strong**` |
+| `md_italic` | `*emphasis*` |
+| `md_code` | inline `` `code` `` |
+| `md_code_block` | fenced code blocks |
+| `md_link` | a link's text |
+| `md_url` | a link's URL |
+| `md_quote` | `>` quotes |
+| `md_bullet` | list markers |
+| `md_rule` | `---` rules |
+| `hl_heading`, `hl_code`, `hl_keyword`, `hl_string`, `hl_comment` | what the nvim highlighter's captures paint in the input (`highlight = "nvim"`): headings, raw text, and inside fenced blocks keywords, strings and comments; its emphasis, links, lists and quotes use the `md_*` roles |
+| `diff_added`, `diff_removed`, `diff_hunk` | added and removed lines, and `@@` or file headers, in the approval preview of an edit and in tool output that is a diff |
+| `input` | the input box text |
+| `input_prompt_insert`, `input_prompt_normal` | the input's prompt character in insert and in normal mode |
+| `separator` | the line above the input |
+| `focus` | the border of the conversation window when it has the focus |
+| `visual` | a visual selection, and the selected row of the command palette |
+| `search` | search hits |
+| `cursor_line` | the cursor line in the conversation window |
+| `status` | the top status strip |
+| `status_insert`, `status_normal`, `status_visual` | the vim mode in the bottom status line |
+| `status_dim` | quiet text in the status lines and the palette's summaries |
+| `mode_manual`, `mode_auto-read`, `mode_edit`, `mode_auto`, `mode_plan` | the agent mode's name in the status strip |
+| `harness_armed`, `harness_tripped` | the harness state in the status strip; `harness_armed` also colours `[y]` in the approval prompt |
+| `remote` | the REMOTE marker |
+| `approval` | the approval, question and confirmation boxes |
 
-`maic settings init` writes every default, so the easiest way to restyle is to run it once and edit.
+### From neovim colorschemes
+
+`:theme nvim:NAME` (and `maic themes import NAME`) read these highlight groups, resolved (`nvim_get_hl` with `link = false`), and give each role the colour of the **first group in its list that has one**. A plain role takes the group's foreground (its background when it has no foreground) and keeps the built-in role's attributes (the bold of a mode name, the inverse of `status_insert`); a **filled** role takes the group's foreground and background as nvim shows them, `reverse` applied. The group's own bold, italic and underline are added. A colorscheme that defines only terminal colours (`ctermfg`) is read through the xterm palette. Roles not listed here, and roles none of whose groups has a colour, keep the built-in default: `user`, `assistant`, `input`, `status_dim`, and `md_bold` / `md_italic` unless the scheme colours `@markup.strong` / `@markup.italic`.
+
+| Role | nvim groups, first with a colour wins |
+| :--- | :--- |
+| `thinking`, `tool_ok`, `md_url`, `hl_comment` | Comment |
+| `tool` | Function, Identifier |
+| `tool_err`, `error`, `mode_auto`, `harness_tripped`, `remote` | ErrorMsg, Error |
+| `notice` | MoreMsg, WarningMsg |
+| `shell`, `hl_string`, `input_prompt_insert`, `status_insert`, `mode_plan`, `harness_armed` | String |
+| `md_heading`, `hl_heading` | @markup.heading, Title |
+| `md_bold` | @markup.strong |
+| `md_italic` | @markup.italic |
+| `md_code` | @markup.raw, String |
+| `hl_code` | @markup.raw, Constant |
+| `md_code_block` (filled) | Pmenu, NormalFloat |
+| `md_link` | @markup.link, Underlined, Directory |
+| `md_quote` | @markup.quote, Comment |
+| `md_bullet` | @markup.list, Special |
+| `md_rule` | LineNr, Comment |
+| `hl_keyword` | Keyword |
+| `diff_added` | Added, DiffAdd |
+| `diff_removed` | Removed, DiffDelete |
+| `diff_hunk` | Changed, DiffText |
+| `input_prompt_normal`, `status_normal`, `mode_manual` | Function, Directory |
+| `separator` | LineNr |
+| `focus` | Special, Function |
+| `visual` (filled) | Visual |
+| `search` (filled) | Search |
+| `cursor_line` (filled) | CursorLine |
+| `status` (filled) | StatusLine |
+| `status_visual` | Constant, Keyword |
+| `mode_auto-read` | Special |
+| `mode_edit` | Type, WarningMsg |
+| `approval` | Question, MoreMsg |
+
+Normal, StatusLineNC, PmenuSel, Todo and DiffChange are read too but no role takes from them yet. The theme's `background` is nvim's `'background'` after the colorscheme ran.
 
 ## Instructions
 

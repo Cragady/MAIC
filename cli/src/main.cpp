@@ -9,6 +9,7 @@
 #include "maic/service.hpp"
 #include "maic/session.hpp"
 #include "maic/settings.hpp"
+#include "maic/theme.hpp"
 #include "maic/status.hpp"
 #include "maic/tripwire.hpp"
 #include "maic/bans.hpp"
@@ -86,6 +87,9 @@ void usage(std::ostream& out = std::cerr) {
                  "                             directory's Lua and script tools with their language and declared reads/writes\n"
                  "  tools check                validate every tool manifest here and in ~/.config/maic/tools (exit 1 on a problem)\n"
                  "  tools new NAME --lang python|sh|perl|node [--global]   scaffold .maic/tools/NAME/ with a manifest and a stub\n"
+                 "  themes                     the themes there are (yours in ~/.config/maic/themes, then the shipped ones), the\n"
+                 "                             active one marked, with where each comes from (maic help theme)\n"
+                 "  themes import NAME [--as FILE]   a neovim colorscheme as a theme file, from a headless nvim with your config\n"
                  "  doctor                     what this machine has, what MAIC needs, a recommended setup\n"
                  "  setup                      a guided first run: prerequisites, settings, llama.cpp, ComfyUI, a model, the\n"
                  "                             tripwire; every step is a yes/no question, nothing runs without a yes\n"
@@ -1108,6 +1112,37 @@ int main(int argc, char** argv) {
                           << "\n    reads " << globs(t.reads) << "; writes " << globs(t.writes) << "; timeout " << t.timeout_s << " s\n";
             }
             for (const auto& n : scripts.notices) std::cout << n << "\n";
+            return 0;
+        }
+        if (cmd == "themes" && !cargs.empty() && cargs[0] == "import") {
+            std::string scheme, as;
+            for (size_t i = 1; i < cargs.size(); ++i) {
+                if (cargs[i] == "--as" && i + 1 < cargs.size()) as = cargs[++i];
+                else if (scheme.empty()) scheme = cargs[i];
+                else throw std::runtime_error("usage: maic themes import COLORSCHEME [--as FILE_NAME]");
+            }
+            if (scheme.empty()) throw std::runtime_error("usage: maic themes import COLORSCHEME [--as FILE_NAME]");
+            try {
+                maic::Theme t = maic::import_nvim_theme(scheme, as);
+                std::cout << "wrote " << t.path.string() << " (" << t.styles.size() << " roles from nvim; the rest keep the default)\n"
+                          << "use it with theme = \"" << t.name << "\" in settings, or :theme " << t.name << " in a session\n";
+            } catch (const std::exception& e) {
+                std::string msg = e.what();
+                if (msg.rfind("nvim has no colorscheme", 0) == 0) {
+                    std::string list;
+                    for (const auto& c : maic::nvim_colorschemes()) list += (list.empty() ? "" : ", ") + c;
+                    msg = "nvim has no colorscheme " + scheme + "; it has: " + list;
+                }
+                throw std::runtime_error(msg);
+            }
+            return 0;
+        }
+        if (cmd == "themes") {
+            maic::Settings settings = maic::load_settings();
+            for (const auto& t : maic::list_themes()) {
+                std::cout << (t.name == settings.theme ? "* " : "  ") << t.name << "  " << (t.path.empty() ? "built in" : t.path.string()) << "\n";
+            }
+            if (!settings.theme_error.empty()) std::cout << "theme " << settings.theme << ": " << settings.theme_error << "\n";
             return 0;
         }
         if (cmd == "vendor") {

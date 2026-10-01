@@ -14,9 +14,11 @@
 #include "style.hpp"
 #include "view.hpp"
 #include "maic/markdown.hpp"
+#include "maic/theme.hpp"
 
 #include <ftxui/dom/node.hpp>
 #include <ftxui/screen/screen.hpp>
+#include <ftxui/screen/terminal.hpp>
 
 namespace fs = std::filesystem;
 using namespace maic;
@@ -1008,6 +1010,40 @@ int main() {
         ftxui::Screen plain(80, 10);
         ftxui::Render(plain, v.render(s, 80, 10));
         expect(plain.PixelAt(4, 8).foreground_color == parse_color("gray_dark") && plain.PixelAt(4, 9).foreground_color == parse_color("gray_dark"), "with markdown off the diff is plain text");
+    }
+
+    section("themes switch live");
+    {
+        auto before = ftxui::Terminal::ColorSupport();
+        ftxui::Terminal::SetColorSupport(ftxui::Terminal::Color::TrueColor);
+        std::string r4;
+        View v(&r4);
+        v.append(Kind::Error, "boom");
+        Settings s;
+        apply_theme(s, Theme{"default"});
+        // The colour of the first "b" on the screen: the error entry's text.
+        auto error_fg = [&] {
+            ftxui::Screen screen(40, 4);
+            ftxui::Render(screen, v.render(s, 40, 4));
+            for (int y = 0; y < 4; ++y) {
+                for (int x = 0; x < 40; ++x) {
+                    if (screen.PixelAt(x, y).character == "b") return screen.PixelAt(x, y).foreground_color;
+                }
+            }
+            return ftxui::Color();
+        };
+        expect(error_fg() == parse_color("red_light"), "the default theme paints an error red_light");
+        apply_theme(s, load_theme("gruvbox-dark"));
+        expect(error_fg() == ftxui::Color::RGB(0xfb, 0x49, 0x34), "after switching to gruvbox-dark the same view paints it #fb4934, no restart");
+        apply_theme(s, load_theme("mono"));
+        expect(error_fg() == ftxui::Color() && s.theme == "mono", "mono paints it with no colour");
+        ftxui::Terminal::SetColorSupport(ftxui::Terminal::Color::Palette256);
+        expect(parse_color("#fb4934") == ftxui::Color::Palette256(203) && parse_color("red") == ftxui::Color(ftxui::Color::Red), "on a 256-colour terminal a hex colour becomes the nearest xterm one");
+        ftxui::Terminal::SetColorSupport(ftxui::Terminal::Color::Palette16);
+        expect(parse_color("#fb4934") == ftxui::Color(ftxui::Color::RedLight) && parse_color("#282828") == ftxui::Color(ftxui::Color::Black), "on a 16-colour terminal, the nearest ANSI colour");
+        set_color_depth("truecolor");
+        expect(ftxui::Terminal::ColorSupport() == ftxui::Terminal::Color::TrueColor, "colors = truecolor overrides the detection");
+        ftxui::Terminal::SetColorSupport(before);
     }
 
     section("msgpack");

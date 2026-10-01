@@ -98,8 +98,11 @@ def main():
     r = subprocess.run([maic, "tools"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
     list_ok = r.returncode == 0 and "word_count  (python)" in r.stdout and "reads **; writes nothing; timeout 10 s" in r.stdout
     print(("ok" if list_ok else "FAIL") + ": maic tools lists script tools with language and declared reads/writes" + ("" if list_ok else "\n" + r.stdout[-1500:]))
+    r = subprocess.run([maic, "themes"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    themes_ok = r.returncode == 0 and "* default  built in" in r.stdout and "  gruvbox-dark  " in r.stdout and "  mono  " in r.stdout
+    print(("ok" if themes_ok else "FAIL") + ": maic themes lists the shipped themes with the active one marked" + ("" if themes_ok else "\n" + r.stdout[-1500:] + r.stderr[-1500:]))
     srv.shutdown()
-    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok else 1)
+    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok else 1)
 
 
 if __name__ == "__main__":

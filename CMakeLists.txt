@@ -56,5 +56,6 @@ install(PROGRAMS tools/comfyui/danbooru_tags.py DESTINATION bin RENAME maic-danb
 install(PROGRAMS tools/comfyui/panel_check.py DESTINATION bin RENAME maic-panel-check)
 install(DIRECTORY server/web/ DESTINATION share/maic/server/web)
 install(DIRECTORY services/ DESTINATION share/maic/services)
+install(DIRECTORY themes/ DESTINATION share/maic/themes)
 # Fallback root for a copy installed without the repository: the vendor ledger and scripts, not the checkouts.
 install(FILES vendor/manifest.json vendor/comfyui.sh vendor/llamacpp.sh vendor/VENDORING DESTINATION share/maic/vendor)

@@ -28,6 +28,8 @@ maic lua                           # a LuaJIT REPL in this directory with the ma
 maic sessions                      # every session, with a preview
 maic artifacts                     # where MAIC and its services keep transcripts, logs, outputs
 maic settings init                 # a documented settings file (docs/settings.md)
+maic themes                        # the themes (yours in ~/.config/maic/themes, then the shipped ones), the active one marked
+maic themes import habamax         # a neovim colorscheme as a theme file, from a headless nvim with your config (docs/themes.md)
 maic doctor                        # the machine, the tools MAIC needs, installed models, a recommended setup
 maic setup                         # the first run as yes/no questions: settings, llama.cpp, ComfyUI, a model, the tripwire
 maic server token new phone        # remote access (docs/remote.md): a bearer token for one device, shown once
@@ -83,6 +85,7 @@ The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"
 | `:models` | models the current provider serves (llama.cpp: every GGUF under the models directory, by file name) |
 | `:think on\|off` | let the model reason before answering |
 | `:set markdown\|mouse\|enter_sends on\|off`, `:set highlight nvim\|builtin` | rendering, scroll-wheel, Enter and input-highlighter toggles |
+| `:theme [NAME\|reload\|nvim:NAME]` | list the themes (the active one marked), switch one live, re-read the active one's file, or import a neovim colorscheme as `~/.config/maic/themes/nvim-NAME.lua` (Tab after `nvim:` lists them). Shipped: `default`, `gruvbox-dark`, `gruvbox-light`, `mono`. `theme` and `colors` in settings; `maic themes` and `maic themes import NAME` in the shell. See docs/themes.md |
 | `:!cmd` or `!cmd` | run a command in **your** shell, unsandboxed, in the workspace; output shows in the conversation and is passed to the model as context (Ctrl-C stops it) |
 | `:status` | harness, every service with where it runs (`[host]` pid or `[docker]` container) and what it holds (resident model; ComfyUI's VRAM and queue), model and whether it is remote, session file, queue. See `:h status` |
 | `:up NAME` / `:down NAME` | start / stop a service |

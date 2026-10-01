@@ -1,5 +1,9 @@
 #include "style.hpp"
 
+#include "maic/theme.hpp"
+
+#include <ftxui/screen/terminal.hpp>
+
 #include <cstdlib>
 #include <map>
 
@@ -19,12 +23,25 @@ Color parse_color(const std::string& name) {
     if (auto it = named.find(name); it != named.end()) return it->second;
     if (name.size() == 7 && name[0] == '#') {
         auto hex = [&](size_t i) { return static_cast<uint8_t>(std::strtol(name.substr(i, 2).c_str(), nullptr, 16)); };
-        return Color::RGB(hex(1), hex(3), hex(5));
+        uint8_t r = hex(1), g = hex(3), b = hex(5);
+        switch (Terminal::ColorSupport()) {
+            case Terminal::Color::TrueColor: return Color::RGB(r, g, b);
+            case Terminal::Color::Palette256: return Color::Palette256(static_cast<uint8_t>(nearest_xterm256(r, g, b)));
+            default: return Color::Palette16(static_cast<Color::Palette16>(nearest_ansi16(r, g, b)));
+        }
     }
     if (!name.empty() && name.find_first_not_of("0123456789") == std::string::npos) {
         return Color::Palette256(static_cast<uint8_t>(std::atoi(name.c_str()) & 255));
     }
     return Color::Default;
+}
+
+void set_color_depth(const std::string& setting) {
+    switch (color_depth(setting)) {
+        case ColorDepth::Truecolor: Terminal::SetColorSupport(Terminal::Color::TrueColor); break;
+        case ColorDepth::Xterm256: Terminal::SetColorSupport(Terminal::Color::Palette256); break;
+        case ColorDepth::Ansi16: Terminal::SetColorSupport(Terminal::Color::Palette16); break;
+    }
 }
 
 Decorator decorate(const Style& s) {

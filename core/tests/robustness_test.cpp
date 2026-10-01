@@ -10,6 +10,7 @@
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
 #include "maic/status.hpp"
+#include "maic/theme.hpp"
 #include "maic/tools.hpp"
 #include "maic/vendor.hpp"
 
@@ -1467,6 +1468,203 @@ int main() {
         expect(comfy_entry && comfy_entry->models.size() == 11 && comfy_entry->models.count("upscale_models") && comfy_entry->models.count("model_patches"), "the manifest maps every category ComfyUI reads");
         unsetenv("XDG_CONFIG_HOME");
         unsetenv("XDG_STATE_HOME");
+    }
+
+    section("themes");
+    {
+        fs::path cfg = ws / "theme-xdg";
+        fs::path themes = cfg / "maic" / "themes";
+        setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
+        auto same = [](const Style& a, const Style& b) {
+            return a.fg == b.fg && a.bg == b.bg && a.bold == b.bold && a.dim == b.dim && a.italic == b.italic && a.underline == b.underline && a.inverted == b.inverted;
+        };
+        auto message = [](auto&& f) {
+            try {
+                f();
+            } catch (const std::exception& e) {
+                return std::string(e.what());
+            }
+            return std::string();
+        };
+
+        // The shipped themes.
+        Theme shipped_default = load_theme_file(builtin_themes_dir() / "default.lua");
+        bool equal = shipped_default.styles.size() == default_styles().size();
+        for (const auto& [role, st] : default_styles()) equal = equal && shipped_default.styles.count(role) && same(shipped_default.styles[role], st);
+        expect(equal, "themes/default.lua is the compiled-in default table, role for role");
+        expect(load_theme("default").styles.empty() && load_theme("default").path.empty(), "theme default with no file of the user's is the built-in table");
+        for (const char* name : {"gruvbox-dark", "gruvbox-light", "mono"}) {
+            Theme t = load_theme(name);
+            bool all = t.styles.size() == default_styles().size();
+            for (const auto& [role, st] : default_styles()) all = all && t.styles.count(role);
+            expect(all && t.name == name && t.path == builtin_themes_dir() / (std::string(name) + ".lua"), std::string(name) + " loads and sets every role");
+        }
+        Theme gd = load_theme("gruvbox-dark"), gl = load_theme("gruvbox-light"), mono = load_theme("mono");
+        expect(gd.background == "dark" && gl.background == "light", "the gruvbox pair says which background it is for");
+        expect(gd.styles["error"].fg == "#fb4934" && gd.styles["diff_added"].fg == "#b8bb26" && gd.styles["notice"].fg == "#fabd2f" && gd.styles["md_link"].fg == "#83a598" &&
+                   gd.styles["md_heading"].fg == "#fe8019" && gd.styles["md_heading"].bold && gd.styles["hl_comment"].fg == "#928374",
+               "gruvbox-dark: errors red, added green, notices yellow, links blue, headings orange and bold, comments grey");
+        expect(gl.styles["error"].fg == "#9d0006" && gl.styles["diff_added"].fg == "#79740e", "gruvbox-light uses the faded palette");
+        bool colourless = true;
+        for (const auto& [role, st] : mono.styles) colourless = colourless && !st.fg && !st.bg;
+        expect(colourless && mono.styles["visual"].inverted && mono.styles["user"].bold, "mono has no colours, only attributes");
+        expect(list_themes().size() == 4, "list_themes: default and the three shipped files");
+
+        // A partial theme of the user's, under the settings' own style entries.
+        write_file(themes / "partial.lua", "return { name = 'partial', background = 'light', styles = { error = { fg = '#ff0000' }, tool = {} } }");
+        fs::path proj = ws / "themeproj";
+        fs::create_directories(proj);
+        write_file(cfg / "maic" / "settings.lua", "return { theme = 'partial', style = { error = { underline = true }, notice = { fg = '#00ff00' } } }");
+        Settings ts = load_settings(proj);
+        expect(ts.theme == "partial" && ts.theme_error.empty(), "theme = NAME in settings loads the user's theme");
+        expect(ts.style("error").fg == "#ff0000" && ts.style("error").underline && !ts.style("error").bold, "precedence: a style entry merges over the theme's role");
+        expect(!ts.style("tool").fg, "a role the theme sets replaces the default whole (tool = {} drops the cyan)");
+        expect(ts.style("notice").fg == "#00ff00" && same(ts.style("md_heading"), default_styles().at("md_heading")), "roles the theme leaves out keep the default, under the style entries");
+        auto listed = list_themes();
+        expect(listed.size() == 5 && listed[4].name == "partial" && listed[4].path == themes / "partial.lua" && listed[0].name == "default" && listed[0].path.empty(),
+               "list_themes includes the user's, with its path, sorted by name");
+        write_file(proj / ".maic" / "settings.lua", "return { theme = 'mono' }");
+        expect(load_settings(proj).theme == "mono" && !load_settings(proj).style("diff_added").fg, "the nearest layer's theme wins");
+        fs::remove(proj / ".maic" / "settings.lua");
+        Settings switched = ts;
+        apply_theme(switched, load_theme("gruvbox-dark"));
+        expect(switched.theme == "gruvbox-dark" && switched.style("error").fg == "#fb4934" && switched.style("error").underline && switched.style("notice").fg == "#00ff00",
+               "switching themes keeps the style entries on top");
+        write_file(themes / "gruvbox-dark.lua", "return { styles = { error = { fg = '#123456' } } }");
+        expect(load_theme("gruvbox-dark").styles["error"].fg == "#123456" && load_theme("gruvbox-dark").path == themes / "gruvbox-dark.lua", "a user theme shadows a shipped one of the same name");
+        fs::remove(themes / "gruvbox-dark.lua");
+
+        // Bad theme files name the file and line.
+        write_file(themes / "broken.lua", "return {\n  styles = {\n    error = { fg = '#zzzzzz' },\n  },\n}\n");
+        std::string m = message([] { load_theme("broken"); });
+        expect(m.find((themes / "broken.lua").string() + ":3: styles.error.fg") == 0, "a bad colour names the file and line: " + m);
+        write_file(themes / "broken.lua", "return {\n  styles = {\n    user = { bold = true },\n    erorr = { fg = 'red' },\n  },\n}\n");
+        m = message([] { load_theme("broken"); });
+        expect(m.find("broken.lua:4: unknown role erorr") != std::string::npos, "an unknown role names its line: " + m);
+        write_file(themes / "broken.lua", "return {\n  style = {},\n}\n");
+        m = message([] { load_theme("broken"); });
+        expect(m.find("broken.lua:2: unknown key style") != std::string::npos, "style for styles is caught: " + m);
+        write_file(themes / "broken.lua", "return {\n  styles = {\n    error = { fg = '#ff0000' \n  },\n");
+        m = message([] { load_theme("broken"); });
+        expect(m.find((themes / "broken.lua").string() + ":") == 0 && m.find("expected") != std::string::npos, "a Lua syntax error names the file and line: " + m);
+        write_file(themes / "broken.lua", "return { styles = { user = { bold = 'yes' } } }");
+        expect(message([] { load_theme("broken"); }).find("styles.user.bold must be true or false") != std::string::npos, "attributes must be booleans");
+        expect(message([] { load_theme("no-such-theme"); }).find("no theme no-such-theme") == 0, "a missing theme says so");
+        expect(message([] { load_theme("../settings"); }).find("a theme name is") == 0, "a theme name cannot leave the themes directory");
+        write_file(cfg / "maic" / "settings.lua", "return { theme = 'broken', style = { user = { fg = 'red' } } }");
+        Settings bs = load_settings(proj);
+        expect(bs.theme_error.find("broken.lua:1:") != std::string::npos && bs.theme == "default" && bs.style("user").fg == "red" && bs.style("user").bold,
+               "a broken theme in settings leaves the default (plus style entries) and the reason, not a failed start: " + bs.theme_error);
+        fs::remove(themes / "broken.lua");
+        write_file(cfg / "maic" / "settings.lua", "return { colors = 'lots' }");
+        expect(message([&] { load_settings(proj); }).find("colors must be") != std::string::npos, "colors is checked");
+        fs::remove(cfg / "maic" / "settings.lua");
+
+        // theme_lua writes what load_theme_file reads back.
+        write_file(themes / "copy.lua", theme_lua(gd, "a copy\nof gruvbox-dark"));
+        Theme back = load_theme("copy");
+        bool round = back.styles.size() == gd.styles.size() && back.background == "dark";
+        for (const auto& [role, st] : gd.styles) round = round && same(back.styles[role], st);
+        expect(round && read_whole_text(themes / "copy.lua").rfind("-- a copy\n-- of gruvbox-dark\nreturn {", 0) == 0, "theme_lua round-trips, comment first");
+        fs::remove(themes / "copy.lua");
+
+        // Colour depth and the mappings.
+        expect(nearest_xterm256(0, 0, 0) == 16 && nearest_xterm256(255, 255, 255) == 231 && nearest_xterm256(255, 0, 0) == 196 && nearest_xterm256(0x80, 0x80, 0x80) == 244 &&
+                   nearest_xterm256(0xfb, 0x49, 0x34) == 203 && nearest_xterm256(0x5f, 0x87, 0xaf) == 67 && nearest_xterm256(0x28, 0x28, 0x28) == 235,
+               "hex to xterm-256: cube corners, the grey ramp, gruvbox red, an exact cube colour");
+        expect(nearest_ansi16(0, 0, 0) == 0 && nearest_ansi16(255, 0, 0) == 9 && nearest_ansi16(0xcd, 0, 0) == 1 && nearest_ansi16(255, 255, 255) == 15 &&
+                   nearest_ansi16(0xeb, 0xdb, 0xb2) == 7 && nearest_ansi16(0x28, 0x28, 0x28) == 0 && nearest_ansi16(0x83, 0xa5, 0x98) == 8,
+               "hex to the 16 ANSI colours");
+        expect(xterm_hex(196) == "#ff0000" && xterm_hex(244) == "#808080" && xterm_hex(1) == "#cd0000" && xterm_hex(67) == "#5f87af", "xterm indexes back to hex");
+        std::string old_colorterm = std::getenv("COLORTERM") ? std::getenv("COLORTERM") : "", old_term = std::getenv("TERM") ? std::getenv("TERM") : "";
+        setenv("COLORTERM", "truecolor", 1);
+        bool depth = color_depth("auto") == ColorDepth::Truecolor && color_depth("16") == ColorDepth::Ansi16 && color_depth("256") == ColorDepth::Xterm256;
+        setenv("COLORTERM", "24bit", 1);
+        depth = depth && color_depth("auto") == ColorDepth::Truecolor;
+        unsetenv("COLORTERM");
+        setenv("TERM", "xterm-256color", 1);
+        depth = depth && color_depth("auto") == ColorDepth::Xterm256 && color_depth("truecolor") == ColorDepth::Truecolor;
+        setenv("TERM", "xterm", 1);
+        depth = depth && color_depth("auto") == ColorDepth::Ansi16;
+        expect(depth, "colour depth: COLORTERM truecolor/24bit, TERM with 256, else 16; the colors setting overrides");
+        if (old_colorterm.empty()) unsetenv("COLORTERM");
+        else setenv("COLORTERM", old_colorterm.c_str(), 1);
+        if (old_term.empty()) unsetenv("TERM");
+        else setenv("TERM", old_term.c_str(), 1);
+
+        // Importing from nvim, against a fake nvim on PATH that answers the way the real one does.
+        fs::path fake = ws / "fake-nvim";
+        write_file(fake / "bin" / "nvim", "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FAKE_NVIM_DIR/argv\"\n"
+                                         "[ -n \"$FAKE_NVIM_HANG\" ] && { sleep 30; exit 0; }\n"
+                                         "case \"$MAIC_THEME_NAME\" in\n"
+                                         "'') echo '{\"colors\":[\"fakescheme\",\"other\"]}' > \"$MAIC_THEME_OUT\";;\n"
+                                         "fakescheme) cat > \"$MAIC_THEME_OUT\" <<'J'\n"
+                                         "{\"background\":\"light\",\"source\":\"/fake/colors/fakescheme.lua\",\"groups\":{\"ErrorMsg\":{\"fg\":\"#aa0000\",\"bold\":true},"
+                                         "\"Added\":{\"fg\":\"#00aa00\"},\"DiffAdd\":{\"bg\":\"#003300\"},\"DiffDelete\":{\"fg\":\"#cc0000\",\"bg\":\"#000000\",\"reverse\":true},"
+                                         "\"Visual\":{\"fg\":\"#111111\",\"bg\":\"#eeeeee\",\"reverse\":true},\"Comment\":{\"ctermfg\":244},\"StatusLine\":{\"fg\":\"#222222\",\"bg\":\"#dddddd\"},"
+                                         "\"@markup.heading\":{\"bold\":true}}}\nJ\n;;\n"
+                                         "*) echo '{\"error\":\"Vim:E185: Cannot find color scheme\",\"colors\":[\"fakescheme\"]}' > \"$MAIC_THEME_OUT\";;\n"
+                                         "esac\n");
+        fs::permissions(fake / "bin" / "nvim", fs::perms::owner_all);
+        std::string old_path = std::getenv("PATH") ? std::getenv("PATH") : "";
+        std::string real_nvim;
+        for (size_t a = 0; a <= old_path.size();) {
+            size_t b = old_path.find(':', a);
+            fs::path cand = fs::path(old_path.substr(a, b == std::string::npos ? std::string::npos : b - a)) / "nvim";
+            if (real_nvim.empty() && access(cand.c_str(), X_OK) == 0) real_nvim = cand.string();
+            if (b == std::string::npos) break;
+            a = b + 1;
+        }
+        setenv("PATH", ((fake / "bin").string() + ":" + old_path).c_str(), 1);
+        setenv("FAKE_NVIM_DIR", fake.c_str(), 1);
+        Theme imported = import_nvim_theme("fakescheme");
+        std::string argv = read_whole_text(fake / "argv");
+        expect(argv.find("--headless\n-i\nNONE\n-n\n--cmd\nlet g:maic_theme_import = 1\n-c\n") == 0 && argv.find("-u\n") == std::string::npos,
+               "nvim runs headless with the user's config (no -u), no shada, no swap, g:maic_theme_import set");
+        expect(imported.name == "nvim-fakescheme" && imported.path == themes / "nvim-fakescheme.lua" && fs::exists(imported.path), "the import is written as nvim-NAME.lua");
+        expect(read_whole_text(imported.path).rfind("-- Imported from the nvim colorscheme fakescheme (/fake/colors/fakescheme.lua) on ", 0) == 0, "with a header saying where it came from and when");
+        expect(imported.background == "light" && imported.styles["error"].fg == "#aa0000" && imported.styles["error"].bold, "ErrorMsg becomes error, bold kept, background read");
+        expect(imported.styles["diff_added"].fg == "#00aa00" && imported.styles["diff_removed"].fg == "#cc0000", "diff colours: Added first, a reversed DiffDelete gives its fg");
+        expect(imported.styles["visual"].fg == "#eeeeee" && imported.styles["visual"].bg == "#111111" && !imported.styles["visual"].inverted, "a filled role takes reverse into account");
+        expect(imported.styles["status"].fg == "#222222" && imported.styles["status"].bg == "#dddddd", "StatusLine becomes status, fg and bg");
+        expect(imported.styles["tool_ok"].fg == "#808080" && imported.styles["thinking"].fg == "#808080" && imported.styles["thinking"].dim, "a cterm-only group still gives a colour; the role keeps its default dim");
+        expect(!imported.styles.count("md_heading") && !imported.styles.count("user"), "roles without a coloured group are left to the default");
+        Theme reread = load_theme("nvim-fakescheme");
+        expect(reread.styles.size() == imported.styles.size() && same(reread.styles["visual"], imported.styles["visual"]), "the written file loads without nvim");
+        m = message([] { import_nvim_theme("bogus"); });
+        expect(m == "nvim has no colorscheme bogus; :theme nvim: with Tab lists them", "a colorscheme nvim lacks is a clear error: " + m);
+        auto schemes = nvim_colorschemes();
+        expect(schemes == std::vector<std::string>{"fakescheme", "other"}, "nvim_colorschemes lists what getcompletion gives");
+        Theme renamed = import_nvim_theme("fakescheme", "mine");
+        expect(renamed.name == "mine" && fs::exists(themes / "mine.lua"), "--as names the file");
+        setenv("FAKE_NVIM_HANG", "1", 1);
+        auto started = std::chrono::steady_clock::now();
+        m = message([] { import_nvim_theme("fakescheme", "", "nvim", std::chrono::seconds(1)); });
+        auto took = std::chrono::steady_clock::now() - started;
+        expect(m.find("did not finish within 1 s") != std::string::npos && took < std::chrono::seconds(5), "a hanging nvim is killed at the timeout: " + m);
+        unsetenv("FAKE_NVIM_HANG");
+        expect(message([] { import_nvim_theme("x", "", "/nonexistent/nvim"); }).find("can't run /nonexistent/nvim") == 0, "a missing nvim says so");
+        setenv("PATH", old_path.c_str(), 1);
+        unsetenv("FAKE_NVIM_DIR");
+
+        // The real nvim, when there is one, with the built-in habamax and none of the developer's own config.
+        if (real_nvim.empty()) {
+            std::cout << "  skip  no nvim on PATH: the real-nvim import is not tested\n";
+        } else {
+            write_file(fake / "real" / "nvim", "#!/bin/sh\nXDG_STATE_HOME=\"" + (fake / "state").string() + "\" exec \"" + real_nvim + "\" -u NONE \"$@\"\n");
+            fs::permissions(fake / "real" / "nvim", fs::perms::owner_all);
+            std::string err = message([&] {
+                Theme h = import_nvim_theme("habamax", "", (fake / "real" / "nvim").string());
+                expect(h.name == "nvim-habamax" && h.background == "dark" && h.styles.count("error") && h.styles["error"].fg && h.styles["visual"].bg &&
+                           h.styles.size() > 30,
+                       "a real nvim imports habamax: " + std::to_string(h.styles.size()) + " roles");
+                expect(load_theme("nvim-habamax").styles.size() == h.styles.size(), "and the file it wrote loads");
+            });
+            expect(err.empty(), "the real nvim import runs: " + err);
+            m = message([&] { import_nvim_theme("no-such-scheme-here", "", (fake / "real" / "nvim").string()); });
+            expect(m.find("nvim has no colorscheme no-such-scheme-here") == 0, "and names a missing colorscheme");
+        }
+        unsetenv("XDG_CONFIG_HOME");
     }
 
     section("system prompt setting");

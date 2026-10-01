@@ -4,6 +4,7 @@
 #include "maic/lua.hpp"
 #include "maic/paths.hpp"
 #include "maic/session.hpp"
+#include "maic/theme.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -58,8 +59,6 @@ std::optional<ModelPreset> find_preset(const std::vector<ModelPreset>& presets, 
 
 namespace fs = std::filesystem;
 using nlohmann::json;
-
-namespace {
 
 const std::map<std::string, Style>& default_styles() {
     static const std::map<std::string, Style> styles = {
@@ -121,6 +120,8 @@ const std::map<std::string, Style>& default_styles() {
     return styles;
 }
 
+namespace {
+
 Style parse_style(const json& j) {
     Style s;
     if (!j.is_object()) throw std::runtime_error("a style must be an object");
@@ -132,18 +133,6 @@ Style parse_style(const json& j) {
     s.underline = j.value("underline", false);
     s.inverted = j.value("inverted", false);
     return s;
-}
-
-json style_json(const Style& s) {
-    json j = json::object();
-    if (s.fg) j["fg"] = *s.fg;
-    if (s.bg) j["bg"] = *s.bg;
-    if (s.bold) j["bold"] = true;
-    if (s.dim) j["dim"] = true;
-    if (s.italic) j["italic"] = true;
-    if (s.underline) j["underline"] = true;
-    if (s.inverted) j["inverted"] = true;
-    return j;
 }
 
 }  // namespace
@@ -210,6 +199,9 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.sessions_home = j.value("sessions_home", s.sessions_home);
         s.leader = j.value("leader", s.leader);
         s.highlight = j.value("highlight", s.highlight);
+        s.theme = j.value("theme", s.theme);
+        s.colors = j.value("colors", s.colors);
+        if (s.colors != "auto" && s.colors != "truecolor" && s.colors != "256" && s.colors != "16") throw std::runtime_error(path.string() + ": colors must be \"auto\", \"truecolor\", \"256\" or \"16\", not \"" + s.colors + "\"");
         s.enter_sends = j.value("enter_sends", s.enter_sends);
         s.record = j.value("record", s.record);
         s.models_dir = j.value("models_dir", s.models_dir);
@@ -361,7 +353,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         }
         json styles = j.value("style", json::object());
         for (const auto& [name, sj] : styles.items()) {
-            s.styles[name] = parse_style(sj).merged_over(s.style(name));
+            s.style_overrides[name] = parse_style(sj).merged_over(s.style_overrides[name]);
         }
     } catch (const json::exception& e) {
         throw std::runtime_error(path.string() + ": " + e.what());
@@ -372,7 +364,6 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
 
 Settings load_settings(const fs::path& workspace) {
     Settings s;
-    s.styles = default_styles();
     apply_file(s, settings_path(), workspace);
     // Project layers: from just under $HOME down to the workspace, like instruction files.
     std::error_code ec;
@@ -394,6 +385,13 @@ Settings load_settings(const fs::path& workspace) {
     for (auto& p : s.profiles) {
         if (p.model.empty()) continue;
         if (auto preset = find_preset(s.presets, p.model)) p.model = preset->model;
+    }
+    // The theme is read once every layer has had its say; a broken one leaves the built-in default and the reason.
+    try {
+        apply_theme(s, load_theme(s.theme));
+    } catch (const std::exception& e) {
+        s.theme_error = e.what();
+        apply_theme(s, Theme{"default"});
     }
     return s;
 }
@@ -467,8 +465,6 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         if (!pr.options.empty()) pj["options"] = pr.options;
         providers[pr.name] = pj;
     }
-    json styles = json::object();
-    for (const auto& [name, st] : default_styles()) styles[name] = style_json(st);
     json j = {
         {"//", "MAIC settings. Every key is optional; delete what you don't change. Comments are allowed."},
         {"model", d.model},
@@ -479,6 +475,10 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"sessions_home", d.sessions_home},
         {"leader", "space"},
         {"highlight", d.highlight},
+        {"theme", d.theme},
+        {"//theme", "a theme by name: default, gruvbox-dark, gruvbox-light, mono, or a file of yours in ~/.config/maic/themes/NAME.lua; `style` entries below override single roles on top of it. :theme lists and switches, :theme nvim:NAME imports a neovim colorscheme. docs/themes.md"},
+        {"colors", d.colors},
+        {"//colors", "colour depth: auto (truecolor when COLORTERM says so, 256 when TERM does, else 16), truecolor, 256 or 16"},
         {"//highlight", "builtin, or nvim: an embedded nvim --embed highlights the input (markdown with treesitter); falls back to builtin when nvim is missing"},
         {"enter_sends", d.enter_sends},
         {"//enter_sends", "true: Enter sends a one-line input in insert mode, Shift+Enter or Alt+Enter insert a newline; false (vim-like): Enter is always a newline, Alt+Enter or :w sends"},
@@ -529,7 +529,8 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"providers", providers},
         {"models", json::object()},
         {"//models", "presets by short name, adding to or overriding the built-in ones (opus-5.5, sonnet-5, haiku-4.5, fable-5.1, qwen-4b, qwen-9b, qwen-9b-vision): models = { [\"opus-5.5\"] = { model = \"anthropic/claude-opus-5-5\", context = 1000000, reviewer = \"anthropic/claude-sonnet-5\", think = true } }. reviewer \"same\" means the model reviews itself; context sizes are your plan's figures. A model on the side server: [\"qwen-4b-side\"] = { model = \"llamacpp-2/Qwen3.5-4B-Q4_K_M\", context = 8192 }"},
-        {"style", styles},
+        {"style", json::object()},
+        {"//style", "single roles over the theme, merged into it: style = { user = { fg = \"#ff8800\" } } keeps the theme's bold. Every role and its default: themes/default.lua"},
     };
     std::ofstream out(p);
     if (as_json) {

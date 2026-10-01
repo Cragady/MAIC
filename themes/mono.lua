@@ -1,0 +1,63 @@
+-- mono: no colours at all, only bold, dim, underline and inverse, for a terminal without colour or for
+-- screenshots that should not depend on the reader's palette. Every role is set, so nothing falls back to the
+-- coloured default.
+return {
+  name = "mono",
+  background = "dark",
+  styles = {
+    -- transcript
+    user = { bold = true },
+    assistant = {},
+    thinking = { dim = true },
+    tool = { bold = true },
+    tool_ok = { dim = true },
+    tool_err = { bold = true, underline = true },
+    notice = {},
+    error = { bold = true },
+    shell = { bold = true },
+    -- markdown
+    md_heading = { bold = true, underline = true },
+    md_bold = { bold = true },
+    md_italic = { italic = true },
+    md_code = { bold = true },
+    md_code_block = {},
+    md_link = { underline = true },
+    md_url = { dim = true, underline = true },
+    md_quote = { dim = true },
+    md_bullet = { bold = true },
+    md_rule = { dim = true },
+    -- the nvim highlighter's captures
+    hl_keyword = { bold = true },
+    hl_string = {},
+    hl_comment = { dim = true },
+    hl_heading = { bold = true, underline = true },
+    hl_code = { bold = true },
+    -- diffs: added lines bold, removed ones dim
+    diff_added = { bold = true },
+    diff_removed = { dim = true },
+    diff_hunk = { underline = true },
+    -- chrome
+    input = {},
+    input_prompt_insert = { bold = true },
+    input_prompt_normal = { dim = true },
+    separator = { dim = true },
+    focus = { bold = true },
+    visual = { inverted = true },
+    search = { bold = true, underline = true },
+    cursor_line = { underline = true },
+    status = {},
+    status_insert = { bold = true, inverted = true },
+    status_normal = { bold = true, inverted = true },
+    status_visual = { bold = true, underline = true, inverted = true },
+    status_dim = { dim = true },
+    mode_manual = { bold = true },
+    ["mode_auto-read"] = { bold = true },
+    mode_edit = { bold = true },
+    mode_auto = { bold = true, underline = true },
+    mode_plan = { bold = true },
+    harness_armed = {},
+    harness_tripped = { bold = true, inverted = true },
+    remote = { bold = true, inverted = true },
+    approval = { bold = true },
+  },
+}

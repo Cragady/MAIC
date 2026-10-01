@@ -34,6 +34,8 @@ struct CompletionContext {
     std::vector<std::string> services;
     std::vector<std::string> providers;
     std::vector<std::string> models;  // installed models, as they would be typed ("qwen3.5:4b", "lab/gemma")
+    std::vector<std::string> themes;       // theme names, for :theme
+    std::vector<std::string> nvim_colors;  // nvim's colorschemes, for :theme nvim:
 };
 std::vector<std::string> complete_argument(const std::string& command, const std::string& partial, const CompletionContext& ctx);
 

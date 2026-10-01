@@ -112,7 +112,7 @@ const std::vector<Topic>& topics() {
          "`maic vendor` lists the services MAIC can install at pinned versions (ComfyUI as a submodule at a release tag, llama.cpp as a submodule at a release tag built out of tree). `maic vendor add NAME` fetches and installs one the way MAIC wants it (own Python, telemetry off, models on the external drive); `maic vendor adopt NAME PATH` uses an install you already have; `maic vendor use llamacpp PATH` picks the GGUF llama-server loads (docs/llamacpp.md); `maic vendor wire NAME` redoes the links without the network and, for comfyui, rewrites only the `maic:` block of `extra_model_paths.yaml` from `models_dir` and the manifest's models map (checkpoints, diffusion_models, loras, text_encoders, vae, clip_vision, embeddings, controlnet, upscale_models, style_models, model_patches), keeping every other key; `maic vendor unlink NAME` stops using it. `maic setup` chains these for a first run. Everything lives under ~/.local/state/maic/vendor/, workflows under ~/.local/state/maic/workflows/, and `maic artifacts` shows where each thing really is. See docs/vendor.md."},
         {"settings", {"config", "styles", "style", "settings.lua", "settings.json"}, "the settings file",
          "*settings*\n"
-         "Lua files returning a table (JSON works too). Layered: ~/.config/maic/settings.lua, then `.maic/settings.lua` and `.maic/settings.local.lua` in each directory from under $HOME down to the workspace (nearest wins; settings.lua is for the project, settings.local.lua is personal). A file is code: `os.getenv`, `maic.hostname`, `maic.home` for per-machine choices. Keys: model, mode, think, markdown, mouse, record, compact_at, sessions_home (auto/general/project/name), models_dir, leader, instruction_files, providers, style. `maic settings init` writes the global one, `:init` scaffolds a project's, `:settings` shows what is in effect. See docs/settings.md."},
+         "Lua files returning a table (JSON works too). Layered: ~/.config/maic/settings.lua, then `.maic/settings.lua` and `.maic/settings.local.lua` in each directory from under $HOME down to the workspace (nearest wins; settings.lua is for the project, settings.local.lua is personal). A file is code: `os.getenv`, `maic.hostname`, `maic.home` for per-machine choices. Keys: model, mode, think, markdown, mouse, record, compact_at, sessions_home (auto/general/project/name), models_dir, leader, instruction_files, providers, theme, colors, style (single roles over the theme; `:h theme`). `maic settings init` writes the global one, `:init` scaffolds a project's, `:settings` shows what is in effect. See docs/settings.md."},
         {"tools", {"tool", "lua-tools", "script-tools", "manifest", "glob", "question", "todo-tool", "user-tools"}, "the model's tools, and writing your own in Lua or any language",
          "*tools*\n"
          "Built in: `read_file` (`grep` for only the matching lines), `list_dir` (`depth` for a tree), `glob` (files by name pattern), `search_files` (grep -E), `write_file`, `edit_file`, "
@@ -315,6 +315,15 @@ const std::vector<CommandInfo>& commands() {
          "*:rename*\nSets the title `maic sessions` and `:export` show. With `title_model` in settings (for example `title_model = \"qwen3.5:4b\"`) a title is generated after the first turn; a remote title model is never used for a local session."},
         {"budget", {}, "[N|off]", "token budget for this session",
          "*:budget*\n`:budget` shows tokens used; `:budget 200000` stops the agent once input plus output over the session reaches that; `:budget off` removes it. `budget_tokens` in settings sets a default."},
+        {"theme", {"themes", "colorscheme", "colo"}, "[NAME|reload|nvim:NAME]", "list themes, switch one live, or import a neovim colorscheme",
+         "*:theme* *themes* *theme* *colors*\n"
+         "`:theme` lists the themes with the active one marked and where each comes from; `:theme NAME` switches to one live; `:theme reload` re-reads the active one's file, for editing a theme while looking at it. "
+         "A theme that fails to load is an error naming the file and line, and the current theme stays. `theme = \"NAME\"` in settings picks one at start (nearest layer wins).\n\n"
+         "Themes are Lua files returning `{ name = ..., background = \"dark\"|\"light\", styles = { role = { fg = \"#rrggbb\", bg = ..., bold = true, italic = true, underline = true, dim = true, inverted = true } } }`, "
+         "found in `~/.config/maic/themes/NAME.lua` first, then the ones shipped with MAIC: `default` (the built-in look), `gruvbox-dark`, `gruvbox-light`, `mono` (no colours, only bold, dim, underline and inverse). "
+         "A theme sets any of the roles; the rest keep the default. Precedence: the built-in default, then the theme, then `style` entries in settings, which merge over single roles.\n\n"
+         "`:theme nvim:NAME` imports a neovim colorscheme: a headless nvim with your own configuration (and `g:maic_theme_import` set, so a config can skip heavy plugins) applies it, its highlight groups are mapped onto the roles, and the result is written to `~/.config/maic/themes/nvim-NAME.lua`, which loads without nvim from then on; then it is switched to. Tab after `nvim:` lists the colorschemes nvim has. `maic themes import NAME [--as FILE]` does the same outside a session.\n\n"
+         "Colours: truecolor when `COLORTERM` is truecolor or 24bit, else the nearest xterm-256 colour, else (no 256 in `TERM`) the nearest of the 16 ANSI colours; `colors = \"truecolor\"|\"256\"|\"16\"` in settings overrides the detection. Writing one, the role list and the nvim mapping: docs/themes.md, docs/settings.md."},
         {"lua", {"luafile", "luajit", "repl", "chat"}, "[CODE]", "run Lua (LuaJIT) here, or enter Lua mode; :chat returns",
          "*:lua* *:luafile* *:chat* *maic lua*\n"
          "`:lua CODE` runs Lua in the workspace with LuaJIT (vendored, pinned to the revision Neovim uses); an expression shows its value, `=expr` forces that. `:luafile PATH` runs a file. `:lua` with nothing after it enters **Lua mode**: the input box becomes a REPL (prompt `lua❯`), every send runs in Lua, and `:chat` (or `:lua` again) returns to the model. Globals persist for the session. Output shows in the conversation and is handed to the model as context, like `!cmd`.\n\n"
@@ -373,6 +382,12 @@ std::vector<std::string> complete_argument(const std::string& command, const std
     else if (cmd == "think") candidates = {"on", "off"};
     else if (cmd == "w" || cmd == "write" || cmd == "send") candidates = {"now"};
     else if (cmd == "up" || cmd == "down") candidates = ctx.services;
+    else if (cmd == "theme") {
+        candidates = ctx.themes;
+        candidates.push_back("reload");
+        candidates.push_back("nvim:");
+        for (const auto& c : ctx.nvim_colors) candidates.push_back("nvim:" + c);
+    }
     else if (cmd == "model") {
         candidates = ctx.models;
         for (const auto& p : ctx.providers) candidates.push_back(p + "/");
