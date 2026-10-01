@@ -5,6 +5,7 @@
 #include "maic/instructions.hpp"
 #include "maic/llm.hpp"
 #include "maic/lua_tools.hpp"
+#include "maic/profile.hpp"
 #include "maic/session.hpp"
 
 #include <atomic>
@@ -147,11 +148,23 @@ public:
     int repeat_trip = 5;
     // This many denials by the user in one turn end the turn.
     int denials_limit = 3;
+    // Model calls per turn before the agent stops and waits for the user (a profile sets a subagent's).
+    int max_steps = 40;
+    int steps() const { return steps_; }  // model calls so far
 
-    // Commands the user pre-approved (see Harness::set_allow); from settings `allow`.
-    void set_allow(std::vector<std::string> patterns) { harness_.set_allow(std::move(patterns)); }
+    // The permission block and the allow list (its run_shell allow entries); from settings `permission` / `allow`.
+    void set_permission(Permission p) { harness_.set_permission(std::move(p)); }
+    void set_allow(const std::vector<std::string>& patterns) { harness_.set_allow(patterns); }
     void set_confined(bool on) { harness_.set_confined(on); }
     void set_forbid(std::vector<std::string> terms) { harness_.set_forbid(std::move(terms)); }
+
+    // Subagents. The `delegate` tool runs a child Agent in this workspace under one of these profiles, with
+    // its own transcript (kind sub) and the parent's provider, permission, forbidden terms and operator text.
+    // A child's mode is its profile's capped by the parent's; it has no delegate, question or todo tool.
+    std::vector<Profile> profiles = default_profiles();
+    // Makes this agent a subagent under `profile` (already narrowed to the session's mode, see narrow_profile).
+    void set_profile(const Profile& profile);
+    const std::string& profile_name() const { return profile_name_; }  // "" for a session
 
     // Names of instruction files (MAIC.md, AGENTS.md, ...) looked for beside files the model reads.
     void set_instruction_names(std::vector<std::string> names);
@@ -216,6 +229,7 @@ public:
 
 private:
     Message run_tool_call(const ToolCall& call, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel);
+    ToolResult run_delegate(const nlohmann::json& args, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel, nlohmann::json& record);
     // Policy, then this session's "always" answers, then the user. Never returns Ask: a No becomes Deny with the
     // user's words, a Trip has already tripped the lock. For Deny and Trip the reason is the text the model
     // sees. Every tool action, built-in or from a Lua tool, goes through here; `record` gets the log fields.
@@ -267,7 +281,10 @@ private:
     std::string last_call_;
     int repeats_ = 0;
     int denials_ = 0;
+    int steps_ = 0;
     bool stuck_ = false;  // the same harmless call kept repeating: end the turn, do not trip
+    std::string profile_name_;  // set: this agent is a subagent
+    std::string parent_id_;     // the parent's session id, for the start record
 };
 
 }  // namespace maic

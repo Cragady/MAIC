@@ -4,6 +4,7 @@
 #include <fnmatch.h>
 
 #include "maic/paths.hpp"
+#include "maic/profile.hpp"
 
 #include <cstdlib>
 #include <regex>
@@ -20,6 +21,8 @@ struct Pattern {
     std::regex re;
     const char* why;
 };
+
+bool helper_read_only(const std::string& command);
 
 // Commands that trip the harness on sight. Checked even in plan mode, before any approval prompt.
 const std::vector<Pattern>& trip_patterns() {
@@ -196,6 +199,25 @@ Mode next_mode(Mode mode) {
     return Mode::Manual;
 }
 
+namespace {
+
+int mode_rank(Mode mode) {
+    switch (mode) {
+        case Mode::Plan: return 0;
+        case Mode::Manual: return 1;
+        case Mode::AutoRead: return 2;
+        case Mode::Edit: return 3;
+        case Mode::Auto: return 4;
+    }
+    return 1;
+}
+
+}  // namespace
+
+Mode narrower_mode(Mode a, Mode b) {
+    return mode_rank(a) <= mode_rank(b) ? a : b;
+}
+
 Harness::~Harness() {
     for (auto& re : forbid_res_) regfree(&re.second);
 }
@@ -269,8 +291,65 @@ Decision Harness::check(const Action& action, Mode mode, Origin origin) const {
         case Action::Kind::Read: d = check_read(action.path, mode); break;
     }
     if (origin == Origin::Remote && confined_) return {Verdict::Deny, "isolated session: no remote requests"};
+    if (profile_) d = check_profile(action, d);
+    // The permission block comes after the fixed rules: a trip or a denial above is not its to lift, and an
+    // allow entry never speaks for a remote origin.
+    if (d.verdict == Verdict::Allow || d.verdict == Verdict::Ask) {
+        if (permitted(permission_.deny, action)) d = {Verdict::Deny, "denied by the permission block"};
+        else if (permitted(permission_.ask, action)) d = {Verdict::Ask, "the permission block asks", d.read_only_sandbox};
+        else if (origin == Origin::Local && permitted(permission_.allow, action)) d = {Verdict::Allow, "on the allow list", d.read_only_sandbox, true};
+    }
     if (d.verdict == Verdict::Allow && origin == Origin::Remote) {
         d = {Verdict::Ask, "request did not come from this terminal"};
+    }
+    return d;
+}
+
+bool Harness::permitted(const std::vector<std::string>& entries, const Action& action) const {
+    std::string kind = action.kind == Action::Kind::Shell ? "run_shell" : action.kind == Action::Kind::Write ? "write" : "read";
+    std::string given = action.kind == Action::Kind::Shell ? action.command : action.path.string();
+    std::string relative = action.kind == Action::Kind::Shell || !in_workspace(action.path) ? "" : action.path.lexically_relative(workspace_).generic_string();
+    for (const auto& entry : entries) {
+        size_t colon = entry.find(':');
+        if (colon == std::string::npos) continue;
+        std::string tool = entry.substr(0, colon), pattern = entry.substr(colon + 1);
+        if (tool != kind && tool != action.tool && !(tool == "write" && is_write_tool(action.tool))) continue;
+        if (!pattern.empty() && pattern[0] == '~') pattern = std::string(std::getenv("HOME")) + pattern.substr(1);
+        if (fnmatch(pattern.c_str(), given.c_str(), 0) == 0) return true;
+        if (!relative.empty() && fnmatch(pattern.c_str(), relative.c_str(), 0) == 0) return true;
+    }
+    return false;
+}
+
+void Harness::set_profile(const Profile& profile) {
+    profile_ = std::make_shared<const Profile>(profile);
+}
+
+bool Harness::tool_allowed(const std::string& name) const {
+    return !profile_ || profile_->allows_tool(name);
+}
+
+Decision Harness::check_profile(const Action& action, Decision d) const {
+    if (d.verdict == Verdict::Deny || d.verdict == Verdict::Trip) return d;
+    const Profile& p = *profile_;
+    std::string who = "the " + p.name + " profile";
+    switch (action.kind) {
+        case Action::Kind::Write:
+            if (p.read_only()) return {Verdict::Deny, who + " is read-only"};
+            if (!in_workspace(action.path)) return {Verdict::Deny, who + " writes only inside the workspace"};
+            if (!p.allows_write(action.path.lexically_relative(workspace_))) {
+                std::string globs;
+                for (const auto& g : p.write_paths) globs += (globs.empty() ? "" : ", ") + g;
+                return {Verdict::Deny, who + " writes only under " + globs};
+            }
+            break;
+        case Action::Kind::Read:
+            if (!p.read_outside && !in_workspace(action.path)) return {Verdict::Deny, who + " reads only inside the workspace"};
+            break;
+        case Action::Kind::Shell:
+            if (p.read_only() && !(is_read_only_command(action.command) || helper_read_only(action.command))) return {Verdict::Deny, who + " runs only read-only commands"};
+            if (!p.read_outside && !action.workdir.empty() && !in_workspace(action.workdir)) return {Verdict::Deny, who + " runs commands only inside the workspace"};
+            break;
     }
     return d;
 }
@@ -319,8 +398,25 @@ std::optional<std::string> Harness::forbidden(const std::string& text) const {
     return std::nullopt;
 }
 
+void Harness::set_allow(const std::vector<std::string>& patterns) {
+    std::vector<std::string> kept;
+    for (const auto& e : permission_.allow) {
+        if (e.rfind("run_shell:", 0) != 0) kept.push_back(e);
+    }
+    for (const auto& p : patterns) kept.push_back("run_shell:" + p);
+    permission_.allow = std::move(kept);
+}
+
+std::vector<std::string> Harness::allow() const {
+    std::vector<std::string> out;
+    for (const auto& e : permission_.allow) {
+        if (e.rfind("run_shell:", 0) == 0) out.push_back(e.substr(10));
+    }
+    return out;
+}
+
 bool Harness::allowed_by_list(const std::string& command) const {
-    for (const auto& p : allow_) {
+    for (const auto& p : allow()) {
         if (fnmatch(p.c_str(), command.c_str(), 0) == 0) return true;
     }
     return false;

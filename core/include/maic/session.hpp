@@ -74,6 +74,8 @@ struct SessionInfo {
     long pid = 0;        // the process that last opened it
     std::string parent;  // id of the session this one was resumed from, if any
     size_t parent_records = 0;
+    std::string delegated_from;  // kind sub: id of the session whose agent delegated this one
+    std::string profile;         // kind sub: the profile it ran under
 };
 
 // Newest first, across every home. With `workspace`, only sessions started or last opened in that directory.

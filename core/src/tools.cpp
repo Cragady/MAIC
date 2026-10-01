@@ -28,7 +28,7 @@ constexpr int kDefaultShellTimeout = 120;
 constexpr int kMaxShellTimeout = 600;
 
 const char* const kToolNames[] = {"read_file", "list_dir", "glob", "search_files", "write_file", "edit_file", "multi_edit", "apply_patch",
-                                  "move_file", "copy_file", "delete_file", "make_dir", "run_shell", "question", "todo"};
+                                  "move_file", "copy_file", "delete_file", "make_dir", "run_shell", "question", "todo", "delegate"};
 
 nlohmann::json fn(const char* name, const char* description, nlohmann::json properties, std::vector<std::string> required) {
     return {{"type", "function"},
@@ -903,11 +903,26 @@ const nlohmann::json& tool_schemas() {
                                   {"properties", {{"text", {{"type", "string"}}}, {"done", {{"type", "boolean"}}}}},
                                   {"required", {"text"}}}}}}},
            {"items"}),
+        fn("delegate",
+           "Hand a task to a subagent that runs in this workspace under a named profile and reports back; its "
+           "answer is the result. Profiles: scout (reads and read-only commands only, for a long search or a read "
+           "of many files you do not want in your own context: ask for a short report with paths and line numbers), "
+           "reviewer (read-only, plan mode: a review of a change you made, against what was asked), builder (edits "
+           "inside the workspace, for a self-contained piece of work). Give the whole task in `task`; the subagent "
+           "has none of this conversation. `context` carries what it needs to know (file names, decisions). A "
+           "subagent cannot delegate, ask the user or keep a plan; it works within its profile's budget and asks the "
+           "user through you when its mode requires.",
+           {{"profile", {{"type", "string"}, {"description", "scout, reviewer, builder, or a profile from settings"}}},
+            {"task", {{"type", "string"}, {"description", "What to do and what to report back"}}},
+            {"context", {{"type", "string"}, {"description", "Background the subagent needs (optional)"}}}},
+           {"profile", "task"}),
     });
     return schemas;
 }
 
-std::vector<Action> tool_actions(const Harness& harness, const std::string& name, const nlohmann::json& args) {
+namespace {
+
+std::vector<Action> actions_of(const Harness& harness, const std::string& name, const nlohmann::json& args) {
     using K = Action::Kind;
     if (name == "read_file" || name == "list_dir") return {{K::Read, harness.resolve(arg(args, "path")), ""}};
     if (name == "glob" || name == "search_files") return {{K::Read, harness.resolve(args.value("path", ".")), ""}};
@@ -929,6 +944,14 @@ std::vector<Action> tool_actions(const Harness& harness, const std::string& name
         return {a};
     }
     throw std::runtime_error("unknown tool: " + name + " (the tools are " + tool_names() + ")");
+}
+
+}  // namespace
+
+std::vector<Action> tool_actions(const Harness& harness, const std::string& name, const nlohmann::json& args) {
+    std::vector<Action> actions = actions_of(harness, name, args);
+    for (auto& a : actions) a.tool = name;
+    return actions;
 }
 
 std::string tool_preview(const Harness& harness, const std::string& name, const nlohmann::json& args) {
@@ -983,6 +1006,11 @@ std::string tool_summary(const std::string& name, const nlohmann::json& args) {
     if (name == "glob") return "glob " + args.value("pattern", "") + " in " + args.value("path", ".");
     if (name == "question") return "question: " + args.value("question", "");
     if (name == "todo") return "todo (" + std::to_string(args.contains("items") && args["items"].is_array() ? args["items"].size() : 0) + " items)";
+    if (name == "delegate") {
+        std::string task = args.value("task", "");
+        for (char& c : task) if (c == '\n') c = ' ';
+        return "delegate " + args.value("profile", "") + ": " + (task.size() > 100 ? task.substr(0, 97) + "..." : task);
+    }
     if (name == "move_file" || name == "copy_file") return name + " " + args.value("from", "") + " -> " + args.value("to", "");
     if (name == "delete_file") return "delete_file " + args.value("path", "") + (flag(args, "recursive") ? " (recursive)" : "");
     if (name == "multi_edit") return "multi_edit " + args.value("path", "") + " (" + std::to_string(args.contains("edits") && args["edits"].is_array() ? args["edits"].size() : 0) + " edits)";

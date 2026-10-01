@@ -2,6 +2,7 @@
 #include "check.hpp"
 
 #include "maic/harness.hpp"
+#include "maic/profile.hpp"
 #include "maic/settings.hpp"
 #include "maic/sandbox.hpp"
 #include "maic/tools.hpp"
@@ -191,7 +192,7 @@ int main() {
         expect(a.check(Action{Action::Kind::Shell, {}, "maic-storyboard next"}, Mode::Plan, Origin::Local).verdict == Verdict::Deny, "plan mode still refuses one that could write");
         expect(a.check(Action{Action::Kind::Shell, {}, "maic-storyboard status"}, Mode::Plan, Origin::Local).verdict == Verdict::Allow, "but its looking-only shapes are read-only");
         Harness defaults(ws);
-        defaults.set_allow(Settings{}.allow);
+        defaults.set_permission(Settings{}.permission);
         expect(defaults.check(Action{Action::Kind::Shell, {}, "maic-danbooru-tags check --prompt \"1girl, grey hair\""}, Mode::Manual, Origin::Local).verdict == Verdict::Allow &&
                    defaults.check(Action{Action::Kind::Shell, {}, "maic-danbooru-tags search hair"}, Mode::Plan, Origin::Local).verdict == Verdict::Allow &&
                    defaults.check(Action{Action::Kind::Shell, {}, "maic-danbooru-tags --help"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow,
@@ -201,6 +202,97 @@ int main() {
         expect(!a.check(Action{Action::Kind::Shell, {}, "make"}, Mode::Auto, Origin::Local).trusted, "an ordinary auto-mode allow is not trusted (the reviewer still sees it)");
         expect(a.harmless(Action{Action::Kind::Shell, {}, "maic-workflow-edit inspect wf.json --json"}) && a.harmless(Action{Action::Kind::Read, ws / "x"}) && !a.harmless(Action{Action::Kind::Write, ws / "x"}) && !a.harmless(Action{Action::Kind::Shell, {}, "make"}),
                "harmless: reads, read-only and helper commands; not writes or other commands");
+    }
+
+    std::cout << "permission block: deny over ask over allow, after the fixed rules\n";
+    {
+        Harness p(ws);
+        Permission perm;
+        perm.allow = {"run_shell:pytest *", "write_file:docs/**", "read_file:/etc/hostname", "run_shell:sudo *", "write:/etc/**", "read:~/.ssh/*"};
+        perm.ask = {"run_shell:git push*", "edit_file:src/core.cpp"};
+        perm.deny = {"run_shell:git push --force*", "write:build/**", "read_file:*.pem"};
+        p.set_permission(perm);
+        auto check = [&](Action a, Mode m, Origin o = Origin::Local) { return p.check(a, m, o); };
+        auto d = check({Action::Kind::Shell, {}, "pytest tests -q", {}, "run_shell"}, Mode::Manual);
+        expect(d.verdict == Verdict::Allow && d.trusted, "an allow entry runs a command in manual mode without asking, trusted");
+        d = check({Action::Kind::Write, ws / "docs" / "a" / "b.md", "", {}, "write_file"}, Mode::Manual);
+        expect(d.verdict == Verdict::Allow && d.trusted, "an allow entry pre-approves a write by its workspace-relative path");
+        expect(check({Action::Kind::Write, ws / "docs" / "x.md", "", {}, "edit_file"}, Mode::Manual).verdict == Verdict::Ask, "a write_file entry does not speak for edit_file");
+        expect(check({Action::Kind::Read, fs::path("/etc/hostname"), "", {}, "read_file"}, Mode::Manual).verdict == Verdict::Allow, "an allow entry covers a read outside the workspace");
+        expect(check({Action::Kind::Shell, {}, "git push origin main", {}, "run_shell"}, Mode::Auto).verdict == Verdict::Ask, "an ask entry turns an auto-mode command into a prompt");
+        expect(check({Action::Kind::Write, ws / "src" / "core.cpp", "", {}, "edit_file"}, Mode::Edit).verdict == Verdict::Ask, "and an edit-mode write into one");
+        d = check({Action::Kind::Shell, {}, "git push --force origin main", {}, "run_shell"}, Mode::Auto);
+        expect(d.verdict == Verdict::Deny && d.reason.find("permission block") != std::string::npos, "deny wins over ask");
+        expect(check({Action::Kind::Write, ws / "build" / "out.o", "", {}, "write_file"}, Mode::Auto).verdict == Verdict::Deny, "write: denies every writing tool under the pattern");
+        expect(check({Action::Kind::Read, ws / "key.pem", "", {}, "read_file"}, Mode::Auto).verdict == Verdict::Deny, "a read can be denied too");
+        expect(check({Action::Kind::Shell, {}, "sudo pytest", {}, "run_shell"}, Mode::Auto).verdict == Verdict::Trip, "allow never reaches a trip pattern");
+        expect(check({Action::Kind::Write, fs::path("/etc/hosts"), "", {}, "write_file"}, Mode::Auto).verdict == Verdict::Trip, "nor a system path");
+        expect(check({Action::Kind::Read, fs::path(home) / ".ssh" / "config", "", {}, "read_file"}, Mode::Auto).verdict == Verdict::Deny, "nor a secret");
+        expect(check({Action::Kind::Shell, {}, "make", {}, "run_shell"}, Mode::Plan).verdict == Verdict::Deny, "nor plan mode's refusal of a command that could write");
+        expect(check({Action::Kind::Shell, {}, "pytest tests", {}, "run_shell"}, Mode::Auto, Origin::Remote).verdict == Verdict::Ask, "allow entries are ignored for a remote origin");
+        expect(check({Action::Kind::Shell, {}, "git push --force", {}, "run_shell"}, Mode::Auto, Origin::Remote).verdict == Verdict::Deny, "deny entries still hold for it");
+        p.set_forbid({"pytest"});
+        expect(check({Action::Kind::Shell, {}, "pytest tests", {}, "run_shell"}, Mode::Auto).verdict == Verdict::Deny, "a forbidden term is not lifted by allow");
+        Harness q(ws);
+        q.set_allow({"npm test"});
+        expect(q.allow() == std::vector<std::string>{"npm test"} && q.permission().allow == std::vector<std::string>{"run_shell:npm test"}, "the allow list is the run_shell allow entries");
+        Permission with_file;
+        with_file.allow = {"write_file:notes/*"};
+        q.set_permission(with_file);
+        q.set_allow({"make"});
+        expect(q.permission().allow.size() == 2 && q.permission().allow[0] == "write_file:notes/*" && q.allow() == std::vector<std::string>{"make"}, "set_allow replaces only the run_shell entries");
+    }
+
+    std::cout << "profiles\n";
+    {
+        const auto& builtins = default_profiles();
+        expect(builtins.size() == 4 && find_profile(builtins, "scout") && find_profile(builtins, "scout")->read_only() && !find_profile(builtins, "builder")->read_only() && !find_profile(builtins, "orchestrator")->read_only(),
+               "scout and reviewer are read-only, builder and orchestrator are not");
+        expect(narrower_mode(Mode::Auto, Mode::Manual) == Mode::Manual && narrower_mode(Mode::Plan, Mode::Auto) == Mode::Plan && narrower_mode(Mode::AutoRead, Mode::Edit) == Mode::AutoRead,
+               "plan is the narrowest mode, then manual, auto-read, edit, auto");
+        expect(narrow_profile(*find_profile(builtins, "builder"), Mode::Manual).mode == Mode::Manual && narrow_profile(*find_profile(builtins, "scout"), Mode::Auto).mode == Mode::AutoRead,
+               "a profile's mode is capped by the session's and never raised to it");
+        Profile net{"wired"};
+        net.network = true;
+        bool threw = false;
+        try {
+            narrow_profile(net, Mode::Auto);
+        } catch (const std::exception& e) {
+            threw = std::string(e.what()).find("network") != std::string::npos;
+        }
+        expect(threw, "a profile asking for the network is an error");
+
+        Harness s(ws);
+        s.set_profile(narrow_profile(*find_profile(builtins, "scout"), Mode::Auto));
+        auto d = s.check({Action::Kind::Write, ws / "a.txt", "", {}, "write_file"}, Mode::AutoRead, Origin::Local);
+        expect(d.verdict == Verdict::Deny && d.reason == "the scout profile is read-only", "a scout's write is denied with the profile named: " + d.reason);
+        expect(s.check({Action::Kind::Shell, {}, "git log -3", {}, "run_shell"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow, "its read-only commands run");
+        d = s.check({Action::Kind::Shell, {}, "make", {}, "run_shell"}, Mode::AutoRead, Origin::Local);
+        expect(d.verdict == Verdict::Deny && d.reason.find("read-only commands") != std::string::npos, "a command that could write is denied, not asked");
+        expect(s.check({Action::Kind::Read, fs::path("/etc/hostname"), "", {}, "read_file"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow, "a scout may read outside the workspace");
+        expect(!s.tool_allowed("write_file") && s.tool_allowed("read_file") && s.tool_allowed("run_shell"), "its tool list is enforced");
+        expect(s.check({Action::Kind::Shell, {}, "sudo ls", {}, "run_shell"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Trip, "trip patterns are untouched by a profile");
+
+        Harness r(ws);
+        r.set_profile(narrow_profile(*find_profile(builtins, "reviewer"), Mode::Auto));
+        expect(r.check({Action::Kind::Read, fs::path("/etc/hostname"), "", {}, "read_file"}, Mode::Plan, Origin::Local).verdict == Verdict::Deny, "a reviewer reads only inside the workspace");
+        expect(r.check({Action::Kind::Read, ws / "x", "", {}, "read_file"}, Mode::Plan, Origin::Local).verdict == Verdict::Allow, "and inside it freely");
+
+        Profile docs{"docs", Mode::Edit};
+        docs.write_paths = {"docs/**", "README.md"};
+        Harness w(ws);
+        w.set_profile(docs);
+        expect(w.check({Action::Kind::Write, ws / "docs" / "deep" / "a.md", "", {}, "write_file"}, Mode::Edit, Origin::Local).verdict == Verdict::Allow, "a write under a write_paths glob runs in edit mode");
+        expect(w.check({Action::Kind::Write, ws / "README.md", "", {}, "edit_file"}, Mode::Edit, Origin::Local).verdict == Verdict::Allow, "an exact file pattern matches");
+        d = w.check({Action::Kind::Write, ws / "src" / "a.cpp", "", {}, "write_file"}, Mode::Edit, Origin::Local);
+        expect(d.verdict == Verdict::Deny && d.reason == "the docs profile writes only under docs/**, README.md", "a write elsewhere is denied with the globs: " + d.reason);
+        expect(w.check({Action::Kind::Write, fs::temp_directory_path() / "maic-profile-out.txt", "", {}, "write_file"}, Mode::Edit, Origin::Local).verdict == Verdict::Deny, "a write outside the workspace is denied, not asked");
+        expect(w.check({Action::Kind::Write, fs::path("/etc/hosts"), "", {}, "write_file"}, Mode::Edit, Origin::Local).verdict == Verdict::Trip, "a system path still trips");
+        expect(w.check({Action::Kind::Shell, {}, "make docs", {}, "run_shell"}, Mode::Edit, Origin::Local).verdict == Verdict::Ask, "commands follow the mode as before");
+        Profile all{"wide"};
+        Harness a(ws);
+        a.set_profile(all);
+        expect(a.check({Action::Kind::Write, ws / "any.txt", "", {}, "write_file"}, Mode::Auto, Origin::Local).verdict == Verdict::Allow && a.tool_allowed("delete_file"), "an empty write_paths and tool list mean the whole workspace and every tool");
     }
 
     std::cout << "workdir\n";

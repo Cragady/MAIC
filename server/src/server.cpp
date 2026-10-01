@@ -221,7 +221,8 @@ struct Server::Impl {
         auto s = std::make_shared<Session>(ws, model);
         s->agent.providers = st.providers;
         s->agent.set_forbid(st.forbid);
-        s->agent.set_allow(st.allow);
+        s->agent.set_permission(st.permission);
+        s->agent.profiles = st.profiles;
         s->agent.mode = mode;
         s->agent.think = st.think;
         s->agent.compaction.at = st.compact_at;

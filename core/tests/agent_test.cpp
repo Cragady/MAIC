@@ -34,6 +34,8 @@ struct FakeServer {
     int usage_input = 0;  // reported as prompt_tokens in the final usage chunk when set
     json tool_call;       // when set and calls_left > 0, the reply is this one tool call ({"name", "arguments"})
     int calls_left = 0;
+    std::function<json(const json&)> tool_call_for;  // when set: the tool call for this request, or null for the echo
+    bool usage_on_calls = false;  // report usage_input on tool-call replies too (llama-server does)
     std::function<std::string(const json&)> reply;  // when set and non-empty for a request, replaces the echo
     int fail_left = 0;      // answer this many requests with fail_status / fail_body first
     int fail_status = 400;
@@ -74,18 +76,23 @@ struct FakeServer {
             }
             int delay = delay_ms;
             int usage = usage_input;
+            bool call_usage = usage_on_calls;
             json call;
-            if (!tool_call.is_null() && calls_left > 0) {
+            if (tool_call_for) {
+                call = tool_call_for(body);
+            } else if (!tool_call.is_null() && calls_left > 0) {
                 --calls_left;
                 call = tool_call;
             }
-            res.set_chunked_content_provider("text/event-stream", [echo, delay, usage, call](size_t, httplib::DataSink& sink) {
+            res.set_chunked_content_provider("text/event-stream", [echo, delay, usage, call, call_usage](size_t, httplib::DataSink& sink) {
                 auto write = [&](const std::string& s) { return sink.write(s.data(), s.size()); };
                 if (!call.is_null()) {
                     json tc = {{"index", 0}, {"id", "call_1"}, {"type", "function"},
                                {"function", {{"name", call["name"]}, {"arguments", call["arguments"].dump()}}}};
                     write(event({{"choices", {{{"index", 0}, {"delta", {{"content", ""}, {"tool_calls", {tc}}}}}}}}));
-                    write(event({{"choices", {{{"index", 0}, {"delta", json::object()}, {"finish_reason", "tool_calls"}}}}}));
+                    json done = {{"choices", {{{"index", 0}, {"delta", json::object()}, {"finish_reason", "tool_calls"}}}}};
+                    if (usage && call_usage) done["usage"] = {{"prompt_tokens", usage}, {"completion_tokens", 5}};
+                    write(event(done));
                     write("data: [DONE]\n\n");
                     sink.done();
                     return true;
@@ -118,7 +125,8 @@ struct Recorder : AgentEvents {
     std::string text;
     std::vector<std::string> notices;
     void on_text(std::string_view d, bool) override { text += d; }
-    void on_tool_call(const std::string&) override {}
+    std::vector<std::string> calls;
+    void on_tool_call(const std::string& s) override { calls.push_back(s); }
     std::vector<std::string> results;
     void on_tool_result(const std::string& t, bool) override { results.push_back(t); }
     void on_notice(const std::string& t) override { notices.push_back(t); }
@@ -146,6 +154,33 @@ std::error_code& ec_ignore() {
 bool has_notice(const Recorder& r, const std::string& what) {
     for (const auto& n : r.notices) {
         if (n.find(what) != std::string::npos) return true;
+    }
+    return false;
+}
+
+bool has_call(const Recorder& r, const std::string& what) {
+    for (const auto& c : r.calls) {
+        if (c.find(what) != std::string::npos) return true;
+    }
+    return false;
+}
+
+bool has_result(const Recorder& r, const std::string& what) {
+    for (const auto& t : r.results) {
+        if (t.find(what) != std::string::npos) return true;
+    }
+    return false;
+}
+
+// A request from a subagent: its system prompt says so.
+bool from_child(const json& body) {
+    return body["messages"][0]["role"] == "system" && body["messages"][0]["content"].get<std::string>().find("# You are a subagent") != std::string::npos;
+}
+
+bool offers_tool(const json& body, const std::string& name) {
+    if (!body.contains("tools")) return false;
+    for (const auto& t : body["tools"]) {
+        if (t["function"]["name"] == name) return true;
     }
     return false;
 }
@@ -498,6 +533,158 @@ int main() {
         expect(r.results.size() == 1 && r.results[0].rfind("error:", 0) == 0 && agent.todo().size() == 1, "a todo call without items is an error and keeps the old list");
         agent.clear();
         expect(agent.todo().empty(), ":clear drops the plan");
+    }
+
+    section("subagents");
+    {
+        FakeServer fake;
+        fake.delay_ms = 1;
+        fake.usage_input = 10;
+        std::ofstream(ws / "facts.txt") << "the river is wide\n";
+        auto delegate_call = [](const char* profile, const char* task) {
+            return json{{"name", "delegate"}, {"arguments", {{"profile", profile}, {"task", task}, {"context", "look in facts.txt"}}}};
+        };
+        // A scout: the parent delegates once; the child reads, is refused a write tool, a writing command, and answers.
+        {
+            int parent_calls = 0, child_calls = 0;
+            fake.tool_call_for = [&](const json& b) -> json {
+                if (!from_child(b)) return ++parent_calls == 1 ? delegate_call("scout", "find the river line") : json();
+                switch (++child_calls) {
+                    case 1: return json{{"name", "read_file"}, {"arguments", {{"path", "facts.txt"}}}};
+                    case 2: return json{{"name", "write_file"}, {"arguments", {{"path", "out.txt"}, {"content", "x"}}}};
+                    case 3: return json{{"name", "run_shell"}, {"arguments", {{"command", "touch out.txt"}}}};
+                    default: return json();
+                }
+            };
+            SessionLog log("agent-test");
+            Agent agent(ws, "test");
+            agent.providers = {fake.provider()};
+            agent.mode = Mode::Auto;
+            agent.review_with_model = false;
+            agent.set_log(&log);
+            Recorder r;
+            agent.submit("what does facts.txt say about the river?", Origin::Local, r, no_cancel);
+            expect(has_call(r, "delegate scout: find the river line") && has_call(r, "↳ scout: read_file facts.txt") && has_call(r, "↳ scout: write_file out.txt"),
+                   "the child's tool calls reach the parent's front end with the profile prefix");
+            expect(has_result(r, "the river is wide") && r.asked.empty(), "the scout read the file in auto-read without asking");
+            expect(has_result(r, "DENIED: the scout profile has no write_file tool") && has_result(r, "DENIED: the scout profile runs only read-only commands") && !fs::exists(ws / "out.txt"),
+                   "a write tool and a writing command are denied by the profile, with its name");
+            std::string final = r.results.empty() ? "" : r.results.back();
+            expect(final.find("echo: find the river line") == 0 && final.find("Context from the parent agent:\nlook in facts.txt") != std::string::npos && final.find("\n\n(the subagent used 4 steps, 15 tokens)") != std::string::npos,
+                   "the child's final answer is the tool result, task and context included, ending with its usage: " + final);
+            expect(agent.usage().total_input == 20 && agent.usage().total_output == 10, "the child's tokens count against the parent's totals");
+            json child_req, parent_req;
+            for (const auto& q : fake.requests) (from_child(q) ? child_req : parent_req) = q;
+            expect(offers_tool(parent_req, "delegate") && parent_req["messages"][0]["content"].get<std::string>().find("delegate hands one task to a subagent") != std::string::npos,
+                   "the parent is offered delegate and briefed on when to use it");
+            expect(!offers_tool(child_req, "delegate") && !offers_tool(child_req, "question") && !offers_tool(child_req, "todo") && !offers_tool(child_req, "write_file") && offers_tool(child_req, "read_file"),
+                   "the child is offered only the profile's tools, never delegate, question or todo");
+            std::string child_sys = child_req["messages"][0]["content"];
+            expect(child_sys.find("under the scout profile, which is read-only") != std::string::npos && child_sys.find("Mode: auto-read") != std::string::npos && child_sys.find("question and todo are not available") != std::string::npos,
+                   "the child's briefing names its profile, its mode and what it lacks");
+            bool listed = false;
+            for (const auto& s : list_sessions(ws)) {
+                if (s.kind == "sub" && s.delegated_from == log.path().stem().string() && s.profile == "scout") {
+                    listed = true;
+                    expect(s.path.parent_path() == log.path().parent_path() && s.first_prompt.find("find the river line") == 0, "the child's transcript sits in the parent's home with the task as its first prompt");
+                    fs::remove(s.path);
+                }
+            }
+            expect(listed, "the child has a transcript of kind sub naming its parent and profile");
+            fs::remove(log.path());
+        }
+        // A child cannot delegate, and the parent in manual mode gives a child in an auto profile no more than manual.
+        {
+            int parent_calls = 0, child_calls = 0;
+            size_t requests_before = fake.requests.size();
+            fake.tool_call_for = [&](const json& b) -> json {
+                if (!from_child(b)) return ++parent_calls == 1 ? delegate_call("fast", "run echo") : json();
+                switch (++child_calls) {
+                    case 1: return delegate_call("scout", "go deeper");
+                    case 2: return json{{"name", "run_shell"}, {"arguments", {{"command", "echo hi"}}}};
+                    default: return json();
+                }
+            };
+            Agent agent(ws, "test");
+            agent.providers = {fake.provider()};
+            agent.mode = Mode::Manual;
+            agent.review_with_model = false;
+            agent.profiles.push_back({"fast", Mode::Auto});
+            Recorder r;
+            r.reply = {Approval::Yes, ""};
+            agent.submit("echo something", Origin::Local, r, no_cancel);
+            expect(has_result(r, "DENIED: a subagent has no delegate tool"), "a child's delegate call is refused: one level only");
+            int children = 0;
+            for (size_t i = requests_before; i < fake.requests.size(); ++i) children += from_child(fake.requests[i]);
+            expect(children == 3, "no grandchild was started (" + std::to_string(children) + " child requests)");
+            expect(r.asked.size() == 1 && r.asked[0].summary == "fast: $ echo hi" && r.asked[0].tool == "run_shell", "the auto profile's command is asked through the parent, under a manual session, with the profile named");
+            expect(has_result(r, "hi"), "and runs once approved");
+            json child_req;
+            for (const auto& q : fake.requests) if (from_child(q)) child_req = q;
+            expect(child_req["messages"][0]["content"].get<std::string>().find("Mode: manual") != std::string::npos, "the child was told its mode is manual");
+            bool unknown = false;
+            parent_calls = 0;
+            fake.tool_call_for = [&](const json& b) -> json { return from_child(b) || ++parent_calls > 1 ? json() : delegate_call("nobody", "x"); };
+            Recorder r2;
+            agent.submit("again", Origin::Local, r2, no_cancel);
+            for (const auto& t : r2.results) unknown = unknown || t.find("error: no profile named 'nobody'. The profiles are: orchestrator, builder, scout, reviewer, fast.") == 0;
+            expect(unknown, "an unknown profile is an error naming the profiles");
+        }
+        // Budgets stop a runaway child: steps from the profile, tokens from the profile.
+        {
+            int parent_calls = 0, child_calls = 0;
+            fake.tool_call_for = [&](const json& b) -> json {
+                if (!from_child(b)) return ++parent_calls == 1 ? delegate_call("tiny", "read everything") : json();
+                return json{{"name", "read_file"}, {"arguments", {{"path", "facts.txt"}, {"offset", ++child_calls}}}};
+            };
+            Agent agent(ws, "test");
+            agent.providers = {fake.provider()};
+            agent.mode = Mode::Auto;
+            agent.review_with_model = false;
+            Profile tiny{"tiny", Mode::AutoRead};
+            tiny.max_steps = 3;
+            tiny.tools = {"read_file"};
+            agent.profiles.push_back(tiny);
+            Recorder r;
+            agent.submit("go", Origin::Local, r, no_cancel);
+            expect(child_calls == 3 && has_notice(r, "tiny: stopped after 3 steps (the profile's limit)"), "the child stops at the profile's step limit, and the user is told (" + std::to_string(child_calls) + " calls)");
+            expect(!r.results.empty() && r.results.back() == "the subagent gave no final answer (the subagent used 3 steps, 0 tokens)", "the result says it never answered: " + r.results.back());
+            child_calls = 0;
+            fake.usage_on_calls = true;
+            Profile spend{"spend", Mode::AutoRead};
+            spend.budget_tokens = 20;
+            spend.tools = {"read_file"};
+            agent.profiles.push_back(spend);
+            fake.tool_call_for = [&](const json& b) -> json {
+                if (!from_child(b)) return parent_calls++ == 2 ? delegate_call("spend", "read everything") : json();
+                return json{{"name", "read_file"}, {"arguments", {{"path", "facts.txt"}, {"offset", ++child_calls}}}};
+            };
+            Recorder r2;
+            agent.submit("again", Origin::Local, r2, no_cancel);
+            expect(child_calls == 2 && has_notice(r2, "spend: token budget reached (30 of 20)"), "the child stops at the profile's token budget (" + std::to_string(child_calls) + " calls)");
+            fake.usage_on_calls = false;
+        }
+        // A tripped tripwire stops the child, and the parent is told.
+        {
+            int parent_calls = 0, child_calls = 0;
+            fake.tool_call_for = [&](const json& b) -> json {
+                if (!from_child(b)) return ++parent_calls == 1 ? delegate_call("scout", "list things") : json();
+                return ++child_calls == 1 ? json{{"name", "run_shell"}, {"arguments", {{"command", "sudo ls"}}}} : json{{"name", "read_file"}, {"arguments", {{"path", "facts.txt"}}}};
+            };
+            Agent agent(ws, "test");
+            agent.providers = {fake.provider()};
+            agent.mode = Mode::Auto;
+            agent.review_with_model = false;
+            Recorder r;
+            agent.submit("look around", Origin::Local, r, no_cancel);
+            expect(tripwire_state() && child_calls == 1 && has_notice(r, "scout: the harness is tripped; the subagent stops here"), "the child's trip ends its turn at once (" + std::to_string(child_calls) + " child calls)");
+            expect(!r.results.empty() && r.results.back().find("BLOCKED and the harness was tripped during the subagent's work") == 0, "the parent's result says so: " + r.results.back());
+            fs::remove(std::getenv("MAIC_TRIPWIRE_FILE"));
+            expect(!tripwire_state(), "the test lock is cleared again");
+        }
+        fake.tool_call_for = nullptr;
+        fake.usage_input = 0;
+        fs::remove(ws / "facts.txt");
     }
 
     section("lua tools through the agent");

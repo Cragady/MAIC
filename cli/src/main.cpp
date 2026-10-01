@@ -379,29 +379,47 @@ int cmd_artifacts(const std::vector<std::string>& args) {
     return 2;
 }
 
+// Numbered by position in `sessions` (the pick list uses the numbers); a subagent's transcript is listed
+// under the session that delegated it when that one is in the list.
 void print_sessions(const std::vector<maic::SessionInfo>& sessions) {
     char today[16];
     std::time_t now = std::time(nullptr);
     std::strftime(today, sizeof(today), "%Y%m%d", std::localtime(&now));
     std::string last_day;
-    for (size_t i = 0; i < sessions.size(); ++i) {
+    std::vector<bool> shown(sessions.size(), false);
+    auto print_one = [&](size_t i, const std::string& indent) {
+        shown[i] = true;
         const auto& s = sessions[i];
         std::string day = s.started.substr(0, 8);
         std::string hm = s.started.size() >= 13 ? s.started.substr(9, 2) + ":" + s.started.substr(11, 2) : "";
-        if (day != last_day) {
+        if (day != last_day && indent.empty()) {
             std::cout << (day == today ? "Today" : day.substr(0, 4) + "-" + day.substr(4, 2) + "-" + day.substr(6, 2)) << "\n";
             last_day = day;
         }
         std::string where = std::filesystem::path(s.workspace).filename().string();
-        std::cout << "  " << i + 1 << ". " << hm << "  " << (s.title.empty() ? (s.first_prompt.empty() ? "(no prompt yet)" : s.first_prompt) : s.title)
+        std::cout << indent << "  " << (indent.empty() ? "" : "↳ ") << i + 1 << ". " << hm << "  " << (s.profile.empty() ? "" : s.profile + ": ")
+                  << (s.title.empty() ? (s.first_prompt.empty() ? "(no prompt yet)" : s.first_prompt) : s.title)
                   << "  [" << where << "]  " << s.turns << " turn" << (s.turns == 1 ? "" : "s") << (maic::session_running(s) ? "  RUNNING" : "")
                   << (maic::session_lock_reason(s) ? "  LOCKED" : "") << "\n"
-                  << "     " << s.id << "  [" << s.home << "]  started in " << s.workspace;
+                  << indent << "     " << s.id << "  [" << s.home << "]  started in " << s.workspace;
         if (s.opened_in != s.workspace) std::cout << ", last opened in " << s.opened_in;
         if (s.opens > 1) std::cout << " (" << s.opens << " opens)";
         if (!s.host.empty()) std::cout << " on " << s.host;
         std::cout << "\n";
-        if (!s.parent.empty()) std::cout << "     resumed from " << s.parent << " (first " << s.parent_records << " records)\n";
+        if (!s.parent.empty()) std::cout << indent << "     resumed from " << s.parent << " (first " << s.parent_records << " records)\n";
+    };
+    auto listed = [&](const std::string& id) {
+        for (const auto& s : sessions) {
+            if (s.id == id) return true;
+        }
+        return false;
+    };
+    for (size_t i = 0; i < sessions.size(); ++i) {
+        if (shown[i] || (!sessions[i].delegated_from.empty() && listed(sessions[i].delegated_from))) continue;
+        print_one(i, "");
+        for (size_t j = 0; j < sessions.size(); ++j) {
+            if (!shown[j] && sessions[j].delegated_from == sessions[i].id) print_one(j, "    ");
+        }
     }
 }
 

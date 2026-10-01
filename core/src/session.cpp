@@ -122,6 +122,8 @@ SessionInfo read_session_info(const fs::path& path) {
             info.host = j.value("host", "");
             info.model = j.value("model", info.model);
             info.pid = j.value("pid", info.pid);
+            info.delegated_from = j.value("parent", info.delegated_from);
+            info.profile = j.value("profile", info.profile);
             ++info.opens;
         } else if (type == "resumed_from") {
             info.parent = fs::path(j.value("path", "")).stem().string();

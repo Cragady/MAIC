@@ -108,7 +108,7 @@ int l_read(lua_State* L) {
     Ctx& c = ctx(L);
     std::string path = luaL_checkstring(L, 1);
     fs::path p = c.harness->resolve(path);
-    gate(L, {Action::Kind::Read, p, ""}, "read_file " + path, "");
+    gate(L, {Action::Kind::Read, p, "", {}, "read_file"}, "read_file " + path, "");
     std::ifstream in(p, std::ios::binary);
     if (!in) return fail(L, "can't read " + p.string());
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -122,7 +122,7 @@ int l_write(lua_State* L) {
     size_t len = 0;
     const char* text = luaL_checklstring(L, 2, &len);
     nlohmann::json args = {{"path", path}, {"content", std::string(text, len)}};
-    gate(L, {Action::Kind::Write, c.harness->resolve(path), ""}, "write_file " + path, tool_preview(*c.harness, "write_file", args));
+    gate(L, {Action::Kind::Write, c.harness->resolve(path), "", {}, "write_file"}, "write_file " + path, tool_preview(*c.harness, "write_file", args));
     ToolResult r = run_tool(*c.harness, "write_file", args, false, *c.cancel);
     if (!r.ok) return fail(L, r.text);
     return 0;
@@ -132,7 +132,7 @@ int l_list(lua_State* L) {
     Ctx& c = ctx(L);
     std::string path = lua_isnoneornil(L, 1) ? "." : luaL_checkstring(L, 1);
     fs::path p = c.harness->resolve(path);
-    gate(L, {Action::Kind::Read, p, ""}, "list_dir " + path, "");
+    gate(L, {Action::Kind::Read, p, "", {}, "list_dir"}, "list_dir " + path, "");
     std::error_code ec;
     if (!fs::is_directory(p, ec)) return fail(L, "no such directory: " + p.string());
     std::vector<std::string> entries;
@@ -150,7 +150,7 @@ int l_search(lua_State* L) {
     Ctx& c = ctx(L);
     std::string pattern = luaL_checkstring(L, 1);
     std::string path = lua_isnoneornil(L, 2) ? "." : luaL_checkstring(L, 2);
-    gate(L, {Action::Kind::Read, c.harness->resolve(path), ""}, "search /" + pattern + "/ in " + path, "");
+    gate(L, {Action::Kind::Read, c.harness->resolve(path), "", {}, "search_files"}, "search /" + pattern + "/ in " + path, "");
     ToolResult r = run_tool(*c.harness, "search_files", {{"pattern", pattern}, {"path", path}}, false, *c.cancel);
     if (!r.ok) return fail(L, r.text);
     lua_pushlstring(L, r.text.data(), r.text.size());
@@ -160,7 +160,7 @@ int l_search(lua_State* L) {
 int l_shell(lua_State* L) {
     Ctx& c = ctx(L);
     std::string command = luaL_checkstring(L, 1);
-    Action a{Action::Kind::Shell, {}, command};
+    Action a{Action::Kind::Shell, {}, command, {}, "run_shell"};
     int secs = kDefaultShellTimeout;
     if (lua_istable(L, 2)) {
         lua_getfield(L, 2, "workdir");

@@ -237,7 +237,8 @@ public:
         agent_.system_prefix = resolve_system_prompt(settings_.system_prompt);
         agent_.prefill = resolve_system_prompt(settings_.prefill);
         agent_.rules = settings_.rules;
-        agent_.set_allow(settings_.allow);
+        agent_.set_permission(settings_.permission);
+        agent_.profiles = settings_.profiles;
         agent_.set_forbid(settings_.forbid);
         set_tripwire_scope(settings_.tripwire, log_->path().string() + ".tripped");
         if (settings_.tripwire == "isolated") agent_.set_confined(true);

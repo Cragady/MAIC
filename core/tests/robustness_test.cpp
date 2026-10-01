@@ -973,8 +973,39 @@ int main() {
         for (const auto& p : places) expect(names.insert(p.name).second, "place names are unique: " + p.name);
         write_file(ws / "proj" / ".maic" / "settings.lua", "return { allow = { 'pytest *' } }");
         Settings sa = load_settings(ws / "proj");
-        expect(std::find(sa.allow.begin(), sa.allow.end(), "pytest *") != sa.allow.end() && std::find(sa.allow.begin(), sa.allow.end(), "maic-storyboard*") != sa.allow.end(),
-               "allow patterns from settings add to the default helpers");
+        auto allows = [](const std::vector<std::string>& v, const char* s) { return std::find(v.begin(), v.end(), s) != v.end(); };
+        expect(allows(sa.permission.allow, "run_shell:pytest *") && allows(sa.permission.allow, "run_shell:maic-storyboard*"),
+               "the old allow key lands in permission.allow as run_shell entries, beside the default helpers");
+        write_file(ws / "proj" / ".maic" / "settings.lua",
+                   "return { permission = { allow = { 'run_shell:npm test' }, ask = { 'edit_file:src/core.cpp' }, deny = { 'write:build/**' } },\n"
+                   "  profiles = { scout = { budget_tokens = 20000, max_steps = 10 },\n"
+                   "               docs = { mode = 'edit', write_paths = { 'docs/**' }, tools = { 'read_file', 'edit_file' }, model = 'qwen-4b', reviewer = false } } }");
+        Settings sp = load_settings(ws / "proj");
+        expect(allows(sp.permission.allow, "run_shell:npm test") && allows(sp.permission.allow, "run_shell:maic-storyboard*") && sp.permission.ask == std::vector<std::string>{"edit_file:src/core.cpp"} && sp.permission.deny == std::vector<std::string>{"write:build/**"},
+               "permission lists load and add to the default allow entries");
+        const Profile* scout = find_profile(sp.profiles, "scout");
+        const Profile* docs = find_profile(sp.profiles, "docs");
+        expect(scout && scout->budget_tokens == 20000 && scout->max_steps == 10 && scout->mode == Mode::AutoRead && scout->tools.size() == 5 && !scout->reviewer,
+               "a built-in profile is narrowed in place and keeps what the file does not mention");
+        expect(docs && sp.profiles.size() == 5 && docs->mode == Mode::Edit && docs->write_paths == std::vector<std::string>{"docs/**"} && docs->tools.size() == 2 && docs->model == "llamacpp/Qwen3.5-4B-Q4_K_M" && !docs->reviewer && docs->read_outside,
+               "a new profile is added with its fields, a preset name resolved to its model");
+        auto rejects = [&](const char* lua, const char* needle) {
+            write_file(ws / "proj" / ".maic" / "settings.lua", lua);
+            try {
+                load_settings(ws / "proj");
+            } catch (const std::exception& e) {
+                return std::string(e.what()).find(needle) != std::string::npos;
+            }
+            return false;
+        };
+        expect(rejects("return { profiles = { scout = { mode = 'auto' } } }", "wider than the built-in scout"), "a built-in profile cannot be given a wider mode");
+        expect(rejects("return { profiles = { scout = { tools = { 'read_file', 'write_file' } } } }", "has no write_file tool"), "nor a tool it lacks");
+        expect(rejects("return { profiles = { scout = { budget_tokens = 100000 } } }", "above the built-in"), "nor a bigger budget");
+        expect(rejects("return { profiles = { reviewer = { read_outside = true } } }", "does not read outside"), "nor reads outside the workspace");
+        expect(rejects("return { profiles = { wired = { network = true } } }", "network"), "no profile gets the network");
+        expect(rejects("return { profiles = { x = { mode = 'fast' } } }", "mode must be"), "a bad mode is an error");
+        expect(rejects("return { permission = { allow = { 'pytest *' } } }", "tool:pattern"), "a permission entry without its tool is an error");
+        expect(rejects("return { permission = { deny = { 'run_shell:' } } }", "tool:pattern"), "and so is one without a pattern");
         fs::remove(ws / "proj" / ".maic" / "settings.lua");
     }
 

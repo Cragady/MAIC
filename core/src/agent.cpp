@@ -17,8 +17,8 @@ namespace maic {
 
 namespace {
 
-constexpr int kMaxSteps = 40;
 constexpr size_t kMaxLoggedResult = 64 * 1024;
+constexpr size_t kMaxDelegateResult = 16 * 1024;  // a subagent's report, as the parent's tool result
 
 const char* verdict_name(Verdict v) {
     switch (v) {
@@ -39,6 +39,24 @@ const char* approval_name(Approval a) {
     }
     return "?";
 }
+
+// A subagent's events, as the parent's front end sees them: its tool calls and notices carry the profile's
+// name, its approvals are asked of the user with the profile named, and its prose is not streamed (the final
+// answer comes back as the delegate result).
+struct ChildEvents : AgentEvents {
+    AgentEvents& parent;
+    std::string profile;
+    ChildEvents(AgentEvents& parent, std::string profile) : parent(parent), profile(std::move(profile)) {}
+    void on_text(std::string_view, bool) override {}
+    void on_tool_call(const std::string& summary) override { parent.on_tool_call("↳ " + profile + ": " + summary); }
+    void on_tool_result(const std::string& text, bool ok) override { parent.on_tool_result(text, ok); }
+    void on_notice(const std::string& text) override { parent.on_notice(profile + ": " + text); }
+    ApprovalAnswer ask(const ApprovalRequest& request) override {
+        ApprovalRequest r = request;
+        r.summary = profile + ": " + request.summary;
+        return parent.ask(r);
+    }
+};
 
 }  // namespace
 
@@ -154,7 +172,23 @@ std::string Agent::system_prompt() const {
         "Workspace: " + harness_.workspace().string() + " (relative paths resolve here; everything you do is scoped to it).\n"
         "Mode: " + std::string(mode_name(mode)) + ". " + mode_rule(mode) + " The user can change modes at any time "
         "(manual, auto-read, edit, auto, plan); you will be told when that happens.\n"
-        "\n"
+        "\n";
+    if (!profile_name_.empty()) {
+        const Profile* p = harness_.profile();
+        std::string tools;
+        for (const auto& t : p->tools) tools += (tools.empty() ? "" : ", ") + t;
+        std::string paths;
+        for (const auto& g : p->write_paths) paths += (paths.empty() ? "" : ", ") + g;
+        prompt += "# You are a subagent\n"
+                  "A parent agent delegated one task to you under the " + profile_name_ + " profile" +
+                  (p->read_only() ? ", which is read-only: you change nothing" : paths.empty() ? "" : ", which writes only under " + paths) +
+                  (tools.empty() ? "" : "; your tools are " + tools) +
+                  ". You have no user to talk to: question and todo are not available, and you cannot delegate. Approvals your mode "
+                  "requires are asked of the user through the parent. Do the task with your tools, then write your report as your final "
+                  "answer: it is handed to the parent as the result of its delegate call and nothing else of yours is, so make it "
+                  "complete and self-contained (paths, line numbers, what you found or changed, what you could not do).\n\n";
+    }
+    prompt +=
         "# Tools\n"
         "read_file (with grep to get only matching lines of a big file), list_dir (depth for a tree), glob (find files by "
         "name pattern), search_files (grep -E syntax), write_file, edit_file (one exact replacement), run_shell.\n"
@@ -164,11 +198,20 @@ std::string Agent::system_prompt() const {
         "or mkdir will ask the user. delete_file needs recursive: true for a directory with contents.\n"
         "run_shell is bash inside a sandbox: only the workspace is writable, there is no network, no sudo, and a "
         "timeout (default 120 s). In auto-read and plan modes only read-only commands run, with the workspace "
-        "read-only too. Tool output is capped; read files in ranges when they are long.\n"
-        "question asks the user one thing and waits for the answer; offer options when the choice is fixed. Use it "
-        "for decisions that are theirs, not for things the other tools can tell you.\n"
-        "todo is your plan for work with several steps: the user sees it. Send the whole list each time, mark items "
-        "done as you finish them, and keep it current until the work is done.\n" +
+        "read-only too. Tool output is capped; read files in ranges when they are long.\n" +
+        (profile_name_.empty()
+             ? "question asks the user one thing and waits for the answer; offer options when the choice is fixed. Use it "
+               "for decisions that are theirs, not for things the other tools can tell you.\n"
+               "todo is your plan for work with several steps: the user sees it. Send the whole list each time, mark items "
+               "done as you finish them, and keep it current until the work is done.\n"
+               "delegate hands one task to a subagent that works in this workspace under a profile and returns its report as "
+               "the result: scout (reads and read-only commands only), reviewer (read-only, plan mode), builder (edits inside "
+               "the workspace). Use it for a long read or search you do not want in your own context (ask the scout for a "
+               "short report with paths and line numbers), and for a review of your own change by a reviewer before you call "
+               "the work done. The subagent sees none of this conversation: put everything it needs in task and context. It "
+               "cannot delegate, ask the user or keep a plan, its approvals come to the user through you, and it stops at its "
+               "profile's budget.\n"
+             : std::string()) +
         user_tools_text() +
         "\n"
         "# Helpers on this machine\n"
@@ -237,9 +280,29 @@ void Agent::set_log(SessionLog* log) {
     if (log_) {
         char host[256] = "";
         gethostname(host, sizeof(host) - 1);
-        log_->write("start", {{"workspace", harness_.workspace().string()}, {"model", model}, {"mode", mode_name(mode)},
-                              {"host", host}, {"pid", getpid()}});
+        nlohmann::json start = {{"workspace", harness_.workspace().string()}, {"model", model}, {"mode", mode_name(mode)}, {"host", host}, {"pid", getpid()}};
+        if (!profile_name_.empty()) {
+            start["profile"] = profile_name_;
+            start["parent"] = parent_id_;
+        }
+        log_->write("start", start);
     }
+}
+
+void Agent::set_profile(const Profile& profile) {
+    profile_name_ = profile.name;
+    mode = profile.mode;
+    harness_.set_profile(profile);
+    budget_tokens = profile.budget_tokens;
+    max_steps = profile.max_steps;
+    review_with_model = review_with_model && profile.reviewer;
+    nlohmann::json kept = nlohmann::json::array();
+    for (const auto& s : schemas_) {
+        std::string name = s["function"]["name"];
+        if (name == "delegate" || name == "question" || name == "todo" || !profile.allows_tool(name)) continue;
+        kept.push_back(s);
+    }
+    schemas_ = std::move(kept);
 }
 
 void Agent::push(Message m) {
@@ -486,7 +549,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
     int ban_attempts = 0;
     int context_retries = 0;
     denials_ = 0;
-    for (int step = 0; step < kMaxSteps; ++step) {
+    for (int step = 0; step < max_steps; ++step) {
         if (drain_mailbox()) events.on_notice("delivered your queued message");
         if (budget_tokens > 0) {
             UsageReport u = usage();
@@ -625,6 +688,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
         context_retries = 0;
         ban_attempts = 0;
         deliver_now_ = false;
+        ++steps_;
         if (log_ && !reply.content.empty()) log_->write("assistant", {{"text", reply.content}});
         if (reply.usage.input || reply.usage.output) {
             std::lock_guard lock(usage_mu_);
@@ -650,8 +714,13 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
                 return;
             }
         }
+        // A session keeps running while tripped, so the user can talk it through; a subagent has no one to talk to.
+        if (!profile_name_.empty() && tripwire_state()) {
+            events.on_notice("the harness is tripped; the subagent stops here");
+            return;
+        }
     }
-    events.on_notice("stopped after " + std::to_string(kMaxSteps) + " steps; send a message to continue");
+    events.on_notice("stopped after " + std::to_string(max_steps) + " steps" + (profile_name_.empty() ? "; send a message to continue" : " (the profile's limit)"));
 }
 
 Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel) {
@@ -692,7 +761,19 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         events.on_notice("HALTED: the call contains the forbidden term \"" + *term + "\"; nothing ran");
         return result("DENIED: the call contains the forbidden term \"" + *term + "\". Do not search for, run, or write anything involving it; tell the user it is forbidden if they asked for it.", false);
     }
-    bool harness_action = !lua && name != "question" && name != "todo";
+    if (!profile_name_.empty() && (name == "delegate" || name == "question" || name == "todo")) {
+        record["decision"] = "deny";
+        record["reason"] = "not a subagent's tool";
+        return result("DENIED: a subagent has no " + name + " tool. Report to the parent in your final answer instead.", false);
+    }
+    if (!harness_.tool_allowed(name)) {
+        record["decision"] = "deny";
+        record["reason"] = "tool not in the profile";
+        std::string allowed;
+        for (const auto& t : harness_.profile()->tools) allowed += (allowed.empty() ? "" : ", ") + t;
+        return result("DENIED: the " + profile_name_ + " profile has no " + name + " tool. Its tools are: " + allowed + ".", false);
+    }
+    bool harness_action = !lua && name != "question" && name != "todo" && name != "delegate";
     std::vector<Action> actions;
     if (harness_action) {
         try {
@@ -729,6 +810,10 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         return result("REFUSED: this exact call has been made " + std::to_string(repeats_) + " times in a row. Do something different, or tell the user what is blocking you.", false);
     }
 
+    if (name == "delegate") {
+        ToolResult r = run_delegate(call.arguments, origin, events, cancel, record);
+        return result(r.text, r.ok);
+    }
     if (name == "question") {
         // Changes nothing on the machine, so no policy; the user answers or not.
         if (!call.arguments.contains("question") || !call.arguments["question"].is_string()) return result("error: missing string argument 'question'", false);
@@ -865,6 +950,100 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     }
     if (d.verdict == Verdict::Deny) return {Verdict::Deny, "DENIED: " + d.reason};
     return d;
+}
+
+ToolResult Agent::run_delegate(const nlohmann::json& args, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel, nlohmann::json& record) {
+    if (!args.contains("profile") || !args["profile"].is_string() || !args.contains("task") || !args["task"].is_string()) {
+        return {false, "error: delegate needs the string arguments 'profile' and 'task'"};
+    }
+    std::string wanted = args["profile"];
+    const Profile* found = find_profile(profiles, wanted);
+    if (!found) {
+        std::string names;
+        for (const auto& p : profiles) names += (names.empty() ? "" : ", ") + p.name;
+        return {false, "error: no profile named '" + wanted + "'. The profiles are: " + names + "."};
+    }
+    Profile profile;
+    try {
+        profile = narrow_profile(*found, mode);
+    } catch (const std::exception& e) {
+        return {false, std::string("error: ") + e.what()};
+    }
+    record["profile"] = profile.name;
+
+    Agent child(harness_.workspace(), profile.model.empty() ? model : profile.model);
+    child.providers = providers;
+    child.think = think;
+    child.sampling = sampling;
+    child.bans = bans;
+    child.operator_note_in_turn = operator_note_in_turn;
+    child.load_instruction_files = load_instruction_files;
+    child.instruction_names_ = instruction_names_;
+    child.system_prefix = system_prefix;
+    child.rules = rules;
+    child.compaction = compaction;
+    child.review_with_model = review_with_model;
+    child.reviewer_model = reviewer_model;
+    child.repeat_limit = repeat_limit;
+    child.repeat_trip = repeat_trip;
+    child.denials_limit = denials_limit;
+    child.harness_.set_permission(harness_.permission());
+    child.harness_.set_forbid(harness_.forbid());
+    child.harness_.set_confined(harness_.confined());
+    child.set_profile(profile);
+    if (budget_tokens > 0) {
+        // The child's tokens count against this session, so it never gets more than what is left.
+        UsageReport u = usage();
+        long remaining = budget_tokens - (u.total_input + u.total_output);
+        if (remaining <= 0) return {false, "DENIED: the session's token budget is used up"};
+        if (child.budget_tokens <= 0 || child.budget_tokens > remaining) child.budget_tokens = remaining;
+    }
+    child.reload_instructions();
+    std::unique_ptr<SessionLog> child_log;
+    if (log_) {
+        child_log = std::make_unique<SessionLog>("sub", log_->path().parent_path());
+        child.parent_id_ = log_->path().stem().string();
+        child.set_log(child_log.get());
+        record["child"] = child_log->path().string();
+    }
+
+    std::string task = args["task"];
+    if (args.contains("context") && args["context"].is_string() && !args["context"].get<std::string>().empty()) {
+        task += "\n\nContext from the parent agent:\n" + args["context"].get<std::string>();
+    }
+    ChildEvents child_events(events, profile.name);
+    if (child.remote() && !remote()) events.on_notice(profile.name + ": runs on " + child.model + ", a remote model; the task and what it reads leave this machine");
+    std::string failure;
+    try {
+        child.submit(task, origin, child_events, cancel);
+    } catch (const std::exception& e) {
+        failure = e.what();
+    }
+    UsageReport cu = child.usage();
+    long tokens = cu.total_input + cu.total_output;
+    {
+        std::lock_guard lock(usage_mu_);
+        usage_.total_input += cu.total_input;
+        usage_.total_output += cu.total_output;
+    }
+    record["steps"] = child.steps();
+    record["tokens"] = tokens;
+    std::string used = "(the subagent used " + std::to_string(child.steps()) + " step" + (child.steps() == 1 ? "" : "s") + ", " + std::to_string(tokens) + " tokens)";
+
+    std::string answer;
+    for (size_t i = child.messages().size(); i-- > 0;) {
+        const auto& m = child.messages()[i];
+        if (m.role == "assistant" && !m.content.empty()) {
+            answer = m.content;
+            break;
+        }
+    }
+    if (answer.size() > kMaxDelegateResult) answer = answer.substr(0, kMaxDelegateResult) + "\n[truncated]";
+    if (!failure.empty()) return {false, "error: the subagent failed: " + failure + (answer.empty() ? "" : "\nIts last words:\n" + answer) + "\n" + used};
+    if (cancel.load()) return {false, "cancelled by the user " + used};
+    if (tripwire_state()) return {false, "BLOCKED and the harness was tripped during the subagent's work. Stop and explain to the user. " + used};
+    if (answer.empty()) return {false, "the subagent gave no final answer " + used};
+    return {true, answer + "\n\n" + used};
 }
 
 const LuaTool* Agent::find_tool(const std::string& name) const {

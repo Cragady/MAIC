@@ -196,7 +196,8 @@ int run_headless(const HeadlessOptions& options) {
     agent.system_prefix = resolve_system_prompt(settings.system_prompt);
     agent.prefill = resolve_system_prompt(settings.prefill);
     agent.rules = settings.rules;
-    agent.set_allow(settings.allow);
+    agent.set_permission(settings.permission);
+    agent.profiles = settings.profiles;
     agent.set_forbid(settings.forbid);
     if (settings.tripwire == "isolated" && !settings.allow_isolated) {
         fprintf(stderr, "maic: tripwire = \"isolated\" is not allowed: set allow_isolated = true in settings to permit it\n");

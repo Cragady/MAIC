@@ -3,12 +3,15 @@
 #include <filesystem>
 #include <regex.h>
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace maic {
+
+struct Profile;
 
 // How much the agent may do without asking. Cycled with Shift-Tab in the CLI.
 enum class Mode {
@@ -22,6 +25,8 @@ enum class Mode {
 std::string_view mode_name(Mode mode);
 std::optional<Mode> parse_mode(std::string_view name);
 Mode next_mode(Mode mode);
+// The one that allows less: plan, then manual, auto-read, edit, auto.
+Mode narrower_mode(Mode a, Mode b);
 
 // Where a request came from. Anything not typed by the local user is always asked, in every mode.
 enum class Origin { Local, Remote };
@@ -31,6 +36,15 @@ struct Action {
     std::filesystem::path path;  // Read / Write
     std::string command;         // Shell
     std::filesystem::path workdir;  // Shell only: where the command runs (resolved); empty = the workspace
+    std::string tool;            // the tool making it ("write_file", "run_shell"), matched by `permission` entries
+};
+
+// `permission` in settings: patterns over `tool:argument` (`run_shell:pytest *`, `write_file:src/**`,
+// `read_file:/etc/**`; `write:` and `read:` stand for any write or read tool). deny wins over ask wins over
+// allow. It runs after the fixed rules, so it never reaches a trip pattern, a secret or a system path, and
+// allow entries are ignored for a remote origin.
+struct Permission {
+    std::vector<std::string> allow, ask, deny;
 };
 
 enum class Verdict {
@@ -71,11 +85,19 @@ public:
     // What "always allow" remembers for the session: the file for writes, the program for commands.
     static std::string approval_key(const Action& action);
 
+    // The additive permission block. Its run_shell allow entries are the allow list (`:allow`).
+    void set_permission(Permission p) { permission_ = std::move(p); }
+    const Permission& permission() const { return permission_; }
     // Commands the user pre-approved (glob patterns over the whole command line, `*` and `?`): allowed in
     // every mode but plan without asking or review. Trip patterns are checked first and still win.
-    void set_allow(std::vector<std::string> patterns) { allow_ = std::move(patterns); }
-    const std::vector<std::string>& allow() const { return allow_; }
+    void set_allow(const std::vector<std::string>& patterns);  // replaces the run_shell entries of permission.allow
+    std::vector<std::string> allow() const;
     bool allowed_by_list(const std::string& command) const;
+    // A subagent's profile: a write outside its write_paths, a read outside the workspace when it may not, a
+    // tool off its list and, for a read-only profile, anything that could write are denied, the profile named.
+    void set_profile(const Profile& profile);
+    const Profile* profile() const { return profile_.get(); }
+    bool tool_allowed(const std::string& name) const;
     // A repeat of this action is harmless (a read, a read-only or allow-listed command): refuse, never trip.
     bool harmless(const Action& action) const;
     // Forbidden terms: a tool call whose name, arguments, command or path contains one (any letter case) is
@@ -94,9 +116,12 @@ private:
     Decision check_shell(const std::string& command, Mode mode) const;
     Decision check_write(const std::filesystem::path& p, Mode mode) const;
     Decision check_read(const std::filesystem::path& p, Mode mode) const;
+    Decision check_profile(const Action& action, Decision d) const;
+    bool permitted(const std::vector<std::string>& entries, const Action& action) const;
 
     std::filesystem::path workspace_;
-    std::vector<std::string> allow_;
+    Permission permission_;
+    std::shared_ptr<const Profile> profile_;
     std::vector<std::string> forbid_;
     std::vector<std::pair<std::string, regex_t>> forbid_res_;  // compiled /regex/ entries, by their text
     bool confined_ = false;

@@ -217,7 +217,68 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             for (const auto& r : j["forbid"]) if (r.is_string() && !r.get<std::string>().empty()) s.forbid.push_back(r.get<std::string>());
         }
         if (j.contains("allow") && j["allow"].is_array()) {
-            for (const auto& r : j["allow"]) if (r.is_string() && !r.get<std::string>().empty()) s.allow.push_back(r.get<std::string>());
+            for (const auto& r : j["allow"]) if (r.is_string() && !r.get<std::string>().empty()) s.permission.allow.push_back("run_shell:" + r.get<std::string>());
+        }
+        if (j.contains("permission")) {
+            if (!j["permission"].is_object()) throw std::runtime_error(path.string() + ": permission must be a table with allow, ask and deny lists");
+            auto entries = [&](const char* key, std::vector<std::string>& into) {
+                if (!j["permission"].contains(key)) return;
+                for (const auto& e : j["permission"][key]) {
+                    std::string entry = e.is_string() ? e.get<std::string>() : "";
+                    size_t colon = entry.find(':');
+                    if (colon == std::string::npos || colon == 0 || colon + 1 == entry.size()) {
+                        throw std::runtime_error(path.string() + ": permission." + key + " entries are \"tool:pattern\" (run_shell:pytest *, write_file:src/**), not \"" + entry + "\"");
+                    }
+                    into.push_back(entry);
+                }
+            };
+            entries("allow", s.permission.allow);
+            entries("ask", s.permission.ask);
+            entries("deny", s.permission.deny);
+        }
+        json profile_table = j.value("profiles", json::object());
+        if (!profile_table.is_object()) throw std::runtime_error(path.string() + ": profiles must be a table of profiles by name");
+        std::vector<Profile> builtins = default_profiles();
+        for (const auto& [name, pj] : profile_table.items()) {
+            if (!pj.is_object()) throw std::runtime_error(path.string() + ": profiles." + name + " must be a table");
+            const Profile* builtin = find_profile(builtins, name);
+            Profile p = builtin ? *builtin : Profile{name};
+            std::string where = path.string() + ": profiles." + name;
+            if (pj.contains("mode")) {
+                auto m = parse_mode(pj["mode"].get<std::string>());
+                if (!m) throw std::runtime_error(where + ".mode must be manual, auto-read, edit, auto or plan");
+                if (builtin && narrower_mode(*m, builtin->mode) != *m) throw std::runtime_error(where + ": mode " + std::string(mode_name(*m)) + " is wider than the built-in " + name + " (" + std::string(mode_name(builtin->mode)) + "); a profile can only narrow");
+                p.mode = *m;
+            }
+            if (pj.contains("write_paths")) p.write_paths = pj["write_paths"].get<std::vector<std::string>>();
+            if (pj.contains("read_outside")) {
+                p.read_outside = pj["read_outside"].get<bool>();
+                if (builtin && p.read_outside && !builtin->read_outside) throw std::runtime_error(where + ": the built-in " + name + " does not read outside the workspace; a profile can only narrow");
+            }
+            if (pj.value("network", false)) throw std::runtime_error(where + ": no profile has the network yet");
+            if (pj.contains("budget_tokens")) {
+                p.budget_tokens = pj["budget_tokens"].get<long>();
+                if (builtin && builtin->budget_tokens > 0 && (p.budget_tokens <= 0 || p.budget_tokens > builtin->budget_tokens)) throw std::runtime_error(where + ": budget_tokens above the built-in " + name + "'s " + std::to_string(builtin->budget_tokens) + "; a profile can only narrow");
+            }
+            if (pj.contains("max_steps")) {
+                p.max_steps = pj["max_steps"].get<int>();
+                if (p.max_steps < 1 || (builtin && p.max_steps > builtin->max_steps)) throw std::runtime_error(where + ": max_steps must be between 1 and " + std::to_string(builtin ? builtin->max_steps : Profile{}.max_steps));
+            }
+            if (pj.contains("tools")) {
+                p.tools = pj["tools"].get<std::vector<std::string>>();
+                if (builtin && !builtin->tools.empty()) {
+                    for (const auto& t : p.tools) {
+                        if (!builtin->allows_tool(t)) throw std::runtime_error(where + ": the built-in " + name + " has no " + t + " tool; a profile can only narrow");
+                    }
+                }
+            }
+            if (pj.contains("reviewer")) p.reviewer = pj["reviewer"].get<bool>();
+            p.model = pj.value("model", p.model);
+            bool replaced = false;
+            for (auto& existing : s.profiles) {
+                if (existing.name == name) existing = p, replaced = true;
+            }
+            if (!replaced) s.profiles.push_back(p);
         }
         if (j.contains("rules") && j["rules"].is_array()) {
             for (const auto& r : j["rules"]) if (r.is_string() && !r.get<std::string>().empty()) s.rules.push_back(r.get<std::string>());
@@ -314,6 +375,11 @@ Settings load_settings(const fs::path& workspace) {
     for (auto it = dirs.rbegin(); it != dirs.rend(); ++it) {
         apply_file(s, *it / ".maic" / "settings.json", workspace);
         apply_file(s, *it / ".maic" / "settings.local.json", workspace);
+    }
+    // A profile's model may be a preset's name; presets from every layer are known only now.
+    for (auto& p : s.profiles) {
+        if (p.model.empty()) continue;
+        if (auto preset = find_preset(s.presets, p.model)) p.model = preset->model;
     }
     return s;
 }
@@ -415,10 +481,12 @@ void write_default_settings(bool as_json) {
         {"system_prompt", d.system_prompt},
         {"prefill", d.prefill},
         {"rules", nlohmann::json::array()},
-        {"allow", nlohmann::json::array()},
+        {"permission", {{"allow", nlohmann::json::array()}, {"ask", nlohmann::json::array()}, {"deny", nlohmann::json::array()}}},
+        {"profiles", nlohmann::json::object()},
         {"forbid", nlohmann::json::array()},
         {"//forbid", "terms no tool call may contain, in any letter case; write /.../ for a POSIX extended regex. A search, a command, a path or any argument with one is halted before it runs, under the dumb harness too. Added to the built-in list. :forbid in a session"},
-        {"//allow", "command patterns (glob over the whole command line) allowed in every mode but plan, without asking or review; MAIC's own helpers (maic-storyboard*, maic-workflow-edit*, maic path* ...) are always on it. Trip patterns still win. Layers add up. :allow in a session"},
+        {"//permission", "allow / ask / deny lists of \"tool:pattern\" (run_shell:pytest *, write_file:src/**, read_file:/etc/**; write: and read: for any such tool). deny wins over ask over allow; allow runs without asking or review in every mode but plan. Trip patterns, secrets and system paths are checked first and are not touched. MAIC's own helpers (maic-storyboard*, maic-workflow-edit*, maic path* ...) are always allowed. Layers add up. :allow in a session"},
+        {"//profiles", "subagent profiles by name, adding to or narrowing the built-in orchestrator, builder, scout and reviewer: profiles = { scout = { budget_tokens = 20000 }, docs = { mode = \"edit\", write_paths = { \"docs/**\" }, tools = { \"read_file\", \"edit_file\", \"write_file\" }, model = \"qwen-4b\" } }. Fields: mode, write_paths, read_outside, budget_tokens, max_steps, tools, reviewer, model. A built-in can only be narrowed. docs/settings.md"},
         {"//rules", "standing one-line instructions (\"always answer in French\"); they ride with system_prompt at both ends of the system prompt and in the per-turn note. :rule in a session, --rule on the command line"},
         {"//prefill", "text every reply starts with, sent as the opening of the assistant turn; a guarantee where a system prompt is a request"},
         {"harness", d.harness},

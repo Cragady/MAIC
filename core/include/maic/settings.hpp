@@ -2,6 +2,7 @@
 
 #include "maic/bans.hpp"
 #include "maic/llm.hpp"
+#include "maic/profile.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -90,7 +91,10 @@ struct Settings {
     // Micaiah's rule: any three letters from f, m, o with at least one o, in any order, as a whole word
     // (fmo, moo, omo, oom, ooo, oof, foo, ...). ffm and mmf carry no o and stay allowed.
     std::vector<std::string> forbid = {"threesome", "/(^|[^a-z0-9])([fm][fm]o|[fm]o[fmo]|o[fmo][fmo])s?([^a-z0-9]|$)/"};
-    std::vector<std::string> allow = {"maic-storyboard*", "maic-workflow-edit*", "maic-danbooru-tags*", "maic path*", "maic status*", "maic artifacts*", "maic sessions*"};  // pre-approved command patterns; layers add up
+    // `permission`: allow / ask / deny over `tool:argument` patterns (docs/harness.md); layers add up. MAIC's own helpers
+    // are pre-approved. The old `allow` key still works: its command patterns land here as `run_shell:` entries.
+    Permission permission{{"run_shell:maic-storyboard*", "run_shell:maic-workflow-edit*", "run_shell:maic-danbooru-tags*", "run_shell:maic path*", "run_shell:maic status*", "run_shell:maic artifacts*", "run_shell:maic sessions*"}, {}, {}};
+    std::vector<Profile> profiles = default_profiles();  // `profiles` in settings adds or narrows, by name
     Bans bans;                      // strings, patterns and tokens the model must not produce (docs/bans.md)
     nlohmann::json sampling = nlohmann::json::object();  // sampler keys for every provider; a provider's options.sampling overrides
     std::string tripwire = "machine";  // "machine": the root-owned lock (default); "session": a lock beside this transcript, no sudo; "isolated": session lock and the machine lock ignored (needs allow_isolated)

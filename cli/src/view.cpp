@@ -48,6 +48,12 @@ bool attached(Kind k) {
     return k == Kind::ToolOk || k == Kind::ToolErr;
 }
 
+// A subagent's tool call ("↳ scout: ...") sits indented under the delegate call that started it.
+const char* marker(const Entry& e) {
+    if (e.kind == Kind::Tool && e.text.rfind("↳", 0) == 0) return "  ";
+    return prefix(e.kind);
+}
+
 constexpr size_t kPreviewLines = 8;
 
 // The first lines of a tool result, with a note about the rest.
@@ -155,7 +161,7 @@ void View::layout(size_t width) {
     for (size_t e = 0; e < snapshot.size(); ++e) {
         const auto& entry = snapshot[e];
         if (e > 0 && !attached(entry.kind)) lines_.push_back({{}, Kind::Assistant, e, 0, 0, false});
-        size_t pre = utf8_len(prefix(entry.kind)) + (timestamps_ ? 6 : 0);
+        size_t pre = utf8_len(marker(entry)) + (timestamps_ ? 6 : 0);
         bool use_md = markdown_ && (entry.kind == Kind::Assistant || entry.kind == Kind::User || entry.kind == Kind::Notice);
         std::string shown_text = entry.collapsed ? preview(entry.text) : entry.text;
         // Tool output and shell output keep tabs; the renderer drops them, so expand.
@@ -602,7 +608,12 @@ Element View::render(const Settings& settings, size_t width, int height) {
         const Line& l = lines_[static_cast<size_t>(i)];
         size_t pre_len = 0;
         StyledLine shown = l.spans;
-        std::string pre = l.first ? prefix(l.kind) : std::string(utf8_len(prefix(l.kind)), ' ');
+        std::string mark;
+        {
+            std::lock_guard lock(mu_);
+            mark = l.entry < entries_.size() ? marker(entries_[l.entry]) : prefix(l.kind);
+        }
+        std::string pre = l.first ? mark : std::string(utf8_len(mark), ' ');
         if (timestamps_) {
             std::string stamp(6, ' ');
             if (l.first) {
