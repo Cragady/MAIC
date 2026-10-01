@@ -3,6 +3,7 @@
 #include "commands.hpp"
 #include "editor.hpp"
 #include "highlight.hpp"
+#include "nvim_host.hpp"
 #include "maic/agent.hpp"
 #include "maic/artifacts.hpp"
 #include "maic/clipboard.hpp"
@@ -10,6 +11,7 @@
 #include "maic/places.hpp"
 #include "maic/vendor.hpp"
 #include "maic/lua.hpp"
+#include "maic/nvim_host.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
@@ -194,8 +196,9 @@ enum class Focus { Input, Conversation };
 
 class App : public AgentEvents {
 public:
-    App(ScreenInteractive& screen, Settings settings, const std::optional<std::filesystem::path>& resume, bool append, std::optional<size_t> fork_at)
-        : screen_(screen), settings_(std::move(settings)),
+    App(ScreenInteractive& screen, Settings settings, const std::optional<std::filesystem::path>& resume, bool append, std::optional<size_t> fork_at,
+        std::shared_ptr<HostNvim> host, std::string host_refused)
+        : host_(std::move(host)), host_refused_(std::move(host_refused)), screen_(screen), settings_(std::move(settings)),
           log_(!resume ? std::make_unique<SessionLog>("tui", settings_.record ? session_home_dir(settings_) : runtime_sessions_dir())
                : append && settings_.record ? std::make_unique<SessionLog>(SessionLog::Reopen{}, *resume)
                                             : std::make_unique<SessionLog>(SessionLog::Fork{}, *resume, fork_at.value_or(count_records(*resume)), "tui",
@@ -250,6 +253,7 @@ public:
         if (settings_.tripwire == "isolated") agent_.set_confined(true);
         agent_.reload_instructions();
         agent_.bans = settings_.bans;
+        agent_.set_nvim_host(host_);
         apply_sampling();
         view_.set_timestamps(settings_.timestamps);
         if (resume) {
@@ -408,6 +412,20 @@ public:
         ++tool_calls_;
         post(Kind::Tool, summary);
     }
+    void on_tool_started(const std::string& tool, const std::string& path, const std::string& summary) override {
+        if (!host_up()) return;
+        std::string resolved = path;
+        try {
+            if (!path.empty()) resolved = agent_.harness().resolve(path).string();
+        } catch (const std::exception&) {
+        }
+        fire("MaicToolCall", {{"tool", tool}, {"path", resolved}, {"summary", summary}});
+    }
+    void on_file_written(const std::filesystem::path& path, const std::string& tool) override {
+        if (!host_up()) return;
+        host_checktime(*host_);
+        fire("MaicFileWritten", {{"tool", tool}, {"path", path.string()}});
+    }
     void on_tool_result(const std::string& text, bool ok) override { post(ok ? Kind::ToolOk : Kind::ToolErr, text); }
     void on_notice(const std::string& text) override { post(Kind::Notice, text); }
     ApprovalAnswer ask(const ApprovalRequest& request) override {
@@ -418,7 +436,13 @@ public:
             answer = approval_->answer.get_future();
         }
         screen_.PostEvent(Event::Custom);
-        return answer.get();
+        nlohmann::json data = {{"tool", request.tool}, {"path", request.path.string()}, {"summary", request.summary}, {"reason", request.reason}, {"verdict", "pending"}};
+        fire("MaicApproval", data);
+        ApprovalAnswer a = answer.get();
+        const char* verdicts[] = {"yes", "no", "always", "trip"};
+        data["verdict"] = verdicts[static_cast<int>(a.choice)];
+        fire("MaicApproval", data);
+        return a;
     }
     std::string question(const std::string& text, const std::vector<std::string>& options) override {
         std::future<std::string> answer;
@@ -498,6 +522,19 @@ private:
     std::vector<std::string> models_cache_;
     std::chrono::steady_clock::time_point models_cached_at_{};
     void theme_command(const std::string& arg);  // :theme, :theme NAME, :theme reload, :theme nvim:NAME
+    // The host nvim (maic.nvim, docs/nvim.md): connected before the settings were read, or refused with a reason.
+    std::shared_ptr<HostNvim> host_;
+    std::string host_refused_;
+    std::atomic<bool> follow_theme_{false};  // the theme follows the host's colorscheme
+    bool host_up() const { return host_ && host_->connected(); }
+    void start_host();
+    void follow_host_theme(bool announce);  // on the host's handler thread: read its colorscheme, apply it here
+    void fire(const std::string& event, nlohmann::json data);  // a User autocmd in the host, with the session id
+    void nvim_command(const std::string& arg);  // :nvim, :nvim theme
+    void open_file(const std::filesystem::path& path);  // in the host, or in $EDITOR in MAIC's place
+    void paste_input(const std::string& text);  // appended to the input, never sent
+    bool pasting_ = false;  // inside a bracketed paste (maic.nvim's fallback when MAIC is not connected)
+    std::string paste_buf_;
     void use_theme(const Theme& theme);
     std::vector<std::string> nvim_colors();  // nvim's colorschemes for :theme nvim:<Tab>, asked once in the background
     std::mutex nvim_colors_mu_;
@@ -587,6 +624,7 @@ void App::welcome() {
         view_.append(Kind::Notice, "tools: " + names + "  (:tools lists them)");
     }
     for (const auto& n : agent_.tool_notices()) view_.append(Kind::Error, n);
+    start_host();
     view_.append(Kind::Notice, std::string("Press i to type, ") + (settings_.enter_sends ? "Enter to send a one-line input (Shift+Enter or Alt+Enter for a new line, :w sends any)" : "Alt+Enter (or :w) to send, Enter for a new line") +
                                    ". Esc = normal mode: j/k scroll, u/Ctrl-R undo/redo, :e opens nvim, Ctrl-W k = conversation window, :help for everything.");
     if (agent_.remote()) view_.append(Kind::Error, "This model runs off this machine: prompts, files the agent reads and command output are sent to it.");
@@ -732,6 +770,14 @@ void App::theme_command(const std::string& arg) {
         post(Kind::Notice, out);
         return;
     }
+    if (arg == "reload" && settings_.theme.rfind("nvim:", 0) == 0) {
+        nvim_command("theme");  // a theme that came from the host is re-read from it
+        return;
+    }
+    if (follow_theme_ && arg != "reload") {
+        follow_theme_ = false;
+        post(Kind::Notice, "no longer following nvim's colorscheme this session (:nvim theme follows it again)");
+    }
     if (arg.rfind("nvim:", 0) == 0) {
         std::string scheme = arg.substr(5);
         if (scheme.empty()) {
@@ -761,6 +807,113 @@ void App::theme_command(const std::string& arg) {
     } catch (const std::exception& e) {
         post(Kind::Error, std::string(e.what()) + "; keeping " + settings_.theme);
     }
+}
+
+void App::start_host() {
+    if (!host_refused_.empty()) view_.append(Kind::Error, "nvim: not connecting to $NVIM (" + host_refused_ + "); running without the host (:h nvim)");
+    if (!host_) return;
+    HostNvim::Handlers h;
+    h.send = [this](const std::string& text) {
+        screen_.Post([this, text] { paste_input(text); });
+        screen_.PostEvent(Event::Custom);
+    };
+    h.command = [this](const std::string& line) {
+        screen_.Post([this, line] { run_command(!line.empty() && line[0] == ':' ? line.substr(1) : line); });
+        screen_.PostEvent(Event::Custom);
+    };
+    h.colorscheme = [this] { follow_host_theme(false); };
+    h.error = [this](const std::string& why) { post(Kind::Error, "nvim: " + why); };
+    h.closed = [this] { post(Kind::Notice, "nvim: the host is gone; :e and the theme are MAIC's own again"); };
+    host_->set_handlers(std::move(h));
+    follow_theme_ = settings_.follow_nvim_theme;
+    try {
+        host_watch_colorscheme(*host_, host_->channel());
+    } catch (const std::exception& e) {
+        view_.append(Kind::Error, std::string("nvim: cannot watch its colorscheme: ") + e.what());
+        follow_theme_ = false;
+    }
+    view_.append(Kind::Notice, "nvim: connected to the nvim MAIC runs in (" + host_->socket() + "): :e FILE opens there, e and d at an approval show the file and the diff, :nvim says more");
+    if (follow_theme_) host_->post([this] { follow_host_theme(true); });
+}
+
+// Runs on the host's handler thread (it waits for nvim); the theme is applied on the UI thread.
+void App::follow_host_theme(bool announce) {
+    if (!follow_theme_ || !host_up()) return;
+    Theme t = host_theme(*host_);
+    screen_.Post([this, t, announce] {
+        if (!follow_theme_) return;
+        apply_theme(settings_, t);
+        if (announce) post(Kind::Notice, "theme: " + t.name + ", following nvim's colorscheme (follow_nvim_theme = false in settings keeps your own)");
+        else status_msg_ = "theme: " + t.name;
+    });
+    screen_.PostEvent(Event::Custom);
+}
+
+void App::fire(const std::string& event, nlohmann::json data) {
+    if (!host_up()) return;
+    data["session"] = log_->path().stem().string();
+    host_fire(*host_, event, data);
+}
+
+void App::nvim_command(const std::string& arg) {
+    if (arg == "theme") {
+        if (!host_up()) {
+            post(Kind::Error, "no host nvim to take the theme from (:nvim)");
+            return;
+        }
+        follow_theme_ = true;
+        host_->post([this] { follow_host_theme(true); });
+        return;
+    }
+    if (!arg.empty()) {
+        post(Kind::Error, ":nvim [theme]");
+        return;
+    }
+    if (host_up()) {
+        post(Kind::Notice, "nvim: connected to " + host_->socket() + " as channel " + std::to_string(host_->channel()) + " (client \"maic\")\n"
+                           "  :e FILE and e at an approval open files there, d at a write's approval diffs it in a new tab\n"
+                           "  User autocmds MaicTurnStart, MaicToolCall, MaicApproval, MaicFileWritten, MaicTurnEnd fire there\n"
+                           "  the model has the diagnostics tool; your Lua has maic.nvim\n"
+                           "  theme: " + std::string(follow_theme_ ? "follows its colorscheme (" + settings_.theme + ")" : "your own (" + settings_.theme + "); :nvim theme follows nvim's"));
+    } else if (host_) {
+        post(Kind::Notice, "nvim: the host this session connected to is gone");
+    } else {
+        const char* sock = std::getenv("NVIM");
+        post(Kind::Notice, std::string("nvim: no host. ") + (sock && *sock ? "$NVIM was refused: " + host_refused_ : "$NVIM is not set: MAIC is not running inside nvim") +
+                               "\nmaic.nvim (:Maic in nvim) runs MAIC in a terminal there; :h nvim");
+    }
+}
+
+void App::open_file(const std::filesystem::path& path) {
+    if (host_up()) {
+        try {
+            host_open(*host_, path);
+            status_msg_ = "opened in nvim: " + path.string();
+        } catch (const std::exception& e) {
+            post(Kind::Error, std::string("nvim: ") + e.what());
+        }
+        return;
+    }
+    const char* editor = std::getenv("VISUAL");
+    if (!editor || !*editor) editor = std::getenv("EDITOR");
+    if (!editor || !*editor) editor = "nvim";
+    std::string quoted = "'";
+    for (char c : path.string()) quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    quoted += "'";
+    std::string command = std::string(editor) + " " + quoted;
+    int rc = 0;
+    screen_.WithRestoredIO([&] { rc = std::system(command.c_str()); })();
+    if (rc != 0) post(Kind::Error, std::string(editor) + " exited with status " + std::to_string(rc));
+}
+
+void App::paste_input(const std::string& text) {
+    if (text.empty()) return;
+    std::string cur = editor_.text();
+    std::string sep = cur.empty() ? "" : cur.back() == '\n' ? "\n" : "\n\n";
+    editor_.replace_text(cur + sep + text);
+    set_focus(Focus::Input);
+    size_t lines = static_cast<size_t>(std::count(text.begin(), text.end(), '\n')) + 1;
+    status_msg_ = "pasted " + std::to_string(lines) + (lines == 1 ? " line" : " lines") + " into the input; nothing is sent until you send it";
 }
 
 void App::use_theme(const Theme& theme) {
@@ -840,6 +993,7 @@ Element App::render_top_status() {
     Elements right;
     right.push_back(text(agent_.model + (agent_.think ? " +think" : "")));
     right.push_back(text(agent_.remote() ? " REMOTE" : " local") | decorate(settings_.style(agent_.remote() ? "remote" : "status_dim")));
+    if (host_up()) right.push_back(text(" nvim") | decorate(settings_.style("status_dim")));
     right.push_back(text(" · ") | decorate(settings_.style("status_dim")));
     if (tripwire_state()) right.push_back(text("HARNESS TRIPPED") | decorate(settings_.style("harness_tripped")));
     else right.push_back(text("harness armed") | decorate(settings_.style("harness_armed")));
@@ -927,6 +1081,11 @@ Element App::render_approval() {
         rows.push_back(hbox({text("[y]") | bold | decorate(settings_.style("harness_armed")), text(" yes   "), text("[n]") | bold | decorate(settings_.style("tool_err")), text(" no   "),
                              text("[N]") | bold | decorate(settings_.style("tool_err")), text(" no, and say why   "), text("[a]") | bold, text(" always: " + key + " (this session)   "),
                              text("[t]") | bold | decorate(settings_.style("error")), text(" trip the harness")}));
+        if (!r.path.empty()) {
+            Elements extra = {text("[e]") | bold, text(host_up() ? " open in nvim   " : " open in $EDITOR   ")};
+            if (host_up() && r.proposed) extra.insert(extra.end(), {text("[d]") | bold, text(" diff in a new nvim tab")});
+            rows.push_back(hbox(extra));
+        }
     }
     return window(text(" approve? ") | bold, vbox(rows)) | decorate(settings_.style("approval"));
 }
@@ -994,7 +1153,7 @@ Element App::render() {
     int approval_rows = 0;
     if (is_asking) {
         std::lock_guard lock(mu_);
-        approval_rows = 5;
+        approval_rows = 5 + (approval_ && !approval_->request.path.empty() ? 1 : 0);
         if (approval_) approval_rows += std::min(14, static_cast<int>(std::count(approval_->request.preview.begin(), approval_->request.preview.end(), '\n')));
         if (confirm_) approval_rows += static_cast<int>(confirm_->lines.size()) + 2;
         if (question_) approval_rows = 4 + static_cast<int>(question_->options.size());
@@ -1010,6 +1169,27 @@ Element App::render() {
 
 bool App::handle(Event e) {
     if (e == Event::Custom) return true;
+
+    // A bracketed paste (maic.nvim's :MaicSend when MAIC is not connected to it) goes into the input whole,
+    // whatever the mode, and is never sent.
+    if (e.input() == "\x1b[200~") {
+        pasting_ = true;
+        paste_buf_.clear();
+        return true;
+    }
+    if (pasting_) {
+        if (e.input() == "\x1b[201~") {
+            pasting_ = false;
+            paste_input(paste_buf_);
+        } else if (e == Event::Return) {
+            paste_buf_ += '\n';
+        } else if (e == Event::Tab) {
+            paste_buf_ += '\t';
+        } else if (e.is_character()) {
+            paste_buf_ += e.input();
+        }
+        return true;
+    }
 
     // A fast Esc followed by a key arrives as one Alt-sequence ("\x1b:"). Vim users type that constantly,
     // so split it back into Esc plus the keys. Real escape sequences (CSI "\x1b[", SS3 "\x1bO") pass through.
@@ -1181,6 +1361,26 @@ bool App::handle_approval(const Event& e) {
     }
     else if (k == "a" || k == "A") answer(Approval::Always);
     else if (k == "t" || k == "T") answer(Approval::Trip);
+    else if (k == "e" || k == "d") {
+        std::filesystem::path path;
+        std::optional<std::string> proposed;
+        {
+            std::lock_guard lock(mu_);
+            if (approval_) path = approval_->request.path, proposed = approval_->request.proposed;
+        }
+        if (path.empty()) status_msg_ = "this approval is not about a file";
+        else if (k == "e") open_file(path);
+        else if (!host_up()) status_msg_ = "d shows the diff in nvim: run MAIC inside nvim (maic.nvim)";
+        else if (!proposed) status_msg_ = "no proposed content to diff for this call";
+        else {
+            try {
+                host_diff(*host_, path, *proposed);
+                status_msg_ = "the diff is in a new nvim tab; answer here";
+            } catch (const std::exception& ex) {
+                post(Kind::Error, std::string("nvim: ") + ex.what());
+            }
+        }
+    }
     else if (k == "\x03") answer(Approval::No), cancel_ = true;
     return true;
 }
@@ -1275,6 +1475,7 @@ void App::start_turn(const std::string& text_in) {
         for (;;) {
             auto t0 = std::chrono::steady_clock::now();
             tool_calls_ = 0;
+            fire("MaicTurnStart", {{"model", agent_.model}});
             try {
                 agent_.submit(next, Origin::Local, *this, cancel_);
             } catch (const std::exception& ex) {
@@ -1290,6 +1491,7 @@ void App::start_turn(const std::string& text_in) {
             int calls = tool_calls_.load();
             view_.append(Kind::Notice, "▣ " + agent_.model + " · " + dur + (calls ? " · " + std::to_string(calls) + (calls == 1 ? " tool call" : " tool calls") : "") +
                                            (cancel_.load() ? " · interrupted" : ""));
+            fire("MaicTurnEnd", {{"model", agent_.model}, {"tool_calls", calls}, {"seconds", secs}, {"interrupted", cancel_.load()}});
             maybe_title(next);
             // Messages queued after the turn's last model call start a new turn on their own.
             if (cancel_.load() || agent_.queued() == 0) break;
@@ -1464,8 +1666,11 @@ void App::run_command(const std::string& line) {
             submit(editor_.text(), arg == "now" || arg == "!");
         } else if (cmd == "ww") {
             submit(editor_.text(), true);
-        } else if (cmd == "e" || cmd == "edit" || cmd == "nvim") {
-            edit_externally();
+        } else if (cmd == "e" || cmd == "edit") {
+            if (arg.empty()) edit_externally();
+            else open_file(agent_.harness().resolve(arg));
+        } else if (cmd == "nvim" || cmd == "host") {
+            nvim_command(arg);
         } else if (cmd == "h" || cmd == "help") {
             post(Kind::Notice, help_text(arg));
         } else if (cmd == "mode") {
@@ -1554,7 +1759,10 @@ void App::run_command(const std::string& line) {
                 run_lua(arg, cmd == "luafile");
             }
         } else if (cmd == "undo") {
-            if (idle()) post(Kind::Notice, agent_.undo(arg.empty() ? 1 : static_cast<size_t>(std::max(1, std::atoi(arg.c_str())))));
+            if (idle()) {
+                post(Kind::Notice, agent_.undo(arg.empty() ? 1 : static_cast<size_t>(std::max(1, std::atoi(arg.c_str())))));
+                if (host_up()) host_checktime(*host_);
+            }
         } else if (cmd == "copy") {
             std::string last = view_.last_assistant();
             if (last.empty()) post(Kind::Error, "nothing to copy yet");
@@ -2087,6 +2295,7 @@ void App::quit() {
 }
 
 void App::shutdown() {
+    if (host_) host_->set_handlers({});
     nvim_hl_.reset();
     cancel_ = true;
     shell_cancel_ = true;
@@ -2104,6 +2313,10 @@ void App::shutdown() {
 }  // namespace
 
 int run_tui(const TuiOptions& options) {
+    // The host nvim first, so the settings files' Lua can use maic.nvim (docs/nvim.md).
+    std::string host_refused;
+    std::shared_ptr<HostNvim> host = HostNvim::from_env(host_refused);
+    set_lua_nvim_host(host);
     Settings settings = load_settings();
     if (options.model) settings.model = *options.model;
     apply_preset(settings, settings.model);
@@ -2138,7 +2351,7 @@ int run_tui(const TuiOptions& options) {
     screen.TrackMouse(settings.mouse);
     std::string first = options.initial_prompt;
     if (first == "-") first.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
-    App app(screen, settings, options.resume, options.append, options.fork_at);
+    App app(screen, settings, options.resume, options.append, options.fork_at, host, host_refused);
     if (options.ctx) {
         // --ctx: the local server is restarted to match before the first message.
         std::string r = restart_llamacpp_if_changed();
@@ -2154,6 +2367,7 @@ int run_tui(const TuiOptions& options) {
     if (!first.empty()) app.send(first);
     auto component = CatchEvent(Renderer([&] { return app.render(); }), [&](Event e) { return app.handle(e); });
     screen.Loop(component);
+    set_lua_nvim_host(nullptr);
     // The way back, printed after the screen is restored: a temporary transcript lives in the runtime
     // directory and is never listed, so this is the only place its path is easy to find.
     std::cout << "transcript" << (settings.record ? "" : " (temporary; gone at logout)") << ": " << app.transcript_path() << "\n"

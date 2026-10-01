@@ -34,6 +34,7 @@ git config core.hooksPath .githooks         # .githooks/pre-push runs scripts/ch
 | `fuzz` | the parser fuzzer, 2 s per target by default | `core/tests/fuzz_parsers.cpp` |
 | `server` | maic-server over HTTP | `server/tests/server_test.cpp` |
 | `editor` | the vim input | `cli/tests/editor_test.cpp` |
+| `nvim` | maic.nvim against a headless `nvim --listen`: the ancestry check (also the real `maic` as a terminal job of that nvim), the host connection, `:e`, the diff, the theme follow, User autocmds, the `diagnostics` tool as a read, `maic.nvim` in Lua; then the plugin's own Lua tests (`nvim -l maic.nvim/tests/maic_test.lua`). Skipped (77) without nvim | `cli/tests/nvim_test.cpp`, `maic.nvim/tests/maic_test.lua` |
 | `cli_smoke` | the real binary headless against a fake OpenAI-compatible server, and `maic setup` off a terminal | `tests/cli_smoke.py` |
 | `tui` | the real binary in a pty, read back with pyte | `tests/test_tui.py`, `tests/tui_driver.py` |
 | `lint_includes` | cpp-httplib only through `maic/http.hpp` | `tests/lint_includes.py` |

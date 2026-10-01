@@ -1000,6 +1000,34 @@ std::string tool_preview(const Harness& harness, const std::string& name, const 
     return "";
 }
 
+std::optional<std::string> tool_proposed(const Harness& harness, const std::string& name, const nlohmann::json& args, const fs::path& path) {
+    try {
+        std::error_code ec;
+        if (name == "write_file") return arg(args, "content");
+        if (name == "edit_file" || name == "multi_edit") {
+            std::string text = fs::is_regular_file(path, ec) ? read_whole(path) : "";
+            bool crlf = text.find("\r\n") != std::string::npos;
+            std::string body = crlf ? to_lf(text) : text;
+            nlohmann::json edits = name == "edit_file" ? nlohmann::json::array({args}) : args.at("edits");
+            for (const auto& ed : edits) {
+                if (!replace_in(body, to_lf(arg(ed, "old_string")), to_lf(arg(ed, "new_string")), flag(ed, "replace_all"), path.string()).error.empty()) return std::nullopt;
+            }
+            return crlf ? to_crlf(body) : body;
+        }
+        if (name == "apply_patch") {
+            for (const auto& f : parse_patch(arg(args, "patch"))) {
+                fs::path p = harness.resolve(f.path());
+                if (p != path) continue;
+                PatchedFile out;
+                if (!patch_file(p, f, out).empty() || out.deleted) return std::nullopt;
+                return out.content;
+            }
+        }
+    } catch (const std::exception&) {
+    }
+    return std::nullopt;
+}
+
 std::string tool_summary(const std::string& name, const nlohmann::json& args) {
     if (name == "run_shell") return "$ " + args.value("command", "");
     if (name == "search_files") return "search /" + args.value("pattern", "") + "/ in " + args.value("path", ".");

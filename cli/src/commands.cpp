@@ -124,6 +124,7 @@ const std::vector<Topic>& topics() {
          "Built in: `read_file` (`grep` for only the matching lines), `list_dir` (`depth` for a tree), `glob` (files by name pattern), `search_files` (grep -E), `write_file`, `edit_file`, "
          "`multi_edit` (several replacements in one file, all or none), `apply_patch` (a unified diff, all or none), `move_file`, `copy_file`, `delete_file`, `make_dir`, `run_shell` (bubblewrap sandbox), "
          "`question` (asks you something, with options; a number picks, or type an answer, Esc gives none) and `todo` (the model's plan; `:todo` shows it, the status strip counts it). "
+         "Inside nvim with a connected host (`:h nvim`) there is also `diagnostics` (`path` optional): the LSP diagnostics nvim has, judged as a read of that file or of the workspace. "
          "Every one goes through the harness; the file tools are judged as writes to each path they touch (a move out of the workspace asks, a delete under ~/.ssh trips, a patch with one such file is refused whole). `:tools` lists them with any tools of your own.\n\n"
          "**Your own tools** are Lua files: `.maic/tools/<name>.lua` in the workspace or `~/.config/maic/tools/<name>.lua`, loaded when a session starts. A file returns a table: "
          "`name`, `description`, `parameters` (a JSON schema as a Lua table) and `run = function(args) ... end` returning a string or a table. The model calls it like any other tool. "
@@ -181,6 +182,14 @@ const std::vector<Topic>& topics() {
          "*diff*\n"
          "The approval prompt for `edit_file`, `multi_edit`, `write_file` and `apply_patch` shows the lines that would change: removed lines in the `diff_removed` style (red by default), added ones in `diff_added` (green), `@@` hunk headers and file headers dim (`diff_hunk`). "
          "Tool output that is a diff (a `git diff` through `run_shell`, a `!git diff` of yours, a patch the model echoes) is coloured the same way in the conversation window. `:set markdown off` shows all of it as plain text. The three styles are set under `style` in settings."},
+        {"nvim", {"maic.nvim", "host", "follow_nvim_theme", "diagnostics", "maicsend"}, "MAIC inside nvim: maic.nvim and the host connection",
+         "*nvim* *maic.nvim* *host*\n"
+         "maic.nvim (`maic.nvim/` in the repository) runs MAIC in an nvim terminal: `:Maic` opens it, `:MaicSend` (a range sends those lines as a fenced snippet with path and line numbers), `:MaicDiagnostics`, `:MaicQuickfix`, `:MaicToggle`; its own help is `:h maic` in nvim.\n\n"
+         "**The host.** nvim sets `$NVIM` to its socket for every job it starts. MAIC connects to it as a msgpack-rpc client named \"maic\" only when the socket belongs to this user and the nvim behind it is one of MAIC's own parent processes (checked with SO_PEERCRED and /proc); any other socket is refused with the reason at start. The status strip shows `nvim` while connected; `:nvim` says more.\n\n"
+         "While connected: text from `:MaicSend` lands in the input (never sent by itself), commands from the plugin run as if typed; `:e FILE` and `e` at an approval prompt open the file in nvim's editing window; `d` at an approval prompt for a write opens a diff of the proposed change in a new tab (the file against a read-only scratch buffer); "
+         "User autocmds `MaicTurnStart`, `MaicToolCall`, `MaicApproval`, `MaicFileWritten`, `MaicTurnEnd` fire in nvim with `data` (session, tool, path, summary, verdict); an approved write runs `:checktime` there so the buffer reloads; "
+         "the theme follows nvim's colorscheme live as `nvim:NAME` (`follow_nvim_theme = false` in settings keeps `theme`; `:theme NAME` stops following for the session, `:nvim theme` resumes).\n\n"
+         "**Lua.** Your own Lua (settings files, `:lua`, `:luafile`) gets `maic.nvim.exec(code, ...)`, `maic.nvim.buffers()`, `maic.nvim.diagnostics(path)`, `maic.nvim.current()`, which run in nvim. The model gets none of that: only the `diagnostics` tool, judged as a read, and in Lua tools a read-only `maic.nvim.diagnostics` / `maic.nvim.buffers`, each authorised as a read. A model's edit is always a file write through the harness. docs/nvim.md."},
         {"highlight", {"highlighter", "treesitter", "hl", "builtin", "nvim-highlight"}, "the input's highlighter: builtin or nvim",
          "*highlight*\n"
          "The input is highlighted as markdown while you type. `highlight = \"builtin\"` (the default) is MAIC's own renderer. `highlight = \"nvim\"` starts one `nvim --embed --headless` for the session on the first keystroke and asks it, over msgpack-rpc, for treesitter's highlight captures of the text as a markdown buffer: headings, inline and fenced code, bold, italic, links, lists, quotes, and inside fenced blocks the keywords, strings and comments of every language nvim has a parser for (lua, vim, c and query out of the box; it runs with `-u NONE`, so parsers your config installs are not seen). "
@@ -197,7 +206,7 @@ const std::vector<Topic>& topics() {
          "*Ctrl-Z*\nSuspends MAIC to the shell that started it, like vim; `fg` brings it back with the screen redrawn. A running turn or command is paused with it (the model call resumes on `fg`; a very long pause can time the connection out, which is then retried like any failed call). Not in command-line mode."},
         {"ctrl-c", {}, "interrupt, clear, quit", "*Ctrl-C*\nWhile the agent works: interrupts the turn. While a `!command` runs: stops it. Otherwise: clears the input; pressed twice on an empty input: quits (or `:q`)."},
         {"shift-tab", {"tab"}, "cycle the mode", "*Shift-Tab*\nCycles manual → auto-read → edit → auto → plan. See `:h modes`."},
-        {"ctrl-x", {"ctrl-x ctrl-e", "nvim", "editor"}, "edit the input in nvim", "*Ctrl-X Ctrl-E*\nOpens the input in $VISUAL, $EDITOR or nvim as a markdown file and loads it back when you quit. Same as `:e`."},
+        {"ctrl-x", {"ctrl-x ctrl-e", "editor"}, "edit the input in nvim", "*Ctrl-X Ctrl-E*\nOpens the input in $VISUAL, $EDITOR or nvim as a markdown file and loads it back when you quit. Same as `:e`."},
         {"v", {"visual", "visual-mode"}, "visual selection", "*v* *V*\n`v` selects by character, `V` by line, in the input or the conversation window. Then `y` yanks, `d` deletes (input only), `c` changes, `o` swaps the ends, Esc leaves."},
         {"i", {"insert", "a", "o", "ctrl-o", "s"}, "insert mode", "*i* *a* *I* *A* *o* *O* *s* *Ctrl-O*\n`i` inserts before the cursor, `a` after, `I` at the first non-blank, `A` at the line end, `o` opens a line below, `O` above; `s` deletes the character first (`3s` three), `S` the line. A count repeats what you typed: `3ix<Esc>` gives `xxx`, `2ofoo<Esc>` two lines. In insert mode Ctrl-O runs one normal-mode command and comes back (`Ctrl-O $`, `Ctrl-O dw`), Ctrl-R then a register name pastes it. Esc returns to normal mode."},
         {"p", {"paste", "register", "reg", "registers", "ctrl-y"}, "paste; named registers", "*p* *P* *Ctrl-Y* *Ctrl-R* *\"+p* *\"a*\n`p` pastes the register after the cursor, `P` before, `3p` three times; lines (from `dd`, `yy`, `yj`, `dap`) go on their own line below or above. In insert mode Ctrl-Y pastes the register and Ctrl-R {reg} a named one (`Ctrl-R a`, `Ctrl-R \"`, `Ctrl-R +`). `\"+p` (or `\"*p`, or Space then `p`) pastes the system clipboard (wl-paste, xclip or xsel).\n"
@@ -234,8 +243,11 @@ const std::vector<CommandInfo>& commands() {
          "*:w* *:write* *:send*\n`:w` sends the input, the same as Alt+Enter. `:w now` sends even while the agent is working: the current output is abandoned and the model is asked again with your message included. Without `now`, a message sent while the agent is busy waits for its next step. See `:h queue`."},
         {"ww", {}, "", "send now, even mid-turn (= :w now)",
          "*:ww*\nThe same as `:w now`: sends immediately even while the agent is working. See `:h w`."},
-        {"e", {"edit", "nvim"}, "", "edit the input in nvim",
-         "*:e* *:edit* *:nvim*\nOpens the input in $VISUAL, $EDITOR or nvim as a markdown file; when you quit, the file becomes the input (one undo step). A non-zero exit leaves the input unchanged. Also Ctrl-X Ctrl-E."},
+        {"e", {"edit"}, "[FILE]", "edit the input in nvim, or open FILE",
+         "*:e* *:edit*\n`:e` opens the input in $VISUAL, $EDITOR or nvim as a markdown file; when you quit, the file becomes the input (one undo step). A non-zero exit leaves the input unchanged. Also Ctrl-X Ctrl-E.\n\n"
+         "`:e FILE` opens a file (relative to the workspace). Inside nvim with a connected host it opens there, with `:drop` in the window you edit in, not inside MAIC's terminal; otherwise $VISUAL, $EDITOR or nvim runs on it in MAIC's place until you quit. `e` at an approval prompt does the same for the file being asked about (`:h nvim`)."},
+        {"nvim", {"host"}, "[theme]", "the nvim MAIC runs inside: connected or not",
+         "*:nvim*\n`:nvim` says whether MAIC is connected to the nvim it runs inside and what that gives; `:nvim theme` follows its colorscheme again after a `:theme`. See `:h nvim` for maic.nvim."},
         {"h", {"help", "topics"}, "[topic]", "this help, or :h TOPIC",
          "*:h* *:help* *maic help*\n`:h` alone lists every topic. `:h TOPIC` shows one: a command (`:h w`), a key (`:h u`, `:h Ctrl-W`, `:h Alt+Enter`) or a concept (`:h modes`, `:h harness`, `:h sessions`). A unique prefix is enough; several matches give a list.\n\nOutside a session `maic help` prints the command summary and `maic help TOPIC` one of these pages, both on stdout so they pipe (`maic help lua | less`, `maic help | grep vendor`). `maic help topics` prints the index."},
         {"harness", {}, "[smart|dumb]", "the reviewer on (smart) or the rule list alone (dumb)",
@@ -377,6 +389,7 @@ std::vector<std::string> complete_argument(const std::string& command, const std
     std::vector<std::string> candidates;
     std::string cmd = lower(command);
     if (cmd == "mode") candidates = {"manual", "auto-read", "edit", "auto", "plan"};
+    else if (cmd == "nvim") candidates = {"theme"};
     else if (cmd == "set") candidates = {"markdown", "mouse", "tooldetails", "timestamps", "highlight", "enter_sends"};
     else if (cmd == "budget") candidates = {"off"};
     else if (cmd == "instructions") candidates = {"on", "off"};

@@ -6,6 +6,7 @@
 #include "maic/llm.hpp"
 #include "maic/lua_tools.hpp"
 #include "maic/agent_def.hpp"
+#include "maic/nvim_host.hpp"
 #include "maic/script_tools.hpp"
 #include "maic/session.hpp"
 #include "maic/settings.hpp"
@@ -13,6 +14,7 @@
 #include <atomic>
 #include <deque>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <mutex>
 #include <set>
@@ -31,6 +33,8 @@ struct ApprovalRequest {
     Origin origin;
     std::string always_covers;  // what "always allow" would cover: "git", "this file", ...
     std::string preview;        // for writes: the lines that would change
+    std::filesystem::path path;  // the file or directory the action is about; empty for a command
+    std::optional<std::string> proposed;  // for a write_file, edit_file, multi_edit or apply_patch: the file's content after it
 };
 
 // The user's answer; `feedback` is a sentence for the model when the answer is No ("use the test config").
@@ -64,6 +68,13 @@ public:
     }
     // The model replaced its plan.
     virtual void on_todo(const std::vector<TodoItem>& items) { (void)items; }
+    // Right after on_tool_call: the tool by name and the path it names as the model gave it ("" for none).
+    virtual void on_tool_started(const std::string& tool, const std::string& path, const std::string& summary) {
+        (void)tool, (void)path, (void)summary;
+    }
+    // A tool call that changed this file finished without error (a write, an edit, a patch, a move's two ends,
+    // a delete; a Lua tool's maic.write).
+    virtual void on_file_written(const std::filesystem::path& path, const std::string& tool) { (void)path, (void)tool; }
 };
 
 class Agent {
@@ -231,6 +242,11 @@ public:
 
     const Harness& harness() const { return harness_; }
 
+    // The nvim MAIC runs inside (maic.nvim). While it is connected the model has the `diagnostics` tool (a read
+    // of the path or the workspace) and the Lua tools have maic.nvim.diagnostics / buffers. Set while idle;
+    // subagents get the same host.
+    void set_nvim_host(std::shared_ptr<NvimHost> host) { nvim_ = std::move(host); }
+
     // MAIC.md / AGENTS.md files in effect. Re-read from disk at the start of every turn.
     const std::vector<InstructionFile>& instructions() const { return instructions_; }
     void reload_instructions() {
@@ -253,7 +269,10 @@ private:
     // user's words, a Trip has already tripped the lock. For Deny and Trip the reason is the text the model
     // sees. Every tool action, built-in or from a Lua tool, goes through here; `record` gets the log fields.
     Decision authorise(const Action& action, const std::string& tool, const std::string& summary, const std::string& preview,
-                       Origin origin, AgentEvents& events, nlohmann::json& record);
+                       Origin origin, AgentEvents& events, nlohmann::json& record, std::optional<std::string> proposed = std::nullopt);
+    bool host_tool() const;            // the diagnostics tool is on offer: a connected host, no user tool of that name, the agent allows it
+    nlohmann::json offered_schemas() const;  // schemas_, plus diagnostics while host_tool()
+    ToolResult run_diagnostics(const nlohmann::json& args, const Action& action);
     const LuaTool* find_tool(const std::string& name) const;
     const ScriptTool* find_script_tool(const std::string& name) const;
     std::string system_prompt() const;
@@ -308,6 +327,7 @@ private:
     int denials_ = 0;
     int steps_ = 0;
     bool stuck_ = false;  // the same harmless call kept repeating: end the turn, do not trip
+    std::shared_ptr<NvimHost> nvim_;
     std::string agent_name_;  // set: this agent is a subagent
     std::string parent_id_;     // the parent's session id, for the start record
     std::string model_reason_;  // a subagent: why it runs on its model, for the start record

@@ -53,6 +53,7 @@ def make_home(port):
         f.write("return { model = 'fake/fake', providers = { fake = { kind = 'openai', base_url = 'http://127.0.0.1:%d/v1' } }, harness = 'dumb', load_instructions = false }\n" % port)
     env = dict(os.environ, XDG_CONFIG_HOME=os.path.join(home, "config"), XDG_STATE_HOME=os.path.join(home, "state"),
                XDG_RUNTIME_DIR=os.path.join(home, "run"), MAIC_TRIPWIRE_FILE=os.path.join(home, "none"), ASAN_OPTIONS="detect_leaks=0")
+    env.pop("NVIM", None)  # run from inside nvim's terminal, maic would connect to that nvim (maic.nvim)
     os.makedirs(env["XDG_RUNTIME_DIR"], mode=0o700)
     return home, env
 

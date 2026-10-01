@@ -49,7 +49,7 @@ Where an outside approach and MAIC's rules cannot both hold, MAIC's rules win an
 | OpenSSL 3 (through vcpkg) | Apache-2.0 | HTTPS to remote providers; the server's and the relay's TLS, self-signed certificates, token hashing and random tokens |
 | libsodium 1.0.20 (through vcpkg) | ISC | the relay tunnel: X25519, HKDF-SHA256, XChaCha20-Poly1305, constant-time compares, random keys and codes |
 | bubblewrap (system package, called as a program) | LGPL-2.0+ | the command sandbox; not linked, only executed |
-| nvim (the user's own install, optional, called as a program) | Apache-2.0 and the Vim license | `highlight = "nvim"`, the input highlighter, and `:e`; not linked, only executed |
+| nvim (the user's own install, optional, called as a program) | Apache-2.0 and the Vim license | `highlight = "nvim"`, the input highlighter, `:e`, and maic.nvim's host connection (msgpack-rpc over its `$NVIM` socket, from `:h api`); not linked, only executed or talked to |
 | glibc regex (`regcomp`) | LGPL, system library | `search_files` |
 | pyte (fetched by `uv run --with pyte`, tests only) | LGPL-3.0 | the terminal emulator behind `tests/tui_driver.py`; not linked, not shipped |
 

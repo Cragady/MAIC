@@ -51,7 +51,7 @@ maic server status                 # the configuration, the relay link (connecte
   INSERT   ↑12 (G follows)                                       Ctrl-W k: conversation · :help
 ```
 
-The strip above the input shows the agent mode, the model, whether it is local or `REMOTE`, the harness state, queued messages and whether the agent is working. The bottom line shows the vim mode, the focused window, your position, and the last message.
+The strip above the input shows the agent mode, the model, whether it is local or `REMOTE`, `nvim` while MAIC is connected to the nvim it runs inside (below), the harness state, queued messages and whether the agent is working. The bottom line shows the vim mode, the focused window, your position, and the last message.
 
 ## Keys
 
@@ -66,13 +66,17 @@ The input starts in normal mode, like opening vim: `i` to type. Cursor: a bar in
 | normal (input empty) | `j k` Ctrl-D/U Ctrl-F/B `G` scroll the conversation without leaving the input; `v` / `V` jump into the conversation window selecting |
 | conversation window | **Ctrl-W k** enters, **Ctrl-W j** (or Esc, `i`, Enter) returns; `j k h l w b e 0 $ gg G` Ctrl-D/U/F/B move, `H M L` to the top / middle / bottom of the window; `f t F T ; ,` on the line; `}` / `{` next / previous message, `]]` / `[[` your messages only; `v` / `V` select; `y` yanks (to the register **and** the system clipboard); `yy` a line; `/pattern` then `n` / `N` search (smart case), `*` / `#` for the word under the cursor; `o` swaps selection ends; a left click folds or unfolds a tool result |
 | anywhere | **Shift-Tab** cycles the mode; **Ctrl-Z** suspends to the shell (`fg` resumes, like vim); **Ctrl-C** interrupts the agent, else stops a `!command`, else clears the input, else (twice) quits; scroll wheel scrolls the conversation (in insert mode: prompt history) |
-| approval prompt | **y** yes · **n** no · **N** no, then type a sentence the model receives as the reason · **a** always allow this file / program for the session · **t** trip the harness. Edits show the lines that would change, removed in red and added in green (`:h diff`) |
+| approval prompt | **y** yes · **n** no · **N** no, then type a sentence the model receives as the reason · **a** always allow this file / program for the session · **t** trip the harness · **e** open the file asked about (in the host nvim when connected, else `$EDITOR`) · **d** the proposed change as a diff in a new tab of the host nvim. Edits show the lines that would change, removed in red and added in green (`:h diff`) |
 
 Ctrl-W in insert mode deletes a word, as in vim; the window chord works from insert mode only when the input is empty, otherwise press Esc first.
 
 The system clipboard is reached through `wl-copy` or `xclip` when present, and always through the terminal (OSC 52), which also works over ssh. Your terminal's own copy (Ctrl-Shift-C) keeps working on text you select with the mouse; with the scroll wheel enabled, that selection needs Shift+drag.
 
 The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"` in settings has an embedded `nvim --embed --headless` do it instead, with treesitter (fenced code in the languages nvim has parsers for gets keywords, strings and comments); it falls back to the built-in one when nvim is missing. See `:h highlight`.
+
+## Inside nvim (maic.nvim)
+
+`maic.nvim/` is the nvim plugin: `:Maic` runs MAIC in a terminal split, float or tab, `:MaicSend` puts the buffer's path or a range (as a fenced snippet with path and line numbers) into MAIC's input, `:MaicDiagnostics` and `:MaicQuickfix` send those lists ([maic.nvim/README.md](../maic.nvim/README.md)). From MAIC's side, nvim sets `$NVIM` for every job, and MAIC connects back to that socket as a msgpack-rpc client, but only when it is a Unix socket of this user whose nvim is one of MAIC's own parent processes (anything else is refused with the reason at start). Connected, `:e FILE` and `e` at an approval open files in the editing window, `d` shows a write's proposed change as a diff, the theme follows nvim's colorscheme live (`follow_nvim_theme`), User autocmds (`MaicTurnStart`, `MaicToolCall`, `MaicApproval`, `MaicFileWritten`, `MaicTurnEnd`) fire there, an approved write runs `:checktime`, your Lua gets `maic.nvim.*`, and the model gets the read-only `diagnostics` tool. The rules: [docs/nvim.md](../docs/nvim.md).
 
 ## Commands
 
@@ -82,6 +86,8 @@ The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"
 | :--- | :--- |
 | `:w` | send the input (same as Alt+Enter). `:w now` or `:ww` sends immediately even while the agent is working (see below) |
 | `:e` | edit the input in nvim (`$VISUAL`, then `$EDITOR`, then `nvim`); a non-zero exit leaves the input unchanged |
+| `:e FILE` | open a file: in the host nvim's editing window when connected (`:drop`), else in `$VISUAL` / `$EDITOR` / `nvim` in MAIC's place |
+| `:nvim [theme]` | whether MAIC is connected to the nvim it runs inside and what that gives; `theme` follows its colorscheme again. See below and `:h nvim` |
 | `:mode manual\|auto-read\|edit\|auto\|plan` | set the agent mode |
 | `:model NAME` | switch model (when idle): `llamacpp/current`, `llamacpp/Qwen3.5-9B-Q4_K_M` (any GGUF under the models directory), `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists providers |
 | `:models` | models the current provider serves (llama.cpp: every GGUF under the models directory, by file name) |
@@ -169,7 +175,7 @@ Where the continuation is written depends on `--append` / `--no-append`:
 
 ## Tools the model gets
 
-`read_file` (`grep` returns only the matching lines of a big file), `list_dir` (`depth` for a tree), `glob` (files by name pattern), `search_files` (grep -E syntax), `write_file`, `edit_file`, `multi_edit` (several replacements in one file, all or none), `apply_patch` (a unified diff over one or more files, all or none), `move_file`, `copy_file`, `delete_file`, `make_dir`, `run_shell`, `question` (asks you something, with options to pick by number), `todo` (the model's plan; `:todo` shows it, the status strip counts it) and `task` (a subagent, see below). Every call goes through the harness in `core/`: the file tools are judged as writes to every path they touch, so a move or copy out of the workspace asks, a delete under `~/.ssh` trips, and a patch is refused whole if one of its files is. The model is briefed at the start of the conversation about MAIC, the tools, the modes, the harness and what a denial means (`core/src/agent.cpp`, `system_prompt`).
+`read_file` (`grep` returns only the matching lines of a big file), `list_dir` (`depth` for a tree), `glob` (files by name pattern), `search_files` (grep -E syntax), `write_file`, `edit_file`, `multi_edit` (several replacements in one file, all or none), `apply_patch` (a unified diff over one or more files, all or none), `move_file`, `copy_file`, `delete_file`, `make_dir`, `run_shell`, `question` (asks you something, with options to pick by number), `todo` (the model's plan; `:todo` shows it, the status strip counts it) and `task` (a subagent, see below); inside a connected host nvim also `diagnostics` (its LSP diagnostics for a file or the workspace, judged as a read). Every call goes through the harness in `core/`: the file tools are judged as writes to every path they touch, so a move or copy out of the workspace asks, a delete under `~/.ssh` trips, and a patch is refused whole if one of its files is. The model is briefed at the start of the conversation about MAIC, the tools, the modes, the harness and what a denial means (`core/src/agent.cpp`, `system_prompt`).
 
 **Subagents.** `task {agent, prompt, context, model}` (opencode's names: the tool was `delegate` and agents were profiles) runs a second agent in the same workspace as an agent that only narrows what it may do: `explore` (auto-read, read-only tools and commands, 50k tokens) for a long read or search the model does not want in its own context, `plan` (plan mode, reads inside the workspace only) for a review of its own change, `general` (edit mode) for a self-contained piece of work, or an agent from `agents` in settings whose `role` lets task run it. Its model comes from the session's preset: the same one, or a non-limited tier when the session's model is `limited` (Fable hands subagents to Opus), or a preset the model asks for from its `subagents` list; a usage limit mid-task moves the child once to the preset's `on_limit`. The child's mode is capped by the session's, so in a manual session its commands are asked about like anything else; approvals come to you through the parent with the agent named, its tool calls show indented under the task call (`↳ explore on opus-5.5 (fable-5.1 is limited)`, then `↳ explore: ...`), its final answer is the tool result with its steps and tokens, and it has no `task`, `question` or `todo` of its own. Each child has its own transcript (kind `sub`) that `maic sessions` lists under the parent. See `:h task`, `:h agent`, `:h model`, [docs/tools.md](../docs/tools.md).
 

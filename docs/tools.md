@@ -22,6 +22,9 @@ What the model can call, and how to add a tool of your own: in Lua, or as a scri
 | `question` | asks you one thing and waits; options are picked by number, or you type an answer | nothing: it changes nothing, so it is only logged |
 | `todo` | the model's plan for multi-step work, replaced whole on every call | nothing: logged |
 | `task` | hands one job to a subagent running as an agent; its report is the result | nothing itself: every call the child makes goes through the harness under the child's agent |
+| `diagnostics` | only while MAIC is connected to the nvim it runs inside ([nvim.md](nvim.md)): the LSP diagnostics nvim has for `path`, or for every open file in the workspace when `path` is left out, one `path:line:col: severity: message` line each | a read of the file, or of the workspace |
+
+`diagnostics` comes from `vim.diagnostic.get()` in the host: only files nvim has open have any, and the workspace-wide call drops files outside the workspace. It is offered while the host is connected and disappears when it goes; a Lua or script tool of the same name takes precedence. The model has no other way into nvim: it cannot run Lua there or change a buffer, and its edits stay file writes through the harness (the host reloads them with `:checktime` after they are made).
 
 `question` shows up like an approval box in the interactive session (a number picks an option, typed text is a free answer, Esc gives no answer) and as a prompt on stderr in `maic -p` when there is a terminal; without one the answer is empty and the model is told so. `todo` shows as `todo n/m done` in the status strip and `:todo` lists it; `maic -p` prints it to stderr.
 
@@ -79,6 +82,8 @@ Each call runs in its own LuaJIT state with the base, `string`, `table`, `math` 
 | `maic.search(pattern, path)` | grep -E over `path` (default `.`), returns the `path:line: text` lines | `search_files` |
 | `maic.shell(cmd, opts)` | runs `cmd` in the sandbox, returns output and exit code; `opts.workdir`, `opts.timeout` (seconds) | `$ cmd`, read-only sandbox when the mode says so |
 | `maic.json_encode(value)`, `maic.json_decode(text)` | JSON in and out | nothing |
+| `maic.nvim.diagnostics(path)` | only inside a connected host nvim ([nvim.md](nvim.md)), else `maic.nvim` is nil: a list of `{path, line, col, severity, message, source}` for `path`, or for every open file in the workspace without one | `diagnostics path` (a read; the workspace without a path) |
+| `maic.nvim.buffers()` | the same condition: the host's file buffers in the workspace, `{bufnr, path, modified, loaded}` | `buffers` (a read of the workspace) |
 | `maic.workspace` | the workspace path | nothing |
 
 Paths resolve against the workspace like a tool argument would. Every `maic.*` call above builds the same action the built-in tool would and passes it through the same step as a built-in call: policy for the current mode, the "always" answers from earlier in the session, then you at the approval prompt (the prompt names your tool). A denial, by policy or by you, is raised as a Lua error whose text is the denial message, so the tool stops there unless it `pcall`s, and the model gets the reason. A trip pattern (`sudo`, `rm -rf /`, a write under `/etc`, ...) trips the lock exactly as it would from `run_shell`.
