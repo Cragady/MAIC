@@ -101,8 +101,24 @@ def main():
     r = subprocess.run([maic, "themes"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
     themes_ok = r.returncode == 0 and "* default  built in" in r.stdout and "  gruvbox-dark  " in r.stdout and "  mono  " in r.stdout
     print(("ok" if themes_ok else "FAIL") + ": maic themes lists the shipped themes with the active one marked" + ("" if themes_ok else "\n" + r.stdout[-1500:] + r.stderr[-1500:]))
+    # maic lazy-lock over a lock file in the throwaway XDG_CONFIG_HOME: none, not recorded, record, in sync, a lazy.nvim update.
+    lazy = lambda *a: subprocess.run([maic, "lazy-lock", *a], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    lock = os.path.join(home, "config", "nvim", "lazy-lock.json")
+    steps = [(lazy(), 2, "no lazy-lock.json at")]
+    os.makedirs(os.path.dirname(lock))
+    with open(lock, "w") as f:
+        f.write('{\n  "lazy.nvim": { "branch": "main", "commit": "1111111aaaa" }\n}\n')
+    steps.append((lazy(), 1, "not recorded yet"))
+    steps.append((lazy("record"), 0, "old: none"))
+    steps.append((lazy(), 0, "in sync"))
+    with open(lock, "w") as f:
+        f.write('{\n  "lazy.nvim": { "branch": "main", "commit": "2222222bbbb" }\n}\n')
+    steps.append((lazy("diff"), 1, "updated  lazy.nvim  commit 1111111..2222222  (package manager updated)"))
+    lazy_ok = all(r.returncode == rc and want in r.stdout and "AddressSanitizer" not in r.stderr for r, rc, want in steps)
+    print(("ok" if lazy_ok else "FAIL") + ": maic lazy-lock status, record and diff with their exit codes" +
+          ("" if lazy_ok else "\n" + "\n".join("exit %d: %s" % (r.returncode, r.stdout + r.stderr) for r, _, _ in steps)))
     srv.shutdown()
-    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok else 1)
+    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok and lazy_ok else 1)
 
 
 if __name__ == "__main__":

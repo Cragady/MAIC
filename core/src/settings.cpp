@@ -294,6 +294,8 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.browser = j.value("browser", s.browser);
         if (s.browser != "default" && s.browser != "firefox" && s.browser != "chrome") throw std::runtime_error(path.string() + ": browser must be default, firefox or chrome");
         s.remote = j.value("remote", s.remote);
+        s.lazy_lock = j.value("lazy_lock", s.lazy_lock);
+        s.lazy_lock_notice = j.value("lazy_lock_notice", s.lazy_lock_notice);
         if (j.contains("sampling") && j["sampling"].is_object()) {
             for (const auto& [k, v] : j["sampling"].items()) s.sampling[k] = v;
         }
@@ -515,6 +517,10 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"//browser", "what maic open SERVICE uses: default (the system's), firefox, chrome"},
         {"remote", d.remote},
         {"//remote", "a maic-server you subscribe to, e.g. https://workstation:7373; maic open prefers the remote's services when it answers"},
+        {"lazy_lock", d.lazy_lock},
+        {"//lazy_lock", "nvim's lazy-lock.json, watched for plugin and lazy.nvim updates; empty: $XDG_CONFIG_HOME/$NVIM_APPNAME/lazy-lock.json (~/.config/nvim/lazy-lock.json). maic lazy-lock, docs/lazy-lock.md"},
+        {"lazy_lock_notice", d.lazy_lock_notice},
+        {"//lazy_lock_notice", "false: no start notice and no lock≠ in the status strip when lazy-lock.json is out of sync; maic status, maic doctor and maic lazy-lock still report"},
         {"//tripwire", "machine: a trip sets the root-owned lock every MAIC process respects, unlock asks for sudo; session: a trip locks this session only (a file beside its transcript), :unlock removes it without sudo. A project's .maic/settings.lua can choose per project"},
         {"//harness", "smart: a model reads the conversation and reviews every command or write the rules would allow without asking (auto, edit); dumb: the rule list alone"},
         {"reviewer_model", d.reviewer_model},

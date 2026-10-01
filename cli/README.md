@@ -31,6 +31,7 @@ maic settings init                 # a documented settings file (docs/settings.m
 maic themes                        # the themes (yours in ~/.config/maic/themes, then the shipped ones), the active one marked
 maic themes import habamax         # a neovim colorscheme as a theme file, from a headless nvim with your config (docs/themes.md)
 maic doctor                        # the machine, the tools MAIC needs, installed models, a recommended setup
+maic lazy-lock                     # is nvim's lazy-lock.json as recorded? record / diff; exit 0 in sync (docs/lazy-lock.md)
 maic setup                         # the first run as yes/no questions: settings, llama.cpp, ComfyUI, a model, the tripwire
 maic server token new phone        # remote access (docs/remote.md): a bearer token for one device, shown once
 maic server start                  # the API and the phone web client; --listen 0.0.0.0:7373 for the LAN, with TLS
@@ -95,6 +96,7 @@ The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"
 | `:session` / `:artifacts` | where this transcript is; where everything is kept, with sizes |
 | `:path [NAME] [copy]` / `:open NAME` | every place maic knows by a short name (`workspace`, `session`, `sessions`, `models`, `workflows`, `templates`, `vendor/llamacpp`, `comfyui/outputs`, ...); show one, copy it to the clipboard, or open it in the file manager. `maic path`, `maic open`, and `eval "$(maic shell-init)"` for `mcd NAME` in your shell. See `:h path` |
 | `:gpu [free [llamacpp\|llamacpp-2\|comfyui]]` | who holds the card (each llama server's resident model, ComfyUI's VRAM view) and one sentence on whether the two models fit it; `free` unloads without stopping anything. `maic gpu` in the shell. A failed `maic up` explains a CUDA out of memory in plain words |
+| `:lazylock [record\|diff]` | whether nvim's `lazy-lock.json` still matches the hash you recorded; `record` writes the hash file (for your dotfiles) and a snapshot, `diff` lists plugins added, removed and updated and calls out a lazy.nvim update. Out of sync: a notice at start and `lock≠` in the status strip. `maic lazy-lock` in the shell. See docs/lazy-lock.md |
 | `:ctx [N]` / `:ctx2 [N]` | the context window of the main llama server (`--ctx`, `context`) and of the side server `llamacpp-2` (`--ctx2`, `context_2`); setting one restarts that server when it runs with another size. See `:h ctx` |
 | `:open NAME folder` / `maic cd NAME [--subshell]` | the containing folder in the file manager; the place's directory printed for `cd "$(maic cd NAME)"`, or with `--subshell` a shell there (`exit` returns) |
 | `:open SERVICE [firefox\|chrome]` | a service's URL in the browser (`browser` in settings picks the default one; `remote` in settings opens a subscribed maic-server's copy) |

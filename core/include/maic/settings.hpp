@@ -112,6 +112,8 @@ struct Settings {
     bool allow_isolated = false;       // may a session opt out of the machine lock (tripwire = "isolated")? Confined when it does
     std::string browser = "default";   // default | firefox | chrome: what `maic open SERVICE` uses
     std::string remote;                // a maic-server you subscribe to (https://host:7373); `maic open` prefers its services when it is up
+    std::string lazy_lock;             // nvim's lazy-lock.json; "" = $XDG_CONFIG_HOME/$NVIM_APPNAME/lazy-lock.json (docs/lazy-lock.md)
+    bool lazy_lock_notice = true;      // the start notice and the status strip's lock≠ when it is out of sync
     std::string harness = "smart";  // "smart": a model reviews commands and writes the rules would allow; "dumb": rules only
     std::string reviewer_model;     // the reviewer ("" = the session's model)
     bool dumb_auto_ok = false;      // true: no warning when entering auto mode under a dumb harness
