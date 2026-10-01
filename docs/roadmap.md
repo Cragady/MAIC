@@ -6,7 +6,33 @@ Status of the built parts in detail: [README.md](../README.md), [cli/README.md](
 
 ## Next, in order
 
-### 1. Accounts on maic-server
+### 1. nvim as MAIC's interface
+
+When nvim is installed, MAIC can run its core as an engine and use nvim as the whole interface: the conversation in a buffer (nvim folds for tool output, nvim's own diff for edits, treesitter markdown), the input as a real nvim buffer (every motion, mapping and plugin the user already has, instead of MAIC's reimplementation of vim), approvals and questions as floats, the theme simply the user's colorscheme. `maic --ui nvim` (and `ui = "nvim"` in settings; offered once at first run when nvim is found) starts nvim with maic.nvim and the engine as its job. The engine speaks one protocol, JSON-RPC over stdio (`maic --rpc`), carrying the same messages as maic-server's API, so this interface and the web app (the unified remote interface item) share it. The FTXUI interface stays for machines without nvim and as the fallback. The two-way relationship this completes: MAIC uses nvim outside of nvim (as its interface, highlighter, colorscheme source and package store), and nvim uses MAIC outside of MAIC (maic.nvim). When nvim is the interface, MAIC's own key handling steps aside and the user's nvim mappings rule (Micaiah's example: whatever `<leader>y` does in her nvim, it does in MAIC's buffers), and MAIC adds only what it needs, under maic.nvim's never-overwrite rule. `:Maic` defaults to this interface once it exists; the terminal mode (MAIC's own TUI in an nvim terminal, today's maic.nvim) stays as a fallback. `--ui nvim` is refused together with `--bare` (`:h bare`), which takes nothing from nvim. The same interrupt keys (`:MaicInterrupt`, `<leader>mc`, `<C-c>` in MAIC's buffers) send an RPC cancel to the engine. MAIC's buffers get the filetypes `maic` (the conversation) and `maic-input` (the input), so plugins can include or exclude them (a completion source, a statusline, an autopairs plugin that should stay out). Depends on maic.nvim; shares the protocol work with the unified remote interface.
+
+### 2. Other agentic tools
+
+Other agent CLIs as parts of MAIC, at three levels, each on the user's own login and plan, never MAIC's.
+
+* **L1, text only.** An external agent CLI as a text-only model backend: `claude -p` with `--output-format stream-json` and its own tools turned off, used where MAIC needs text and no actions: the diction scribe, the smart harness's reviewer, session titles and compaction summaries. A provider kind like any other, chosen per role.
+* **L2, MAIC's tools.** An external agent runs the loop with its built-in tools disabled and MAIC's tools served to it over MCP, so MAIC's harness judges every action (modes, approvals, the tripwire, the transcript) exactly as for its own model. Usable as a `task` subagent or as the main agent; its output is treated as data, like any model output.
+* **L3, its own tools.** An external agent using its own tools, only as an explicit opt-in per agent definition, and confined to the sandbox.
+
+Claude Code first (the only one installed here), opencode next.
+
+### 3. Side conversations (`:btw` and `:aside`)
+
+`:btw QUESTION` opens a side thread forked from the main conversation at that point (a fork pointer, sharing the history without copying it), in a side pane in MAIC's interface and a split or float in maic.nvim. It answers, and the user keeps chatting in that thread afterwards; the main conversation is untouched, and a running main turn keeps running. `:aside QUESTION` is the same with no main-conversation context: a fresh thread with the session's workspace, settings and harness.
+
+Either can be merged back into the main conversation:
+
+* `:merge summary` (the default): `small_model` drafts a short note of what was found, and the user edits it before it lands.
+* `:merge all`: every side turn grafted in, marked as from a side thread.
+* `:merge pick`: the user chooses the turns.
+
+What lands is a clearly marked note with a pointer to the side session, never a fabricated main-thread turn. Side threads are sessions listed under their parent (like subagents) and can be resumed; the harness treats their actions like any other, and an approval names the thread it comes from. On a local server with one slot, a side thread and a running main turn take turns. Builds on forks, `maic sessions graft` and `inject`. opencode has no equivalent (no `/btw` in its source as of 2fa3363c92); the name is Micaiah's.
+
+### 4. Accounts on maic-server
 
 Micaiah's decision (2026-09-30): accounts belong to MAIC's own server, never to llama.cpp (which has API keys only, no identities). Design document first, then build; security-sensitive, so the design is reviewed before code.
 
@@ -19,23 +45,19 @@ Micaiah's decision (2026-09-30): accounts belong to MAIC's own server, never to 
 
 The relay (done) already carries the phone away from the LAN; accounts ride inside its tunnel unchanged.
 
-### 2. One remote interface: MAIC plus llama.cpp
+### 5. One remote interface: MAIC plus llama.cpp
 
-The web app and the phone apps present one clean interface that combines the MAIC server (sessions, approvals, the harness, services) and the llama.cpp server (models, loading and switching, sampling and XTC, a plain chat with the loaded model), so remote access gives both. llama.cpp stays behind MAIC's server, never exposed on its own; MAIC's server proxies what the app needs. A native client (Android first) follows the web app: notifications for pending approvals, pairing in the app, background reattach. Depends on 1.
+The web app and the phone apps present one clean interface that combines the MAIC server (sessions, approvals, the harness, services) and the llama.cpp server (models, loading and switching, sampling and XTC, a plain chat with the loaded model), so remote access gives both. llama.cpp stays behind MAIC's server, never exposed on its own; MAIC's server proxies what the app needs. A native client (Android first) follows the web app: notifications for pending approvals, pairing in the app, background reattach. Depends on 4 (accounts).
 
-### 3. MAIC packages, laid out like nvim's
+### 6. MAIC packages, laid out like nvim's
 
 A package is a directory holding MAIC's runtime folders: `plugin/` (Lua run at start in MAIC's settings Lua state, with the user's trust, as nvim runs `plugin/`), `tools/` (Lua and script tools), `themes/`, `agents/` (opencode's agent file format, its `mode:` read as `role`) and `prompts/` (text for `--system @`). MAIC's runtime path, in order: `~/.config/maic`, the project's `.maic/`, MAIC's own `<data>/maic/site/pack/*/start/*` (and `opt/*` with `:packadd`), then nvim-managed plugins that carry a `maic/` folder. nvim never loads a `maic/` folder (it is not a runtime folder nvim knows), so one repository can ship an nvim side and a MAIC side and one package manager installs both; MAIC loads its part itself. Package management stays nvim's: lazy.nvim fetches, updates and pins (its `lazy-lock.json`), and MAIC only reads the result. Finding them without nvim running: lazy's root (`stdpath("data")/lazy`, the plugin list from the lock file) and nvim's `site/pack/*/{start,opt}`; inside an nvim host (maic.nvim), MAIC asks the host for its runtime paths, so lazy-loaded plugins are found exactly as nvim sees them. Tools a package adds are model-callable and so judged by the harness like any other; package startup code runs with the user's trust, as in nvim. `maic packages` lists what was found and from where. Depends on nothing; uses maic.nvim's host connection when present.
 
-### 4. nvim as MAIC's interface
-
-When nvim is installed, MAIC can run its core as an engine and use nvim as the whole interface: the conversation in a buffer (nvim folds for tool output, nvim's own diff for edits, treesitter markdown), the input as a real nvim buffer (every motion, mapping and plugin the user already has, instead of MAIC's reimplementation of vim), approvals and questions as floats, the theme simply the user's colorscheme. `maic --ui nvim` (and `ui = "nvim"` in settings; offered once at first run when nvim is found) starts nvim with maic.nvim and the engine as its job. The engine speaks one protocol, JSON-RPC over stdio (`maic --rpc`), carrying the same messages as maic-server's API, so this interface and the web app (the unified remote interface item) share it. The FTXUI interface stays for machines without nvim and as the fallback. The two-way relationship this completes: MAIC uses nvim outside of nvim (as its interface, highlighter, colorscheme source and package store), and nvim uses MAIC outside of MAIC (maic.nvim). Depends on maic.nvim; shares the protocol work with the unified remote interface.
-
-### 5. Windows
+### 7. Windows
 
 The tripwire design for Windows is in [harness.md](harness.md); the rest needs a port of the sandbox (AppContainer), the service manager (job objects with kill-on-close, junctions instead of symlinks, portable git on PATH, `%LOCALAPPDATA%\maic` for state and the uv cache), the runtime directory for temporary transcripts, and the terminal layer.
 
-### 6. opencode agent files
+### 8. opencode agent files
 
 Read opencode's `.opencode/agent/*.md` files (frontmatter plus a prompt) as agents, mapping their `mode:` to MAIC's `role`.
 
@@ -43,6 +65,7 @@ Read opencode's `.opencode/agent/*.md` files (frontmatter plus a prompt) as agen
 
 * Compaction through a Lua hook from a helper script: the storyboard steps are small enough that a 4B does not need it; revisit if a helper ever does.
 * A `:compact` that the model calls itself: the byte estimate and the too-long retry cover the cases seen so far.
+* Prompt completion, on purpose: a completion source for the `maic-input` filetype (for blink.cmp and nvim-cmp, and for MAIC's own interface) offering `:` commands, `@file` paths, agent, preset and model names, recent prompts, and continuations from `small_model` or the completion server. Its behaviour lives in maic.nvim's defaults table, so a consumer overrides it like any other option. Parked until nvim as MAIC's interface gives the input a real buffer.
 * Prompt profiles per backend: measured on the 4B (2026-09-30) and the 9B (2026-10-01) against MAIC's real prompt and tool schemas; both follow a short operator rule only when it closes the user turn, under Ollama and llama.cpp alike, so the per-turn `operator_note` stays the one profile and nothing differs by backend yet ([references/prompt-placement.md](references/prompt-placement.md)). Reopen when a new provider or model family measures differently.
 
 ## Done
@@ -72,3 +95,4 @@ Built, in the order it landed, so the list above is only what is left.
 * **maic.nvim (2026-10-01)**: the plugin in `maic.nvim/` (`plugin/maic.lua` with the commands, `lua/maic/init.lua`, `doc/maic.txt`): `:Maic [args]` opens or focuses MAIC in a terminal per tab (`open = split | vsplit | float | tab`, `size`, `cmd`, `args`), `:MaicToggle`, `:[range]MaicSend` (the path, or the lines as a fenced snippet with path and line numbers), `:MaicDiagnostics[!]`, `:MaicQuickfix`, keymaps under `<leader>m` from `setup{}` (`keymaps = false` for none); text reaches MAIC over `rpcnotify(chan, "maic_send")` (`maic_command` runs a command as if typed) or, unconnected, as a bracketed paste into the terminal, and is never sent by itself. MAIC side: `$NVIM` is used only when it is a Unix socket of this user whose listener (SO_PEERCRED) is one of MAIC's ancestors (`MAIC_NVIM_TRUST_SOCKET=1` for tests, ignored without `MAIC_TESTING=1`), as a msgpack-rpc client named "maic" with a reader that takes notifications; `nvim` in the status strip and `:nvim`; `:e FILE` and `e` at an approval `:drop` the file in the host's editing window, `d` diffs a write's proposed content in a host tab; User autocmds `MaicTurnStart`, `MaicToolCall`, `MaicApproval`, `MaicFileWritten`, `MaicTurnEnd` with data; `:checktime` after a write; the theme follows the host's `ColorScheme` live as `nvim:NAME` through `theme_from_nvim` + `apply_theme` (`follow_nvim_theme`); `maic.nvim.exec / buffers / diagnostics / current` in the user's Lua; for the model only the `diagnostics` tool while connected, judged as a read, and a read-only `maic.nvim.diagnostics / buffers` in Lua tools, authorised as reads. ctest `nvim` against a headless `nvim --listen` plus the plugin's own Lua tests; [nvim.md](nvim.md).
 * **Model catalog and code completion (2026-10-01)**: `models/catalog.json`, every model MAIC installs pinned to a Hugging Face commit with its SHA-256 and size (the Qwen3.5 4B and 9B, the 9B text-only entry as a first-class share of the 9B's weights, the whisper models and Silero VAD, the Qwen2.5-Coder base models), each with a brief, license, VRAM estimates and presets; user entries and overrides by id in `~/.config/maic/models.json`; `maic models` / `info` / `install [--link]` / `verify` / `remove` / `check`, installs through the checked download with files already present kept, removal that never takes weights another entry links; `maic setup` reads the catalog; `services/llamacpp-fim.json`, llama-server in router mode on 8084 serving the linked coder to llama.vim's `/infill`, unloaded by the GPU turn-taking like the other llama servers and counted by `maic gpu` ([models.md](models.md)).
 * **lazy-lock tracking (2026-10-01)**: a SHA-256 of nvim's `lazy-lock.json` in `~/.config/maic/nvim-lazy-lock.sha256` (one `sha256sum` line, committed with the dotfiles) and a snapshot under the state directory; `maic lazy-lock` / `:lazylock` for status, `record` and a per-plugin `diff` that calls out lazy.nvim's own update; a start notice, `lock≠` in the status strip re-checked by mtime and size at each turn end, and a line in `maic status` and `maic doctor`; `lazy_lock` and `lazy_lock_notice` in settings ([lazy-lock.md](lazy-lock.md)).
+* **nvim keys, interrupts and bare (2026-10-01)**: maic.nvim's defaults table (`require("maic").defaults`, deep-merged by `setup(opts)`); it never overwrites a mapping (a held default key is skipped and reported once per session, a key the user names is set and reported); `<Esc>` passed through to MAIC in its terminal over a global `tnoremap <Esc>`, `terminal_escape`, the `maic` and `maic-input` filetypes; `:checkhealth maic` and `maic nvim keymaps` (maic.nvim's, MAIC's terminal input's and llama.vim's keys against the user's mappings, global and buffer-local), re-run once after a `lazy-lock.json` change with new collisions reported at start, a line in `maic doctor`; `:MaicInterrupt`, `<leader>mc` and `<C-c>` in MAIC's buffers as the first Ctrl-C over `maic_interrupt`; `maic --bare` (`MAIC_BARE=1`, `bare = true`) with nothing from nvim; llama.vim's insert-mode keys off the leader in [models.md](models.md) ([nvim.md](nvim.md)).
