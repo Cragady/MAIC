@@ -25,6 +25,7 @@ add_library(maic_core
     src/session.cpp
     src/settings.cpp
     src/status.cpp
+    src/theme.cpp
     src/tools.cpp
     src/tripwire.cpp
     src/vendor.cpp

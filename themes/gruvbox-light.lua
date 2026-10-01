@@ -1,0 +1,65 @@
+-- gruvbox, light: the palette of morhetz/gruvbox (colors/gruvbox.vim, contrast medium), mapped onto MAIC's
+-- roles: errors red, added lines green, notices yellow, links blue, headings orange and bold, comments and
+-- quiet text grey. Meant for a terminal with the gruvbox light background (#fbf1c7); MAIC paints no background
+-- of its own. Palette: bg0 #fbf1c7 bg1 #ebdbb2 bg2 #d5c4a1 bg3 #bdae93 gray #928374, fg0 #282828 fg1 #3c3836 fg4 #7c6f64,
+-- red #9d0006 green #79740e yellow #b57614 blue #076678 purple #8f3f71 aqua #427b58 orange #af3a03.
+return {
+  name = "gruvbox-light",
+  background = "light",
+  styles = {
+    -- transcript
+    user = { fg = "#282828", bold = true },
+    assistant = { fg = "#3c3836" },
+    thinking = { fg = "#928374", italic = true },
+    tool = { fg = "#427b58" },
+    tool_ok = { fg = "#928374" },
+    tool_err = { fg = "#9d0006" },
+    notice = { fg = "#b57614" },
+    error = { fg = "#9d0006", bold = true },
+    shell = { fg = "#79740e" },
+    -- markdown
+    md_heading = { fg = "#af3a03", bold = true },
+    md_bold = { fg = "#282828", bold = true },
+    md_italic = { italic = true },
+    md_code = { fg = "#427b58" },
+    md_code_block = { fg = "#3c3836", bg = "#ebdbb2" },
+    md_link = { fg = "#076678", underline = true },
+    md_url = { fg = "#928374" },
+    md_quote = { fg = "#928374", italic = true },
+    md_bullet = { fg = "#b57614" },
+    md_rule = { fg = "#bdae93" },
+    -- the nvim highlighter's captures
+    hl_keyword = { fg = "#9d0006", bold = true },
+    hl_string = { fg = "#79740e" },
+    hl_comment = { fg = "#928374", italic = true },
+    hl_heading = { fg = "#af3a03", bold = true },
+    hl_code = { fg = "#427b58" },
+    -- diffs
+    diff_added = { fg = "#79740e" },
+    diff_removed = { fg = "#9d0006" },
+    diff_hunk = { fg = "#076678" },
+    -- chrome
+    input = { fg = "#3c3836" },
+    input_prompt_insert = { fg = "#79740e" },
+    input_prompt_normal = { fg = "#076678" },
+    separator = { fg = "#d5c4a1" },
+    focus = { fg = "#427b58" },
+    visual = { bg = "#bdae93" },
+    search = { fg = "#fbf1c7", bg = "#b57614" },
+    cursor_line = { bg = "#ebdbb2" },
+    status = { fg = "#3c3836", bg = "#d5c4a1" },
+    status_insert = { fg = "#79740e", bold = true, inverted = true },
+    status_normal = { fg = "#076678", bold = true, inverted = true },
+    status_visual = { fg = "#af3a03", bold = true, inverted = true },
+    status_dim = { fg = "#7c6f64" },
+    mode_manual = { fg = "#076678", bold = true },
+    ["mode_auto-read"] = { fg = "#427b58", bold = true },
+    mode_edit = { fg = "#b57614", bold = true },
+    mode_auto = { fg = "#9d0006", bold = true },
+    mode_plan = { fg = "#79740e", bold = true },
+    harness_armed = { fg = "#79740e" },
+    harness_tripped = { fg = "#9d0006", bold = true },
+    remote = { fg = "#af3a03", bold = true },
+    approval = { fg = "#b57614" },
+  },
+}

@@ -88,6 +88,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [harness.md](docs/harness.md) — the safety harness: tripwire (built) and planned layers.
 * [tools.md](docs/tools.md): the model's tools, and writing your own, in Lua or any language, behind the harness.
 * [settings.md](docs/settings.md) — the settings file: model providers (local and remote), styles, instruction files.
+* [themes.md](docs/themes.md): themes (default, gruvbox dark and light, mono), writing one, importing a neovim colorscheme, colour depth.
 * [sessions.md](docs/sessions.md): the session file format, every record type, homes, forks and `--fork-at`, `maic sessions import` (claude.ai exports, Claude Code transcripts), `redact`, `export`.
 * [llamacpp.md](docs/llamacpp.md): llama.cpp, the local server: every sampler (XTC, DRY, top-n-sigma), logit bias, grammars, the models directory and `maic vendor model`.
 * [vendor.md](docs/vendor.md): the services MAIC installs for itself (llama.cpp, ComfyUI) at pinned versions, and the artifact tree.

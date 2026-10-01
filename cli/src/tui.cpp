@@ -14,6 +14,7 @@
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
 #include "maic/status.hpp"
+#include "maic/theme.hpp"
 #include "maic/tools.hpp"
 #include "maic/tripwire.hpp"
 #include "style.hpp"
@@ -493,6 +494,15 @@ private:
     std::vector<std::string> installed_models();  // the local providers' models, cached for a while (a localhost call)
     std::vector<std::string> models_cache_;
     std::chrono::steady_clock::time_point models_cached_at_{};
+    void theme_command(const std::string& arg);  // :theme, :theme NAME, :theme reload, :theme nvim:NAME
+    void use_theme(const Theme& theme);
+    std::vector<std::string> nvim_colors();  // nvim's colorschemes for :theme nvim:<Tab>, asked once in the background
+    std::mutex nvim_colors_mu_;
+    std::vector<std::string> nvim_colors_;
+    bool nvim_colors_asked_ = false;
+    std::thread nvim_colors_thread_;
+    std::atomic<bool> theme_busy_{false};
+    std::thread theme_thread_;  // a :theme nvim:NAME import
     void complete_command();
     Element render_top_status();
     Element render_bottom_status();
@@ -564,6 +574,7 @@ void App::welcome() {
     view_.append(Kind::Notice, "MAIC  ·  workspace " + agent_.harness().workspace().string() + "  ·  model " + agent_.model + remote);
     std::string files;
     for (const auto& f : agent_.instructions()) files += (files.empty() ? "" : ", ") + f.path.string();
+    if (!settings_.theme_error.empty()) view_.append(Kind::Error, settings_.theme_error + "; the default theme is in use (:theme reload after fixing it)");
     if (session_tripped()) view_.append(Kind::Error, "this session is tripped (its own lock, from an earlier run): :unlock removes it");
     view_.append(Kind::Notice, "session transcript: " + log_path() + (files.empty() ? "" : "\ninstructions: " + files));
     if (!agent_.tools().empty() || !agent_.script_tools().empty()) {
@@ -667,6 +678,10 @@ std::vector<std::string> App::palette_entries() {
     ctx.models = installed_models();
     std::string cmd = line.substr(0, space), partial = line.substr(space + 1);
     auto matches = match_commands(cmd);
+    if (!matches.empty() && matches.front()->name == "theme") {
+        for (const auto& t : list_themes()) ctx.themes.push_back(t.name);
+        if (partial.rfind("nvim:", 0) == 0) ctx.nvim_colors = nvim_colors();
+    }
     return complete_argument(matches.empty() ? cmd : matches.front()->name, partial, ctx);
 }
 
@@ -687,6 +702,69 @@ std::vector<std::string> App::installed_models() {
     models_cache_ = out;
     models_cached_at_ = now;
     return out;
+}
+
+std::vector<std::string> App::nvim_colors() {
+    std::lock_guard lock(nvim_colors_mu_);
+    if (!nvim_colors_asked_) {
+        nvim_colors_asked_ = true;
+        nvim_colors_thread_ = std::thread([this] {
+            try {
+                auto colors = nvim_colorschemes();
+                std::lock_guard l(nvim_colors_mu_);
+                nvim_colors_ = std::move(colors);
+            } catch (const std::exception& e) {
+                post(Kind::Error, std::string("listing nvim's colorschemes: ") + e.what());
+            }
+            screen_.PostEvent(Event::Custom);
+        });
+    }
+    return nvim_colors_;
+}
+
+void App::theme_command(const std::string& arg) {
+    if (arg.empty()) {
+        std::string out = "themes (:theme NAME switches, :theme reload re-reads the file, :theme nvim:NAME imports a neovim colorscheme):";
+        for (const auto& t : list_themes()) out += "\n" + std::string(t.name == settings_.theme ? "* " : "  ") + t.name + "  " + (t.path.empty() ? "built in" : t.path.string());
+        post(Kind::Notice, out);
+        return;
+    }
+    if (arg.rfind("nvim:", 0) == 0) {
+        std::string scheme = arg.substr(5);
+        if (scheme.empty()) {
+            post(Kind::Error, ":theme nvim:NAME imports that neovim colorscheme; Tab after nvim: lists them");
+            return;
+        }
+        if (theme_busy_) {
+            post(Kind::Error, "an nvim import is still running");
+            return;
+        }
+        if (theme_thread_.joinable()) theme_thread_.join();
+        theme_busy_ = true;
+        post(Kind::Notice, "importing " + scheme + " from nvim with your configuration (up to 15 s)");
+        theme_thread_ = std::thread([this, scheme] {
+            try {
+                Theme t = import_nvim_theme(scheme);
+                screen_.Post([this, t] { use_theme(t); });
+            } catch (const std::exception& e) {
+                post(Kind::Error, std::string(e.what()) + "; keeping " + settings_.theme);
+            }
+            theme_busy_ = false;
+        });
+        return;
+    }
+    try {
+        use_theme(load_theme(arg == "reload" ? settings_.theme : arg));
+    } catch (const std::exception& e) {
+        post(Kind::Error, std::string(e.what()) + "; keeping " + settings_.theme);
+    }
+}
+
+void App::use_theme(const Theme& theme) {
+    apply_theme(settings_, theme);
+    std::string note = "theme: " + theme.name + " (" + (theme.path.empty() ? "built in" : theme.path.string()) + ")";
+    if (!settings_.style_overrides.empty()) note += "; the " + std::to_string(settings_.style_overrides.size()) + " role(s) under `style` in settings stay on top of it";
+    post(Kind::Notice, note);
 }
 
 Element App::render_palette(int& rows) {
@@ -773,8 +851,8 @@ Element App::render_top_status() {
     if (busy_) right.push_back(text(" · working… ctrl-c interrupts") | decorate(settings_.style("notice")));
     if (shell_busy_) right.push_back(text(" · shell running") | decorate(settings_.style("shell")));
     if (lua_mode_) right.push_back(text(" · LUA MODE (:chat returns)") | decorate(settings_.style("shell")));
-    if (!agent_.review_with_model) right.push_back(text(" · DUMB HARNESS") | color(Color::RedLight));
-    if (agent_.harness().confined()) right.push_back(text(" · ISOLATED") | color(Color::Yellow));
+    if (!agent_.review_with_model) right.push_back(text(" · DUMB HARNESS") | decorate(settings_.style("error")));
+    if (agent_.harness().confined()) right.push_back(text(" · ISOLATED") | decorate(settings_.style("notice")));
     right.push_back(text(" "));
     return hbox({hbox(left), filler(), hbox(right)}) | decorate(settings_.style("status"));
 }
@@ -843,9 +921,9 @@ Element App::render_approval() {
     if (approval_->typing) {
         rows.push_back(hbox({text("no, because: ") | bold, text(approval_->feedback), text(" ") | inverted, text("  (Enter sends this to the model, Esc cancels)") | dim}));
     } else {
-        rows.push_back(hbox({text("[y]") | bold | color(Color::Green), text(" yes   "), text("[n]") | bold | color(Color::Red), text(" no   "),
-                             text("[N]") | bold | color(Color::Red), text(" no, and say why   "), text("[a]") | bold, text(" always: " + key + " (this session)   "),
-                             text("[t]") | bold | color(Color::RedLight), text(" trip the harness")}));
+        rows.push_back(hbox({text("[y]") | bold | decorate(settings_.style("harness_armed")), text(" yes   "), text("[n]") | bold | decorate(settings_.style("tool_err")), text(" no   "),
+                             text("[N]") | bold | decorate(settings_.style("tool_err")), text(" no, and say why   "), text("[a]") | bold, text(" always: " + key + " (this session)   "),
+                             text("[t]") | bold | decorate(settings_.style("error")), text(" trip the harness")}));
     }
     return window(text(" approve? ") | bold, vbox(rows)) | decorate(settings_.style("approval"));
 }
@@ -855,7 +933,7 @@ Element App::render_confirm() {
     if (!confirm_) return emptyElement();
     Elements rows;
     for (const auto& l : confirm_->lines) rows.push_back(text(l));
-    return window(text(confirm_->title) | bold | color(Color::RedLight), vbox(rows)) | decorate(settings_.style("approval"));
+    return window(text(confirm_->title) | bold | decorate(settings_.style("error")), vbox(rows)) | decorate(settings_.style("approval"));
 }
 
 bool App::handle_confirm(const Event& e) {
@@ -1461,6 +1539,8 @@ void App::run_command(const std::string& line) {
                 editor_.set_enter_sends(on);
                 post(Kind::Notice, on ? "Enter sends a one-line input; Shift+Enter or Alt+Enter inserts a line break" : "Enter inserts a line break; Alt+Enter or :w sends");
             } else post(Kind::Error, ":set markdown|mouse|tooldetails|timestamps|enter_sends on|off, :set highlight nvim|builtin");
+        } else if (cmd == "theme" || cmd == "themes" || cmd == "colorscheme" || cmd == "colo") {
+            theme_command(arg);
         } else if (cmd == "lua" || cmd == "luafile") {
             if (cmd == "lua" && arg.empty()) {
                 lua_mode_ = !lua_mode_;
@@ -2012,6 +2092,8 @@ void App::shutdown() {
     }
     if (worker_.joinable()) worker_.join();
     if (shell_thread_.joinable()) shell_thread_.join();
+    if (theme_thread_.joinable()) theme_thread_.join();
+    if (nvim_colors_thread_.joinable()) nvim_colors_thread_.join();
 }
 
 }  // namespace
@@ -2046,6 +2128,7 @@ int run_tui(const TuiOptions& options) {
         fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
         return 2;
     }
+    set_color_depth(settings.colors);
     auto screen = ScreenInteractive::Fullscreen();
     screen.TrackMouse(settings.mouse);
     std::string first = options.initial_prompt;

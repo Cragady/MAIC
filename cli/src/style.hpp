@@ -11,7 +11,10 @@
 namespace maic {
 
 // Settings colors ("red", "gray_dark", "#rrggbb", 0-255) to FTXUI. Unknown names fall back to the default color.
+// A hex colour is sent as is on a truecolor terminal, else as the nearest xterm-256 or ANSI 16 colour.
 ftxui::Color parse_color(const std::string& name);
+// The terminal's colour depth for parse_color: the `colors` setting, "auto" detecting it (maic/theme.hpp).
+void set_color_depth(const std::string& setting);
 
 ftxui::Decorator decorate(const Style& style);
 

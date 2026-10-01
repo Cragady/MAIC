@@ -27,6 +27,9 @@ struct Style {
     Style merged_over(const Style& base) const;
 };
 
+// The built-in style of every role MAIC paints with (docs/settings.md lists them); the role names are its keys.
+const std::map<std::string, Style>& default_styles();
+
 // Layered settings, every key optional:
 //   1. $XDG_CONFIG_HOME/maic/settings.lua (default ~/.config/maic/settings.lua)
 //   2. <dir>/.maic/settings.lua and then <dir>/.maic/settings.local.lua for every directory from just under
@@ -82,7 +85,11 @@ struct Settings {
     std::vector<std::filesystem::path> sources;  // the files that were read, in order
     std::vector<Provider> providers = default_providers();
     std::vector<ModelPreset> presets = default_presets();  // `models` in settings adds or overrides by name
-    std::map<std::string, Style> styles;  // by role, see docs/settings.md; defaults are filled in
+    std::map<std::string, Style> styles;  // by role, in effect: built-in default < theme < style_overrides (docs/settings.md)
+    std::map<std::string, Style> style_overrides;  // the `style` entries of the settings files, merged across layers
+    std::string theme = "default";  // a theme by name (docs/themes.md); `:theme NAME` switches live
+    std::string theme_error;        // why the theme could not be loaded (the built-in default is then in effect)
+    std::string colors = "auto";    // colour depth: auto, truecolor, 256 or 16
     std::vector<std::string> instruction_files = {"MAIC.md", "AGENTS.md"};
     bool load_instructions = true;  // false: no MAIC.md / AGENTS.md anywhere
     std::string system_prompt;      // text placed first in the system prompt; "@path" reads a file (~ expands)

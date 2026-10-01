@@ -46,8 +46,8 @@ class TuiTest(unittest.TestCase):
         cls.fake.wait()
         shutil.rmtree(cls.home, ignore_errors=True)
 
-    def start(self, *args):
-        tui = Tui([MAIC, "--no-record", "--harness", "dumb", "--no-instructions", *args], env=self.env, cwd=self.ws)
+    def start(self, *args, env=None):
+        tui = Tui([MAIC, "--no-record", "--harness", "dumb", "--no-instructions", *args], env=env or self.env, cwd=self.ws)
         self.addCleanup(tui.close)
         tui.wait_for(STRIP)
         return tui
@@ -118,6 +118,24 @@ class TuiTest(unittest.TestCase):
         tui.resume()
         text = tui.wait_for(STRIP)
         self.assertIn("❯ some draft", text)  # the input survived, still in insert mode
+
+    def test_theme_switches_the_colours_live(self):
+        tui = self.start(env=dict(self.env, COLORTERM="truecolor"))
+
+        def fg_of(needle):
+            for y, line in enumerate(tui.screen.display):
+                x = line.find(needle)
+                if x >= 0:
+                    return tui.screen.buffer[y][x].fg
+            self.fail("%r is not on the screen:\n%s" % (needle, tui.text()))
+
+        self.assertEqual(fg_of("harness armed"), "green")  # the default theme
+        tui.send(":theme gruvbox-dark<cr>")
+        self.assertIn("theme: gruvbox-dark (", tui.text())
+        self.assertEqual(fg_of("harness armed"), "b8bb26")  # gruvbox green, in truecolor
+        tui.send(":theme no-such-theme<cr>")
+        self.assertIn("no theme no-such-theme", tui.text())
+        self.assertEqual(fg_of("harness armed"), "b8bb26")  # a failed switch keeps the current theme
 
     def test_quit_prints_the_transcript_line(self):
         tui = self.start()
