@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "note": "Frozen snapshot, synced from SOPIA at the instant above. It is immutable: a later sync writes a NEW dated file beside this one rather than editing it, so this keeps its single-commit freeze while the set tracks the source. Carried so cai works from a single download with nothing else reachable.",
+  "shim": "#!/usr/bin/env bash\n# Installed by `cai enroll --strong`. A shim on purpose: the behaviour lives\n# in `cai hook`, so it improves without reinstalling this file. Removing this\n# is a decision -- make it deliberately rather than by editing around it.\nexec cai hook {name} --repo \"$(git rev-parse --show-toplevel)\"\n",
+  "hooks": {
+    "pre-commit": {
+      "action": "commit",
+      "what": "commit",
+      "note": "A pre-commit hook runs before the message exists, so it cannot check a subject or run a verification. Those belong to `cai commit`, used deliberately."
+    },
+    "pre-push": {
+      "action": "push",
+      "what": "push",
+      "note": "Publishing is a separate permission from committing: a commit is local and reversible, a push is outward-facing and is where work becomes someone else's problem."
+    }
+  },
+  "frozen": "2026-09-02T05:47:56Z",
+  "synced": "2026-09-02T05:47:56Z",
+  "name": "hooks-20260902T054756Z.json",
+  "syncedFrom": "docs/hooks.json"
+}

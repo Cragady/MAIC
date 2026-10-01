@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "note": "Embedded FALLBACK, not the source. The source is SOPIA's docs/hooks.json. This answers only when that cannot be reached.",
+  "synced": null,
+  "shim": "#!/usr/bin/env bash\n# Installed by `cai enroll --strong`. A shim on purpose: the behaviour lives\n# in `cai hook`, so it improves without reinstalling this file. Removing this\n# is a decision -- make it deliberately rather than by editing around it.\nexec cai hook {name} --repo \"$(git rev-parse --show-toplevel)\"\n",
+  "hooks": {
+    "pre-commit": {
+      "action": "commit",
+      "what": "commit"
+    },
+    "pre-push": {
+      "action": "push",
+      "what": "push",
+      "note": "Publishing is a separate permission from committing: a commit is local and reversible, a push is outward-facing."
+    }
+  }
+}

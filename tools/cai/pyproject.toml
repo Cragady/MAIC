@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cai-tools"
+version = "0.1.0"
+description = "Claude-specific tooling: transcript rebuild, transcript redaction"
+requires-python = ">=3.9"
+
+[project.scripts]
+cai = "cai.dispatch:main"
+
+# Built-in tools register through the same mechanism an external package uses.
+[project.entry-points."cai.tools"]
+trans-fairy = "cai.transfairy.cli:main"
+redact = "cai.redact.cli:main"
+trans-fairy-write = "cai.transfairywrite.cli:main"
+notation = "cai.notation.cli:main"
+grant = "cai.grant.cli:main"
+commit = "cai.commit.cli:main"
+enroll = "cai.enroll.cli:main"
+hook = "cai.hook.cli:main"
+edit = "cai.edit.cli:main"
+time = "cai.timekeeping.cli:main"
+document = "cai.document.cli:main"
+name = "cai.name.cli:main"
+fabricate = "cai.fabricate.cli:main"
+sync = "cai.sync.cli:main"
+flow = "cai.flow.cli:main"
+read = "cai.read.cli:main"
+reflow = "cai.reflow.cli:main"
+
+# The reflow family is DISCOVERED, so its own first member registers the same
+# way any other package's would. The built-in is not a special case.
+[project.entry-points."cai.reflow.operations"]
+lines = "cai.reflow.lines"
+context = "cai.reflow.context"
+
+[tool.setuptools.packages.find]
+where = ["src"]

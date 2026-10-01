@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "note": "Embedded FALLBACK, not the source. The source is SOPIA's docs/shapes.json.",
+  "synced": null,
+  "shapes": {
+    "session-name": {
+      "summary": "What a session is called, and why each part sits where it does.",
+      "order": "<cwd-name> <lineage markers> <role marker> - <8 uuid chars>",
+      "parts": [
+        {
+          "key": "cwd",
+          "required": true,
+          "reads": "the operator",
+          "why": "what the session is for. It LEADS because a listing truncates the tail, and sibling repositories are the pattern implemented more often than forking."
+        },
+        {
+          "key": "lineage",
+          "required": false,
+          "reads": "the operator",
+          "notation": [
+            "fork",
+            "has-open-forks"
+          ],
+          "why": "is this a fork, and does it have open forks. The pair co-occurs; depth is deliberately untracked."
+        },
+        {
+          "key": "role",
+          "required": false,
+          "reads": "the operator",
+          "notation": [
+            "role-pivot",
+            "role-anchor"
+          ],
+          "why": "is this the pivot, or a lineage held below one. Promotion is the operator's; demotion is the tool's."
+        },
+        {
+          "key": "slice",
+          "required": true,
+          "reads": "other agents",
+          "why": "eight uuid characters, matching the commit trailer. The name is the address; the slice is documentation, and a mismatch records where a conversation came from."
+        }
+      ],
+      "rules": [
+        "The name carries lineage; the sessionId carries iteration. Marked definitely-needs-improvement.",
+        "A marker earns its place only if you would make a different decision on seeing it in a listing.",
+        "The slice does three jobs: address, commit trailer, and edit signature in a comms chain."
+      ]
+    },
+    "grant": {
+      "summary": "A statement that a named party may do a named thing, in a named place, for a stated span.",
+      "document": "SOPIA/docs/grant-shape.md",
+      "parts": [
+        {
+          "key": "repo",
+          "required": true,
+          "why": "where it applies. A grant is never global."
+        },
+        {
+          "key": "sessionId",
+          "required": true,
+          "why": "who, unforgeably. THIS is what authorises."
+        },
+        {
+          "key": "sessionName",
+          "required": false,
+          "why": "who, as an operator reads it."
+        },
+        {
+          "key": "action",
+          "required": false,
+          "why": "what. Absent means repository-wide."
+        },
+        {
+          "key": "effect",
+          "required": false,
+          "why": "allow or deny. A deny is a statement; an absent permission is silence."
+        },
+        {
+          "key": "granted",
+          "required": true,
+          "why": "UTC instant it begins."
+        },
+        {
+          "key": "expires",
+          "required": false,
+          "why": "UTC instant it ends, or absent if it ends another way."
+        }
+      ],
+      "rules": [
+        "Uncertainty never becomes permission: every failure path returns no-grant.",
+        "A local grant is organisational, not security -- the signing authority for anything a server acts on must be server-side."
+      ]
+    }
+  }
+}

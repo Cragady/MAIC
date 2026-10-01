@@ -1,0 +1,4 @@
+{
+  "enrollment": "weak",
+  "note": "Declared by the operator. `off` is a recorded decision, not the absence of one -- which is why it is written down rather than inferred from a missing hook."
+}

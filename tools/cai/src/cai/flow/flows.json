@@ -1,0 +1,193 @@
+{
+  "schema": 1,
+  "note": "Embedded FALLBACK, not the source. The source is SOPIA's docs/flows.json.",
+  "flows": {
+    "re-root": {
+      "summary": "Carry a session's context forward past a compaction, into a new transcript.",
+      "why": "A summary loses what was not selected; a re-root carries what was said. Measured: the re-root held a reasoned ruling under every degradation applied, and the summary lost it with none.",
+      "steps": [
+        {
+          "do": "choose the window",
+          "tool": null,
+          "check": "the start is a clean top-level user record, and the arc's premise is inside it",
+          "why": "starting after the premise means the root must assert what the successor could have watched being decided",
+          "see": [
+            "docs/tests/re-root-fidelity/RESULTS.md",
+            "docs/tests/re-root-fidelity/RUN-4-RESULTS.md"
+          ]
+        },
+        {
+          "do": "project the slice",
+          "tool": "cai redact --project",
+          "check": "thinking blocks excluded; the token count fits the target",
+          "why": "3.9M raw becomes 281k as conversation; thinking is the largest component and its signatures do not validate outside the session that minted them",
+          "see": [
+            "docs/guides/carrying-context-forward.md"
+          ]
+        },
+        {
+          "do": "compose root and suffix",
+          "tool": "cai trans-fairy compose",
+          "check": "verification passes BEFORE the write",
+          "why": "a malformed record reaching a projects directory crashes the client on load, and by then a backup is a recovery rather than a prevention",
+          "see": [
+            "docs/shapes.json"
+          ]
+        },
+        {
+          "do": "carry the compaction summary verbatim",
+          "tool": null,
+          "check": "the summary is unaltered",
+          "why": "it is the only artifact recording what was lost, written at the moment of loss by the thing that did the losing",
+          "see": [
+            "docs/guides/carrying-context-forward.md"
+          ]
+        },
+        {
+          "do": "mark the window's BOTH edges",
+          "tool": null,
+          "check": "the notice states where it starts and where it stops",
+          "why": "a suffix is a window, not a tail; a successor reading `runs to the end` believes it is current",
+          "see": [
+            "docs/guides/interaction-conventions.md"
+          ]
+        },
+        {
+          "do": "install",
+          "tool": "cai trans-fairy install",
+          "check": "the destination is named for the sessionId in the records",
+          "why": "reading the id off a filename installs under a name that disagrees with the contents",
+          "see": [
+            "docs/grant-shape.md"
+          ]
+        },
+        {
+          "do": "hand off",
+          "tool": null,
+          "check": "the resume command is given to a person",
+          "why": "resuming is a human step, and the first prompt is the operator's to scope",
+          "see": [
+            "docs/guides/carrying-context-forward.md"
+          ]
+        }
+      ],
+      "see": [
+        "docs/guides/carrying-context-forward.md",
+        "docs/tests/re-root-fidelity/PRE-REGISTRATION.md"
+      ]
+    },
+    "commit": {
+      "summary": "Land a change, having verified what the change depended on.",
+      "why": "Every commit failure in one session was the same shape: the commit ran without verifying what it depended on.",
+      "steps": [
+        {
+          "do": "make the edit",
+          "tool": "cai edit",
+          "check": "the anchor matched exactly once and the structure count is as declared",
+          "why": "an anchor matching zero times leaves a message describing work the diff does not contain",
+          "see": [
+            "docs/guides/interaction-conventions.md"
+          ]
+        },
+        {
+          "do": "run the checks",
+          "tool": null,
+          "check": "the relevant suites pass",
+          "why": "three commits carried failing tests because the run and the commit were separate statements in one shell line"
+        },
+        {
+          "do": "commit",
+          "tool": "cai commit --verify --grant",
+          "check": "staged diff non-empty, verification passing, grant in force",
+          "why": "the gate refuses rather than reporting afterwards",
+          "see": [
+            "docs/grant-shape.md"
+          ]
+        },
+        {
+          "do": "push",
+          "tool": "cai commit --push",
+          "check": "the push grant is in force in its own right",
+          "why": "a commit is local and reversible; a push is outward-facing",
+          "see": [
+            "docs/grant-shape.md"
+          ]
+        }
+      ],
+      "see": [
+        "docs/grant-shape.md"
+      ]
+    },
+    "sync": {
+      "summary": "Take a dated snapshot of what SOPIA defines, so cai works from one download.",
+      "steps": [
+        {
+          "do": "confirm the source is reachable",
+          "tool": "cai sync list",
+          "check": "the source exists",
+          "why": "a sync that invented content would fabricate the very thing it was meant to preserve",
+          "see": [
+            "docs/hooks.json"
+          ]
+        },
+        {
+          "do": "snapshot",
+          "tool": "cai sync all",
+          "check": "each snapshot carries what it copied and when",
+          "why": "identity comes from the content, which is why the single-commit rule is not applied here",
+          "see": [
+            "docs/shapes.json"
+          ]
+        },
+        {
+          "do": "commit the snapshots",
+          "tool": "cai commit",
+          "check": "they land under sync-frozen",
+          "why": "a freeze claim from outside a frozen directory is refused rather than believed",
+          "see": [
+            "docs/grant-shape.md"
+          ]
+        }
+      ],
+      "see": [
+        "docs/shapes.json"
+      ]
+    },
+    "enroll": {
+      "summary": "Decide how strongly a repository is held to cai.",
+      "steps": [
+        {
+          "do": "ask the operator",
+          "tool": "cai enroll",
+          "check": "the question was put and answered",
+          "why": "a tool that picked a default would make the choice by omission",
+          "see": [
+            "docs/guides/interaction-conventions.md"
+          ]
+        },
+        {
+          "do": "apply",
+          "tool": "cai enroll --strong|--weak|--off",
+          "check": "strong pre-flights, and refuses if the hooks could not succeed",
+          "why": "strong enrollment should never brick a repository, so that is an impossible ask",
+          "see": [
+            "docs/hooks.json"
+          ]
+        },
+        {
+          "do": "commit the marker",
+          "tool": "cai commit",
+          "check": "the marker is tracked",
+          "why": "hooks live in .git and do not survive a clone; the marker does",
+          "see": [
+            "docs/shapes.json"
+          ]
+        }
+      ],
+      "see": [
+        "docs/hooks.json"
+      ]
+    }
+  },
+  "synced": null
+}
