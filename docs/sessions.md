@@ -10,11 +10,11 @@ Every line has `type` and `time`. The rest depends on the type.
 
 | type | written by | fields | meaning |
 | :--- | :--- | :--- | :--- |
-| `start` | every open | `workspace`, `model`, `mode`, `host`, `pid` | The session was started or resumed here. A file has one per open; `maic sessions` counts them and shows the first workspace as where it was started and the last as where it was last opened. |
+| `start` | every open | `workspace`, `model`, `mode`, `host`, `pid`; for a subagent (kind `sub`) also `parent` (the delegating session's id) and `profile` | The session was started or resumed here. A file has one per open; `maic sessions` counts them and shows the first workspace as where it was started and the last as where it was last opened, and lists a `sub` under its parent. |
 | `msg` | the agent | `role`, `content`, and for assistant turns `tool_calls` (`id`, `name`, `arguments`), for tool turns `tool_name`, `tool_call_id`, `is_error`; `raw_kind` and `raw` when the provider's own blocks are kept | One message as sent to or received from the model. Loading a session replays these in order. `raw` holds provider content that must go back unchanged: Anthropic thinking blocks with their signatures (`raw_kind` `anthropic`), and DeepSeek's `reasoning_content` (`raw_kind` `openai`), which its thinking models require on every earlier assistant turn while tools are in the request. |
 | `user` | the agent | `text`, `provider`, `model`, `remote`, `mode`; `queued` when it was sent mid-turn | What you typed, for the transcript. Also where the model and mode in effect are recorded per turn. |
 | `assistant` | the agent | `text` | The reply, for the transcript. |
-| `tool` | the agent | `tool`, `arguments`, `result` (capped at 64 KB), `ok` | One tool call with the harness's outcome, for the transcript. The full result is in the `msg` record. |
+| `tool` | the agent | `tool`, `arguments`, `result` (capped at 64 KB), `ok`; for `delegate` also `profile`, `child` (the subagent's transcript), `steps` and `tokens` | One tool call with the harness's outcome, for the transcript. The full result is in the `msg` record. |
 | `usage` | the agent | `input`, `output`, `context` | Token counts the provider reported for one reply. |
 | `context` | `--context` and `-C` | `text` | A file attached to the conversation, shown as a notice. |
 | `title` | `:rename`, an auto-title, or an import | `text` | The name `maic sessions` shows. The last one wins. |

@@ -31,7 +31,7 @@ Not allowed:
 
 Both fit as layers on the existing design; neither replaces the tripwire.
 
-* **Permission profiles by role** (orchestrator, builder, scout, reviewer): a profile is a named bundle of mode, allowed write paths, network yes/no and budgets, chosen per session or per future subagent. It can narrow what the harness allows or pre-approve harmless commands. It can never widen past the fixed rules: trip patterns, secrets, system paths and remote-origin asking stay as they are in every profile. This is the same rule as the planned additive `permission` block.
+* **Permission profiles by role** (orchestrator, builder, scout, reviewer): a profile is a named bundle of mode, allowed write paths, network yes/no and budgets, chosen per subagent (built 2026-10-01, [harness.md](harness.md) layer 24; per session is still to come). It can narrow what the harness allows or pre-approve harmless commands. It can never widen past the fixed rules: trip patterns, secrets, system paths and remote-origin asking stay as they are in every profile. This is the same rule as the additive `permission` block (layer 23).
 * **Forkable transcripts**: sessions stay JSONL (one file, append-only, readable with any tool) instead of a relational tree. A fork is a new session file whose `start` record names the parent file and the record index it forked at; `maic -r ID --fork-at N` would replay the parent up to N and continue in the new file. The parent is never edited, which is also what the Anthropic history check needs.
 * **Budgets**: per-command time limits exist; memory limits are planned with `prlimit`; token and cost budgets need the usage figures every provider returns, which will be recorded per turn in the session file first.
 

@@ -21,8 +21,17 @@ What the model can call, and how to add a tool of your own in Lua. Every tool, b
 | `run_shell` | bash in bubblewrap: workspace writable, no network, no sudo, a timeout | a command |
 | `question` | asks you one thing and waits; options are picked by number, or you type an answer | nothing: it changes nothing, so it is only logged |
 | `todo` | the model's plan for multi-step work, replaced whole on every call | nothing: logged |
+| `delegate` | hands one task to a subagent running under a profile; its report is the result | nothing itself: every call the child makes goes through the harness under the child's profile |
 
 `question` shows up like an approval box in the interactive session (a number picks an option, typed text is a free answer, Esc gives no answer) and as a prompt on stderr in `maic -p` when there is a terminal; without one the answer is empty and the model is told so. `todo` shows as `todo n/m done` in the status strip and `:todo` lists it; `maic -p` prints it to stderr.
+
+### delegate
+
+`delegate {profile, task, context?}` starts a second agent in the same workspace, on the same model unless the profile names another, and runs `task` to completion. The child gets none of the parent's conversation: `task` and `context` are all it knows, and its final answer comes back as the tool result (capped at 16 KB), ending with `(the subagent used N steps, M tokens)`. The model is briefed to use it for long reads or searches it does not want in its own context (a `scout`, asked for a short report with paths and line numbers), and for a review of its own change by a `reviewer` before it calls the work done; a `builder` takes a self-contained piece of editing.
+
+What the child may do is its profile's, capped by the session: the built-in `scout` (auto-read, read-only tools plus read-only commands, 50k tokens), `reviewer` (plan mode, reads inside the workspace only, 50k tokens), `builder` (edit mode, writes anywhere in the workspace) and `orchestrator` (everything the session has), or a profile from `profiles` in settings ([settings.md](settings.md)). A child never gets a wider mode than the session is in, so under a manual session even a scout's `git log` is asked about. Approvals come to you through the parent with the profile named (`scout: $ git log`); the child's tool calls show indented under the delegate call (`↳ scout: read_file src/a.cpp`). A child has no `delegate`, `question` or `todo` tool: one level only, and it reports to the parent in its answer. Ctrl-C and a trip stop the child along with the parent; a child stops at its profile's step and token budget, and its tokens count against the session's budget.
+
+Every child has its own transcript, kind `sub`, in the parent's home, with the parent's id and the profile in its `start` record ([sessions.md](sessions.md)); `maic sessions` lists it indented under the parent and `maic -r ID` opens it like any session. The parent's `tool` record for the call names the child's file, its steps and its tokens.
 
 ## Your own tools, in Lua
 
@@ -89,4 +98,4 @@ A complete example ships in [tools/examples/word-count.lua](../tools/examples/wo
 
 ## Where this is going
 
-Tools in other languages (Perl, Python, TypeScript, Go, WASM, shell) as manifests plus scripts, per-tool network grants, and subagents with their own profiles: [roadmap.md](roadmap.md), "Tools and the polyglot spokes".
+Tools in other languages (Perl, Python, TypeScript, Go, WASM, shell) as manifests plus scripts, and per-tool network grants: [roadmap.md](roadmap.md), "Tools and the polyglot spokes".
