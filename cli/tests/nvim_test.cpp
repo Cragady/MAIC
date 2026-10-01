@@ -18,6 +18,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -167,13 +168,48 @@ struct FakeModel {
     Provider provider() const { return {"fake", "openai", "http://127.0.0.1:" + std::to_string(port) + "/v1", "", "", {{"context_window", 16384}}}; }
 };
 
+// A model whose reply never ends: one chunk, then keepalives until the agent hangs up (or 10 s).
+struct HeldModel {
+    httplib::Server srv;
+    int port = 0;
+    std::thread thread;
+    std::atomic<bool> streaming{false};
+
+    HeldModel() {
+        port = srv.bind_to_any_port("127.0.0.1");
+        srv.Post("/v1/chat/completions", [this](const httplib::Request&, httplib::Response& res) {
+            res.set_chunked_content_provider("text/event-stream", [this](size_t, httplib::DataSink& sink) {
+                std::string first = FakeModel::event({{"choices", {{{"index", 0}, {"delta", {{"content", "thinking"}}}}}}});
+                if (!sink.write(first.data(), first.size())) return false;
+                streaming = true;
+                std::string keepalive = FakeModel::event({{"choices", {{{"index", 0}, {"delta", json::object()}}}}});
+                auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+                while (std::chrono::steady_clock::now() < deadline) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    if (!sink.write(keepalive.data(), keepalive.size())) return false;
+                }
+                sink.done();
+                return true;
+            });
+        });
+        thread = std::thread([this] { srv.listen_after_bind(); });
+        srv.wait_until_ready();
+    }
+    ~HeldModel() {
+        srv.stop();
+        thread.join();
+    }
+    Provider provider() const { return {"fake", "openai", "http://127.0.0.1:" + std::to_string(port) + "/v1", "", "", {{"context_window", 16384}}}; }
+};
+
 struct Recorder : AgentEvents {
     std::vector<std::string> results;
     std::vector<ApprovalRequest> asked;
+    std::vector<std::string> notices;
     void on_text(std::string_view, bool) override {}
     void on_tool_call(const std::string&) override {}
     void on_tool_result(const std::string& t, bool) override { results.push_back(t); }
-    void on_notice(const std::string&) override {}
+    void on_notice(const std::string& n) override { notices.push_back(n); }
     ApprovalAnswer ask(const ApprovalRequest& r) override {
         asked.push_back(r);
         return {Approval::No, ""};
@@ -291,6 +327,29 @@ int main() {
         expect(wait_for([&] { return !sent.empty(); }) && sent[0] == "hello from nvim", "maic_send arrives as text for the input");
         other->exec_lua("require('maic').command(...)", json::array({":theme mono"}));
         expect(wait_for([&] { return !commands.empty(); }) && commands[0] == ":theme mono", "maic_command arrives as a command line");
+    }
+
+    section(":MaicInterrupt cancels a running turn");
+    {
+        HeldModel model;
+        Agent agent(ws, "fake/m");
+        agent.providers = {model.provider()};
+        std::atomic<bool> cancel{false};
+        h.interrupt = [&] { cancel = true; };  // the TUI's handler does the first Ctrl-C; this one sets the same flag
+        host->set_handlers(h);
+        Recorder r;
+        std::thread turn([&] { agent.submit("a long one", Origin::Local, r, cancel); });
+        expect(eventually([&] { return model.streaming.load(); }), "the fake turn is running");
+        auto t0 = std::chrono::steady_clock::now();
+        other->exec_lua("vim.cmd('runtime plugin/maic.lua') vim.cmd('MaicInterrupt')", json::array());
+        turn.join();
+        bool noticed = false;
+        for (const auto& n : r.notices) noticed = noticed || n.find("interrupted") != std::string::npos;
+        expect(cancel.load() && noticed && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5),
+               "rpcnotify(chan, \"maic_interrupt\") from :MaicInterrupt cancels the turn at once");
+        expect(other->exec_lua("return require('maic').interrupt()", json::array()) == "rpc", "require('maic').interrupt() goes over MAIC's channel when it is connected");
+        h.interrupt = nullptr;
+        host->set_handlers(h);
     }
 
     section(":e and the diff open in the host");
@@ -445,7 +504,8 @@ int main() {
                         json::array({typed.string()}));
         expect(eventually([&] { return fs::exists(typed) && mode() == "t"; }), "MAIC's terminal starts in terminal mode");
         other->request("nvim_input", {msgpack::Value::str("ab<Esc>c")});
-        expect(eventually([&] { return read_file(typed) == "ab\x1b" "c"; }), "Esc reaches MAIC as Esc: " + json(read_file(typed)).dump());
+        bool reached = eventually([&] { return read_file(typed) == "ab\x1b" "c"; });
+        expect(reached, "Esc reaches MAIC as Esc: " + json(read_file(typed)).dump());
         expect(mode() == "t", "and MAIC's terminal stays in terminal mode");
         other->request("nvim_input", {msgpack::Value::str("<C-\\><C-n>")});
         expect(eventually([&] { return mode() == "nt"; }), "<C-\\><C-n> (terminal_escape) leaves it");

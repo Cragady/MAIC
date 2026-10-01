@@ -196,7 +196,7 @@ HostNvim::~HostNvim() {
 
 void HostNvim::set_handlers(Handlers h) {
     std::lock_guard lock(handlers_mu_);
-    has_handlers_ = h.send || h.command || h.colorscheme || h.error || h.closed;
+    has_handlers_ = h.send || h.command || h.colorscheme || h.interrupt || h.error || h.closed;
     handlers_ = std::move(h);
 }
 
@@ -316,6 +316,7 @@ void HostNvim::read_loop() {
                     std::string text = a[2].is_array() && !a[2].array.empty() && a[2].array[0].is_str() ? a[2].array[0].s : "";
                     if (method == "maic_send") queue([this, text] { if (handlers_.send) handlers_.send(text); });
                     else if (method == "maic_command") queue([this, text] { if (handlers_.command) handlers_.command(text); });
+                    else if (method == "maic_interrupt") queue([this] { if (handlers_.interrupt) handlers_.interrupt(); });
                     else if (method == "maic_colorscheme") queue([this] { if (handlers_.colorscheme) handlers_.colorscheme(); });
                     else if (method == "nvim_error_event") {
                         std::string why = a[2].is_array() && a[2].array.size() >= 2 && a[2].array[1].is_str() ? a[2].array[1].s : "error";

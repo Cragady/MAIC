@@ -88,6 +88,15 @@ require("maic").setup({opts})
         src/a.c:12:5: error: expected ';' [clangd]
 <    With [!], every buffer's.
 
+                                                              *:MaicInterrupt*
+:MaicInterrupt
+    Stops MAIC's running turn as its first Ctrl-C does, from any window.
+    When MAIC is connected it goes over its channel
+    (`rpcnotify(chan, "maic_interrupt")`): a running turn, `!` command or
+    pending approval is stopped, and an idle MAIC only says so (your draft
+    stays). Without a connection, Ctrl-C is typed into this tab's MAIC
+    terminal.
+
                                                                *:MaicQuickfix*
 :MaicQuickfix
     The quickfix list, `path:line:col: type: text` per item; an item with no
@@ -118,9 +127,11 @@ The table, as shipped: >lua
         diagnostics = "<leader>md",
         workspace_diagnostics = "<leader>mD",
         quickfix = "<leader>mq",
+        interrupt = "<leader>mc",
       },
+      buffer_keymaps = { interrupt = "<C-c>" },
       terminal_escape = "<C-\\><C-n>",
-      terminal_passthrough = { ["<Esc>"] = true },
+      terminal_passthrough = { ["<Esc>"] = true, ["<C-c>"] = true },
       filetypes = { terminal = "maic", input = "maic-input" },
     }
 <
@@ -187,6 +198,15 @@ Set by |maic.setup()|; the name is the key in the `keymaps` table.
     diagnostics             <leader>md    normal   |:MaicDiagnostics|
     workspace_diagnostics   <leader>mD    normal   :MaicDiagnostics!
     quickfix                <leader>mq    normal   |:MaicQuickfix|
+    interrupt               <leader>mc    normal   |:MaicInterrupt|
+
+                                                      *maic-buffer_keymaps*
+In MAIC's own buffers only, buffer-local (`buffer_keymaps`, same names):
+
+    interrupt               <C-c>         normal   |:MaicInterrupt|
+
+and <C-c> in terminal mode is passed through to MAIC, whose own Ctrl-C
+interrupts (|maic-terminal_passthrough|). <C-c> is never mapped globally.
 
                                                                    *maic-esc*
 In MAIC's terminal, <Esc> goes to MAIC, whose input is vim-like and needs it
@@ -267,6 +287,10 @@ open({args})                                                  *maic.open()*
 
 toggle()                                                    *maic.toggle()*
     |:MaicToggle|.
+
+interrupt()                                              *maic.interrupt()*
+    |:MaicInterrupt|. Returns "rpc", "key" (Ctrl-C into the terminal) or
+    nil (no MAIC here).
 
 send_text({text})                                        *maic.send_text()*
     Puts {text} into MAIC's input, never sent. Returns "rpc" (over MAIC's

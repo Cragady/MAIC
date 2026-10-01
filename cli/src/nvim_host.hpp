@@ -26,7 +26,7 @@ std::string connect_host_socket(const std::string& path, int& fd);
 
 // The nvim MAIC runs inside, as a msgpack-rpc client of its $NVIM socket (`nvim_set_client_info` name "maic",
 // attribute pid). Requests wait with a timeout. The notifications maic.nvim sends (maic_send, maic_command,
-// maic_colorscheme) and nvim's error events are handled on a thread of the host's own, never the reader's, so a
+// maic_interrupt, maic_colorscheme) and nvim's error events are handled on a thread of the host's own, never the reader's, so a
 // handler may make requests.
 class HostNvim : public NvimHost {
 public:
@@ -34,6 +34,7 @@ public:
         std::function<void(const std::string&)> send;     // maic_send: text for the input
         std::function<void(const std::string&)> command;  // maic_command: a command line, ":" optional
         std::function<void()> colorscheme;                // the host's ColorScheme fired
+        std::function<void()> interrupt;                  // maic_interrupt: what the first Ctrl-C does
         std::function<void(const std::string&)> error;    // nvim's error for a notification of ours
         std::function<void()> closed;                     // the connection is gone
     };

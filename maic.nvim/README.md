@@ -12,7 +12,7 @@ With lazy.nvim, from the MAIC checkout:
 { dir = "~/dev2/MAIC/maic.nvim", opts = {} }
 ```
 
-`opts` makes lazy.nvim call `require("maic").setup(opts)`, which sets the keymaps; leave it out for the commands alone. The plugin is small enough to load at start; to load it on first use instead, add `cmd = { "Maic", "MaicToggle", "MaicSend", "MaicDiagnostics", "MaicQuickfix" }`.
+`opts` makes lazy.nvim call `require("maic").setup(opts)`, which sets the keymaps; leave it out for the commands alone. The plugin is small enough to load at start; to load it on first use instead, add `cmd = { "Maic", "MaicToggle", "MaicSend", "MaicDiagnostics", "MaicQuickfix", "MaicInterrupt" }`.
 
 Without a plugin manager, as a package:
 
@@ -37,6 +37,7 @@ then `:helptags ALL` once for `:h maic`. `plugin/maic.lua` only defines the comm
 | `:[range]MaicSend` | With a range (`:'<,'>MaicSend`, `:%MaicSend`, `:10,20MaicSend`): those lines as a fenced snippet headed with the path and line numbers. Without a range: the buffer's path, for the agent to read itself. |
 | `:MaicDiagnostics[!]` | This buffer's LSP diagnostics as `path:line:col: severity: message [source]` lines; with `!`, every buffer's. |
 | `:MaicQuickfix` | The quickfix list, `path:line:col: type: text` (an item with no location is its text). |
+| `:MaicInterrupt` | Stops MAIC's running turn as its first Ctrl-C does, from any window: over MAIC's channel (`rpcnotify(chan, "maic_interrupt")`) when it is connected, where an idle MAIC only says so; else Ctrl-C typed into this tab's MAIC terminal. |
 
 What is sent lands in MAIC's input; nothing is sent to the model until you send it there. When MAIC is connected to this nvim the text goes over its channel (`rpcnotify(chan, "maic_send", text)`); when it is not, it is typed into the terminal as a bracketed paste, which MAIC takes whole in any mode.
 
@@ -69,9 +70,11 @@ The table as shipped:
   keymaps = {            -- name = key; false drops one, keymaps = false drops all
     open = "<leader>mm", toggle = "<leader>mt", send = "<leader>ms", send_selection = "<leader>ms",
     send_buffer = "<leader>mb", diagnostics = "<leader>md", workspace_diagnostics = "<leader>mD", quickfix = "<leader>mq",
+    interrupt = "<leader>mc",
   },
+  buffer_keymaps = { interrupt = "<C-c>" },     -- normal mode, buffer-local in MAIC's own buffers only
   terminal_escape = "<C-\\><C-n>",            -- leaves terminal mode in MAIC's terminal; another key is mapped there
-  terminal_passthrough = { ["<Esc>"] = true },  -- keys that reach MAIC in its terminal over a global terminal-mode mapping
+  terminal_passthrough = { ["<Esc>"] = true, ["<C-c>"] = true },  -- keys that reach MAIC in its terminal over a global terminal-mode mapping
   filetypes = { terminal = "maic", input = "maic-input" },  -- MAIC's buffers, for plugins to include or exclude
 }
 ```
@@ -92,12 +95,15 @@ Set by `setup()` unless `keymaps = false`; the first column is the name in the `
 | `diagnostics` | `<leader>md` | normal | `:MaicDiagnostics` |
 | `workspace_diagnostics` | `<leader>mD` | normal | `:MaicDiagnostics!` |
 | `quickfix` | `<leader>mq` | normal | `:MaicQuickfix` |
+| `interrupt` | `<leader>mc` | normal | `:MaicInterrupt` |
+
+In MAIC's own buffers only, buffer-local: `<C-c>` in normal mode is `:MaicInterrupt` (`buffer_keymaps.interrupt`), and in terminal mode it is passed through to MAIC, whose Ctrl-C interrupts. `<C-c>` is never mapped globally.
 
 maic.nvim never overwrites a mapping. Before it sets a default key it checks `maparg()` and `mapcheck()` in that mode; when another mapping holds the key or shares a prefix with it, the key is skipped, and every skipped key is reported once per session in one warning naming the key, the mode and what holds it (its description and the script and line that set it). A key you name in `keymaps` is set anyway, since you chose it, and reported as shadowing what held it.
 
 ## Lua
 
-`require("maic")` also has `send_text(text)` (returns `"rpc"`, `"paste"` or nil), `command(":cmd")` (runs a command in a connected MAIC as if typed), `channel()`, `open(args)`, `toggle()`, and the formatters `format_snippet`, `format_diagnostics`, `format_quickfix`.
+`require("maic")` also has `interrupt()` (returns `"rpc"`, `"key"` or nil), `send_text(text)` (returns `"rpc"`, `"paste"` or nil), `command(":cmd")` (runs a command in a connected MAIC as if typed), `channel()`, `open(args)`, `toggle()`, and the formatters `format_snippet`, `format_diagnostics`, `format_quickfix`.
 
 ## Events from MAIC
 

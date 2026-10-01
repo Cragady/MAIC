@@ -5,11 +5,12 @@ cannot see (they link httplib themselves). Usage: cli_smoke.py PATH_TO_MAIC
 
 Also a module for test_tui.py (the fake, the throwaway home), and `cli_smoke.py --serve` runs the fake alone,
 printing its port."""
-import http.server, json, os, subprocess, sys, tempfile, threading
+import http.server, json, os, subprocess, sys, tempfile, threading, time
 
 
 class Fake(http.server.BaseHTTPRequestHandler):
-    """Answers every chat with "echo: " plus the first line of the last user message, streamed as SSE."""
+    """Answers every chat with "echo: " plus the first line of the last user message, streamed as SSE. A message
+    starting with "hold" gets a reply that idles for 10 s instead, for the interrupt tests."""
 
     def log_message(self, *a):
         pass
@@ -29,6 +30,15 @@ class Fake(http.server.BaseHTTPRequestHandler):
         last = [m for m in body.get("messages", []) if m.get("role") == "user"][-1]["content"]
         if isinstance(last, list):  # text parts beside an image
             last = "".join(p.get("text", "") for p in last if p.get("type") == "text")
+        if last.startswith("hold"):  # a reply that never ends: only an interrupt brings the turn back
+            try:
+                self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {"content": "holding"}}]}) + "\n\n").encode())
+                for _ in range(500):
+                    time.sleep(0.02)
+                    self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {}}]}) + "\n\n").encode())
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         for piece in ("echo: ", last.split("\n")[0]):
             self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {"content": piece}}]}) + "\n\n").encode())
         self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 5, "completion_tokens": 2}}) + "\n\n").encode())

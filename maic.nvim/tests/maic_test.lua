@@ -18,7 +18,7 @@ vim.fn.mkdir(tmp, "p")
 vim.cmd.cd(tmp)
 
 io.write("commands\n")
-for _, c in ipairs({ "Maic", "MaicSend", "MaicDiagnostics", "MaicQuickfix", "MaicToggle" }) do
+for _, c in ipairs({ "Maic", "MaicSend", "MaicDiagnostics", "MaicQuickfix", "MaicToggle", "MaicInterrupt" }) do
   expect(vim.fn.exists(":" .. c) == 2, ":" .. c .. " is defined")
 end
 
@@ -68,6 +68,12 @@ vim.wait(3000, function()
   return got == want
 end)
 expect(got == want, ":MaicSend goes into the terminal as a bracketed paste: " .. vim.inspect(got))
+expect(maic.interrupt() == "key", "without a connected MAIC, :MaicInterrupt types Ctrl-C into the terminal")
+vim.wait(3000, function()
+  got = table.concat(vim.fn.readfile(out, "b"), "\n")
+  return got == want .. "\3"
+end)
+expect(got == want .. "\3", "the job gets Ctrl-C: " .. vim.inspect(got:sub(-3)))
 
 io.write("one MAIC per tab, toggled\n")
 local before = #vim.api.nvim_list_bufs()
@@ -98,6 +104,13 @@ expect(maic.config.open == "float" and maic.config.cmd == "maic" and maic.config
 expect(maic.defaults.keymaps.send == "<leader>ms" and maic.defaults.open == "vsplit", "and leaves the defaults table as it was")
 maic.setup({ keymaps = true })
 expect(mapped("<leader>mm") and mapped("<leader>ms"), "keymaps = true is the defaults")
+local function global(lhs, mode)
+  for _, m in ipairs(vim.api.nvim_get_keymap(mode)) do
+    if m.lhs == lhs then return m end
+  end
+end
+expect(vim.fn.maparg("<leader>mc", "n"):find("MaicInterrupt") ~= nil and not global("<C-C>", "n") and not global("<C-C>", "t"),
+  "<leader>mc interrupts; <C-c> is never mapped globally")
 
 io.write("Esc in MAIC's terminal\n")
 vim.keymap.set("t", "<Esc>", "<C-\\><C-n>", { desc = "leave the terminal" })
@@ -115,6 +128,8 @@ expect(vim.bo[tbuf].buftype == "terminal" and vim.bo[tbuf].filetype == "maic", "
 expect(esc and esc.rhs == "<Esc>" and esc.noremap == 1 and esc.nowait == 1, "a buffer-local terminal-mode <Esc> sends Esc to MAIC (noremap, nowait)")
 local q = local_map("<C-Q>")
 expect(q and q.rhs == "<C-\\><C-N>", "terminal_escape leaves terminal mode there: " .. vim.inspect(q and q.rhs))
+local cc, ncc = local_map("<C-C>"), local_map("<C-C>", "n")
+expect(cc and cc.rhs == "<C-C>" and ncc and ncc.rhs == "<Cmd>MaicInterrupt<CR>", "<C-c> interrupts in MAIC's buffer: passed through in terminal mode, :MaicInterrupt in normal mode")
 expect(vim.fn.maparg("<Esc>", "t", false, true).buffer == 1 and vim.api.nvim_get_keymap("t")[1].desc == "leave the terminal",
   "the user's global <Esc> mapping stays as it was")
 maic.setup({ keymaps = false, cmd = { "sh", "-c", "sleep 30" }, open = "split" })

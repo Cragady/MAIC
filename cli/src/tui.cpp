@@ -532,6 +532,7 @@ private:
     void follow_host_theme(bool announce);  // on the host's handler thread: read its colorscheme, apply it here
     void fire(const std::string& event, nlohmann::json data);  // a User autocmd in the host, with the session id
     void nvim_command(const std::string& arg);  // :nvim, :nvim theme
+    void interrupt_from_host();                 // maic.nvim's :MaicInterrupt: the first Ctrl-C, or a notice when idle
     void open_file(const std::filesystem::path& path);  // in the host, or in $EDITOR in MAIC's place
     void paste_input(const std::string& text);  // appended to the input, never sent
     bool pasting_ = false;  // inside a bracketed paste (maic.nvim's fallback when MAIC is not connected)
@@ -827,6 +828,10 @@ void App::start_host() {
         screen_.Post([this, line] { run_command(!line.empty() && line[0] == ':' ? line.substr(1) : line); });
         screen_.PostEvent(Event::Custom);
     };
+    h.interrupt = [this] {
+        screen_.Post([this] { interrupt_from_host(); });
+        screen_.PostEvent(Event::Custom);
+    };
     h.colorscheme = [this] { follow_host_theme(false); };
     h.error = [this](const std::string& why) { post(Kind::Error, "nvim: " + why); };
     h.closed = [this] { post(Kind::Notice, "nvim: the host is gone; :e and the theme are MAIC's own again"); };
@@ -878,6 +883,7 @@ void App::nvim_command(const std::string& arg) {
     if (host_up()) {
         post(Kind::Notice, "nvim: connected to " + host_->socket() + " as channel " + std::to_string(host_->channel()) + " (client \"maic\")\n"
                            "  :e FILE and e at an approval open files there, d at a write's approval diffs it in a new tab\n"
+                           "  :MaicInterrupt (<leader>mc) there stops a running turn as Ctrl-C does\n"
                            "  User autocmds MaicTurnStart, MaicToolCall, MaicApproval, MaicFileWritten, MaicTurnEnd fire there\n"
                            "  the model has the diagnostics tool; your Lua has maic.nvim\n"
                            "  theme: " + std::string(follow_theme_ ? "follows its colorscheme (" + settings_.theme + ")" : "your own (" + settings_.theme + "); :nvim theme follows nvim's"));
@@ -888,6 +894,16 @@ void App::nvim_command(const std::string& arg) {
         post(Kind::Notice, std::string("nvim: no host. ") + (sock && *sock ? "$NVIM was refused: " + host_refused_ : "$NVIM is not set: MAIC is not running inside nvim") +
                                "\nmaic.nvim (:Maic in nvim) runs MAIC in a terminal there; :h nvim");
     }
+}
+
+// maic_interrupt does what the first Ctrl-C does to a running turn, shell command or question, and nothing else: an
+// idle MAIC keeps its draft and says so instead of clearing it or arming the quit.
+void App::interrupt_from_host() {
+    if (asking() || shell_busy_ || busy_) {
+        handle(Event::Special("\x03"));
+        return;
+    }
+    post(Kind::Notice, "nvim: nothing to interrupt (MAIC is idle)");
 }
 
 void App::open_file(const std::filesystem::path& path) {

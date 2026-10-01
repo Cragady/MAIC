@@ -185,6 +185,16 @@ class TuiTest(unittest.TestCase):
         self.assertEqual(remote("expand('%:t')"), "notes.txt")
         remote("luaeval('require(\"maic\").command(\":rename from the plugin\")')")
         tui.wait_for("titled: from the plugin")
+        # :MaicInterrupt does what the first Ctrl-C does to a running turn; idle, MAIC says so and keeps the draft.
+        tui.send("<esc><c-c>")  # the first Ctrl-C of an idle MAIC clears the input
+        tui.send("ihold on<m-cr>", settle=False)
+        tui.wait_for("working… ctrl-c interrupts")
+        self.assertEqual(remote("luaeval('require(\"maic\").interrupt()')"), "rpc")
+        tui.wait_for("interrupted")
+        tui.send("<esc>ia draft<esc>")
+        remote("luaeval('require(\"maic\").interrupt()')")
+        text = tui.wait_for("nvim: nothing to interrupt (MAIC is idle)")
+        self.assertIn("│ a draft", text)
 
     def test_quit_prints_the_transcript_line(self):
         tui = self.start()

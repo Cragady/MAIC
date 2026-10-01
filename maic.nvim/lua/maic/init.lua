@@ -20,12 +20,15 @@ M.defaults = {
     diagnostics = "<leader>md",
     workspace_diagnostics = "<leader>mD",
     quickfix = "<leader>mq",
+    interrupt = "<leader>mc",
   },
+  -- name = key, normal mode, buffer-local in MAIC's own buffers only (<C-c> is never mapped globally)
+  buffer_keymaps = { interrupt = "<C-c>" },
   -- Leaves terminal mode in MAIC's terminal. nvim's own <C-\><C-n> needs no mapping; another key is mapped there.
   terminal_escape = "<C-\\><C-n>",
   -- Keys that reach MAIC in its terminal even when a global terminal-mode mapping holds them (buffer-local, so
   -- the global mapping keeps working everywhere else). key = true; false drops one.
-  terminal_passthrough = { ["<Esc>"] = true },
+  terminal_passthrough = { ["<Esc>"] = true, ["<C-c>"] = true },
   filetypes = { terminal = "maic", input = "maic-input" }, -- MAIC's buffers, for plugins to include or exclude
 }
 
@@ -182,6 +185,22 @@ function M.command(line)
   return true
 end
 
+-- :MaicInterrupt: stops MAIC's running turn as its first Ctrl-C does, from any window. Over MAIC's channel when it
+-- is connected (idle, MAIC says so), else Ctrl-C typed into this tab's terminal. Returns "rpc", "key" or nil.
+function M.interrupt()
+  local chan = M.channel()
+  if chan then
+    vim.rpcnotify(chan, "maic_interrupt")
+    return "rpc"
+  end
+  local t = term_here()
+  if t then
+    vim.fn.chansend(t.job, "\3")
+    return "key"
+  end
+  vim.notify("maic.nvim: no MAIC here; :Maic starts one", vim.log.levels.WARN)
+end
+
 function M.bracketed(text)
   return "\27[200~" .. text .. "\27[201~"
 end
@@ -277,6 +296,7 @@ local actions = {
   diagnostics = { "n", "<cmd>MaicDiagnostics<cr>", "MAIC: send this buffer's diagnostics" },
   workspace_diagnostics = { "n", "<cmd>MaicDiagnostics!<cr>", "MAIC: send every buffer's diagnostics" },
   quickfix = { "n", "<cmd>MaicQuickfix<cr>", "MAIC: send the quickfix list" },
+  interrupt = { "n", "<cmd>MaicInterrupt<cr>", "MAIC: interrupt the running turn" },
 }
 
 -- The global keymaps the config asks for: { name, mode, lhs, rhs, desc, explicit }, explicit when opts named the key.
@@ -328,9 +348,16 @@ function map(k, buf)
   return true
 end
 
--- The buffer-local keymaps of MAIC's terminal: the passthrough keys, and terminal_escape when it is not nvim's own.
+-- The buffer-local keymaps of MAIC's terminal: buffer_keymaps, the passthrough keys, and terminal_escape when it
+-- is not nvim's own.
 function M.buffer_planned()
   local c, out = M.config, {}
+  for name, lhs in pairs(c.buffer_keymaps or {}) do
+    if lhs and actions[name] then
+      out[#out + 1] = { name = "buffer_keymaps." .. name, mode = "n", lhs = lhs, rhs = actions[name][2], desc = actions[name][3],
+        explicit = lhs ~= M.defaults.buffer_keymaps[name] }
+    end
+  end
   local escape = c.terminal_escape ~= M.defaults.terminal_escape and c.terminal_escape or nil
   for key, on in pairs(c.terminal_passthrough or {}) do
     if on and key ~= escape then
