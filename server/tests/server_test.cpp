@@ -191,7 +191,7 @@ int main() {
         token = store.create("phone");
         expect(token.size() == 32, "a token is 32 url-safe characters");
         expect(store.verify(token) == std::optional<std::string>("phone"), "the token verifies to its name");
-        expect(!store.verify(token.substr(0, 31) + "x") && !store.verify(""), "a wrong or empty token does not");
+        expect(!store.verify(token.substr(0, 31) + "!") && !store.verify(""), "a wrong or empty token does not");
         std::string laptop = store.create("laptop");
         expect(store.list().size() == 2 && slurp(state / "tokens.json").find(laptop) == std::string::npos, "only hashes are on disk");
         struct stat st {};
