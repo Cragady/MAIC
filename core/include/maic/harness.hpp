@@ -122,7 +122,8 @@ private:
     Decision check_write(const std::filesystem::path& p, Mode mode) const;
     Decision check_read(const std::filesystem::path& p, Mode mode) const;
     Decision check_agent_def(const Action& action, Decision d) const;
-    bool permitted(const std::vector<std::string>& entries, const Action& action) const;
+    // `each_segment` (deny and ask entries): a shell entry also matches any command inside a chained line.
+    bool permitted(const std::vector<std::string>& entries, const Action& action, bool each_segment = false) const;
 
     std::filesystem::path workspace_;
     Permission permission_;

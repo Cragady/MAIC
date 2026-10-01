@@ -269,6 +269,31 @@ int main() {
             expect(check(asking, Mode::Manual, cmd).verdict == Verdict::Ask && check(asking, Mode::Auto, cmd).verdict == Verdict::Ask, "and for each chained form: " + cmd);
         }
 
+        // Deny and ask entries see every command in the line, so putting the command after a prefix, a pipe, inside
+        // a substitution or on its own line does not dodge them; chains of other commands are decided as before.
+        Harness denying(ws);
+        denying.set_permission(Permission{{}, {}, {"run_shell:git push*"}});
+        Harness unlisted(ws);
+        for (const std::string cmd : {"true; git push", "x && git push", "x | git push", "$(git push)", "echo `git push origin main`", "true\ngit push",
+                                      "x || git push --force", "(git push)", "x & git push", "GIT_TRACE=1 git push", "if true; then git push; fi"}) {
+            for (Mode m : {Mode::Manual, Mode::Auto}) {
+                Decision dd = check(denying, m, cmd);
+                expect(dd.verdict == Verdict::Deny && dd.reason == "denied by the permission block", "a deny entry matches a command inside the line: " + cmd);
+                expect(check(asking, m, cmd).verdict == Verdict::Ask, "and so does an ask entry: " + cmd);
+            }
+        }
+        for (const std::string cmd : {"true; git status", "ls | wc -l", "make && make test", "echo $(date)", "git pull\ngit log", "echo `pwd`"}) {
+            for (Mode m : {Mode::Manual, Mode::Auto}) {
+                Verdict v = check(unlisted, m, cmd).verdict;
+                expect(check(denying, m, cmd).verdict == v && check(asking, m, cmd).verdict == v, "a chain of other commands is decided as without the entries: " + cmd);
+            }
+        }
+        // Forbidden terms and trip patterns already look at the whole line.
+        Harness forbidding(ws);
+        forbidding.set_forbid({"git push"});
+        expect(check(forbidding, Mode::Auto, "true; git push").reason.find("forbidden term") != std::string::npos, "a forbidden term is found anywhere in the line");
+        expect(check(unlisted, Mode::Auto, "true; sudo ls").verdict == Verdict::Trip, "a trip pattern too");
+
         // The default entries for MAIC's helpers and cai, and the read-only shapes behind them (helper_read_only
         // and the cai classifier).
         Harness defaults(ws);

@@ -145,6 +145,34 @@ bool read_only_segment(const std::string& segment) {
     return true;
 }
 
+// The commands a shell line runs, for deny and ask entries: the line split on ; & | and line breaks, with the
+// insides of $(...), (...) and backticks as commands of their own, each trimmed of a leading {, !, a shell
+// keyword (if, then, do, ...) and VAR=value assignments. Conservative on purpose: quotes are not honoured, so a
+// separator inside a string makes one more segment, which can only match more.
+std::vector<std::string> command_segments(const std::string& command) {
+    std::string flat = command;
+    for (char& c : flat) {
+        if (c == ';' || c == '&' || c == '|' || c == '\n' || c == '\r' || c == '`' || c == '(' || c == ')') c = '\n';
+    }
+    std::vector<std::string> out;
+    std::istringstream in(flat);
+    for (std::string seg; std::getline(in, seg);) {
+        std::istringstream words(seg);
+        std::vector<std::string> w;
+        for (std::string x; words >> x;) w.push_back(x);
+        size_t i = 0;
+        for (; i < w.size(); ++i) {
+            static const std::set<std::string> lead = {"{", "}", "!", "$", "if", "then", "elif", "else", "do", "while", "until", "time"};
+            bool assignment = w[i].find('=') != std::string::npos && w[i].find('=') > 0 && (std::isalpha(static_cast<unsigned char>(w[i][0])) || w[i][0] == '_');
+            if (!lead.count(w[i]) && !assignment) break;
+        }
+        std::string joined;
+        for (size_t k = i; k < w.size(); ++k) joined += (joined.empty() ? "" : " ") + w[k];
+        if (!joined.empty()) out.push_back(joined);
+    }
+    return out;
+}
+
 }  // namespace
 
 bool is_simple_command(const std::string& command) {
@@ -302,8 +330,8 @@ Decision Harness::check(const Action& action, Mode mode, Origin origin) const {
     // The permission block comes after the fixed rules: a trip or a denial above is not its to lift, and an
     // allow entry never speaks for a remote origin.
     if (d.verdict == Verdict::Allow || d.verdict == Verdict::Ask) {
-        if (permitted(permission_.deny, action)) d = {Verdict::Deny, "denied by the permission block"};
-        else if (permitted(permission_.ask, action)) d = {Verdict::Ask, "the permission block asks", d.read_only_sandbox};
+        if (permitted(permission_.deny, action, true)) d = {Verdict::Deny, "denied by the permission block"};
+        else if (permitted(permission_.ask, action, true)) d = {Verdict::Ask, "the permission block asks", d.read_only_sandbox};
         else if (origin == Origin::Local && (action.kind != Action::Kind::Shell || is_simple_command(action.command)) && permitted(permission_.allow, action)) d = {Verdict::Allow, "on the allow list", d.read_only_sandbox, true};
     }
     if (d.verdict == Verdict::Allow && origin == Origin::Remote) {
@@ -312,10 +340,12 @@ Decision Harness::check(const Action& action, Mode mode, Origin origin) const {
     return d;
 }
 
-bool Harness::permitted(const std::vector<std::string>& entries, const Action& action) const {
+bool Harness::permitted(const std::vector<std::string>& entries, const Action& action, bool each_segment) const {
     std::string kind = action.kind == Action::Kind::Shell ? "run_shell" : action.kind == Action::Kind::Write ? "write" : "read";
     std::string given = action.kind == Action::Kind::Shell ? action.command : action.path.string();
     std::string relative = action.kind == Action::Kind::Shell || !in_workspace(action.path) ? "" : action.path.lexically_relative(workspace_).generic_string();
+    // A deny or ask entry matches the whole command or any command in it, so a prefix (`true; git push`) does not dodge it.
+    std::vector<std::string> segments = each_segment && action.kind == Action::Kind::Shell ? command_segments(action.command) : std::vector<std::string>{};
     for (const auto& entry : entries) {
         size_t colon = entry.find(':');
         if (colon == std::string::npos) continue;
@@ -324,6 +354,9 @@ bool Harness::permitted(const std::vector<std::string>& entries, const Action& a
         if (!pattern.empty() && pattern[0] == '~') pattern = std::string(std::getenv("HOME")) + pattern.substr(1);
         if (fnmatch(pattern.c_str(), given.c_str(), 0) == 0) return true;
         if (!relative.empty() && fnmatch(pattern.c_str(), relative.c_str(), 0) == 0) return true;
+        for (const auto& seg : segments) {
+            if (fnmatch(pattern.c_str(), seg.c_str(), 0) == 0) return true;
+        }
     }
     return false;
 }
