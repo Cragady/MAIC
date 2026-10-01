@@ -152,9 +152,27 @@ def main():
     lazy_ok = all(r.returncode == rc and want in r.stdout and "AddressSanitizer" not in r.stderr for r, rc, want in steps)
     print(("ok" if lazy_ok else "FAIL") + ": maic lazy-lock status, record and diff with their exit codes" +
           ("" if lazy_ok else "\n" + "\n".join("exit %d: %s" % (r.returncode, r.stdout + r.stderr) for r, _, _ in steps)))
+    # maic sessions redact --in-place keeps its copy where trans-fairy-write keeps its own, so cai's list-backups and
+    # restore see it.
+    with open(sess) as f:
+        original = f.read()
+    r = subprocess.run([maic, "sessions", "redact", sess, "--in-place"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    lb = subprocess.run([cai, "trans-fairy-write", "list-backups", "20260101-120000-tui-1"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    listed = json.loads(lb.stdout).get("backups", []) if lb.returncode == 0 else []
+    with open(sess) as f:
+        last = json.loads(f.read().splitlines()[-1])
+    rs = subprocess.run([cai, "trans-fairy-write", "restore", "20260101-120000-tui-1", "--backup", listed[0]["taken"] if listed else "x", "--ignore-live"],
+                        capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    with open(sess) as f:
+        restored = f.read()
+    backup_ok = (r.returncode == 0 and "the original is kept at" in r.stdout and len(listed) == 1 and last.get("type") == "rewritten"
+                 and last.get("backup") == listed[0]["backup"] and rs.returncode == 0 and restored.startswith(original)
+                 and json.loads(restored.splitlines()[-1]).get("type") == "rewritten")
+    print(("ok" if backup_ok else "FAIL") + ": maic sessions redact --in-place keeps a copy that cai trans-fairy-write list-backups and restore see" +
+          ("" if backup_ok else "\n" + r.stdout + r.stderr + lb.stdout + lb.stderr + rs.stdout + rs.stderr))
     models_ok = models_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and models_ok else 1)
+    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and models_ok else 1)
 
 
 def models_smoke(maic, port):

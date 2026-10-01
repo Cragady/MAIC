@@ -3,6 +3,8 @@
 // Replacement happens inside JSON string values, never in the serialised line, so the copy stays valid JSON.
 #include "maic/redact.hpp"
 
+#include "maic/session.hpp"
+
 #include <fcntl.h>
 #include <regex.h>
 #include <unistd.h>
@@ -11,6 +13,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <stdexcept>
 #include <vector>
@@ -171,6 +174,22 @@ RedactReport redact_session(const fs::path& in, const fs::path& out) {
         ++report.records;
     }
     return report;
+}
+
+fs::path redact_session_in_place(const fs::path& path, const std::string& invocation, RedactReport& report) {
+    bool maic_session = is_maic_session(path);
+    fs::path backup = backup_session(path), tmp = path.string() + ".redacting";
+    report = redact_session(path, tmp);
+    fs::rename(tmp, path);
+    if (maic_session) {
+        std::time_t t = std::time(nullptr);
+        char stamp[40];
+        std::strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%S%z", std::localtime(&t));
+        json rec = {{"type", "rewritten"}, {"time", stamp}, {"tool", "maic sessions redact"}, {"invocation", invocation}, {"backup", backup.string()},
+                    {"records_before", report.records}, {"records_after", report.records}};
+        std::ofstream(path, std::ios::app) << rec.dump() << '\n';
+    }
+    return backup;
 }
 
 }  // namespace maic

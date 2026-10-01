@@ -4,6 +4,7 @@
 #include "maic/paths.hpp"
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <climits>
@@ -216,6 +217,47 @@ size_t count_records(const fs::path& path) {
     size_t n = 0;
     for (std::string line; std::getline(in, line);) ++n;
     return n;
+}
+
+fs::path backup_session(const fs::path& path) {
+    fs::path root = sessions_dir() / ".backups", dir = root / path.stem();
+    for (const auto& d : {root, dir}) {
+        if (mkdir(d.c_str(), 0700) != 0 && errno != EEXIST) throw std::runtime_error("can't create " + d.string() + ": " + std::strerror(errno));
+    }
+    std::time_t t = std::time(nullptr);
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y%m%dT%H%M%SZ", std::gmtime(&t));
+    fs::path dest;
+    int fd = -1;
+    for (int n = 0; fd < 0; ++n) {
+        dest = dir / (std::string(stamp) + (n ? "-" + std::to_string(n) : "") + ".jsonl");
+        fd = open(dest.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        if (fd < 0 && errno != EEXIST) throw std::runtime_error("can't create " + dest.string() + ": " + std::strerror(errno));
+    }
+    close(fd);
+    std::ifstream src(path, std::ios::binary);
+    std::ofstream out(dest, std::ios::binary | std::ios::trunc);
+    out << src.rdbuf();
+    if (!src || !out.flush()) throw std::runtime_error("could not copy " + path.string() + " to " + dest.string());
+    return dest;
+}
+
+bool is_maic_session(const fs::path& path) {
+    std::ifstream in(path);
+    bool signature = false;
+    for (std::string line; std::getline(in, line);) {
+        auto j = nlohmann::json::parse(line, nullptr, false);
+        if (!j.is_object()) continue;
+        std::string type = j.value("type", "");
+        if (type == "cai" || type == "rewritten") continue;
+        for (const char* k : {"uuid", "parentUuid", "message", "isMeta", "sessionId"}) {
+            if (j.contains(k)) return false;
+        }
+        signature = signature || (type == "start" && j.contains("workspace")) || (type == "msg" && j.contains("role")) ||
+                    ((type == "user" || type == "assistant") && j.contains("text")) || (type == "tool" && j.contains("tool")) ||
+                    (type == "resumed_from" && j.contains("records"));
+    }
+    return signature;
 }
 
 namespace {

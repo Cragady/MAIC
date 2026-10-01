@@ -59,7 +59,7 @@ cai trans-fairy-write list-backups ID              the copies kept for a session
 cai trans-fairy-write restore ID [--backup TS]     put the newest copy (or the one stamped TS) back
 ```
 
-`ID` is a MAIC session id, a unique prefix, or any transcript's path. `restore` copies what is there first, so it can itself be undone, refuses a session that looks live (`--ignore-live` as for a write, `-n` for a dry run), and appends a `rewritten` record naming both copies. `maic sessions` never lists the `.backups` directory. `redact` and `reflow --replace` keep the in-place modes cai gave them, each behind the `--backup` it requires.
+`ID` is a MAIC session id, a unique prefix, or any transcript's path. `restore` copies what is there first, so it can itself be undone, refuses a session that looks live (`--ignore-live` as for a write, `-n` for a dry run), and appends a `rewritten` record naming both copies. `maic sessions` never lists the `.backups` directory. `maic sessions redact --in-place` takes its copy the same way, in the same place, so `list-backups` and `restore` see it too. `redact` and `reflow --replace` keep the in-place modes cai gave them, each behind the `--backup` it requires.
 
 ## Permissions
 

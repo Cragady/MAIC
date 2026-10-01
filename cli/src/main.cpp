@@ -680,14 +680,11 @@ int cmd_sessions_redact(const std::vector<std::string>& args) {
     auto s = maic::find_session(target);
     if (!s) throw std::runtime_error("no session matching '" + target + "' (maic sessions)");
     // The copy lands in the current directory by default, so it is never listed as a session itself.
-    std::filesystem::path dest = in_place ? std::filesystem::path(s->path.string() + ".redacting")
-                                 : out.empty() ? std::filesystem::current_path() / (s->id + ".redacted.jsonl")
-                                               : std::filesystem::path(out);
-    maic::RedactReport report = maic::redact_session(s->path, dest);
-    if (in_place) {
-        std::filesystem::rename(dest, s->path);
-        dest = s->path;
-    }
+    std::filesystem::path dest = in_place ? s->path : out.empty() ? std::filesystem::current_path() / (s->id + ".redacted.jsonl") : std::filesystem::path(out);
+    maic::RedactReport report;
+    std::filesystem::path backup;
+    if (in_place) backup = maic::redact_session_in_place(s->path, "maic sessions redact " + target + " --in-place", report);
+    else report = maic::redact_session(s->path, dest);
     if (report.total() == 0) std::cout << "nothing to redact in " << report.records << " records";
     else {
         std::cout << "redacted " << report.total() << " value" << (report.total() == 1 ? "" : "s") << " in " << report.records << " records:";
@@ -695,6 +692,7 @@ int cmd_sessions_redact(const std::vector<std::string>& args) {
     }
     if (report.malformed) std::cout << " (" << report.malformed << " malformed lines redacted as text)";
     std::cout << "\nwrote " << dest.string() << "\n";
+    if (!backup.empty()) std::cout << "the original is kept at " << backup.string() << " (cai trans-fairy-write restore " << s->id << " puts it back)\n";
     return 0;
 }
 

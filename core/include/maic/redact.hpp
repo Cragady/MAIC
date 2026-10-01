@@ -23,4 +23,9 @@ std::string redact_text(const std::string& text, std::map<std::string, size_t>& 
 // tool call ids aside). `in` is never modified; `out` must not exist yet and is created 0600.
 RedactReport redact_session(const std::filesystem::path& in, const std::filesystem::path& out);
 
+// `maic sessions redact --in-place`: copies the file with backup_session first, then rewrites it through a
+// temporary file and a rename; a MAIC session then gets a `rewritten` record naming the copy and `invocation`,
+// as cai's trans-fairy-write appends one. Returns the copy's path.
+std::filesystem::path redact_session_in_place(const std::filesystem::path& path, const std::string& invocation, RedactReport& report);
+
 }  // namespace maic

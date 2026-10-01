@@ -8,6 +8,7 @@
 
 #include <sys/stat.h>
 
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -305,6 +306,46 @@ int main() {
             threw = true;
         }
         expect(threw && read_whole(log.path()) == before, "writing over the source is refused the same way");
+    }
+
+    section("redact --in-place: a copy first, then a rewritten record");
+    {
+        SessionLog log("session-test");
+        log.write("start", {{"workspace", "/w"}, {"model", "m"}, {"mode", "manual"}});
+        log.write("msg", message_to_json({"user", "here is my key sk-abcdefghijklmnopqrstuvwxyz"}));
+        log.write("user", {{"text", "here is my key sk-abcdefghijklmnopqrstuvwxyz"}});
+        std::string before = read_whole(log.path());
+        RedactReport rep;
+        fs::path backup = redact_session_in_place(log.path(), "maic sessions redact " + log.path().stem().string() + " --in-place", rep);
+        fs::path dir = sessions_dir() / ".backups" / log.path().stem();
+        std::string name = backup.filename().string();
+        bool stamp = name.size() == 22 && name.substr(8, 1) == "T" && name.substr(15) == "Z.jsonl";
+        for (size_t i : {0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14}) stamp = stamp && std::isdigit(static_cast<unsigned char>(name[i]));
+        expect(backup.parent_path() == dir && stamp, "the copy is <sessions>/.backups/<id>/<UTC stamp>.jsonl, as trans-fairy-write names its own: " + backup.string());
+        struct stat d1{}, d2{};
+        expect(read_whole(backup) == before && mode_is_0600(backup) && stat(dir.c_str(), &d1) == 0 && (d1.st_mode & 0777) == 0700 &&
+                   stat(dir.parent_path().c_str(), &d2) == 0 && (d2.st_mode & 0777) == 0700,
+               "it is the original byte for byte, 0600 inside 0700 directories");
+        auto recs = records(log.path());
+        expect(recs.size() == 4 && recs[1]["content"] == "here is my key [REDACTED:api-key]" && recs[2]["text"] == "here is my key [REDACTED:api-key]", "the session itself is redacted");
+        expect(recs[3]["type"] == "rewritten" && recs[3]["backup"] == backup.string() && recs[3]["tool"] == "maic sessions redact" &&
+                   recs[3]["invocation"] == "maic sessions redact " + log.path().stem().string() + " --in-place" && recs[3].contains("time"),
+               "and ends with a rewritten record naming the copy and the command");
+        fs::path again = backup_session(log.path());
+        expect(again != backup && again.parent_path() == dir && fs::exists(backup), "a second copy never replaces the first (a -N suffix within the same second)");
+
+        // A file that is not a MAIC session (Claude Code's shape) gets the copy but no record of MAIC's.
+        fs::path cc = ws / "cc-transcript.jsonl";
+        {
+            std::ofstream f(cc);
+            f << json{{"type", "user"}, {"uuid", "u1"}, {"parentUuid", nullptr}, {"sessionId", "s"}, {"message", {{"role", "user"}, {"content", "token sk-abcdefghijklmnopqrstuvwxyz"}}}}.dump() << "\n";
+        }
+        expect(is_maic_session(log.path()) && !is_maic_session(cc), "is_maic_session tells a MAIC session from a Claude Code transcript");
+        std::string cc_before = read_whole(cc);
+        fs::path cc_backup = redact_session_in_place(cc, "maic sessions redact " + cc.string() + " --in-place", rep);
+        expect(read_whole(cc_backup) == cc_before && records(cc).size() == 1 && read_whole(cc).find("[REDACTED:api-key]") != std::string::npos &&
+                   cc_backup.parent_path() == sessions_dir() / ".backups" / "cc-transcript",
+               "a Claude Code transcript gets the copy and the redaction, and no rewritten record");
     }
 
     section("fork-at");

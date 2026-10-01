@@ -176,6 +176,14 @@ std::optional<std::string> session_lock_reason(const SessionInfo& info);
 // Number of records (lines) in a session file.
 size_t count_records(const std::filesystem::path& path);
 
+// A copy of a session file taken before it is rewritten in place, named as cai's trans-fairy-write names its own
+// (its safety_backup): <sessions>/.backups/<id>/<UTC %Y%m%dT%H%M%SZ>.jsonl, a -N suffix for a second copy in the
+// same second, 0600 in 0700 directories, so `cai trans-fairy-write list-backups` and `restore` find it.
+std::filesystem::path backup_session(const std::filesystem::path& path);
+// Is this file a MAIC session, by content, as cai's grammar decides it: a MAIC record (a start with its workspace,
+// a msg with its role, ...) and none of Claude Code's keys outside cai's own record types.
+bool is_maic_session(const std::filesystem::path& path);
+
 // The transcript as markdown: a title line, the session id, ## User / ## Assistant sections, tool calls and
 // results in fenced blocks when `tool_details`.
 std::string export_markdown(const SessionInfo& info, const LoadedSession& session, bool tool_details = true);
