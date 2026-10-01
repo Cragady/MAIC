@@ -86,7 +86,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 **Set up and measured on this machine** (not AI transcripts — these were installed and tested):
 
 * [harness.md](docs/harness.md) — the safety harness: tripwire (built) and planned layers.
-* [tools.md](docs/tools.md): the model's tools, and writing your own in Lua behind the harness.
+* [tools.md](docs/tools.md): the model's tools, and writing your own, in Lua or any language, behind the harness.
 * [settings.md](docs/settings.md) — the settings file: model providers (local and remote), styles, instruction files.
 * [sessions.md](docs/sessions.md): the session file format, every record type, homes, forks and `--fork-at`, `maic sessions import` (claude.ai exports, Claude Code transcripts), `redact`, `export`.
 * [llamacpp.md](docs/llamacpp.md): llama.cpp, the local server: every sampler (XTC, DRY, top-n-sigma), logit bias, grammars, the models directory and `maic vendor model`.
@@ -129,7 +129,7 @@ MAIC/
 ├── harness/    maic-lock (root-owned tripwire helper) + its installer
 ├── services/   one JSON file per service MAIC runs (llamacpp, comfyui)
 ├── vendor/     pinned submodules (llama.cpp, ComfyUI), MAIC's own ComfyUI nodes (comfyui-maic-*), install scripts, manifest.json. See docs/vendor.md
-├── tools/      examples of user-defined Lua tools (docs/tools.md); the polyglot runtimes are planned
+├── tools/      examples of user-defined tools, Lua and script (docs/tools.md), and the ComfyUI helpers
 ├── server/     maic-server: sessions over HTTP with server-sent events, the phone web client. See docs/remote.md
 └── docs/
 ```

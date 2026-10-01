@@ -50,4 +50,26 @@ setup_ok = s.returncode == 2 and "plan (each a yes/no in a terminal)" in s.stdou
 print(("ok" if setup_ok else "FAIL") + ": setup off a terminal, exit %d" % s.returncode)
 if not setup_ok:
     print(s.stdout[-2000:], s.stderr[-2000:])
-sys.exit(0 if ok and setup_ok else 1)
+
+# `maic tools check` over the shipped script tool examples, a scaffolded tool and a broken manifest.
+import shutil
+examples = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "examples")
+tools = os.path.join(home, ".maic", "tools")
+for name in ("word_count", "json_pick"):
+    shutil.copytree(os.path.join(examples, name), os.path.join(tools, name))
+r = subprocess.run([MAIC, "tools", "check"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+check_ok = r.returncode == 0 and "ok    " in r.stdout and "word_count (python)" in r.stdout and "json_pick (sh)" in r.stdout and "2 manifests, 0 problems" in r.stdout
+print(("ok" if check_ok else "FAIL") + ": maic tools check on the examples, exit %d" % r.returncode + ("" if check_ok else "\n" + r.stdout.strip()))
+r = subprocess.run([MAIC, "tools", "new", "greet", "--lang", "sh"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+new_ok = r.returncode == 0 and os.path.isfile(os.path.join(tools, "greet", "tool.json")) and os.path.isfile(os.path.join(tools, "greet", "main.sh"))
+print(("ok" if new_ok else "FAIL") + ": maic tools new scaffolds a tool, exit %d" % r.returncode + ("" if new_ok else "\n" + r.stdout.strip()[:200]))
+os.makedirs(os.path.join(tools, "needs_net"))
+with open(os.path.join(tools, "needs_net", "tool.json"), "w") as f:
+    f.write('{"name": "needs_net", "description": "x", "run": ["sh", "-c", "true"], "network": true}')
+r = subprocess.run([MAIC, "tools", "check"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+bad_ok = r.returncode == 1 and "FAIL  " in r.stdout and "per-tool network grants are not implemented yet" in r.stdout and "4 manifests, 1 problem" in r.stdout
+print(("ok" if bad_ok else "FAIL") + ": maic tools check reports a manifest asking for the network, exit %d" % r.returncode + ("" if bad_ok else "\n" + r.stdout.strip()))
+r = subprocess.run([MAIC, "tools"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+list_ok = r.returncode == 0 and "word_count  (python)" in r.stdout and "reads **; writes nothing; timeout 10 s" in r.stdout and "tool skipped" in r.stdout and "maic-panel-check" in r.stdout
+print(("ok" if list_ok else "FAIL") + ": maic tools lists script tools with language and declared reads/writes" + ("" if list_ok else "\n" + r.stdout.strip()))
+sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok else 1)

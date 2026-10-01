@@ -6,6 +6,7 @@
 #include "maic/llm.hpp"
 #include "maic/lua_tools.hpp"
 #include "maic/profile.hpp"
+#include "maic/script_tools.hpp"
 #include "maic/session.hpp"
 
 #include <atomic>
@@ -223,8 +224,10 @@ public:
     // The model's current plan, replaced whole by every todo call; cleared with the conversation.
     const std::vector<TodoItem>& todo() const { return todo_; }
 
-    // User-defined Lua tools, loaded once at construction (docs/tools.md), and the files that were skipped.
+    // User-defined tools, loaded once at construction (docs/tools.md): Lua files, then script tools from manifests,
+    // and the files that were skipped.
     const std::vector<LuaTool>& tools() const { return tools_; }
+    const std::vector<ScriptTool>& script_tools() const { return script_tools_; }
     const std::vector<std::string>& tool_notices() const { return tool_notices_; }
 
 private:
@@ -236,6 +239,7 @@ private:
     Decision authorise(const Action& action, const std::string& tool, const std::string& summary, const std::string& preview,
                        Origin origin, AgentEvents& events, nlohmann::json& record);
     const LuaTool* find_tool(const std::string& name) const;
+    const ScriptTool* find_script_tool(const std::string& name) const;
     std::string system_prompt() const;
     std::string instructions_text() const;
     std::string user_tools_text() const;
@@ -274,8 +278,9 @@ private:
     bool warned_bad_patterns_ = false;
     std::vector<TodoItem> todo_;
     std::vector<LuaTool> tools_;
+    std::vector<ScriptTool> script_tools_;
     std::vector<std::string> tool_notices_;
-    nlohmann::json schemas_;  // the built-ins, then the Lua tools
+    nlohmann::json schemas_;  // the built-ins, then the Lua tools, then the script tools
     std::vector<std::string> instruction_names_ = {"MAIC.md", "AGENTS.md"};
     std::set<std::string> attached_instructions_;
     std::string last_call_;

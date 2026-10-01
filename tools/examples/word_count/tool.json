@@ -1,0 +1,17 @@
+{
+  "name": "word_count",
+  "description": "Counts the lines, words and characters of a text file in the workspace. Use it instead of wc in run_shell.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": { "type": "string", "description": "File to count, relative to the workspace" }
+    },
+    "required": ["path"],
+    "additionalProperties": false
+  },
+  "run": ["python3", "main.py"],
+  "timeout_s": 10,
+  "network": false,
+  "reads": ["**"],
+  "writes": []
+}

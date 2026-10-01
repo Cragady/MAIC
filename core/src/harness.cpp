@@ -364,6 +364,7 @@ bool helper_read_only(const std::string& command) {
     if (prog == "maic-storyboard") return sub.empty() || sub == "status" || sub == "plan" || sub == "check" || sub == "--help" || sub == "-h";
     if (prog == "maic-workflow-edit") return sub == "inspect" || sub == "--help" || sub == "-h";
     if (prog == "maic-danbooru-tags") return sub == "check" || sub == "search" || sub == "show" || sub == "--help" || sub == "-h" || sub.empty();
+    if (prog == "maic-panel-check") return true;  // it only reads the workflow and the local tag file
     if (prog == "maic") return sub == "path" || sub == "status" || sub == "artifacts" || sub == "sessions" || sub == "help" || sub == "vendor" || sub == "doctor" || sub == "tools";
     return false;
 }

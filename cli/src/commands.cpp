@@ -110,7 +110,7 @@ const std::vector<Topic>& topics() {
         {"settings", {"config", "styles", "style", "settings.lua", "settings.json"}, "the settings file",
          "*settings*\n"
          "Lua files returning a table (JSON works too). Layered: ~/.config/maic/settings.lua, then `.maic/settings.lua` and `.maic/settings.local.lua` in each directory from under $HOME down to the workspace (nearest wins; settings.lua is for the project, settings.local.lua is personal). A file is code: `os.getenv`, `maic.hostname`, `maic.home` for per-machine choices. Keys: model, mode, think, markdown, mouse, record, compact_at, sessions_home (auto/general/project/name), models_dir, leader, instruction_files, providers, style. `maic settings init` writes the global one, `:init` scaffolds a project's, `:settings` shows what is in effect. See docs/settings.md."},
-        {"tools", {"tool", "lua-tools", "glob", "question", "todo-tool", "user-tools"}, "the model's tools, and writing your own in Lua",
+        {"tools", {"tool", "lua-tools", "script-tools", "manifest", "glob", "question", "todo-tool", "user-tools"}, "the model's tools, and writing your own in Lua or any language",
          "*tools*\n"
          "Built in: `read_file` (`grep` for only the matching lines), `list_dir` (`depth` for a tree), `glob` (files by name pattern), `search_files` (grep -E), `write_file`, `edit_file`, "
          "`multi_edit` (several replacements in one file, all or none), `apply_patch` (a unified diff, all or none), `move_file`, `copy_file`, `delete_file`, `make_dir`, `run_shell` (bubblewrap sandbox), "
@@ -121,7 +121,13 @@ const std::vector<Topic>& topics() {
          "Each call runs in its own LuaJIT state with only the base, string, table, math and bit libraries: no io, os, require or load. Inside, `maic.read(path)`, `maic.write(path, text)`, "
          "`maic.list(path)`, `maic.search(pattern, path)` and `maic.shell(cmd, opts)` each go through the harness exactly as the built-in tool would (policy, your approval, the sandbox); a denial "
          "is a Lua error carrying the reason, so the tool fails and the model sees why. `maic.json_encode` / `maic.json_decode` convert. A tool is stopped after 60 s or on Ctrl-C, and its output is capped at 64 KB. "
-         "A file that fails to load is skipped with a notice. `maic tools` lists them outside a session. Format and a complete example: docs/tools.md and tools/examples/word-count.lua."},
+         "A file that fails to load is skipped with a notice. `maic tools` lists them outside a session. Format and a complete example: docs/tools.md and tools/examples/word-count.lua.\n\n"
+         "**Script tools** are a directory each, `.maic/tools/<name>/` or `~/.config/maic/tools/<name>/`, holding `tool.json` and the script: `name` (snake_case, not a built-in), `description`, `parameters` (a JSON schema), "
+         "`run` (argv: `[\"python3\", \"main.py\"]`, `[\"sh\", \"main.sh\"]`, `[\"perl\", \"main.pl\"]`, `[\"node\", \"main.js\"]`, `[\"deno\", \"run\", \"main.ts\"]`, `[\"./tool\"]` for a Go binary, `[\"wasmtime\", \"tool.wasm\"]`; the program must be on PATH, a file named in the tool's directory is passed by its absolute path), "
+         "`timeout_s` (default 60), `network` (false; true is refused: per-tool network grants are not implemented yet), `reads` and `writes` (globs over the workspace). MAIC checks the model's arguments against the schema, judges every declared read and write through the harness "
+         "before the script starts (a write glob outside the workspace is refused; the mode decides what is asked), then runs the script in the same bubblewrap sandbox as run_shell with the arguments as JSON on stdin, the workspace writable only when `writes` is non-empty, "
+         "no network, killed at the timeout. stdout is the result (capped like command output); a non-zero exit fails the call with stderr attached. `maic tools` lists them with language and declared reads/writes, `maic tools check` validates every manifest, "
+         "`maic tools new NAME --lang python|sh|perl|node` scaffolds one. Examples: tools/examples/word_count (python3) and tools/examples/json_pick (sh with jq)."},
         {"delegate", {"subagent", "subagents", "scout", "builder", "orchestrator"}, "subagents: the delegate tool, what a child may do, where its transcript goes",
          "*delegate* *subagents*\n"
          "The model's `delegate` tool hands one task to a subagent: a second agent in the same workspace, on the same model unless the profile names another, running under a **profile** (`:h profile`) that narrows what it may do. The parent's conversation is not shared: the task and an optional context are all the child gets, and its final answer comes back as the tool result, ending with how many steps and tokens it used. "
@@ -218,7 +224,7 @@ const std::vector<CommandInfo>& commands() {
         {"todo", {"plan"}, "", "the model's plan (the todo tool)",
          "*:todo*\nShows the list the model keeps with its `todo` tool during multi-step work: `[x]` done, `[ ]` not yet. The status strip shows `todo n/m done` while there is one; `:clear` drops it. See `:h tools`."},
         {"tools", {}, "", "the model's tools, built in and yours",
-         "*:tools* *maic tools*\nLists the built-in tools and every user-defined Lua tool with its file and description, plus files that were skipped and why. Outside a session `maic tools` does the same. Writing one: `:h tools` (the topic) and docs/tools.md."},
+         "*:tools* *maic tools*\nLists the built-in tools, MAIC's helpers, every user-defined Lua tool with its file and description, and every script tool with its language, manifest and declared reads/writes, plus files that were skipped and why. Outside a session `maic tools` does the same; `maic tools check` validates the manifests and `maic tools new NAME --lang LANG` scaffolds one. Writing one: `:h tools` (the topic) and docs/tools.md."},
         {"up", {}, "SERVICE", "start a service", "*:up*\n`:up llamacpp` starts a service MAIC manages (llamacpp, comfyui). Refused while the harness is tripped."},
         {"down", {}, "SERVICE", "stop a service MAIC started", "*:down*\n`:down llamacpp` stops it. MAIC only stops what it started."},
         {"init", {}, "", "scaffold MAIC.md and .maic/settings.lua, then draft the MAIC.md",
