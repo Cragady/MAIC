@@ -250,7 +250,10 @@ def restore(spec, backup_ts=None, ignore_live=False, dry_run=False, invocation=N
                            + "".join("  - %s\n" % r for r in live)
                            + "Close the session, or pass --ignore-live if you know it is not running.")
     chosen_lines = load(chosen)
-    current = load(path)
+    # The file being replaced may be the broken one a restore exists for: count what
+    # still parses rather than refusing to restore it.
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        current = fmt.grecords.load(fh.read())
     taken = None
     if not dry_run:
         taken = safety_backup(path)
