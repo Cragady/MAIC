@@ -4,6 +4,7 @@
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
 
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -73,6 +74,7 @@ struct GpuReport {
         bool running = false;
         std::vector<std::string> models;  // resident ("" entries never); the completion server's "current" as the folder it links
         int context = 0;                  // the completion server's --ctx-size; the others take theirs from settings
+        std::string linked;               // the completion server's linked coder ("" when none is linked)
     };
     std::vector<Server> servers;   // every llama server, in service order
     bool comfyui_running = false;
@@ -91,6 +93,22 @@ GpuReport gpu_report(const std::vector<ServiceDef>& services);
 // models and releases cached memory (its /free route); whisper cannot, and says so. `what` is "all", a llama
 // server's name, "whisper" or "comfyui".
 std::string gpu_free(const std::vector<ServiceDef>& services, const std::string& what = "all");
+
+// The completion server runs with --no-models-autoload: llama.vim asks at every pause in typing, so a coder
+// unloaded for ComfyUI or whisper would otherwise come straight back behind their backs. MAIC loads its model
+// "current" itself instead: after maic up, on maic gpu load, after a relink, and when the last service that
+// unloaded it (free_gpu_for keeps the list under the state directory) stops through MAIC.
+// `load_fim` asks the router to load "current" and waits up to `timeout` until it is loaded; on failure it
+// throws with the reason and the card's budget sentence.
+std::string load_fim(const ServiceDef& def, const std::vector<ServiceDef>& services, std::chrono::seconds timeout = std::chrono::seconds(120));
+// `maic gpu load NAME`: only llamacpp-fim waits to be asked; anything else is an error naming it.
+std::string gpu_load(const std::vector<ServiceDef>& services, const std::string& what);
+// After fim's current.gguf was relinked: a running completion server that held a coder unloads it and loads the
+// new link. "" when it is not running; a notice when it held nothing (the link waits for maic gpu load).
+std::string reload_fim(const std::vector<ServiceDef>& services);
+// After `def` stopped through MAIC: when it was the last service that had unloaded the coder, load it again.
+// Stopping llamacpp-fim itself forgets the list. Returns a notice, "" when nothing happened.
+std::string restore_gpu_after(const ServiceDef& def, const std::vector<ServiceDef>& services);
 
 // One model as a server holds it, for the budget sentence.
 struct ModelPlan {
@@ -111,7 +129,7 @@ std::string budget_sentence(const std::vector<ModelPlan>& plans, const std::file
 // The sentence for this machine: each llama server's resident model, else the one settings would send it
 // (`model` and `context` for llamacpp; `reviewer_model` on llamacpp-2, else the same model, with `context_2`),
 // the whisper server's model when one is linked (its file plus an estimate for its buffers), and the completion
-// server's model while that server runs.
+// server's model while it is loaded.
 std::string gpu_budget(const GpuReport& report, const Settings& settings, long card_total_fallback = -1);
 
 // Why a service died, from the tail of its log: a CUDA out of memory, a missing module, a port in use, and

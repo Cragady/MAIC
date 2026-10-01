@@ -5,13 +5,17 @@
 #include <nlohmann/json.hpp>
 
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <thread>
 
+#include "maic/paths.hpp"
 #include "maic/tripwire.hpp"
 #include "maic/vendor.hpp"
 
+#include <algorithm>
 #include <filesystem>
 
 namespace maic {
@@ -74,6 +78,50 @@ bool comfyui_free(const ServiceDef& def) {
     c.set_read_timeout(30);
     auto res = c.Post("/free", R"({"unload_models":true,"free_memory":true})", "application/json");
     return res && res->status == 200;
+}
+
+// One model's state on a router: "loaded", "loading", "unloaded" or "failed"; "" when the server does not answer
+// or lists no such model.
+std::string router_state(const std::string& base_url, const std::string& id) {
+    httplib::Client c(base_url);
+    c.set_connection_timeout(2);
+    c.set_read_timeout(5);
+    auto r = c.Get("/v1/models");
+    if (!r || r->status != 200) return "";
+    auto j = nlohmann::json::parse(r->body, nullptr, false);
+    if (!j.is_object()) return "";
+    for (const auto& m : j.value("data", nlohmann::json::array())) {
+        if (m.value("id", "") != id) continue;
+        auto st = m.value("status", nlohmann::json::object());
+        return st.value("failed", false) ? "failed" : st.value("value", "");
+    }
+    return "";
+}
+
+// The services that unloaded the completion server's coder while it was loaded, one per line; when the last of
+// them stops through MAIC, the coder is loaded again.
+fs::path fim_evicted_path() {
+    return state_dir() / "run" / "llamacpp-fim.evicted";
+}
+
+std::vector<std::string> fim_evictors() {
+    std::vector<std::string> out;
+    std::ifstream in(fim_evicted_path());
+    for (std::string line; std::getline(in, line);) {
+        if (!line.empty()) out.push_back(line);
+    }
+    return out;
+}
+
+void set_fim_evictors(const std::vector<std::string>& names) {
+    std::error_code ec;
+    if (names.empty()) {
+        fs::remove(fim_evicted_path(), ec);
+        return;
+    }
+    fs::create_directories(fim_evicted_path().parent_path(), ec);
+    std::ofstream out(fim_evicted_path(), std::ios::trunc);
+    for (const auto& n : names) out << n << "\n";
 }
 
 std::string first_line(const char* command) {
@@ -218,6 +266,12 @@ std::string free_gpu_for(const ServiceDef& def, const std::vector<ServiceDef>& s
     for (const auto& other : services) {
         if (!is_llama_server(other.name) || service_status(other).state != ServiceState::Running) continue;
         auto freed = unload_resident(local_url(other));
+        if (is_fim_server(other.name)) {
+            // The coder stays unloaded (no autoload); remember who owes it back.
+            auto owed = fim_evictors();
+            if ((!freed.empty() || !owed.empty()) && std::find(owed.begin(), owed.end(), def.name) == owed.end()) owed.push_back(def.name);
+            set_fim_evictors(owed);
+        }
         if (freed.empty()) continue;
         out += (out.empty() ? "unloaded " : "; ") + joined(freed) + " from " + other.name;
     }
@@ -243,9 +297,9 @@ GpuReport gpu_report(const std::vector<ServiceDef>& services) {
             for (size_t i = 0; i + 1 < def.command.size(); ++i) {
                 if (def.command[i] == "--ctx-size" || def.command[i] == "-c") s.context = std::atoi(def.command[i + 1].c_str());
             }
-            std::string linked = fim_current_id();
+            s.linked = fim_current_id();
             for (auto& m : s.models) {
-                if (m == "current" && !linked.empty()) m = linked;
+                if (m == "current" && !s.linked.empty()) m = s.linked;
             }
         }
         r.servers.push_back(s);
@@ -282,6 +336,9 @@ std::string GpuReport::text() const {
     for (const auto& s : servers) {
         out += s.name + ": ";
         if (!s.running) out += "not running\n";
+        else if (is_fim_server(s.name) && !s.models.empty()) out += joined(s.models) + " loaded (maic gpu free " + s.name + " unloads it until maic gpu load " + s.name + ")\n";
+        else if (is_fim_server(s.name) && !s.linked.empty()) out += s.linked + " unloaded (maic gpu load " + s.name + ")\n";
+        else if (is_fim_server(s.name)) out += "running, not linked (maic models install qwen2.5-coder-7b --link)\n";
         else if (s.models.empty()) out += "running, no model resident\n";
         else out += "holds " + joined(s.models) + " (maic gpu free " + s.name + " unloads; it reloads on the next request)\n";
     }
@@ -331,6 +388,75 @@ std::string gpu_free(const std::vector<ServiceDef>& services, const std::string&
     }
     if (!known) throw std::runtime_error("maic gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui]");
     return out;
+}
+
+std::string load_fim(const ServiceDef& def, const std::vector<ServiceDef>& services, std::chrono::seconds timeout) {
+    std::string id = fim_current_id();
+    if (id.empty()) throw std::runtime_error(def.name + " has no coder linked: maic models install qwen2.5-coder-7b --link (or the 3b or 1.5b)");
+    std::string url = local_url(def), why;
+    std::string state = router_state(url, "current");
+    if (state != "loaded" && state != "loading") {
+        httplib::Client c(url);
+        c.set_connection_timeout(2);
+        c.set_read_timeout(30);
+        auto r = c.Post("/models/load", nlohmann::json{{"model", "current"}}.dump(), "application/json");
+        if (!r) {
+            why = "it did not answer on port " + std::to_string(def.port);
+        } else if (r->status != 200) {
+            auto j = nlohmann::json::parse(r->body, nullptr, false);
+            why = j.is_object() && j.contains("error") && j["error"].is_object() ? j["error"].value("message", r->body) : r->body;
+        }
+    }
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (why.empty()) {
+        state = router_state(url, "current");
+        if (state == "loaded") {
+            set_fim_evictors({});
+            return def.name + ": loaded " + id;
+        }
+        if (state == "failed" || state == "unloaded") why = "it exited while loading (maic logs " + def.name + ")";
+        else if (std::chrono::steady_clock::now() >= deadline) why = "it was not loaded after " + std::to_string(timeout.count()) + " s";
+        else std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    std::string fit = gpu_budget(gpu_report(services), load_settings());
+    throw std::runtime_error(def.name + " could not load " + id + ": " + why + ". " + (fit.empty() ? "maic gpu shows who holds the card" : "On the card: " + fit) +
+                             "; a smaller coder needs less (maic models install qwen2.5-coder-3b --link)");
+}
+
+std::string gpu_load(const std::vector<ServiceDef>& services, const std::string& what) {
+    if (!is_fim_server(what)) throw std::runtime_error("maic gpu load llamacpp-fim (the other llama servers load their model on the next request)");
+    const auto* def = by_name(services, what);
+    if (!def) throw std::runtime_error("there is no " + what + " service (services/llamacpp-fim.json)");
+    if (service_status(*def).state != ServiceState::Running) return what + ": not running (maic up " + what + " starts it and loads its coder)\n";
+    return load_fim(*def, services) + "\n";
+}
+
+std::string reload_fim(const std::vector<ServiceDef>& services) {
+    const auto* def = by_name(services, "llamacpp-fim");
+    if (!def || service_status(*def).state != ServiceState::Running) return "";
+    std::string url = local_url(*def);
+    auto was = unload_resident(url);
+    if (was.empty()) return def->name + " holds no coder now; maic gpu load " + def->name + " loads the new link\n";
+    // The router unloads in the background; a load while the old one still runs is refused.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!resident_models(url).empty() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    return load_fim(*def, services) + " (the new link; the previous coder was unloaded)\n";
+}
+
+std::string restore_gpu_after(const ServiceDef& def, const std::vector<ServiceDef>& services) {
+    auto owed = fim_evictors();
+    if (is_fim_server(def.name)) {
+        set_fim_evictors({});
+        return "";
+    }
+    auto it = std::find(owed.begin(), owed.end(), def.name);
+    if (it == owed.end()) return "";
+    owed.erase(it);
+    set_fim_evictors(owed);
+    if (!owed.empty()) return "";
+    const auto* fim = by_name(services, "llamacpp-fim");
+    if (!fim || service_status(*fim).state != ServiceState::Running) return "";
+    return load_fim(*fim, services) + " again (" + def.name + " had unloaded it)";
 }
 
 namespace {
@@ -412,8 +538,8 @@ std::string gpu_budget(const GpuReport& report, const Settings& settings, long c
     std::string main_model;
     for (const auto& s : report.servers) {
         if (is_fim_server(s.name)) {
-            // Counted while it runs: it loads the linked coder on llama.vim's first request.
-            std::string id = !s.models.empty() ? s.models.front() : s.running ? fim_current_id() : "";
+            // Counted while loaded: it loads only when MAIC asks (no autoload), never on llama.vim's requests.
+            std::string id = s.models.empty() ? "" : s.models.front();
             long bytes = id.empty() ? -1 : model_footprint({id, s.context}, fim_models_root());
             if (bytes >= 0) plans.push_back({"", 0, "completion " + size_label(id) + " at " + k_tokens(s.context), bytes});
             continue;

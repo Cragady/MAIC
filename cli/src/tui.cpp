@@ -1896,7 +1896,14 @@ void App::run_command(const std::string& line) {
                     if (std::string freed = free_gpu_for(s, services()); !freed.empty()) post(Kind::Notice, freed);
                     post(Kind::Notice, "starting " + s.name + "…");
                     try {
-                        post(Kind::Notice, start_service(s) ? s.name + " is ready" : s.name + " is still starting");
+                        bool ready = start_service(s);
+                        post(Kind::Notice, ready ? s.name + " is ready" : s.name + " is still starting");
+                        if (is_fim_server(s.name) && !ready) post(Kind::Notice, "once it is up, :gpu load " + s.name + " loads its coder");
+                        try {
+                            if (is_fim_server(s.name) && ready) post(Kind::Notice, load_fim(s, services()));
+                        } catch (const std::exception& e) {
+                            post(Kind::Error, e.what());
+                        }
                     } catch (const std::exception& e) {
                         std::string why = explain_exit(s, services());
                         post(Kind::Error, std::string(e.what()) + (why.empty() ? "" : "\n" + why));
@@ -1904,6 +1911,11 @@ void App::run_command(const std::string& line) {
                 } else {
                     stop_service(s);
                     post(Kind::Notice, s.name + " stopped");
+                    try {
+                        if (std::string back = restore_gpu_after(s, services()); !back.empty()) post(Kind::Notice, back);
+                    } catch (const std::exception& e) {
+                        post(Kind::Error, e.what());
+                    }
                 }
             }
             if (!found) post(Kind::Error, "unknown service: " + arg + (arg.empty() ? " (:up NAME)" : " (see :status)"));
@@ -2211,10 +2223,13 @@ void App::run_command(const std::string& line) {
                     require_armed("free GPU memory");
                     std::string what = arg.size() > 5 ? arg.substr(5) : "all";
                     post(Kind::Notice, gpu_free(services(), what));
+                } else if (arg.rfind("load", 0) == 0) {
+                    require_armed("load a model");
+                    post(Kind::Notice, gpu_load(services(), arg.size() > 5 ? arg.substr(5) : "llamacpp-fim"));
                 } else {
                     GpuReport report = gpu_report(services());
                     std::string fit = gpu_budget(report, settings_);
-                    post(Kind::Notice, report.text() + (fit.empty() ? "" : fit + "\n") + ":gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui] releases memory without stopping anything");
+                    post(Kind::Notice, report.text() + (fit.empty() ? "" : fit + "\n") + ":gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui] releases memory without stopping anything; :gpu load llamacpp-fim brings the coder back");
                 }
             } catch (const std::exception& e) {
                 post(Kind::Error, e.what());

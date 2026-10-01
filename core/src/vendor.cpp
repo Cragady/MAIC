@@ -350,8 +350,17 @@ void vendor_use(const VendorEntry& e, const fs::path& model) {
     } else if (!is_gguf(target)) {
         throw std::runtime_error(model.string() + " is not a GGUF (no .gguf suffix and no GGUF header)");
     }
+    if (e.name == "llamacpp" && router_id(target, llamacpp_models_root()).empty() && !router_id(target, fim_models_root()).empty()) {
+        // A coder under <models_dir>/fim: it becomes llamacpp-fim's current.gguf, linked relatively like maic models install --link.
+        fs::path link = fim_model_link(), rel = target.lexically_relative(fs::weakly_canonical(fim_models_root(), ec));
+        if (fs::is_symlink(link, ec)) fs::remove(link);
+        else if (fs::exists(link, ec)) throw std::runtime_error(link.string() + " exists and is not a link; remove it first");
+        fs::create_symlink(rel, link);
+        std::cout << link.string() << " -> " << rel.string() << "\n";
+        return;
+    }
     if (e.name == "llamacpp" && router_id(target, llamacpp_models_root()).empty()) {
-        throw std::runtime_error("the server only sees GGUFs under " + llamacpp_models_root().string() + "; move or link the file there (a subdirectory named after the file when an mmproj goes with it), or maic vendor model llamacpp URL SHA256");
+        throw std::runtime_error("the server only sees GGUFs under " + llamacpp_models_root().string() + " (or, for code completion, " + fim_models_root().string() + "); move or link the file there (a subdirectory named after the file when an mmproj goes with it), or maic vendor model llamacpp URL SHA256");
     }
     fs::path link = vendor_model_link(e);
     fs::create_directories(link.parent_path());

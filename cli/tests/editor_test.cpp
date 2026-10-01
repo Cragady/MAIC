@@ -907,6 +907,8 @@ int main() {
             CompletionContext five{{"llamacpp", "llamacpp-2", "llamacpp-fim", "whisper", "comfyui"}, {"llamacpp"}};
             expect(complete_argument("gpu", "free ", five) == std::vector<std::string>{"free comfyui", "free llamacpp", "free llamacpp-2", "free llamacpp-fim", "free whisper"},
                    ":gpu free completes every server that holds the card");
+            expect(complete_argument("gpu", "lo", five) == std::vector<std::string>{"load llamacpp-fim"} && complete_argument("gpu", "lo", two_servers).empty(),
+                   ":gpu load completes the completion server, where there is one");
             expect(help_text("ctx2").find("*:ctx2*") == 0 && help_text("ctx2").find("llamacpp-2") != std::string::npos, ":h ctx2 is the side server's context page");
         }
         {

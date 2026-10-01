@@ -79,6 +79,8 @@ std::filesystem::path fim_model_link();
 std::string fim_current_id();
 // Router ids of the GGUFs under the models root, sorted.
 std::vector<std::string> llamacpp_model_ids();
+// Links `model` as the entry's current model; for llamacpp, a GGUF under <models_dir>/fim becomes llamacpp-fim's
+// current.gguf instead (the caller reloads a running completion server: reload_fim).
 void vendor_use(const VendorEntry& e, const std::filesystem::path& model);
 
 // Downloads a GGUF with curl into `into` (default: <models_dir>/llamacpp; for whisper a ggml .bin into <models_dir>/whisper),

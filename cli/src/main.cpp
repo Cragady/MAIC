@@ -113,6 +113,7 @@ void usage(std::ostream& out = std::cerr) {
                  "  logs <service> [lines]     the end of a service's log (default 40 lines; docker logs for a container)\n"
                  "  gpu [free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui]]   who holds the card (each llama server's resident model,\n"
                  "                             whisper's, ComfyUI's VRAM) and whether they fit; free unloads models without stopping anything\n"
+                 "  gpu load llamacpp-fim      load the completion server's coder (it never loads by itself; docs/models.md)\n"
                  "  path [NAME] [--copy]       every place maic knows (workspace, sessions, models, workflows, ...) or one path;\n"
                  "                             --copy puts it on the clipboard; a unique prefix is enough\n"
                  "  cd NAME [--subshell]       print a place's directory (cd \"$(maic cd NAME)\"; a file's parent); --subshell (-s)\n"
@@ -241,6 +242,15 @@ int cmd_up(const std::vector<maic::ServiceDef>& services) {
             std::cout << def.name << ": starting..." << std::flush;
             bool ready = maic::start_service(def);
             std::cout << (ready ? " ready on port " + std::to_string(def.port) : " still starting, check `maic status`") << "\n";
+            if (maic::is_fim_server(def.name) && !ready) std::cout << "once it is up, maic gpu load " << def.name << " loads its coder\n";
+            if (maic::is_fim_server(def.name) && ready) {
+                try {
+                    std::cout << maic::load_fim(def, all) << "\n";
+                } catch (const std::exception& e) {
+                    std::cerr << "maic: " << e.what() << "\n";
+                    rc = 1;
+                }
+            }
         } catch (const std::exception& e) {
             std::cout << " failed\n";
             std::cerr << "maic: " << e.what() << "\n";
@@ -257,14 +267,19 @@ int cmd_gpu(const std::vector<std::string>& args) {
         maic::GpuReport report = maic::gpu_report(services);
         std::cout << report.text();
         if (std::string fit = maic::gpu_budget(report, maic::load_settings()); !fit.empty()) std::cout << fit << "\n";
-        std::cout << "maic gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui] releases memory without stopping anything\n";
+        std::cout << "maic gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui] releases memory without stopping anything; maic gpu load llamacpp-fim brings the coder back\n";
         return 0;
     }
     if (args[0] == "free") {
         std::cout << maic::gpu_free(services, args.size() > 1 ? args[1] : "all");
         return 0;
     }
-    throw std::runtime_error("maic gpu [show | free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui]]");
+    if (args[0] == "load") {
+        maic::require_armed("load a model");
+        std::cout << maic::gpu_load(services, args.size() > 1 ? args[1] : "llamacpp-fim");
+        return 0;
+    }
+    throw std::runtime_error("maic gpu [show | free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui] | load llamacpp-fim]");
 }
 
 std::string human_bytes(uintmax_t b);
@@ -370,11 +385,13 @@ int cmd_models(const std::vector<std::string>& args) {
 }
 
 int cmd_down(const std::vector<maic::ServiceDef>& services) {
+    auto all = maic::load_services(maic::root_dir() / "services");
     int rc = 0;
     for (const auto& def : services) {
         try {
             maic::stop_service(def);
             std::cout << def.name << ": stopped\n";
+            if (std::string back = maic::restore_gpu_after(def, all); !back.empty()) std::cout << back << "\n";
         } catch (const std::exception& e) {
             std::cerr << "maic: " << e.what() << "\n";
             rc = 1;
@@ -1395,7 +1412,11 @@ int main(int argc, char** argv) {
             if (!e) throw std::runtime_error("no vendored service named " + cargs[1] + " (maic vendor)");
             if (cargs[0] == "add") maic::vendor_add(*e);
             else if (cargs[0] == "adopt" && cargs.size() == 3) maic::vendor_adopt(*e, cargs[2]);
-            else if (cargs[0] == "use" && cargs.size() == 3) maic::vendor_use(*e, cargs[2]);
+            else if (cargs[0] == "use" && cargs.size() == 3) {
+                std::string coder = maic::fim_current_id();
+                maic::vendor_use(*e, cargs[2]);
+                if (maic::fim_current_id() != coder) std::cout << maic::reload_fim(maic::load_services(maic::root_dir() / "services"));
+            }
             else if (cargs[0] == "model" && cargs.size() >= 4) {
                 std::filesystem::path into;
                 for (size_t i = 4; i + 1 < cargs.size(); ++i) {

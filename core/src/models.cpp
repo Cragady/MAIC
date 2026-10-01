@@ -287,7 +287,7 @@ void link_entry(const CatalogEntry& e, std::ostream& out) {
         else if (fs::exists(link, ec)) throw std::runtime_error(link.string() + " exists and is not a link; remove it first");
         fs::create_symlink(fs::path(e.dir) / w->name, link);
         out << link.string() << " -> " << (fs::path(e.dir) / w->name).string() << "\n";
-        out << "llamacpp-fim serves it as the model \"current\"; a resident coder is replaced after maic gpu free llamacpp-fim\n";
+        out << "llamacpp-fim serves it as the model \"current\"\n" << reload_fim(load_services(root_dir() / "services"));
         return;
     }
     auto v = find_vendor(e.root == "whisper" ? "whisper" : "llamacpp");
@@ -341,7 +341,7 @@ void install_entry(const CatalogEntry& e, const std::vector<CatalogEntry>& all, 
     }
     if (link) link_entry(e, out);
     else if (weights_of(e) && !entry_current(e)) out << "maic models install " << e.id << " --link makes it the current " << e.root << " model\n";
-    if (e.root != "whisper") out << "a running " << (e.root == "fim" ? "llamacpp-fim" : "llama server") << " lists a new folder after it restarts (maic down, then maic up)\n";
+    if (e.root == "llamacpp") out << "a running llama server lists a new folder after it restarts (maic down, then maic up)\n";
 }
 
 bool verify_entry(const CatalogEntry& e, std::ostream& out) {
