@@ -162,7 +162,14 @@ std::vector<SessionInfo> list_sessions(const std::optional<fs::path>& workspace)
             fs::rename(e.path(), sessions_home("general") / e.path().filename(), ec);
         }
     }
-    for (const auto& e : fs::recursive_directory_iterator(sessions_dir(), ec)) {
+    for (auto it = fs::recursive_directory_iterator(sessions_dir(), ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (ec) break;
+        const auto& e = *it;
+        // sessions/.backups/<id>/<stamp>.jsonl are trans-fairy-write's copies (docs/cai.md), not sessions.
+        if (e.is_directory(ec) && e.path().filename().string().rfind(".", 0) == 0) {
+            it.disable_recursion_pending();
+            continue;
+        }
         if (e.path().extension() != ".jsonl") continue;
         SessionInfo info = read_session_info(e.path());
         if (!want.empty() && info.workspace != want && info.opened_in != want) continue;

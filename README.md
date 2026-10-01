@@ -90,6 +90,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [settings.md](docs/settings.md) — the settings file: model providers (local and remote), styles, instruction files.
 * [themes.md](docs/themes.md): themes (default, gruvbox dark and light, mono), writing one, importing a neovim colorscheme, colour depth.
 * [sessions.md](docs/sessions.md): the session file format, every record type, homes, forks and `--fork-at`, `maic sessions import` (claude.ai exports, Claude Code transcripts), `redact`, `export`.
+* [cai.md](docs/cai.md): cai-tools, all of it, as `cai TOOL` and `maic cai TOOL`: trans-fairy, redact, read, fabricate and the rest, on MAIC sessions as on Claude Code transcripts; `trans-fairy-write`'s backups.
 * [llamacpp.md](docs/llamacpp.md): llama.cpp, the local server: every sampler (XTC, DRY, top-n-sigma), logit bias, grammars, the models directory and `maic vendor model`.
 * [vendor.md](docs/vendor.md): the services MAIC installs for itself (llama.cpp, ComfyUI) at pinned versions, and the artifact tree.
 * [bans.md](docs/bans.md) — string, regex and token bans, XTC, and why MAIC bans after the fact rather than by constrained decoding.
