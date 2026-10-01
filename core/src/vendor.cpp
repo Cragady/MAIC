@@ -22,8 +22,7 @@ namespace fs = std::filesystem;
 namespace {
 
 std::string link_name(const VendorEntry& e) {
-    if (e.kind == "submodule") return fs::path(e.path).filename().string();  // vendor/ComfyUI -> ComfyUI
-    return e.name;
+    return fs::path(e.path).filename().string();  // vendor/ComfyUI -> ComfyUI
 }
 
 int run(const std::string& command) {
@@ -41,17 +40,10 @@ void run_or_throw(const std::string& command, const std::string& what) {
     if (run(command) != 0) throw std::runtime_error(what + " failed");
 }
 
-std::string install_env(const VendorEntry& e) {
+std::string install_env() {
     Settings s = load_settings();
     std::string env = "MAIC_VENDOR=" + sh(vendor_dir().string()) + " MAIC_STATE=" + sh(state_dir().string()) + " MAIC_ROOT=" + sh(root_dir().string());
     if (!s.models_dir.empty()) env += " MAIC_MODELS_DIR=" + sh(s.models_dir);
-    if (e.kind == "release") {
-        auto expand = [&](std::string t) {
-            for (size_t p; (p = t.find("${VERSION}")) != std::string::npos;) t.replace(p, 10, e.version);
-            return t;
-        };
-        env += " OLLAMA_VERSION=" + sh(e.version) + " OLLAMA_URL=" + sh(expand(e.url)) + " OLLAMA_CHECKSUMS=" + sh(expand(e.checksums));
-    }
     return env;
 }
 
@@ -66,7 +58,7 @@ void run_install(const VendorEntry& e, const char* verb) {
     if (e.install.empty()) return;
     fs::path script = root_dir() / e.install;
     if (!fs::exists(script)) throw std::runtime_error("install script missing: " + script.string());
-    run_or_throw("env " + install_env(e) + " bash " + sh(script.string()) + " " + verb, e.name + " " + verb);
+    run_or_throw("env " + install_env() + " bash " + sh(script.string()) + " " + verb, e.name + " " + verb);
 }
 
 }  // namespace
@@ -80,12 +72,9 @@ std::vector<VendorEntry> load_vendor_manifest() {
         if (name == "//" || !v.is_object()) continue;
         VendorEntry e;
         e.name = name;
-        e.kind = v.value("kind", "submodule");
         e.path = v.value("path", "");
         e.url = v.value("url", "");
         e.ref = v.value("ref", "");
-        e.version = v.value("version", "");
-        e.checksums = v.value("checksums", "");
         e.install = v.value("install", "");
         e.description = v.value("description", "");
         e.patches = v.value("patches", std::vector<std::string>{});
@@ -107,7 +96,6 @@ fs::path vendor_dir() {
 }
 
 fs::path vendor_link(const VendorEntry& e) {
-    if (e.kind == "release") return vendor_dir() / e.name / "current";
     return vendor_dir() / link_name(e);
 }
 
@@ -130,7 +118,7 @@ VendorStatus vendor_status(const VendorEntry& e) {
         s.linked = true;
         s.target = link.string();
     } else {
-        s.note = e.kind == "submodule" ? "maic vendor add " + e.name + " (or adopt an existing checkout)" : "maic vendor add " + e.name + " (or adopt an existing install)";
+        s.note = "maic vendor add " + e.name + " (or adopt an existing checkout)";
         return s;
     }
     if (e.install.empty()) {
@@ -138,7 +126,7 @@ VendorStatus vendor_status(const VendorEntry& e) {
         return s;
     }
     fs::path script = root_dir() / e.install;
-    s.installed = fs::exists(script) && run("env " + install_env(e) + " bash " + sh(script.string()) + " check >/dev/null 2>&1") == 0;
+    s.installed = fs::exists(script) && run("env " + install_env() + " bash " + sh(script.string()) + " check >/dev/null 2>&1") == 0;
     if (!s.installed) s.note = "linked but not installed: maic vendor add " + e.name;
     return s;
 }
@@ -147,13 +135,10 @@ void vendor_adopt(const VendorEntry& e, const fs::path& existing) {
     std::error_code ec;
     fs::path target = fs::weakly_canonical(existing, ec);
     if (!fs::is_directory(target, ec)) throw std::runtime_error("not a directory: " + existing.string());
-    if (e.kind == "release" && !fs::exists(target / "bin" / e.name, ec)) {
-        throw std::runtime_error(target.string() + " has no bin/" + e.name + "; give the version directory (the one holding bin/)");
-    }
-    if (e.kind == "submodule" && e.name == "comfyui" && !fs::exists(target / "main.py", ec)) {
+    if (e.name == "comfyui" && !fs::exists(target / "main.py", ec)) {
         throw std::runtime_error(target.string() + " does not look like a ComfyUI checkout (no main.py)");
     }
-    if (e.kind == "submodule" && e.name == "llamacpp" && !fs::exists(target / "ggml", ec)) {
+    if (e.name == "llamacpp" && !fs::exists(target / "ggml", ec)) {
         throw std::runtime_error(target.string() + " does not look like a llama.cpp checkout (no ggml/)");
     }
     fs::path link = vendor_link(e);
@@ -174,21 +159,19 @@ void vendor_add(const VendorEntry& e) {
     }
     fs::create_directories(vendor_dir());
     std::error_code ec;
-    if (e.kind == "submodule") {
-        fs::path checkout = root_dir() / e.path;
-        std::cout << "fetching " << e.name << " " << e.ref << " into " << checkout.string() << " ...\n";
-        run_or_throw("git -C " + sh(root_dir().string()) + " submodule update --init --recursive -- " + sh(e.path), "git submodule update");
-        for (const auto& p : e.patches) {
-            fs::path patch = root_dir() / p;
-            // Already applied on an earlier run: `--reverse --check` succeeds.
-            if (run("git -C " + sh(checkout.string()) + " apply --reverse --check " + sh(patch.string()) + " >/dev/null 2>&1") == 0) continue;
-            run_or_throw("git -C " + sh(checkout.string()) + " apply " + sh(patch.string()), "applying " + p);
-            std::cout << "applied " << p << "\n";
-        }
-        fs::path link = vendor_link(e);
-        if (fs::is_symlink(link, ec)) fs::remove(link);
-        if (!fs::exists(link, ec)) fs::create_directory_symlink(checkout, link);
+    fs::path checkout = root_dir() / e.path;
+    std::cout << "fetching " << e.name << " " << e.ref << " into " << checkout.string() << " ...\n";
+    run_or_throw("git -C " + sh(root_dir().string()) + " submodule update --init --recursive -- " + sh(e.path), "git submodule update");
+    for (const auto& p : e.patches) {
+        fs::path patch = root_dir() / p;
+        // Already applied on an earlier run: `--reverse --check` succeeds.
+        if (run("git -C " + sh(checkout.string()) + " apply --reverse --check " + sh(patch.string()) + " >/dev/null 2>&1") == 0) continue;
+        run_or_throw("git -C " + sh(checkout.string()) + " apply " + sh(patch.string()), "applying " + p);
+        std::cout << "applied " << p << "\n";
     }
+    fs::path link = vendor_link(e);
+    if (fs::is_symlink(link, ec)) fs::remove(link);
+    if (!fs::exists(link, ec)) fs::create_directory_symlink(checkout, link);
     run_install(e, "install");
 }
 

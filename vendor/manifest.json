@@ -1,7 +1,6 @@
 {
-  "//": "Services MAIC can install for itself. Submodules are pinned to stable tags or commits; a release is a binary download verified against its published checksum. `maic vendor` reads this.",
+  "//": "Services MAIC can install for itself: submodules pinned to stable tags or commits. `maic vendor` reads this.",
   "comfyui": {
-    "kind": "submodule",
     "path": "vendor/ComfyUI",
     "url": "https://github.com/Comfy-Org/ComfyUI",
     "ref": "v0.38.0",
@@ -9,19 +8,10 @@
     "description": "ComfyUI in its own Python (uv, 3.13, CUDA 13 torch), API nodes and auto-launch off, models on the external drive, MAIC's llama.cpp chat nodes linked in"
   },
   "llamacpp": {
-    "kind": "submodule",
     "path": "vendor/llama.cpp",
     "url": "https://github.com/ggml-org/llama.cpp",
     "ref": "b11284",
     "install": "vendor/llamacpp.sh",
     "description": "llama.cpp built out of tree (CUDA when nvcc is present, no TLS so nothing can be downloaded), llama-server on 127.0.0.1:8081 serving the GGUF that `maic vendor use llamacpp PATH` picks"
-  },
-  "ollama": {
-    "kind": "release",
-    "version": "v0.35.0",
-    "url": "https://github.com/ollama/ollama/releases/download/${VERSION}/ollama-linux-amd64.tar.zst",
-    "checksums": "https://github.com/ollama/ollama/releases/download/${VERSION}/sha256sum.txt",
-    "install": "vendor/ollama.sh",
-    "description": "Ollama server, official Linux build, run local-only by services/ollama.json (no cloud, no remotes)"
   }
 }

@@ -590,16 +590,15 @@ int main() {
     section("vendor manifest and adopt");
     {
         auto entries = load_vendor_manifest();
-        expect(entries.size() >= 3, "the manifest lists the vendored services");
+        expect(entries.size() >= 2, "the manifest lists the vendored services");
         auto comfy = find_vendor("comfyui");
-        expect(comfy && comfy->kind == "submodule" && comfy->ref == "v0.38.0" && comfy->path == "vendor/ComfyUI", "comfyui is a submodule pinned to a release tag");
-        auto oll = find_vendor("ollama");
-        expect(oll && oll->kind == "release" && !oll->checksums.empty() && oll->url.find("${VERSION}") != std::string::npos, "ollama is a checksum-verified release");
+        expect(comfy && comfy->ref == "v0.38.0" && comfy->path == "vendor/ComfyUI", "comfyui is a submodule pinned to a release tag");
+        expect(!find_vendor("ollama"), "ollama is no longer vendored");
         auto lc = find_vendor("llamacpp");
         auto release_tag = [](const std::string& ref) {  // b<number>, llama.cpp's release tags
             return ref.size() > 1 && ref[0] == 'b' && ref.find_first_not_of("0123456789", 1) == std::string::npos;
         };
-        expect(lc && lc->kind == "submodule" && lc->path == "vendor/llama.cpp" && release_tag(lc->ref) && lc->install == "vendor/llamacpp.sh",
+        expect(lc && lc->path == "vendor/llama.cpp" && release_tag(lc->ref) && lc->install == "vendor/llamacpp.sh",
                "llamacpp is a submodule pinned to a release tag: " + (lc ? lc->ref : std::string("missing")));
         bool loopback = false;
         for (const auto& p : default_providers()) {
@@ -609,27 +608,26 @@ int main() {
         // Adopt into a throwaway state directory, never the real one.
         fs::path state = ws / "xdg-state";
         setenv("XDG_STATE_HOME", state.c_str(), 1);
-        fs::path fake_ollama = ws / "fake-ollama" / "v9";
-        write_file(fake_ollama / "bin" / "ollama", "#!/bin/sh\necho ollama version is 9\n");
-        fs::permissions(fake_ollama / "bin" / "ollama", fs::perms::owner_all);
-        VendorEntry e = *oll;
+        fs::path fake_lc = ws / "fake-llama.cpp";
+        write_file(fake_lc / "ggml" / "CMakeLists.txt", "# ggml\n");
+        VendorEntry e = *lc;
         e.install.clear();  // no script: adopt only links
-        vendor_adopt(e, fake_ollama);
+        vendor_adopt(e, fake_lc);
         auto st = vendor_status(e);
-        expect(st.linked && st.installed && fs::path(st.target) == fs::weakly_canonical(fake_ollama), "adopt links current at the given install: " + st.target);
-        expect(fs::is_symlink(vendor_link(e)) && vendor_link(e).parent_path() == state / "maic" / "vendor" / "ollama", "the link lives under <state>/vendor/ollama/current");
+        expect(st.linked && st.installed && fs::path(st.target) == fs::weakly_canonical(fake_lc), "adopt links the checkout the user gave: " + st.target);
+        expect(fs::is_symlink(vendor_link(e)) && vendor_link(e) == state / "maic" / "vendor" / "llama.cpp", "the link lives at <state>/vendor/llama.cpp");
         threw = false;
         try {
-            vendor_adopt(e, ws / "fake-ollama");  // the parent, without bin/ollama
+            vendor_adopt(e, ws);  // no ggml/
         } catch (const std::exception&) {
             threw = true;
         }
-        expect(threw, "adopting a directory without bin/ollama is refused");
+        expect(threw, "adopting a directory that is not a llama.cpp checkout is refused");
         VendorEntry c = *comfy;
         c.install.clear();
         threw = false;
         try {
-            vendor_adopt(c, ws / "fake-ollama");
+            vendor_adopt(c, fake_lc);
         } catch (const std::exception&) {
             threw = true;
         }
@@ -669,7 +667,7 @@ int main() {
         expect(vendor_status(l).model.rfind("sha256-blob", 0) == 0, "vendor status shows the model id");
         threw = false;
         try {
-            vendor_use(e, root / "tiny.gguf");
+            vendor_use(c, root / "tiny.gguf");
         } catch (const std::exception&) {
             threw = true;
         }
@@ -831,9 +829,9 @@ int main() {
         expect(expand_vars("${MAIC_CONTEXT}") == "4096", "${MAIC_CONTEXT} follows the environment main() sets");
         unsetenv("MAIC_CONTEXT");
         expect(expand_vars("${MAIC_CONTEXT}") == "16384", "and defaults to 16384");
-        write_file(ws / "proj" / ".maic" / "settings.lua", "return { harness = 'dumb', reviewer_model = 'ollama/qwen3.5:4b', dumb_auto_ok = true }");
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { harness = 'dumb', reviewer_model = 'llamacpp/Qwen3.5-4B-Q4_K_M', dumb_auto_ok = true }");
         Settings sh = load_settings(ws / "proj");
-        expect(sh.harness == "dumb" && sh.reviewer_model == "ollama/qwen3.5:4b" && sh.dumb_auto_ok, "harness, reviewer_model and dumb_auto_ok load from settings");
+        expect(sh.harness == "dumb" && sh.reviewer_model == "llamacpp/Qwen3.5-4B-Q4_K_M" && sh.dumb_auto_ok, "harness, reviewer_model and dumb_auto_ok load from settings");
         {
             // vendor model: a checked download from a local server, never linked on a hash mismatch.
             httplib::Server srv;
@@ -883,7 +881,7 @@ int main() {
             expect(llamacpp_model_ids() == std::vector<std::string>{"Big-Q4", "Small-Q4", "tiny"}, "ids: subdirectory name or file stem, mmproj and other files ignored");
             vendor_use(*ll, ws / "mroot" / "llamacpp" / "Big-Q4" / "Big-Q4.gguf");
             expect(llamacpp_current_id() == "Big-Q4" && resolve_model_alias("llamacpp/current") == "llamacpp/Big-Q4", "current resolves to the linked file's router id");
-            expect(resolve_model_alias("ollama/x") == "ollama/x", "other models pass through");
+            expect(resolve_model_alias("anthropic/x") == "anthropic/x", "other models pass through");
             write_file(ws / "elsewhere.gguf", "GGUF....");
             bool outside = false;
             try {
@@ -976,7 +974,7 @@ int main() {
         lc.port = closed_port();
         expect(free_gpu_for(comfy, {lc}).empty(), "nothing to free when llamacpp is not running");
         ServiceDef plain;
-        plain.name = "ollama";
+        plain.name = "plain";
         expect(free_gpu_for(plain, {lc}).empty(), "a service that does not need the GPU frees nothing");
         auto defs = load_services(root_dir() / "services");
         bool marked = false;

@@ -1,6 +1,5 @@
 Third-party source is vendored as SUBMODULES pinned to a commit or tag, never a
-branch head, or as a RELEASE download verified against the checksum the project
-published with it. vendor/manifest.json is the ledger `maic vendor` reads.
+branch head. vendor/manifest.json is the ledger `maic vendor` reads.
 
     vendor/ComfyUI
         https://github.com/Comfy-Org/ComfyUI
@@ -38,12 +37,6 @@ published with it. vendor/manifest.json is the ledger `maic vendor` reads.
         <state>/vendor/llamacpp/current-model.gguf (`maic vendor use llamacpp PATH`).
         Tags are b<build number>; bump to the newest one, never a branch head.
 
-    ollama  (release, not a submodule)
-        https://github.com/ollama/ollama/releases  v0.35.0
-        vendor/ollama.sh downloads the linux amd64 archive, fetches the
-        release's sha256sum.txt, and refuses to unpack on a mismatch. Ollama is
-        a Go + CUDA build; the official binary is the reproducible artefact.
-
 WHY SUBMODULES AND NOT COPIES. A copy can be incomplete without anyone noticing
 (a .gitignore written from a guess once dropped thirteen real source files from a
 LuaJIT copy elsewhere; only a fresh clone would have shown it). A submodule's
@@ -52,8 +45,7 @@ is a hash rather than a copy someone might edit.
 
 WHERE THE RUNNING COPIES LIVE. Not here. ~/.local/state/maic/vendor/<Name> is a
 symlink to a checkout (this repo's, or one the user adopted with
-`maic vendor adopt`), and ~/.local/state/maic/vendor/ollama/current points at a
-release directory. Services and `maic artifacts` go through those links, so a
+`maic vendor adopt`). Services and `maic artifacts` go through those links, so a
 user with an existing install keeps it and nothing moves.
 
 CHECKING
