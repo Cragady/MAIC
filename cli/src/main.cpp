@@ -32,6 +32,8 @@
 #include <ctime>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -112,6 +114,18 @@ void usage(std::ostream& out = std::cerr) {
                  "                             a claude.ai export or a Claude Code transcript as a new session (prints its id)\n"
                  "  sessions redact ID|FILE [--in-place | -o FILE]   a copy with credential material replaced by [REDACTED:kind]\n"
                  "                             (default: ./<id>.redacted.jsonl, outside the sessions tree)\n"
+                 "  sessions read ID [--range A-B] [--tools]   the conversation as plain text (user turns A to B), for piping\n"
+                 "  sessions state ID          one screen: turns, tool calls per tool, files touched, tokens and budget,\n"
+                 "                             compactions, forks and subagents\n"
+                 "  sessions time ID [--slowest N]   how long each turn took, and the slowest tool calls\n"
+                 "  sessions name ID [--model M]   title it with the title model (title_model in settings), as the auto-title does\n"
+                 "  sessions inject ID (--text T | --file F|-) [--at N] [--role user|system] [--home general|project|NAME]\n"
+                 "                             a new session: ID's first N records (a pointer) plus one note, marked as injected\n"
+                 "  sessions graft ID --onto TARGET [--at N] [--home ...]   a new session: TARGET's first N records (a pointer),\n"
+                 "                             then ID's conversation copied in after a note saying where it came from\n"
+                 "  sessions compose ID --from N [--root FILE|-] [--home ...]   a new session: ID's records from N on, copied,\n"
+                 "                             after an optional root text and a note that the earlier part is missing\n"
+                 "                             (none of these three changes an existing transcript)\n"
                  "  settings init [--json]|path  write the global settings file (Lua; --json for JSON), or show where it goes\n"
                  "  init                       scaffold this project: MAIC.md and .maic/settings.lua (transcripts then\n"
                  "                             go under sessions/projects/); :init in a session also drafts the MAIC.md\n"
@@ -505,6 +519,221 @@ int cmd_sessions_redact(const std::vector<std::string>& args) {
     }
     if (report.malformed) std::cout << " (" << report.malformed << " malformed lines redacted as text)";
     std::cout << "\nwrote " << dest.string() << "\n";
+    return 0;
+}
+
+maic::SessionInfo need_session(const std::string& id) {
+    auto s = maic::find_session(id);
+    if (!s) throw std::runtime_error("no session matching '" + id + "' (maic sessions)");
+    return *s;
+}
+
+// The ID first, then options: a `valued` one takes the next argument, a `bare` one stands alone. Anything else
+// is the usage error.
+std::pair<std::string, std::map<std::string, std::string>> session_args(const std::vector<std::string>& args, const std::vector<std::string>& valued,
+                                                                        const std::vector<std::string>& bare, const std::string& use) {
+    std::string id;
+    std::map<std::string, std::string> opts;
+    for (size_t i = 1; i < args.size(); ++i) {
+        if (std::find(valued.begin(), valued.end(), args[i]) != valued.end()) {
+            if (i + 1 >= args.size()) throw std::runtime_error(args[i] + " needs a value");
+            const std::string& name = args[i];
+            opts[name] = args[++i];
+        } else if (std::find(bare.begin(), bare.end(), args[i]) != bare.end()) opts[args[i]] = "yes";
+        else if (id.empty() && args[i][0] != '-') id = args[i];
+        else throw std::runtime_error(use);
+    }
+    if (id.empty()) throw std::runtime_error(use);
+    return {id, opts};
+}
+
+// --home general|project|NAME; project is the session's own workspace.
+std::filesystem::path home_for(std::map<std::string, std::string>& opts, const maic::SessionInfo& s) {
+    std::string home = opts.count("--home") ? opts["--home"] : "general";
+    return home == "project" ? maic::sessions_home("project:" + s.workspace) : maic::sessions_home(home);
+}
+
+// A text argument given as a file, or - for stdin.
+std::string text_from(const std::string& file) {
+    if (file == "-") return std::string(std::istreambuf_iterator<char>(std::cin), {});
+    std::ifstream in(file);
+    if (!in) throw std::runtime_error("can't read " + file);
+    return std::string(std::istreambuf_iterator<char>(in), {});
+}
+
+int created(const std::filesystem::path& path, const std::string& what) {
+    std::cerr << what << "\n" << path.string() << "\n";
+    std::cout << path.stem().string() << "\n";
+    return 0;
+}
+
+// maic sessions compose ID --from N [--root FILE|-] [--home general|project|NAME]
+int cmd_sessions_compose(const std::vector<std::string>& args) {
+    std::string use = "maic sessions compose ID --from N [--root FILE|-] [--home general|project|NAME]";
+    auto [id, o] = session_args(args, {"--from", "--root", "--home"}, {}, use);
+    if (!o.count("--from")) throw std::runtime_error(use);
+    auto s = need_session(id);
+    std::string root = o.count("--root") ? text_from(o["--root"]) : "";
+    size_t from = std::stoul(o["--from"]);
+    auto path = maic::compose_session(s.path, from, root, home_for(o, s));
+    return created(path, "composed: records " + std::to_string(from) + " to " + std::to_string(maic::count_records(s.path)) + " of " + s.id +
+                             (root.empty() ? "" : " after the root") + "; " + s.id + " is unchanged");
+}
+
+// maic sessions graft ID --onto TARGET [--at N] [--home general|project|NAME]
+int cmd_sessions_graft(const std::vector<std::string>& args) {
+    std::string use = "maic sessions graft ID --onto TARGET [--at N] [--home general|project|NAME]";
+    auto [id, o] = session_args(args, {"--onto", "--at", "--home"}, {}, use);
+    if (!o.count("--onto")) throw std::runtime_error(use);
+    auto s = need_session(id);
+    auto target = need_session(o["--onto"]);
+    size_t at = o.count("--at") ? std::stoul(o["--at"]) : maic::count_records(target.path);
+    auto path = maic::graft_session(target.path, at, s.path, home_for(o, target));
+    return created(path, "grafted " + s.id + " after record " + std::to_string(at) + " of " + target.id + "; both are unchanged");
+}
+
+// maic sessions inject ID (--text TEXT | --file FILE|-) [--at N] [--role user|system] [--home general|project|NAME]
+int cmd_sessions_inject(const std::vector<std::string>& args) {
+    std::string use = "maic sessions inject ID (--text TEXT | --file FILE|-) [--at N] [--role user|system] [--home general|project|NAME]";
+    auto [id, o] = session_args(args, {"--text", "--file", "--at", "--role", "--home"}, {}, use);
+    if (o.count("--text") == o.count("--file")) throw std::runtime_error(use);
+    auto s = need_session(id);
+    std::string text = o.count("--text") ? o["--text"] : text_from(o["--file"]);
+    size_t at = o.count("--at") ? std::stoul(o["--at"]) : maic::count_records(s.path);
+    std::string role = o.count("--role") ? o["--role"] : "user";
+    auto path = maic::inject_note(s.path, at, role, text, home_for(o, s));
+    return created(path, "injected a " + role + " note after record " + std::to_string(at) + " of " + s.id + "; " + s.id + " is unchanged");
+}
+
+std::string hms(long seconds) {
+    char buf[32];
+    if (seconds >= 3600) snprintf(buf, sizeof buf, "%ldh%02ldm", seconds / 3600, seconds % 3600 / 60);
+    else if (seconds >= 60) snprintf(buf, sizeof buf, "%ldm%02lds", seconds / 60, seconds % 60);
+    else snprintf(buf, sizeof buf, "%lds", seconds);
+    return buf;
+}
+
+// maic sessions state ID
+int cmd_sessions_state(const std::vector<std::string>& args) {
+    auto [id, o] = session_args(args, {}, {}, "maic sessions state ID");
+    auto s = need_session(id);
+    maic::SessionStats st = maic::session_stats(s.path);
+    std::cout << (s.title.empty() ? (s.first_prompt.empty() ? "(no prompt yet)" : s.first_prompt) : s.title) << "\n"
+              << s.id << "  [" << s.home << "]  " << s.kind << ", started " << s.started << " in " << s.workspace;
+    if (s.opened_in != s.workspace) std::cout << ", last opened in " << s.opened_in;
+    if (s.opens > 1) std::cout << " (" << s.opens << " opens)";
+    if (!s.model.empty()) std::cout << ", model " << s.model;
+    if (maic::session_running(s)) std::cout << "  RUNNING";
+    if (maic::session_lock_reason(s)) std::cout << "  LOCKED";
+    std::cout << "\n";
+    if (!s.parent.empty()) std::cout << "resumed from " << s.parent << " (first " << s.parent_records << " records)\n";
+    if (!s.delegated_from.empty()) std::cout << "subagent of " << s.delegated_from << " under profile " << s.profile << "\n";
+    std::cout << st.records << " records in this file, " << st.first_time << " to " << st.last_time << "\n"
+              << st.turns << " turn" << (st.turns == 1 ? "" : "s") << ", " << st.replies << " repl" << (st.replies == 1 ? "y" : "ies") << ", "
+              << st.tool_calls << " tool call" << (st.tool_calls == 1 ? "" : "s");
+    if (st.tool_errors) std::cout << " (" << st.tool_errors << " failed)";
+    std::vector<std::pair<std::string, size_t>> tools(st.tools.begin(), st.tools.end());
+    std::sort(tools.begin(), tools.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    for (size_t i = 0; i < tools.size(); ++i) std::cout << (i ? ", " : ": ") << tools[i].first << " " << tools[i].second;
+    std::cout << "\n";
+    if (!st.files.empty()) {
+        std::cout << "files touched (" << st.files.size() << "):\n";
+        for (const auto& f : st.files) std::cout << "  " << f << "\n";
+    }
+    std::cout << "tokens: " << st.input_tokens << " in, " << st.output_tokens << " out";
+    if (long budget = maic::load_settings().budget_tokens; budget > 0) {
+        long used = st.input_tokens + st.output_tokens;
+        std::cout << "; budget " << used << " of " << budget << (used < budget ? ", " + std::to_string(budget - used) + " left" : ", spent");
+    }
+    if (st.context) std::cout << "; context window " << st.context;
+    std::cout << "\n";
+    if (!st.compactions.empty() || st.clears || st.undos) {
+        std::cout << "compactions:";
+        for (const auto& [stage, n] : st.compactions) std::cout << " " << stage << " " << n;
+        if (st.compactions.empty()) std::cout << " none";
+        if (st.clears) std::cout << "; clears " << st.clears;
+        if (st.undos) std::cout << "; undos " << st.undos;
+        std::cout << "\n";
+    }
+    std::string forks, children;
+    for (const auto& other : maic::list_sessions()) {
+        if (other.parent == s.id) forks += (forks.empty() ? "" : ", ") + other.id + " (at " + std::to_string(other.parent_records) + ")";
+        if (other.delegated_from == s.id) children += (children.empty() ? "" : ", ") + other.id + " (" + other.profile + ")";
+    }
+    if (!forks.empty()) std::cout << "forks: " << forks << "\n";
+    if (!children.empty()) std::cout << "subagents: " << children << "\n";
+    return 0;
+}
+
+// maic sessions time ID [--slowest N]
+int cmd_sessions_time(const std::vector<std::string>& args) {
+    auto [id, o] = session_args(args, {"--slowest"}, {}, "maic sessions time ID [--slowest N]");
+    auto s = need_session(id);
+    maic::SessionTiming t = maic::session_timing(s.path);
+    if (t.turns.empty()) {
+        std::cout << "no turns yet\n";
+        return 0;
+    }
+    long total = 0;
+    std::cout << "turn      time  tools  prompt\n";
+    for (size_t i = 0; i < t.turns.size(); ++i) {
+        const auto& turn = t.turns[i];
+        total += turn.seconds;
+        printf("%4zu  %8s  %5zu  %s\n", i + 1, hms(turn.seconds).c_str(), turn.tool_calls, turn.prompt.c_str());
+    }
+    std::cout << "total " << hms(total) << " over " << t.turns.size() << " turn" << (t.turns.size() == 1 ? "" : "s") << ", " << t.tools.size() << " tool call"
+              << (t.tools.size() == 1 ? "" : "s") << "\n";
+    std::sort(t.tools.begin(), t.tools.end(), [](const auto& a, const auto& b) { return a.seconds > b.seconds; });
+    size_t show = std::min(t.tools.size(), o.count("--slowest") ? std::stoul(o["--slowest"]) : size_t(5));
+    if (show && t.tools[0].seconds > 0) std::cout << "slowest tool calls:\n";
+    for (size_t i = 0; i < show && t.tools[i].seconds > 0; ++i) {
+        printf("  %8s  %s%s\n", hms(t.tools[i].seconds).c_str(), t.tools[i].summary.c_str(), t.tools[i].ok ? "" : "  (failed)");
+    }
+    return 0;
+}
+
+// maic sessions name ID [--model MODEL]
+int cmd_sessions_name(const std::vector<std::string>& args) {
+    auto [id, o] = session_args(args, {"--model"}, {}, "maic sessions name ID [--model MODEL]");
+    auto s = need_session(id);
+    if (maic::session_running(s)) throw std::runtime_error(s.id + " is running: :rename inside it, or wait until it ends");
+    maic::Settings settings = maic::load_settings();
+    std::string model = o.count("--model") ? o["--model"] : settings.title_model;
+    if (model.empty()) throw std::runtime_error("no title_model in settings; pass --model MODEL (maic help settings)");
+    auto [provider, name] = maic::resolve_model(settings.providers, model);
+    bool local_session = s.model.empty() || !maic::resolve_model(settings.providers, s.model).first.remote();
+    if (provider.remote() && local_session) {
+        throw std::runtime_error("a remote title model is never used for a local session (" + s.id + " ran on " + (s.model.empty() ? "no named model" : s.model) + ")");
+    }
+    std::string first;
+    for (const auto& t : maic::load_session(s.path).transcript) {
+        if (t.type != "user") continue;
+        first = t.text;
+        break;
+    }
+    if (first.empty()) throw std::runtime_error(s.id + " has no user turn to name it by");
+    std::string title = maic::generate_title(provider, name, first);
+    if (title.empty()) throw std::runtime_error(model + " gave no usable title");
+    maic::SessionLog::reopen(s.path).write("title", {{"text", title}});
+    std::cout << title << "\n";
+    return 0;
+}
+
+// maic sessions read ID [--range A-B] [--tools]
+int cmd_sessions_read(const std::vector<std::string>& args) {
+    auto [id, o] = session_args(args, {"--range"}, {"--tools"}, "maic sessions read ID [--range A-B] [--tools]");
+    auto s = need_session(id);
+    size_t from = 0, to = 0;
+    if (o.count("--range")) {
+        std::string r = o["--range"];
+        size_t dash = r.find('-');
+        if (dash == std::string::npos) from = to = std::stoul(r);
+        else {
+            if (dash) from = std::stoul(r.substr(0, dash));
+            if (dash + 1 < r.size()) to = std::stoul(r.substr(dash + 1));
+        }
+    }
+    std::cout << maic::render_text(maic::load_session(s.path), from, to, o.count("--tools"));
     return 0;
 }
 
@@ -933,6 +1162,13 @@ int main(int argc, char** argv) {
         if (cmd == "sessions") {
             if (!cargs.empty() && cargs[0] == "import") return cmd_sessions_import(cargs);
             if (!cargs.empty() && cargs[0] == "redact") return cmd_sessions_redact(cargs);
+            if (!cargs.empty() && cargs[0] == "compose") return cmd_sessions_compose(cargs);
+            if (!cargs.empty() && cargs[0] == "graft") return cmd_sessions_graft(cargs);
+            if (!cargs.empty() && cargs[0] == "inject") return cmd_sessions_inject(cargs);
+            if (!cargs.empty() && cargs[0] == "state") return cmd_sessions_state(cargs);
+            if (!cargs.empty() && cargs[0] == "time") return cmd_sessions_time(cargs);
+            if (!cargs.empty() && cargs[0] == "name") return cmd_sessions_name(cargs);
+            if (!cargs.empty() && cargs[0] == "read") return cmd_sessions_read(cargs);
             if (cargs.size() >= 2 && (cargs[0] == "rehome" || cargs[0] == "path" || cargs[0] == "export")) {
                 auto s = maic::find_session(cargs[1]);
                 if (!s) throw std::runtime_error("no session matching '" + cargs[1] + "' (maic sessions)");

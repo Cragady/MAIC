@@ -67,6 +67,10 @@ std::vector<Provider> default_providers();
 // provider name (model names can contain '/') goes to the first provider whole.
 std::pair<Provider, std::string> resolve_model(const std::vector<Provider>& providers, const std::string& model);
 
+// A one-line title for a conversation that starts with `first_prompt`, from `model` on `provider`; "" when the
+// reply was not usable as one. The auto-title after a first turn and `maic sessions name` share it.
+std::string generate_title(const Provider& provider, const std::string& model, const std::string& first_prompt);
+
 struct ChatOptions {
     std::string model;  // without the provider prefix
     bool think = false;
