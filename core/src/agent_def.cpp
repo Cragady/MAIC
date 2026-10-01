@@ -58,7 +58,7 @@ std::vector<AgentDef> default_agent_defs() {
     AgentDef plan{"plan", Mode::Plan, Role::All, "Plan mode. Disallows all edit tools: reads inside the workspace only, for a review of a change against what was asked."};
     plan.budget_tokens = 50000;
     plan.read_outside = false;
-    plan.tools = {"read_file", "list_dir", "glob", "search_files"};
+    plan.tools = {"read_file", "list_dir", "glob", "search_files", "diagnostics"};
     plan.reviewer = false;
     out.push_back(plan);
     out.push_back({"general", Mode::Edit, Role::Subagent, "General-purpose agent for researching complex questions and executing multi-step tasks; edits inside the workspace."});
@@ -66,7 +66,7 @@ std::vector<AgentDef> default_agent_defs() {
                      "Fast agent specialized for exploring codebases: finds files by pattern, searches code for keywords and answers questions about "
                      "the codebase with reads and read-only commands. Ask for a short report with paths and line numbers."};
     explore.budget_tokens = 50000;
-    explore.tools = {"read_file", "list_dir", "glob", "search_files", "run_shell"};
+    explore.tools = {"read_file", "list_dir", "glob", "search_files", "run_shell", "diagnostics"};
     explore.reviewer = false;
     out.push_back(explore);
     return out;

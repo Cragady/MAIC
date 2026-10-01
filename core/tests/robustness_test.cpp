@@ -1076,7 +1076,7 @@ int main() {
                "permission lists load and add to the default allow entries");
         const AgentDef* explore = find_agent_def(sp.agents, "explore");
         const AgentDef* docs = find_agent_def(sp.agents, "docs");
-        expect(explore && explore->name == "explore" && explore->budget_tokens == 20000 && explore->max_steps == 10 && explore->mode == Mode::AutoRead && explore->tools.size() == 5 && !explore->reviewer,
+        expect(explore && explore->name == "explore" && explore->budget_tokens == 20000 && explore->max_steps == 10 && explore->mode == Mode::AutoRead && explore->tools.size() == 6 && !explore->reviewer,
                "the older key and name (profiles, scout) narrow the built-in explore in place, keeping what the file does not mention");
         expect(docs && sp.agents.size() == 5 && docs->mode == Mode::Edit && docs->role == Role::Subagent && docs->description == "Writes the docs" && docs->write_paths == std::vector<std::string>{"docs/**"} &&
                    docs->tools.size() == 2 && docs->model == "llamacpp/Qwen3.5-4B-Q4_K_M" && !docs->reviewer && docs->read_outside,

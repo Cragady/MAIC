@@ -354,6 +354,20 @@ int main() {
             expect(offers(model.requests[2], "diagnostics"), "with a host the model is offered diagnostics");
             expect(r.asked.empty() && !r.results.empty() && r.results[0].find("src.c:2:13: error: expected ;") != std::string::npos,
                    "a read in the workspace runs in plan mode without asking and returns the line: " + (r.results.empty() ? "" : r.results[0]));
+            // The built-in plan and explore agents list their tools, and diagnostics is on both lists.
+            for (const char* name : {"plan", "explore"}) {
+                FakeModel sub_model;
+                sub_model.args = {{"path", "src.c"}};
+                Agent sub(ws, "fake/m");
+                sub.providers = {sub_model.provider()};
+                sub.set_agent_def(*find_agent_def(default_agent_defs(), name));
+                sub.set_nvim_host(host);
+                Recorder sr;
+                sub.submit("check it", Origin::Local, sr, no);
+                expect(!sub_model.requests.empty() && offers(sub_model.requests[0], "diagnostics") && sr.asked.empty() && !sr.results.empty() &&
+                           sr.results[0].find("src.c:2:13: error: expected ;") != std::string::npos,
+                       std::string("the ") + name + " agent is offered diagnostics while a host is connected and runs it as a read");
+            }
 
             model.args = {{"path", "/etc/hostname"}};
             r = Recorder{};
