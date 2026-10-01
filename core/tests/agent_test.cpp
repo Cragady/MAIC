@@ -49,6 +49,7 @@ struct FakeServer {
     int fail_left = 0;      // answer this many requests with fail_status / fail_body first
     int fail_status = 400;
     std::string fail_body;
+    std::function<bool(const json&)> fail_when;  // when set: also fail every request it is true for
 
     static std::string text_of(const json& content) {
         if (content.is_string()) return content;
@@ -82,8 +83,8 @@ struct FakeServer {
             for (const auto& m : body["messages"]) {
                 if (m["role"] == "user") last = text_of(m["content"]);
             }
-            if (fail_left > 0) {
-                --fail_left;
+            if (fail_left > 0 || (fail_when && fail_when(body))) {
+                if (fail_left > 0) --fail_left;
                 res.status = fail_status;
                 res.set_content(fail_body, "application/json");
                 return;
@@ -568,14 +569,14 @@ int main() {
         FakeServer fake;
         fake.usage_input = 10;
         std::ofstream(ws / "facts.txt") << "the river is wide\n";
-        auto delegate_call = [](const char* profile, const char* task) {
-            return json{{"name", "delegate"}, {"arguments", {{"profile", profile}, {"task", task}, {"context", "look in facts.txt"}}}};
+        auto task_call = [](const char* agent, const char* task) {
+            return json{{"name", "task"}, {"arguments", {{"agent", agent}, {"prompt", task}, {"context", "look in facts.txt"}}}};
         };
-        // A scout: the parent delegates once; the child reads, is refused a write tool, a writing command, and answers.
+        // explore: the parent hands over one job; the child reads, is refused a write tool, a writing command, and answers.
         {
             int parent_calls = 0, child_calls = 0;
             fake.tool_call_for = [&](const json& b) -> json {
-                if (!from_child(b)) return ++parent_calls == 1 ? delegate_call("scout", "find the river line") : json();
+                if (!from_child(b)) return ++parent_calls == 1 ? task_call("explore", "find the river line") : json();
                 switch (++child_calls) {
                     case 1: return json{{"name", "read_file"}, {"arguments", {{"path", "facts.txt"}}}};
                     case 2: return json{{"name", "write_file"}, {"arguments", {{"path", "out.txt"}, {"content", "x"}}}};
@@ -591,43 +592,44 @@ int main() {
             agent.set_log(&log);
             Recorder r;
             agent.submit("what does facts.txt say about the river?", Origin::Local, r, no_cancel);
-            expect(has_call(r, "delegate scout: find the river line") && has_call(r, "↳ scout: read_file facts.txt") && has_call(r, "↳ scout: write_file out.txt"),
-                   "the child's tool calls reach the parent's front end with the profile prefix");
-            expect(has_result(r, "the river is wide") && r.asked.empty(), "the scout read the file in auto-read without asking");
-            expect(has_result(r, "DENIED: the scout profile has no write_file tool") && has_result(r, "DENIED: the scout profile runs only read-only commands") && !fs::exists(ws / "out.txt"),
-                   "a write tool and a writing command are denied by the profile, with its name");
+            expect(has_call(r, "task explore: find the river line") && has_call(r, "↳ explore: read_file facts.txt") && has_call(r, "↳ explore: write_file out.txt"),
+                   "the child's tool calls reach the parent's front end with the agent prefix");
+            expect(has_call(r, "↳ explore on test (the session's model)"), "the task call shows the child's model and why");
+            expect(has_result(r, "the river is wide") && r.asked.empty(), "explore read the file in auto-read without asking");
+            expect(has_result(r, "DENIED: the explore agent has no write_file tool") && has_result(r, "DENIED: the explore agent runs only read-only commands") && !fs::exists(ws / "out.txt"),
+                   "a write tool and a writing command are denied by the agent, with its name");
             std::string final = r.results.empty() ? "" : r.results.back();
             expect(final.find("echo: find the river line") == 0 && final.find("Context from the parent agent:\nlook in facts.txt") != std::string::npos && final.find("\n\n(the subagent used 4 steps, 15 tokens)") != std::string::npos,
                    "the child's final answer is the tool result, task and context included, ending with its usage: " + final);
             expect(agent.usage().total_input == 20 && agent.usage().total_output == 10, "the child's tokens count against the parent's totals");
             json child_req, parent_req;
             for (const auto& q : fake.requests) (from_child(q) ? child_req : parent_req) = q;
-            expect(offers_tool(parent_req, "delegate") && parent_req["messages"][0]["content"].get<std::string>().find("delegate hands one task to a subagent") != std::string::npos,
-                   "the parent is offered delegate and briefed on when to use it");
-            expect(!offers_tool(child_req, "delegate") && !offers_tool(child_req, "question") && !offers_tool(child_req, "todo") && !offers_tool(child_req, "write_file") && offers_tool(child_req, "read_file"),
-                   "the child is offered only the profile's tools, never delegate, question or todo");
+            expect(offers_tool(parent_req, "task") && parent_req["messages"][0]["content"].get<std::string>().find("task hands one job to a subagent") != std::string::npos,
+                   "the parent is offered task and briefed on when to use it");
+            expect(!offers_tool(child_req, "task") && !offers_tool(child_req, "question") && !offers_tool(child_req, "todo") && !offers_tool(child_req, "write_file") && offers_tool(child_req, "read_file"),
+                   "the child is offered only the agent's tools, never task, question or todo");
             std::string child_sys = child_req["messages"][0]["content"];
-            expect(child_sys.find("under the scout profile, which is read-only") != std::string::npos && child_sys.find("Mode: auto-read") != std::string::npos && child_sys.find("question and todo are not available") != std::string::npos,
-                   "the child's briefing names its profile, its mode and what it lacks");
+            expect(child_sys.find("as the explore agent, which is read-only") != std::string::npos && child_sys.find("Mode: auto-read") != std::string::npos && child_sys.find("question, todo and task are not available") != std::string::npos,
+                   "the child's briefing names its agent, its mode and what it lacks");
             bool listed = false;
             for (const auto& s : list_sessions(ws)) {
-                if (s.kind == "sub" && s.delegated_from == log.path().stem().string() && s.profile == "scout") {
+                if (s.kind == "sub" && s.delegated_from == log.path().stem().string() && s.agent == "explore") {
                     listed = true;
                     expect(s.path.parent_path() == log.path().parent_path() && s.first_prompt.find("find the river line") == 0, "the child's transcript sits in the parent's home with the task as its first prompt");
                     fs::remove(s.path);
                 }
             }
-            expect(listed, "the child has a transcript of kind sub naming its parent and profile");
+            expect(listed, "the child has a transcript of kind sub naming its parent and agent");
             fs::remove(log.path());
         }
-        // A child cannot delegate, and the parent in manual mode gives a child in an auto profile no more than manual.
+        // A child cannot run task, and the parent in manual mode gives a child in an auto agent no more than manual.
         {
             int parent_calls = 0, child_calls = 0;
             size_t requests_before = fake.requests.size();
             fake.tool_call_for = [&](const json& b) -> json {
-                if (!from_child(b)) return ++parent_calls == 1 ? delegate_call("fast", "run echo") : json();
+                if (!from_child(b)) return ++parent_calls == 1 ? task_call("fast", "run echo") : json();
                 switch (++child_calls) {
-                    case 1: return delegate_call("scout", "go deeper");
+                    case 1: return task_call("explore", "go deeper");
                     case 2: return json{{"name", "run_shell"}, {"arguments", {{"command", "echo hi"}}}};
                     default: return json();
                 }
@@ -636,66 +638,79 @@ int main() {
             agent.providers = {fake.provider()};
             agent.mode = Mode::Manual;
             agent.review_with_model = false;
-            agent.profiles.push_back({"fast", Mode::Auto});
+            agent.agents.push_back({"fast", Mode::Auto});
+            agent.agents.push_back({"boss", Mode::Auto, Role::Primary});
             Recorder r;
             r.reply = {Approval::Yes, ""};
             agent.submit("echo something", Origin::Local, r, no_cancel);
-            expect(has_result(r, "DENIED: a subagent has no delegate tool"), "a child's delegate call is refused: one level only");
+            expect(has_result(r, "DENIED: a subagent has no task tool"), "a child's task call is refused: one level only");
             int children = 0;
             for (size_t i = requests_before; i < fake.requests.size(); ++i) children += from_child(fake.requests[i]);
             expect(children == 3, "no grandchild was started (" + std::to_string(children) + " child requests)");
-            expect(r.asked.size() == 1 && r.asked[0].summary == "fast: $ echo hi" && r.asked[0].tool == "run_shell", "the auto profile's command is asked through the parent, under a manual session, with the profile named");
+            expect(r.asked.size() == 1 && r.asked[0].summary == "fast: $ echo hi" && r.asked[0].tool == "run_shell", "the auto agent's command is asked through the parent, under a manual session, with the agent named");
             expect(has_result(r, "hi"), "and runs once approved");
             json child_req;
             for (const auto& q : fake.requests) if (from_child(q)) child_req = q;
             expect(child_req["messages"][0]["content"].get<std::string>().find("Mode: manual") != std::string::npos, "the child was told its mode is manual");
             bool unknown = false;
             parent_calls = 0;
-            fake.tool_call_for = [&](const json& b) -> json { return from_child(b) || ++parent_calls > 1 ? json() : delegate_call("nobody", "x"); };
+            fake.tool_call_for = [&](const json& b) -> json { return from_child(b) || ++parent_calls > 1 ? json() : task_call("nobody", "x"); };
             Recorder r2;
             agent.submit("again", Origin::Local, r2, no_cancel);
-            for (const auto& t : r2.results) unknown = unknown || t.find("error: no profile named 'nobody'. The profiles are: orchestrator, builder, scout, reviewer, fast.") == 0;
-            expect(unknown, "an unknown profile is an error naming the profiles");
+            for (const auto& t : r2.results) unknown = unknown || t.find("error: no agent named 'nobody'. The agents task can run are: plan, general, explore, fast.") == 0;
+            expect(unknown, "an unknown agent is an error naming the ones task can run");
+            bool primary = false;
+            parent_calls = 0;
+            fake.tool_call_for = [&](const json& b) -> json { return from_child(b) || ++parent_calls > 1 ? json() : task_call("build", "x"); };
+            Recorder r3;
+            agent.submit("again", Origin::Local, r3, no_cancel);
+            for (const auto& t : r3.results) primary = primary || t.find("error: the build agent is a primary agent, which task cannot run. The agents task can run are: plan, general, explore, fast.") == 0;
+            expect(primary, "a primary agent is refused, with the eligible ones listed");
+            parent_calls = 0;
+            fake.tool_call_for = [&](const json& b) -> json { return from_child(b) || ++parent_calls > 1 ? json() : task_call("scout", "look"); };
+            Recorder r4;
+            agent.submit("again", Origin::Local, r4, no_cancel);
+            expect(has_call(r4, "↳ explore on test") && !r4.results.empty() && r4.results.back().find("echo: look") == 0, "an older name (scout) runs the agent it became (explore)");
         }
-        // Budgets stop a runaway child: steps from the profile, tokens from the profile.
+        // Budgets stop a runaway child: steps from the agent, tokens from the agent.
         {
             int parent_calls = 0, child_calls = 0;
             fake.tool_call_for = [&](const json& b) -> json {
-                if (!from_child(b)) return ++parent_calls == 1 ? delegate_call("tiny", "read everything") : json();
+                if (!from_child(b)) return ++parent_calls == 1 ? task_call("tiny", "read everything") : json();
                 return json{{"name", "read_file"}, {"arguments", {{"path", "facts.txt"}, {"offset", ++child_calls}}}};
             };
             Agent agent(ws, "test");
             agent.providers = {fake.provider()};
             agent.mode = Mode::Auto;
             agent.review_with_model = false;
-            Profile tiny{"tiny", Mode::AutoRead};
+            AgentDef tiny{"tiny", Mode::AutoRead};
             tiny.max_steps = 3;
             tiny.tools = {"read_file"};
-            agent.profiles.push_back(tiny);
+            agent.agents.push_back(tiny);
             Recorder r;
             agent.submit("go", Origin::Local, r, no_cancel);
-            expect(child_calls == 3 && has_notice(r, "tiny: stopped after 3 steps (the profile's limit)"), "the child stops at the profile's step limit, and the user is told (" + std::to_string(child_calls) + " calls)");
+            expect(child_calls == 3 && has_notice(r, "tiny: stopped after 3 steps (the agent's limit)"), "the child stops at the agent's step limit, and the user is told (" + std::to_string(child_calls) + " calls)");
             expect(!r.results.empty() && r.results.back() == "the subagent gave no final answer (the subagent used 3 steps, 0 tokens)", "the result says it never answered: " + r.results.back());
             child_calls = 0;
             fake.usage_on_calls = true;
-            Profile spend{"spend", Mode::AutoRead};
+            AgentDef spend{"spend", Mode::AutoRead};
             spend.budget_tokens = 20;
             spend.tools = {"read_file"};
-            agent.profiles.push_back(spend);
+            agent.agents.push_back(spend);
             fake.tool_call_for = [&](const json& b) -> json {
-                if (!from_child(b)) return parent_calls++ == 2 ? delegate_call("spend", "read everything") : json();
+                if (!from_child(b)) return parent_calls++ == 2 ? task_call("spend", "read everything") : json();
                 return json{{"name", "read_file"}, {"arguments", {{"path", "facts.txt"}, {"offset", ++child_calls}}}};
             };
             Recorder r2;
             agent.submit("again", Origin::Local, r2, no_cancel);
-            expect(child_calls == 2 && has_notice(r2, "spend: token budget reached (30 of 20)"), "the child stops at the profile's token budget (" + std::to_string(child_calls) + " calls)");
+            expect(child_calls == 2 && has_notice(r2, "spend: token budget reached (30 of 20)"), "the child stops at the agent's token budget (" + std::to_string(child_calls) + " calls)");
             fake.usage_on_calls = false;
         }
         // A tripped tripwire stops the child, and the parent is told.
         {
             int parent_calls = 0, child_calls = 0;
             fake.tool_call_for = [&](const json& b) -> json {
-                if (!from_child(b)) return ++parent_calls == 1 ? delegate_call("scout", "list things") : json();
+                if (!from_child(b)) return ++parent_calls == 1 ? task_call("explore", "list things") : json();
                 return ++child_calls == 1 ? json{{"name", "run_shell"}, {"arguments", {{"command", "sudo ls"}}}} : json{{"name", "read_file"}, {"arguments", {{"path", "facts.txt"}}}};
             };
             Agent agent(ws, "test");
@@ -704,7 +719,7 @@ int main() {
             agent.review_with_model = false;
             Recorder r;
             agent.submit("look around", Origin::Local, r, no_cancel);
-            expect(tripwire_state() && child_calls == 1 && has_notice(r, "scout: the harness is tripped; the subagent stops here"), "the child's trip ends its turn at once (" + std::to_string(child_calls) + " child calls)");
+            expect(tripwire_state() && child_calls == 1 && has_notice(r, "explore: the harness is tripped; the subagent stops here"), "the child's trip ends its turn at once (" + std::to_string(child_calls) + " child calls)");
             expect(!r.results.empty() && r.results.back().find("BLOCKED and the harness was tripped during the subagent's work") == 0, "the parent's result says so: " + r.results.back());
             fs::remove(std::getenv("MAIC_TRIPWIRE_FILE"));
             expect(!tripwire_state(), "the test lock is cleared again");
@@ -712,6 +727,203 @@ int main() {
         fake.tool_call_for = nullptr;
         fake.usage_input = 0;
         fs::remove(ws / "facts.txt");
+    }
+
+    section("subagent models and usage limits");
+    {
+        // Two providers: fa serves Fable (limited), fb serves Opus, Sonnet and Haiku. The presets are the
+        // shipped ones with their models pointed at the fakes.
+        FakeServer fa, fb;
+        Provider pa = fa.provider(), pb = fb.provider();
+        pa.name = "fa";
+        pb.name = "fb";
+        std::vector<ModelPreset> presets = default_presets();
+        for (auto& p : presets) {
+            if (p.name == "fable-5.1") p.model = "fa/fable";
+            if (p.name == "opus-5.5") p.model = "fb/opus";
+            if (p.name == "sonnet-5") p.model = "fb/sonnet";
+            if (p.name == "haiku-4.5") p.model = "fb/haiku";
+        }
+        const std::string fable_body = R"({"type":"error","error":{"type":"rate_limit_error","message":"You've reached your Fable limit. Run /usage-credits to continue or switch models with /model."}})";
+        auto task_call = [](const char* agent, const char* prompt, const char* model = nullptr) {
+            json args = {{"agent", agent}, {"prompt", prompt}};
+            if (model) args["model"] = model;
+            return json{{"name", "task"}, {"arguments", args}};
+        };
+        auto models_of = [](const FakeServer& f, bool child) {
+            std::vector<std::string> out;
+            for (const auto& q : f.requests) if (from_child(q) == child) out.push_back(q.value("model", ""));
+            return out;
+        };
+        auto records = [](const fs::path& file, const std::string& type) {
+            std::vector<json> out;
+            std::ifstream in(file);
+            for (std::string l; std::getline(in, l);) {
+                json j = json::parse(l, nullptr, false);
+                if (j.is_object() && j.value("type", "") == type) out.push_back(j);
+            }
+            return out;
+        };
+        auto make = [&](const std::string& model) {
+            auto a = std::make_unique<Agent>(ws, model);
+            a->providers = {pa, pb};
+            a->presets = presets;
+            a->mode = Mode::Auto;
+            a->review_with_model = false;
+            return a;
+        };
+        auto reset = [&] {
+            fa.requests.clear();
+            fb.requests.clear();
+            fa.fail_when = fb.fail_when = nullptr;
+        };
+
+        // A parent on the limited Fable hands its subagent to Opus, and is told so.
+        {
+            reset();
+            int parent_calls = 0;
+            fa.tool_call_for = [&](const json& b) -> json { return !from_child(b) && ++parent_calls == 1 ? task_call("explore", "map the repo") : json(); };
+            fb.tool_call_for = nullptr;
+            SessionLog log("agent-test");
+            auto agent = make("fa/fable");
+            agent->set_log(&log);
+            Recorder r;
+            agent->submit("look around", Origin::Local, r, no_cancel);
+            expect(models_of(fb, true) == std::vector<std::string>{"opus"} && models_of(fa, true).empty(), "the child of a limited Fable runs on Opus, on its own provider");
+            expect(has_call(r, "↳ explore on opus-5.5 (fable-5.1 is limited)"), "the task line shows the child's model and why");
+            std::string desc;
+            for (const auto& t : fa.requests[0]["tools"]) if (t["function"]["name"] == "task") desc = t["function"]["description"];
+            expect(desc.find("opus-5.5 (tier 40; the default: fable-5.1 is limited), fable-5.1 (tier 50, limited), sonnet-5 (tier 30), haiku-4.5 (tier 20)") != std::string::npos &&
+                       desc.find("lower tier for wide reads") != std::string::npos && desc.find("explore (Fast agent") != std::string::npos,
+                   "the task tool lists the presets with tiers, the default first and why, and the agents: " + desc);
+            std::string brief = fa.requests[0]["messages"][0]["content"];
+            expect(brief.find("task's model: Its `model` may name one of these presets, the default first: opus-5.5") != std::string::npos, "and the briefing says the same");
+            auto tools = records(log.path(), "tool");
+            expect(!tools.empty() && tools[0].value("agent", "") == "explore" && tools[0].value("model", "") == "fb/opus" && tools[0].value("model_reason", "") == "fable-5.1 is limited",
+                   "the parent's tool record has the agent, the model and the reason");
+            fs::path child = tools.empty() ? fs::path() : fs::path(tools[0].value("child", ""));
+            auto start = records(child, "start");
+            expect(!start.empty() && start[0].value("agent", "") == "explore" && start[0].value("model", "") == "fb/opus" && start[0].value("model_reason", "") == "fable-5.1 is limited",
+                   "and the child's start record");
+            fs::remove(child);
+            fs::remove(log.path());
+        }
+        // The model argument: anything on the list, higher or lower; anything else is an error listing them.
+        {
+            reset();
+            int parent_calls = 0;
+            const char* want = "haiku-4.5";
+            fa.tool_call_for = [&](const json& b) -> json { return !from_child(b) && ++parent_calls == 1 ? task_call("explore", "count files", want) : json(); };
+            auto agent = make("fa/fable");
+            Recorder r;
+            agent->submit("count", Origin::Local, r, no_cancel);
+            expect(models_of(fb, true) == std::vector<std::string>{"haiku"} && has_call(r, "↳ explore on haiku-4.5 (asked for by the parent)"), "the parent may ask for a lower tier");
+            reset();
+            parent_calls = 0;
+            want = "qwen-4b";
+            Recorder r2;
+            agent->submit("count again", Origin::Local, r2, no_cancel);
+            expect(has_result(r2, "error: 'qwen-4b' is not a model this session may hand a task to. The allowed models are: fable-5.1 (tier 50, limited), opus-5.5 (tier 40), sonnet-5 (tier 30), haiku-4.5 (tier 20).") &&
+                       models_of(fa, true).empty() && models_of(fb, true).empty(),
+                   "a model off the list is an error naming the allowed ones with their tiers, and no child runs");
+            // An agent's model is the user's pin: the argument does not move it.
+            reset();
+            parent_calls = 0;
+            want = "haiku-4.5";
+            AgentDef pinned{"pinned", Mode::AutoRead, Role::Subagent};
+            pinned.model = "fb/sonnet";
+            agent->agents.push_back(pinned);
+            fa.tool_call_for = [&](const json& b) -> json { return !from_child(b) && ++parent_calls == 1 ? task_call("pinned", "count", want) : json(); };
+            Recorder r3;
+            agent->submit("pinned", Origin::Local, r3, no_cancel);
+            expect(models_of(fb, true) == std::vector<std::string>{"sonnet"} && has_call(r3, "↳ pinned on sonnet-5 (the pinned agent's model; the model argument does not override it)"),
+                   "an agent's model wins over the call's model argument");
+        }
+        // A usage limit mid-task: the child continues on the preset's on_limit model, once.
+        {
+            reset();
+            int parent_calls = 0, child_calls = 0;
+            std::ofstream(ws / "limits.txt") << "a line\n";
+            fa.tool_call_for = [&](const json& b) -> json {
+                if (from_child(b)) return ++child_calls == 1 ? json{{"name", "read_file"}, {"arguments", {{"path", "limits.txt"}}}} : json();
+                return ++parent_calls == 1 ? task_call("explore", "read limits.txt", "fable-5.1") : json();
+            };
+            fb.tool_call_for = nullptr;
+            // Fable answers the child's first call, then is out: every later child request gets the 429.
+            fa.fail_when = [&](const json& b) { return from_child(b) && child_calls >= 1; };
+            fa.fail_status = 429;
+            fa.fail_body = fable_body;
+            SessionLog log("agent-test");
+            auto agent = make("fa/fable");
+            agent->set_log(&log);
+            Recorder r;
+            agent->submit("read it", Origin::Local, r, no_cancel);
+            expect(has_notice(r, "explore: fable-5.1 hit its usage limit; continuing on opus-5.5"), "the user is told the child switched");
+            json after;
+            for (const auto& q : fb.requests) if (from_child(q)) after = q;
+            bool kept = false;
+            for (const auto& m : after.value("messages", json::array())) kept = kept || (m["role"] == "tool" && FakeServer::text_of(m["content"]).find("a line") != std::string::npos);
+            expect(models_of(fb, true) == std::vector<std::string>{"opus"} && kept, "Opus continues the same turn with the conversation so far (the read's result included)");
+            expect(!r.results.empty() && r.results.back().find("echo: ") == 0, "and the parent gets the child's answer: " + (r.results.empty() ? "" : r.results.back()));
+            auto tools = records(log.path(), "tool");
+            fs::path child = tools.empty() ? fs::path() : fs::path(tools.back().value("child", ""));
+            auto sw = records(child, "model");
+            expect(sw.size() == 1 && sw[0].value("from", "") == "fable-5.1" && sw[0].value("to", "") == "opus-5.5" && sw[0].value("model", "") == "fb/opus" && sw[0].value("reason", "") == "usage limit",
+                   "the child's transcript records the switch");
+            fs::remove(child);
+            fs::remove(log.path());
+
+            // A second limit ends the child, naming both.
+            reset();
+            parent_calls = child_calls = 0;
+            fa.fail_when = [&](const json& b) { return from_child(b) && child_calls >= 1; };
+            fb.fail_when = [&](const json& b) { return from_child(b); };
+            fb.fail_status = 429;
+            fb.fail_body = R"({"type":"error","error":{"type":"rate_limit_error","message":"You have reached your specified workspace API usage limits."}})";
+            Recorder r2;
+            agent->submit("read it again", Origin::Local, r2, no_cancel);
+            expect(!r2.results.empty() && r2.results.back().find("error: the subagent failed: opus-5.5 hit its usage limit after fable-5.1 did; the subagent stops here") == 0,
+                   "a second limit ends the child with an error naming both models: " + (r2.results.empty() ? "" : r2.results.back()));
+            fs::remove(ws / "limits.txt");
+        }
+        // The session itself never switches: the limit is its error.
+        {
+            reset();
+            fa.tool_call_for = nullptr;
+            fa.fail_when = [](const json&) { return true; };
+            auto agent = make("fa/fable");
+            Recorder r;
+            std::string err;
+            try {
+                agent->submit("hello", Origin::Local, r, no_cancel);
+            } catch (const ApiError& e) {
+                err = is_usage_limit(e) ? "limit" : e.what();
+            }
+            expect(err == "limit" && agent->model == "fa/fable" && fa.requests.size() == 1, "a usage limit on the session's own model is thrown once, unretried, and the model stays");
+        }
+        // A subagent's reviewer follows the child's own model.
+        {
+            reset();
+            int parent_calls = 0, child_calls = 0;
+            auto is_review = [](const json& b) { return b["messages"][0]["content"].get<std::string>().rfind("You review one action", 0) == 0; };
+            fb.tool_call_for = [&](const json& b) -> json {
+                if (is_review(b)) return json();
+                if (from_child(b)) return ++child_calls == 1 ? json{{"name", "write_file"}, {"arguments", {{"path", "child-review.txt"}, {"content", "x"}}}} : json();
+                return ++parent_calls == 1 ? task_call("general", "write the file", "haiku-4.5") : json();
+            };
+            fb.reply = [&](const json& b) { return is_review(b) ? std::string("ALLOW: fine") : std::string(); };
+            auto agent = make("fb/opus");
+            agent->review_with_model = true;
+            Recorder r;
+            agent->submit("write it", Origin::Local, r, no_cancel);
+            std::string review_model;
+            for (const auto& q : fb.requests) if (is_review(q)) review_model = q.value("model", "");
+            expect(fs::exists(ws / "child-review.txt") && review_model == "haiku", "a child on Haiku reviews on Haiku (" + review_model + ")");
+            fs::remove(ws / "child-review.txt");
+            fb.reply = nullptr;
+        }
+        fa.tool_call_for = fb.tool_call_for = nullptr;
+        reset();
     }
 
     section("lua tools through the agent");
@@ -1206,6 +1418,135 @@ int main() {
         expect(fs::exists(ws / "side2.txt") && side_reviews == 1 && reviews() == main_reviews && side_model == "Qwen3.5-4B-Q4_K_M",
                "with llamacpp-2 answering, the review goes there with the same model name and the main server is left alone");
         fake.reply = nullptr;
+    }
+
+    section("the reviewer's model, its limits and its spend");
+    {
+        // fa serves the session's model (Opus), fb the cheaper ones the reviewer may use.
+        FakeServer fa, fb;
+        Provider pa = fa.provider(), pb = fb.provider();
+        pa.name = "fa";
+        pb.name = "fb";
+        std::vector<ModelPreset> presets = default_presets();
+        for (auto& p : presets) {
+            if (p.name == "fable-5.1") p.model = "fa/fable";
+            if (p.name == "opus-5.5") p.model = "fa/opus";
+            if (p.name == "sonnet-5") p.model = "fb/sonnet";
+            if (p.name == "haiku-4.5") p.model = "fb/haiku";
+        }
+        auto is_review = [](const json& b) { return b["messages"][0]["content"].get<std::string>().rfind("You review one action", 0) == 0; };
+        auto review_models = [&](const FakeServer& f) {
+            std::vector<std::string> out;
+            for (const auto& q : f.requests) if (is_review(q)) out.push_back(q.value("model", ""));
+            return out;
+        };
+        int n = 0;
+        // One agent per case; each turn writes one file, so each turn wants one review.
+        auto make = [&](const std::string& small, const std::string& pin = "") {
+            auto a = std::make_unique<Agent>(ws, "fa/opus");
+            a->providers = {pa, pb};
+            a->presets = presets;
+            a->mode = Mode::Auto;
+            a->small_model = small;
+            a->reviewer_model = pin;
+            return a;
+        };
+        auto write_turn = [&](Agent& a, Recorder& r) {
+            std::string path = "rv" + std::to_string(++n) + ".txt";
+            fa.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", path}, {"content", "x"}}}};
+            fa.calls_left = 1;
+            a.submit("please write " + path, Origin::Local, r, no_cancel);
+            return fs::exists(ws / path);
+        };
+        auto allow = [&](const json& b) { return is_review(b) ? std::string("ALLOW: fine") : std::string(); };
+        fa.reply = fb.reply = allow;
+        auto reset = [&] {
+            fa.requests.clear();
+            fb.requests.clear();
+            fb.fail_when = nullptr;
+        };
+
+        {
+            reset();
+            SessionLog log("agent-test");
+            auto a = make("haiku-4.5");
+            a->set_log(&log);
+            Recorder r;
+            expect(write_turn(*a, r) && review_models(fb) == std::vector<std::string>{"haiku"} && review_models(fa).empty(), "small_model reviews: Opus's write is reviewed on Haiku");
+            json review;
+            std::ifstream in(log.path());
+            for (std::string l; std::getline(in, l);) {
+                json j = json::parse(l, nullptr, false);
+                if (j.is_object() && j.value("type", "") == "tool" && j.contains("review")) review = j["review"];
+            }
+            expect(review.value("model", "") == "fb/haiku" && review.value("model_reason", "") == "small_model" && review.value("verdict", "") == "allow",
+                   "the transcript's review records the model and why: " + review.dump());
+            fs::remove(log.path());
+        }
+        {
+            reset();
+            auto a = make("haiku-4.5", "fb/sonnet");
+            Recorder r;
+            expect(write_turn(*a, r) && review_models(fb) == std::vector<std::string>{"sonnet"}, "a reviewer_model pin wins over small_model");
+            expect(a->reviewer().pick.reason == "reviewer_model", "and :harness says so");
+        }
+        // Sonnet runs out: one notice, this action is asked, the next review is on Haiku.
+        {
+            reset();
+            fb.fail_when = [&](const json& b) { return is_review(b) && b.value("model", "") == "sonnet"; };
+            fb.fail_status = 429;
+            fb.fail_body = R"({"type":"error","error":{"type":"rate_limit_error","message":"You've reached your Sonnet limit. Run /usage-credits to continue or switch models with /model."}})";
+            auto a = make("sonnet-5");
+            Recorder r;
+            r.reply = {Approval::Yes, ""};
+            bool wrote = write_turn(*a, r);
+            int notices = 0;
+            for (const auto& t : r.notices) notices += t.find("hit its usage limit") != std::string::npos;
+            expect(wrote && r.asked.size() == 1 && r.asked[0].reason == "reviewer: the reviewer hit its usage limit" && has_notice(r, "reviewer: sonnet-5 hit its usage limit; reviewing on haiku-4.5") && notices == 1,
+                   "a usage limit on the reviewer asks this action and says once where reviews go now");
+            Recorder r2;
+            expect(write_turn(*a, r2) && r2.asked.empty() && r2.notices.empty() && review_models(fb) == std::vector<std::string>{"sonnet", "haiku"}, "the next review runs on Haiku, without retrying Sonnet");
+        }
+        // Haiku runs out with nothing cheaper: the reviewer is off, and what it would review is asked.
+        {
+            reset();
+            fb.fail_when = [&](const json& b) { return is_review(b); };
+            auto a = make("haiku-4.5");
+            Recorder r;
+            r.reply = {Approval::Yes, ""};
+            write_turn(*a, r);
+            expect(r.asked.size() == 1 && has_notice(r, "reviewer: haiku-4.5 hit its usage limit and nothing cheaper is left; every action it would review is asked for the rest of the session"),
+                   "no fallback left: one notice, and the action is asked");
+            Recorder r2;
+            r2.reply = {Approval::Yes, ""};
+            bool wrote = write_turn(*a, r2);
+            expect(wrote && r2.asked.size() == 1 && r2.asked[0].reason.find("reviewer: no reviewer: haiku-4.5 hit its usage limit") == 0 && r2.notices.empty() && review_models(fb).size() == 1,
+                   "later actions are asked without another notice or another call to the limited model");
+            expect(a->reviewer().pick.model.empty(), ":harness shows the reviewer off");
+        }
+        // Spend: reviewer tokens count toward the session, and reviewer_budget_tokens caps them on their own.
+        {
+            reset();
+            fb.usage_input = 10;  // each review reports 10 in, 5 out
+            auto a = make("haiku-4.5");
+            a->reviewer_budget_tokens = 10;
+            Recorder r;
+            write_turn(*a, r);
+            expect(a->reviewer().tokens == 15 && a->usage().total_input == 10 && a->usage().total_output == 5, "the review's tokens count toward the session's totals (" + std::to_string(a->usage().total_input) + " in)");
+            Recorder r2;
+            r2.reply = {Approval::Yes, ""};
+            write_turn(*a, r2);
+            expect(r2.asked.size() == 1 && has_notice(r2, "reviewer: its token budget is used up (15 of 10); every action it would review is asked from now on") && review_models(fb).size() == 1,
+                   "past reviewer_budget_tokens the reviewer stops and the action is asked");
+            Recorder r3;
+            r3.reply = {Approval::Yes, ""};
+            write_turn(*a, r3);
+            expect(r3.asked.size() == 1 && r3.notices.empty(), "with no second notice");
+            fb.usage_input = 0;
+        }
+        fa.reply = fb.reply = nullptr;
+        fa.tool_call = json();
+        reset();
     }
 
     section("context files");

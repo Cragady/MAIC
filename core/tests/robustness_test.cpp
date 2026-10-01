@@ -1014,17 +1014,18 @@ int main() {
                "the old allow key lands in permission.allow as run_shell entries, beside the default helpers");
         write_file(ws / "proj" / ".maic" / "settings.lua",
                    "return { permission = { allow = { 'run_shell:npm test' }, ask = { 'edit_file:src/core.cpp' }, deny = { 'write:build/**' } },\n"
-                   "  profiles = { scout = { budget_tokens = 20000, max_steps = 10 },\n"
-                   "               docs = { mode = 'edit', write_paths = { 'docs/**' }, tools = { 'read_file', 'edit_file' }, model = 'qwen-4b', reviewer = false } } }");
+                   "  profiles = { scout = { budget_tokens = 20000, max_steps = 10 } },\n"
+                   "  agents = { docs = { mode = 'edit', role = 'subagent', description = 'Writes the docs', write_paths = { 'docs/**' }, tools = { 'read_file', 'edit_file' }, model = 'qwen-4b', reviewer = false } } }");
         Settings sp = load_settings(ws / "proj");
         expect(allows(sp.permission.allow, "run_shell:npm test") && allows(sp.permission.allow, "run_shell:maic-storyboard*") && sp.permission.ask == std::vector<std::string>{"edit_file:src/core.cpp"} && sp.permission.deny == std::vector<std::string>{"write:build/**"},
                "permission lists load and add to the default allow entries");
-        const Profile* scout = find_profile(sp.profiles, "scout");
-        const Profile* docs = find_profile(sp.profiles, "docs");
-        expect(scout && scout->budget_tokens == 20000 && scout->max_steps == 10 && scout->mode == Mode::AutoRead && scout->tools.size() == 5 && !scout->reviewer,
-               "a built-in profile is narrowed in place and keeps what the file does not mention");
-        expect(docs && sp.profiles.size() == 5 && docs->mode == Mode::Edit && docs->write_paths == std::vector<std::string>{"docs/**"} && docs->tools.size() == 2 && docs->model == "llamacpp/Qwen3.5-4B-Q4_K_M" && !docs->reviewer && docs->read_outside,
-               "a new profile is added with its fields, a preset name resolved to its model");
+        const AgentDef* explore = find_agent_def(sp.agents, "explore");
+        const AgentDef* docs = find_agent_def(sp.agents, "docs");
+        expect(explore && explore->name == "explore" && explore->budget_tokens == 20000 && explore->max_steps == 10 && explore->mode == Mode::AutoRead && explore->tools.size() == 5 && !explore->reviewer,
+               "the older key and name (profiles, scout) narrow the built-in explore in place, keeping what the file does not mention");
+        expect(docs && sp.agents.size() == 5 && docs->mode == Mode::Edit && docs->role == Role::Subagent && docs->description == "Writes the docs" && docs->write_paths == std::vector<std::string>{"docs/**"} &&
+                   docs->tools.size() == 2 && docs->model == "llamacpp/Qwen3.5-4B-Q4_K_M" && !docs->reviewer && docs->read_outside,
+               "a new agent is added with its fields (role and description too), a preset name resolved to its model");
         auto rejects = [&](const char* lua, const char* needle) {
             write_file(ws / "proj" / ".maic" / "settings.lua", lua);
             try {
@@ -1034,12 +1035,14 @@ int main() {
             }
             return false;
         };
-        expect(rejects("return { profiles = { scout = { mode = 'auto' } } }", "wider than the built-in scout"), "a built-in profile cannot be given a wider mode");
-        expect(rejects("return { profiles = { scout = { tools = { 'read_file', 'write_file' } } } }", "has no write_file tool"), "nor a tool it lacks");
-        expect(rejects("return { profiles = { scout = { budget_tokens = 100000 } } }", "above the built-in"), "nor a bigger budget");
-        expect(rejects("return { profiles = { reviewer = { read_outside = true } } }", "does not read outside"), "nor reads outside the workspace");
-        expect(rejects("return { profiles = { wired = { network = true } } }", "network"), "no profile gets the network");
-        expect(rejects("return { profiles = { x = { mode = 'fast' } } }", "mode must be"), "a bad mode is an error");
+        expect(rejects("return { agents = { explore = { mode = 'auto' } } }", "wider than the built-in explore"), "a built-in agent cannot be given a wider mode");
+        expect(rejects("return { profiles = { scout = { mode = 'auto' } } }", "wider than the built-in explore"), "nor under its older name");
+        expect(rejects("return { agents = { explore = { tools = { 'read_file', 'write_file' } } } }", "has no write_file tool"), "nor a tool it lacks");
+        expect(rejects("return { agents = { explore = { budget_tokens = 100000 } } }", "above the built-in"), "nor a bigger budget");
+        expect(rejects("return { agents = { plan = { read_outside = true } } }", "does not read outside"), "nor reads outside the workspace");
+        expect(rejects("return { agents = { wired = { network = true } } }", "network"), "no agent gets the network");
+        expect(rejects("return { agents = { x = { mode = 'fast' } } }", "mode must be"), "a bad mode is an error");
+        expect(rejects("return { agents = { x = { role = 'boss' } } }", "role must be primary, subagent or all"), "and so is a bad role");
         expect(rejects("return { permission = { allow = { 'pytest *' } } }", "tool:pattern"), "a permission entry without its tool is an error");
         expect(rejects("return { permission = { deny = { 'run_shell:' } } }", "tool:pattern"), "and so is one without a pattern");
         fs::remove(ws / "proj" / ".maic" / "settings.lua");
@@ -1209,26 +1212,96 @@ int main() {
     {
         Settings d;
         auto op = find_preset(d.presets, "Opus 5.5");
-        expect(op && op->model == "anthropic/claude-opus-5-5" && op->context == 1000000 && op->reviewer == "anthropic/claude-sonnet-5" && op->think == 1, "the Opus 5.5 preset resolves from a loose spelling");
+        expect(op && op->model == "anthropic/claude-opus-5-5" && op->context == 1000000 && op->reviewer.empty() && op->think == 1, "the Opus 5.5 preset resolves from a loose spelling");
         expect(find_preset(d.presets, "opus55") && find_preset(d.presets, "claude-opus-5-5") && find_preset(d.presets, "OPUS_5.5"), "hyphens, dots, spaces, underscores and a claude- prefix all match");
         expect(!find_preset(d.presets, "gpt-9"), "an unknown name is no preset");
         auto q9 = find_preset(d.presets, "qwen-9b");
         auto q9v = find_preset(d.presets, "qwen-9b-vision");
         expect(q9 && q9->model == "llamacpp/Qwen3.5-9B-Q4_K_M-text" && q9->context == 16384 && q9v && q9v->model == "llamacpp/Qwen3.5-9B-Q4_K_M" && q9v->context == 8192,
                "the 9B has a text preset at 16k and a vision preset at 8k");
-        write_file(ws / "proj" / ".maic" / "settings.lua", "return { models = { ['opus-5.5'] = { model = 'anthropic/claude-opus-5-5', context = 500000, reviewer = 'same' }, mine = { model = 'llamacpp/Other', context = 4096 } } }");
+
+        // The shipped tiers and lists.
+        auto P = [&](const Settings& st, const char* n) { return *find_preset(st.presets, n); };
+        const std::vector<std::string> cloud = {"fable-5.1", "opus-5.5", "sonnet-5", "haiku-4.5"};
+        const std::vector<std::string> local = {"qwen-9b", "qwen-9b-vision", "qwen-4b"};
+        expect(P(d, "fable-5.1").tier == 50 && P(d, "fable-5.1").limited && P(d, "opus-5.5").tier == 40 && !P(d, "opus-5.5").limited && P(d, "sonnet-5").tier == 30 && P(d, "haiku-4.5").tier == 20,
+               "fable 50 and limited, opus 40, sonnet 30, haiku 20");
+        expect(P(d, "qwen-9b").tier == 12 && P(d, "qwen-9b-vision").tier == 12 && P(d, "qwen-4b").tier == 10 && !P(d, "qwen-4b").limited, "the 9Bs at 12, the 4B at 10, none limited");
+        bool lists = true;
+        for (const auto& n : cloud) lists = lists && P(d, n.c_str()).subagents == cloud && P(d, n.c_str()).subagent.empty() && P(d, n.c_str()).on_limit.empty();
+        for (const auto& n : local) lists = lists && P(d, n.c_str()).subagents == local && P(d, n.c_str()).reviewer == "same";
+        expect(lists, "the Anthropic presets list each other, the local ones only each other (never a cloud preset), and the local ones review with themselves");
+        auto names = [](const std::vector<ModelPreset>& v) {
+            std::string out;
+            for (const auto& p : v) out += (out.empty() ? "" : " ") + p.name;
+            return out;
+        };
+        expect(names(subagent_presets(d.presets, P(d, "haiku-4.5"))) == "fable-5.1 opus-5.5 sonnet-5 haiku-4.5", "subagent_presets lists strongest first, the model itself included");
+
+        // The subagent pick.
+        auto sub = [&](const Settings& st, const char* n) { return subagent_pick(st.presets, P(st, n)); };
+        expect(sub(d, "fable-5.1").preset == "opus-5.5" && sub(d, "fable-5.1").reason == "fable-5.1 is limited", "fable-5.1 is limited: its subagents run on opus-5.5");
+        expect(sub(d, "opus-5.5").preset == "opus-5.5" && sub(d, "sonnet-5").preset == "sonnet-5" && sub(d, "haiku-4.5").preset == "haiku-4.5" && sub(d, "opus-5.5").reason == "the same model",
+               "a model that is not limited keeps its subagents on itself");
+        expect(sub(d, "qwen-9b").preset == "qwen-9b" && sub(d, "qwen-4b").preset == "qwen-4b", "so do the local ones");
+        auto lim = [&](const Settings& st, const char* n) { auto q = on_limit_pick(st.presets, P(st, n)); return q ? q->name : std::string("none"); };
+        expect(lim(d, "fable-5.1") == "opus-5.5" && lim(d, "opus-5.5") == "sonnet-5" && lim(d, "sonnet-5") == "haiku-4.5", "on_limit by default: the next non-limited tier down");
+        expect(lim(d, "haiku-4.5") == "opus-5.5", "with nothing below, the strongest non-limited one on the list");
+
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { models = { ['opus-5.5'] = { context = 500000, limited = true }, mine = { model = 'llamacpp/Other', context = 4096 } } }");
         Settings sp = load_settings(ws / "proj");
-        auto over = find_preset(sp.presets, "opus-5.5");
-        expect(over && over->context == 500000 && over->reviewer == "same" && over->think == -1, "settings override a built-in preset by name");
-        expect(find_preset(sp.presets, "mine") && find_preset(sp.presets, "mine")->model == "llamacpp/Other", "and add new ones");
-        write_file(ws / "proj" / ".maic" / "settings.lua", "return { models = { bad = { context = 1 } } }");
+        auto over = P(sp, "opus-5.5");
+        expect(over.context == 500000 && over.limited && over.model == "anthropic/claude-opus-5-5" && over.think == 1 && over.tier == 40 && over.subagents == cloud,
+               "an override merges into the built-in preset field by field, no model needed");
+        expect(sub(sp, "opus-5.5").preset == "sonnet-5" && sub(sp, "opus-5.5").reason == "opus-5.5 is limited", "Opus marked limited hands its subagents to Sonnet");
+        expect(sub(sp, "fable-5.1").preset == "sonnet-5" && lim(sp, "fable-5.1") == "sonnet-5", "and Fable, with Opus limited too, goes to Sonnet");
+        expect(find_preset(sp.presets, "mine") && P(sp, "mine").model == "llamacpp/Other" && P(sp, "mine").reviewer.empty() && sub(sp, "mine").preset == "mine", "a new preset is added");
+
+        write_file(ws / "proj" / ".maic" / "settings.lua",
+                   "return { models = { ['fable-5.1'] = { subagent = 'haiku-4.5', on_limit = 'sonnet-5' }, ['opus-5.5'] = { subagents = { 'opus-5.5', 'sonnet-5', 'haiku-4.5', 'qwen-4b' } } } }");
+        Settings sx = load_settings(ws / "proj");
+        expect(sub(sx, "fable-5.1").preset == "haiku-4.5" && sub(sx, "fable-5.1").reason == "fable-5.1's subagent setting" && lim(sx, "fable-5.1") == "sonnet-5", "subagent and on_limit settings win over the rule");
+        expect(names(subagent_presets(sx.presets, P(sx, "opus-5.5"))) == "opus-5.5 sonnet-5 haiku-4.5 qwen-4b", "a cloud preset can be allowed to hand cheap scans to a local model");
+
         bool threw = false;
-        try {
-            load_settings(ws / "proj");
-        } catch (const std::exception&) {
-            threw = true;
-        }
-        expect(threw, "a preset without a model is an error");
+        auto load_throws = [&](const char* lua, const char* needle) {
+            write_file(ws / "proj" / ".maic" / "settings.lua", lua);
+            try {
+                load_settings(ws / "proj");
+            } catch (const std::exception& e) {
+                return std::string(e.what()).find(needle) != std::string::npos;
+            }
+            return false;
+        };
+        threw = load_throws("return { models = { bad = { context = 1 } } }", "needs a model");
+        expect(threw, "a new preset without a model is an error");
+        expect(load_throws("return { models = { ['opus-5.5'] = { subagents = { 'opus-5.5', 'gpt-9' } } } }", "models.opus-5.5.subagents: no preset named gpt-9"), "an unknown name in subagents is an error");
+        expect(load_throws("return { models = { ['opus-5.5'] = { on_limit = 'nope' } } }", "on_limit: no preset named nope"), "and in on_limit");
+
+        // The reviewer: the pin, the preset's reviewer, small_model, the family's small model, the model itself.
+        auto rev = [&](const Settings& st, const std::string& model, const std::string& pin = "", const std::string& small = "", const std::set<std::string>& failed = {}) {
+            return reviewer_pick(st.presets, st.providers, model, pin, small, failed);
+        };
+        auto fable = P(d, "fable-5.1").model, opus = P(d, "opus-5.5").model, sonnet = P(d, "sonnet-5").model, haiku = P(d, "haiku-4.5").model;
+        bool cheap = true;
+        for (const auto& n : cloud) cheap = cheap && rev(d, P(d, n.c_str()).model).preset == "haiku-4.5";
+        expect(cheap, "every Anthropic preset reviews on haiku-4.5, the family's small model");
+        expect(rev(d, opus).reason.find("small model") != std::string::npos, "and says why: " + rev(d, opus).reason);
+        expect(rev(d, P(d, "qwen-9b").model).model == P(d, "qwen-9b").model && rev(d, P(d, "qwen-4b").model).model == P(d, "qwen-4b").model, "a local preset reviews with itself");
+        expect(rev(d, opus, "", "sonnet-5").preset == "sonnet-5" && rev(d, opus, "", "sonnet-5").reason == "small_model", "small_model = sonnet-5 moves Opus's reviewer up to Sonnet");
+        expect(rev(d, opus, "deepseek/deepseek-chat", "sonnet-5").model == "deepseek/deepseek-chat" && rev(d, opus, "deepseek/deepseek-chat").reason == "reviewer_model", "a reviewer_model pin wins");
+        expect(rev(d, "lab/thing").model == "lab/thing", "a model that is not a preset reviews itself");
+        expect(rev(d, opus, "", "", {haiku}).model.empty() && rev(d, opus, "", "", {haiku}).reason.find("haiku-4.5 hit its usage limit") == 0,
+               "haiku-4.5 limited with nothing cheaper left: no reviewer");
+        expect(rev(d, opus, "", "sonnet-5", {sonnet}).preset == "haiku-4.5", "Sonnet limited falls back to Haiku, never up");
+        expect(rev(d, fable, "", "sonnet-5", {sonnet, haiku}).model.empty(), "and with Haiku gone too, nothing is left");
+
+        // Titles: small_model, and title_model as its older name.
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { title_model = 'qwen-4b' }");
+        expect(load_settings(ws / "proj").small_model == "llamacpp/Qwen3.5-4B-Q4_K_M", "title_model is read as small_model, a preset name resolved");
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { title_model = 'a/b', small_model = 'haiku-4.5', reviewer_budget_tokens = 9000 }");
+        Settings st = load_settings(ws / "proj");
+        expect(st.small_model == haiku && st.reviewer_budget_tokens == 9000, "small_model wins over title_model, and reviewer_budget_tokens loads");
         fs::remove(ws / "proj" / ".maic" / "settings.lua");
     }
 

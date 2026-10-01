@@ -2,7 +2,7 @@
 #include "check.hpp"
 
 #include "maic/harness.hpp"
-#include "maic/profile.hpp"
+#include "maic/agent_def.hpp"
 #include "maic/settings.hpp"
 #include "maic/sandbox.hpp"
 #include "maic/tools.hpp"
@@ -243,55 +243,62 @@ int main() {
         expect(q.permission().allow.size() == 2 && q.permission().allow[0] == "write_file:notes/*" && q.allow() == std::vector<std::string>{"make"}, "set_allow replaces only the run_shell entries");
     }
 
-    std::cout << "profiles\n";
+    std::cout << "agents\n";
     {
-        const auto& builtins = default_profiles();
-        expect(builtins.size() == 4 && find_profile(builtins, "scout") && find_profile(builtins, "scout")->read_only() && !find_profile(builtins, "builder")->read_only() && !find_profile(builtins, "orchestrator")->read_only(),
-               "scout and reviewer are read-only, builder and orchestrator are not");
+        const auto& builtins = default_agent_defs();
+        expect(builtins.size() == 4 && find_agent_def(builtins, "explore") && find_agent_def(builtins, "explore")->read_only() && find_agent_def(builtins, "plan")->read_only() &&
+                   !find_agent_def(builtins, "general")->read_only() && !find_agent_def(builtins, "build")->read_only(),
+               "explore and plan are read-only, general and build are not");
+        expect(find_agent_def(builtins, "build")->role == Role::Primary && find_agent_def(builtins, "plan")->role == Role::All && find_agent_def(builtins, "general")->role == Role::Subagent &&
+                   find_agent_def(builtins, "explore")->role == Role::Subagent && !find_agent_def(builtins, "build")->runs_as_subagent() && find_agent_def(builtins, "plan")->runs_as_subagent(),
+               "build is primary, plan is for both, general and explore are subagents");
+        expect(find_agent_def(builtins, "scout")->name == "explore" && find_agent_def(builtins, "reviewer")->name == "plan" && find_agent_def(builtins, "builder")->name == "general" &&
+                   find_agent_def(builtins, "orchestrator")->name == "build",
+               "the names before opencode's find the agents they became");
         expect(narrower_mode(Mode::Auto, Mode::Manual) == Mode::Manual && narrower_mode(Mode::Plan, Mode::Auto) == Mode::Plan && narrower_mode(Mode::AutoRead, Mode::Edit) == Mode::AutoRead,
                "plan is the narrowest mode, then manual, auto-read, edit, auto");
-        expect(narrow_profile(*find_profile(builtins, "builder"), Mode::Manual).mode == Mode::Manual && narrow_profile(*find_profile(builtins, "scout"), Mode::Auto).mode == Mode::AutoRead,
-               "a profile's mode is capped by the session's and never raised to it");
-        Profile net{"wired"};
+        expect(narrow_agent_def(*find_agent_def(builtins, "general"), Mode::Manual).mode == Mode::Manual && narrow_agent_def(*find_agent_def(builtins, "explore"), Mode::Auto).mode == Mode::AutoRead,
+               "an agent's mode is capped by the session's and never raised to it");
+        AgentDef net{"wired"};
         net.network = true;
         bool threw = false;
         try {
-            narrow_profile(net, Mode::Auto);
+            narrow_agent_def(net, Mode::Auto);
         } catch (const std::exception& e) {
             threw = std::string(e.what()).find("network") != std::string::npos;
         }
-        expect(threw, "a profile asking for the network is an error");
+        expect(threw, "an agent asking for the network is an error");
 
         Harness s(ws);
-        s.set_profile(narrow_profile(*find_profile(builtins, "scout"), Mode::Auto));
+        s.set_agent_def(narrow_agent_def(*find_agent_def(builtins, "explore"), Mode::Auto));
         auto d = s.check({Action::Kind::Write, ws / "a.txt", "", {}, "write_file"}, Mode::AutoRead, Origin::Local);
-        expect(d.verdict == Verdict::Deny && d.reason == "the scout profile is read-only", "a scout's write is denied with the profile named: " + d.reason);
+        expect(d.verdict == Verdict::Deny && d.reason == "the explore agent is read-only", "explore's write is denied with the agent named: " + d.reason);
         expect(s.check({Action::Kind::Shell, {}, "git log -3", {}, "run_shell"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow, "its read-only commands run");
         d = s.check({Action::Kind::Shell, {}, "make", {}, "run_shell"}, Mode::AutoRead, Origin::Local);
         expect(d.verdict == Verdict::Deny && d.reason.find("read-only commands") != std::string::npos, "a command that could write is denied, not asked");
-        expect(s.check({Action::Kind::Read, fs::path("/etc/hostname"), "", {}, "read_file"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow, "a scout may read outside the workspace");
+        expect(s.check({Action::Kind::Read, fs::path("/etc/hostname"), "", {}, "read_file"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow, "explore may read outside the workspace");
         expect(!s.tool_allowed("write_file") && s.tool_allowed("read_file") && s.tool_allowed("run_shell"), "its tool list is enforced");
-        expect(s.check({Action::Kind::Shell, {}, "sudo ls", {}, "run_shell"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Trip, "trip patterns are untouched by a profile");
+        expect(s.check({Action::Kind::Shell, {}, "sudo ls", {}, "run_shell"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Trip, "trip patterns are untouched by an agent");
 
         Harness r(ws);
-        r.set_profile(narrow_profile(*find_profile(builtins, "reviewer"), Mode::Auto));
-        expect(r.check({Action::Kind::Read, fs::path("/etc/hostname"), "", {}, "read_file"}, Mode::Plan, Origin::Local).verdict == Verdict::Deny, "a reviewer reads only inside the workspace");
+        r.set_agent_def(narrow_agent_def(*find_agent_def(builtins, "plan"), Mode::Auto));
+        expect(r.check({Action::Kind::Read, fs::path("/etc/hostname"), "", {}, "read_file"}, Mode::Plan, Origin::Local).verdict == Verdict::Deny, "plan reads only inside the workspace");
         expect(r.check({Action::Kind::Read, ws / "x", "", {}, "read_file"}, Mode::Plan, Origin::Local).verdict == Verdict::Allow, "and inside it freely");
 
-        Profile docs{"docs", Mode::Edit};
+        AgentDef docs{"docs", Mode::Edit};
         docs.write_paths = {"docs/**", "README.md"};
         Harness w(ws);
-        w.set_profile(docs);
+        w.set_agent_def(docs);
         expect(w.check({Action::Kind::Write, ws / "docs" / "deep" / "a.md", "", {}, "write_file"}, Mode::Edit, Origin::Local).verdict == Verdict::Allow, "a write under a write_paths glob runs in edit mode");
         expect(w.check({Action::Kind::Write, ws / "README.md", "", {}, "edit_file"}, Mode::Edit, Origin::Local).verdict == Verdict::Allow, "an exact file pattern matches");
         d = w.check({Action::Kind::Write, ws / "src" / "a.cpp", "", {}, "write_file"}, Mode::Edit, Origin::Local);
-        expect(d.verdict == Verdict::Deny && d.reason == "the docs profile writes only under docs/**, README.md", "a write elsewhere is denied with the globs: " + d.reason);
-        expect(w.check({Action::Kind::Write, fs::temp_directory_path() / "maic-profile-out.txt", "", {}, "write_file"}, Mode::Edit, Origin::Local).verdict == Verdict::Deny, "a write outside the workspace is denied, not asked");
+        expect(d.verdict == Verdict::Deny && d.reason == "the docs agent writes only under docs/**, README.md", "a write elsewhere is denied with the globs: " + d.reason);
+        expect(w.check({Action::Kind::Write, fs::temp_directory_path() / "maic-agent-out.txt", "", {}, "write_file"}, Mode::Edit, Origin::Local).verdict == Verdict::Deny, "a write outside the workspace is denied, not asked");
         expect(w.check({Action::Kind::Write, fs::path("/etc/hosts"), "", {}, "write_file"}, Mode::Edit, Origin::Local).verdict == Verdict::Trip, "a system path still trips");
         expect(w.check({Action::Kind::Shell, {}, "make docs", {}, "run_shell"}, Mode::Edit, Origin::Local).verdict == Verdict::Ask, "commands follow the mode as before");
-        Profile all{"wide"};
+        AgentDef all{"wide"};
         Harness a(ws);
-        a.set_profile(all);
+        a.set_agent_def(all);
         expect(a.check({Action::Kind::Write, ws / "any.txt", "", {}, "write_file"}, Mode::Auto, Origin::Local).verdict == Verdict::Allow && a.tool_allowed("delete_file"), "an empty write_paths and tool list mean the whole workspace and every tool");
     }
 

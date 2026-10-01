@@ -12,6 +12,7 @@
 #include <iostream>
 #include <iterator>
 #include <thread>
+#include <tuple>
 
 namespace maic {
 
@@ -40,20 +41,20 @@ const char* approval_name(Approval a) {
     return "?";
 }
 
-// A subagent's events, as the parent's front end sees them: its tool calls and notices carry the profile's
-// name, its approvals are asked of the user with the profile named, and its prose is not streamed (the final
-// answer comes back as the delegate result).
+// A subagent's events, as the parent's front end sees them: its tool calls and notices carry the agent's
+// name, its approvals are asked of the user with the agent named, and its prose is not streamed (the final
+// answer comes back as the task result).
 struct ChildEvents : AgentEvents {
     AgentEvents& parent;
-    std::string profile;
-    ChildEvents(AgentEvents& parent, std::string profile) : parent(parent), profile(std::move(profile)) {}
+    std::string agent;
+    ChildEvents(AgentEvents& parent, std::string agent) : parent(parent), agent(std::move(agent)) {}
     void on_text(std::string_view, bool) override {}
-    void on_tool_call(const std::string& summary) override { parent.on_tool_call("↳ " + profile + ": " + summary); }
+    void on_tool_call(const std::string& summary) override { parent.on_tool_call("↳ " + agent + ": " + summary); }
     void on_tool_result(const std::string& text, bool ok) override { parent.on_tool_result(text, ok); }
-    void on_notice(const std::string& text) override { parent.on_notice(profile + ": " + text); }
+    void on_notice(const std::string& text) override { parent.on_notice(agent + ": " + text); }
     ApprovalAnswer ask(const ApprovalRequest& request) override {
         ApprovalRequest r = request;
-        r.summary = profile + ": " + request.summary;
+        r.summary = agent + ": " + request.summary;
         return parent.ask(r);
     }
 };
@@ -189,19 +190,19 @@ std::string Agent::system_prompt() const {
         "Mode: " + std::string(mode_name(mode)) + ". " + mode_rule(mode) + " The user can change modes at any time "
         "(manual, auto-read, edit, auto, plan); you will be told when that happens.\n"
         "\n";
-    if (!profile_name_.empty()) {
-        const Profile* p = harness_.profile();
+    if (!agent_name_.empty()) {
+        const AgentDef* p = harness_.agent_def();
         std::string tools;
         for (const auto& t : p->tools) tools += (tools.empty() ? "" : ", ") + t;
         std::string paths;
         for (const auto& g : p->write_paths) paths += (paths.empty() ? "" : ", ") + g;
         prompt += "# You are a subagent\n"
-                  "A parent agent delegated one task to you under the " + profile_name_ + " profile" +
+                  "A parent agent gave you one task as the " + agent_name_ + " agent" +
                   (p->read_only() ? ", which is read-only: you change nothing" : paths.empty() ? "" : ", which writes only under " + paths) +
                   (tools.empty() ? "" : "; your tools are " + tools) +
-                  ". You have no user to talk to: question and todo are not available, and you cannot delegate. Approvals your mode "
+                  ". You have no user to talk to: question, todo and task are not available. Approvals your mode "
                   "requires are asked of the user through the parent. Do the task with your tools, then write your report as your final "
-                  "answer: it is handed to the parent as the result of its delegate call and nothing else of yours is, so make it "
+                  "answer: it is handed to the parent as the result of its task call and nothing else of yours is, so make it "
                   "complete and self-contained (paths, line numbers, what you found or changed, what you could not do).\n\n";
     }
     prompt +=
@@ -215,18 +216,18 @@ std::string Agent::system_prompt() const {
         "run_shell is bash inside a sandbox: only the workspace is writable, there is no network, no sudo, and a "
         "timeout (default 120 s). In auto-read and plan modes only read-only commands run, with the workspace "
         "read-only too. Tool output is capped; read files in ranges when they are long.\n" +
-        (profile_name_.empty()
+        (agent_name_.empty()
              ? "question asks the user one thing and waits for the answer; offer options when the choice is fixed. Use it "
                "for decisions that are theirs, not for things the other tools can tell you.\n"
                "todo is your plan for work with several steps: the user sees it. Send the whole list each time, mark items "
                "done as you finish them, and keep it current until the work is done.\n"
-               "delegate hands one task to a subagent that works in this workspace under a profile and returns its report as "
-               "the result: scout (reads and read-only commands only), reviewer (read-only, plan mode), builder (edits inside "
-               "the workspace). Use it for a long read or search you do not want in your own context (ask the scout for a "
-               "short report with paths and line numbers), and for a review of your own change by a reviewer before you call "
-               "the work done. The subagent sees none of this conversation: put everything it needs in task and context. It "
-               "cannot delegate, ask the user or keep a plan, its approvals come to the user through you, and it stops at its "
-               "profile's budget.\n"
+               "task hands one job to a subagent that works in this workspace as one of the agents below and returns its "
+               "report as the result. Use explore for a long read or search you do not want in your own context (ask it for "
+               "a short report with paths and line numbers), and plan for a review of your own change before you call the "
+               "work done; general takes a self-contained piece of editing. The subagent sees none of this conversation: put "
+               "everything it needs in prompt and context. It cannot run task, ask the user or keep a plan, its approvals come "
+               "to the user through you, and it stops at its agent's budget.\n"
+               "Agents for task: " + task_agents_text() + "\n" + (task_models_text().empty() ? "" : "task's model: " + task_models_text() + "\n")
              : std::string()) +
         user_tools_text() +
         "\n"
@@ -300,25 +301,26 @@ void Agent::set_log(SessionLog* log) {
         char host[256] = "";
         gethostname(host, sizeof(host) - 1);
         nlohmann::json start = {{"workspace", harness_.workspace().string()}, {"model", model}, {"mode", mode_name(mode)}, {"host", host}, {"pid", getpid()}};
-        if (!profile_name_.empty()) {
-            start["profile"] = profile_name_;
+        if (!agent_name_.empty()) {
+            start["agent"] = agent_name_;
             start["parent"] = parent_id_;
+            if (!model_reason_.empty()) start["model_reason"] = model_reason_;
         }
         log_->write("start", start);
     }
 }
 
-void Agent::set_profile(const Profile& profile) {
-    profile_name_ = profile.name;
-    mode = profile.mode;
-    harness_.set_profile(profile);
-    budget_tokens = profile.budget_tokens;
-    max_steps = profile.max_steps;
-    review_with_model = review_with_model && profile.reviewer;
+void Agent::set_agent_def(const AgentDef& def) {
+    agent_name_ = def.name;
+    mode = def.mode;
+    harness_.set_agent_def(def);
+    budget_tokens = def.budget_tokens;
+    max_steps = def.max_steps;
+    review_with_model = review_with_model && def.reviewer;
     nlohmann::json kept = nlohmann::json::array();
     for (const auto& s : schemas_) {
         std::string name = s["function"]["name"];
-        if (name == "delegate" || name == "question" || name == "todo" || !profile.allows_tool(name)) continue;
+        if (name == "task" || name == "question" || name == "todo" || !def.allows_tool(name)) continue;
         kept.push_back(s);
     }
     schemas_ = std::move(kept);
@@ -535,6 +537,17 @@ bool Agent::drain_mailbox() {
 
 void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel) {
     start_or_update_conversation();
+    if (agent_name_.empty()) {
+        // The agents and the model can change between turns, and with them what task may use.
+        std::string models = "Agents: " + task_agents_text() + ".";
+        if (!task_models_text().empty()) models += " " + task_models_text();
+        for (auto& s : schemas_) {
+            if (s["function"]["name"] != "task") continue;
+            for (const auto& base : tool_schemas()) {
+                if (base["function"]["name"] == "task") s["function"]["description"] = base["function"]["description"].get<std::string>() + " " + models;
+            }
+        }
+    }
     auto [provider, model_name] = resolve_model(providers, model);
     if (log_) {
         log_->write("user", {{"text", text}, {"provider", provider.name}, {"model", model}, {"remote", provider.remote()},
@@ -695,6 +708,25 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
             events.on_notice("interrupted");
             return;
         } catch (const ApiError& e) {
+            if (!agent_name_.empty() && is_usage_limit(e)) {
+                // A subagent continues on its preset's on_limit model, once, with the conversation so far.
+                auto current = preset_for_model(presets, model);
+                std::string from = current ? current->name : model;
+                if (!limit_from_.empty()) throw std::runtime_error(from + " hit its usage limit after " + limit_from_ + " did; the subagent stops here");
+                auto next = current ? on_limit_pick(presets, *current) : std::nullopt;
+                if (!next) throw std::runtime_error(from + " hit its usage limit and has no on_limit model to continue on");
+                bool was_remote = provider.remote();
+                limit_from_ = from;
+                use_preset(*next);
+                std::tie(provider, model_name) = resolve_model(providers, model);
+                options.model = model_name;
+                options.think = think;
+                if (log_) log_->write("model", {{"from", from}, {"to", next->name}, {"model", model}, {"reason", "usage limit"}});
+                events.on_notice(from + " hit its usage limit; continuing on " + next->name +
+                                 (provider.remote() && !was_remote ? ", a remote model: the task and what it reads leave this machine" : ""));
+                --step;
+                continue;
+            }
             // The server refused the request as too long: compact and try again, twice at most.
             std::string what = e.what();
             bool too_long = e.status == 400 && (what.find("context") != std::string::npos || what.find("too long") != std::string::npos || what.find("too many tokens") != std::string::npos);
@@ -734,12 +766,12 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
             }
         }
         // A session keeps running while tripped, so the user can talk it through; a subagent has no one to talk to.
-        if (!profile_name_.empty() && tripwire_state()) {
+        if (!agent_name_.empty() && tripwire_state()) {
             events.on_notice("the harness is tripped; the subagent stops here");
             return;
         }
     }
-    events.on_notice("stopped after " + std::to_string(max_steps) + " steps" + (profile_name_.empty() ? "; send a message to continue" : " (the profile's limit)"));
+    events.on_notice("stopped after " + std::to_string(max_steps) + " steps" + (agent_name_.empty() ? "; send a message to continue" : " (the agent's limit)"));
 }
 
 Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel) {
@@ -783,19 +815,19 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         events.on_notice("HALTED: the call contains the forbidden term \"" + *term + "\"; nothing ran");
         return result("DENIED: the call contains the forbidden term \"" + *term + "\". Do not search for, run, or write anything involving it; tell the user it is forbidden if they asked for it.", false);
     }
-    if (!profile_name_.empty() && (name == "delegate" || name == "question" || name == "todo")) {
+    if (!agent_name_.empty() && (name == "task" || name == "question" || name == "todo")) {
         record["decision"] = "deny";
         record["reason"] = "not a subagent's tool";
         return result("DENIED: a subagent has no " + name + " tool. Report to the parent in your final answer instead.", false);
     }
     if (!harness_.tool_allowed(name)) {
         record["decision"] = "deny";
-        record["reason"] = "tool not in the profile";
+        record["reason"] = "tool not in the agent's list";
         std::string allowed;
-        for (const auto& t : harness_.profile()->tools) allowed += (allowed.empty() ? "" : ", ") + t;
-        return result("DENIED: the " + profile_name_ + " profile has no " + name + " tool. Its tools are: " + allowed + ".", false);
+        for (const auto& t : harness_.agent_def()->tools) allowed += (allowed.empty() ? "" : ", ") + t;
+        return result("DENIED: the " + agent_name_ + " agent has no " + name + " tool. Its tools are: " + allowed + ".", false);
     }
-    bool harness_action = !lua && !script && name != "question" && name != "todo" && name != "delegate";
+    bool harness_action = !lua && !script && name != "question" && name != "todo" && name != "task";
     std::vector<Action> actions;
     if (harness_action) {
         try {
@@ -844,8 +876,8 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         return result("REFUSED: this exact call has been made " + std::to_string(repeats_) + " times in a row. Do something different, or tell the user what is blocking you.", false);
     }
 
-    if (name == "delegate") {
-        ToolResult r = run_delegate(call.arguments, origin, events, cancel, record);
+    if (name == "task") {
+        ToolResult r = run_task(call.arguments, origin, events, cancel, record);
         return result(r.text, r.ok);
     }
     if (name == "question") {
@@ -957,8 +989,11 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     }
     // The second reader: only for what would otherwise run silently, and never for allow-listed commands.
     if (d.verdict == Verdict::Allow && !user_allowed && !d.trusted && action.kind != Action::Kind::Read && review_with_model) {
-        Decision r = review(action, summary, preview);
-        record["review"] = {{"verdict", verdict_name(r.verdict)}, {"reason", r.reason}};
+        nlohmann::json rr = nlohmann::json::object();
+        Decision r = review(action, summary, preview, events, rr);
+        rr["verdict"] = verdict_name(r.verdict);
+        rr["reason"] = r.reason;
+        record["review"] = rr;
         if (r.verdict != Verdict::Allow) {
             if (r.verdict == Verdict::Deny) events.on_notice("reviewer refused: " + summary + " (" + r.reason + ")");
             d = {r.verdict, "reviewer: " + r.reason, d.read_only_sandbox};
@@ -1000,28 +1035,63 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     return d;
 }
 
-ToolResult Agent::run_delegate(const nlohmann::json& args, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel, nlohmann::json& record) {
-    if (!args.contains("profile") || !args["profile"].is_string() || !args.contains("task") || !args["task"].is_string()) {
-        return {false, "error: delegate needs the string arguments 'profile' and 'task'"};
+ToolResult Agent::run_task(const nlohmann::json& args, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel, nlohmann::json& record) {
+    if (!args.contains("agent") || !args["agent"].is_string() || !args.contains("prompt") || !args["prompt"].is_string()) {
+        return {false, "error: task needs the string arguments 'agent' and 'prompt'"};
     }
-    std::string wanted = args["profile"];
-    const Profile* found = find_profile(profiles, wanted);
-    if (!found) {
+    std::string wanted = args["agent"];
+    const AgentDef* found = find_agent_def(agents, wanted);
+    if (!found || !found->runs_as_subagent()) {
         std::string names;
-        for (const auto& p : profiles) names += (names.empty() ? "" : ", ") + p.name;
-        return {false, "error: no profile named '" + wanted + "'. The profiles are: " + names + "."};
+        for (const auto& a : agents) {
+            if (a.runs_as_subagent()) names += (names.empty() ? "" : ", ") + a.name;
+        }
+        return {false, "error: " + (found ? "the " + found->name + " agent is a primary agent, which task cannot run" : "no agent named '" + wanted + "'") +
+                           ". The agents task can run are: " + names + "."};
     }
-    Profile profile;
+    AgentDef def;
     try {
-        profile = narrow_profile(*found, mode);
+        def = narrow_agent_def(*found, mode);
     } catch (const std::exception& e) {
         return {false, std::string("error: ") + e.what()};
     }
-    record["profile"] = profile.name;
+    record["agent"] = def.name;
 
-    Agent child(harness_.workspace(), profile.model.empty() ? model : profile.model);
+    // The child's model, first match wins: the agent's (the user's pin), the call's `model` (one on this
+    // model's subagents list), this preset's pick, this model.
+    auto own = preset_for_model(presets, model);
+    std::string asked = args.contains("model") && args["model"].is_string() ? args["model"].get<std::string>() : "";
+    ModelPick pick;
+    if (!def.model.empty()) {
+        auto q = preset_for_model(presets, def.model);
+        pick = {q ? q->name : "", def.model, "the " + def.name + " agent's model" + (asked.empty() ? "" : "; the model argument does not override it")};
+    } else if (!asked.empty()) {
+        auto q = find_preset(presets, asked);
+        std::vector<ModelPreset> allowed = own ? subagent_presets(presets, *own) : std::vector<ModelPreset>{};
+        if (!q || std::none_of(allowed.begin(), allowed.end(), [&](const ModelPreset& a) { return a.name == q->name; })) {
+            if (allowed.empty()) return {false, "error: this session's model (" + model + ") is not a preset, so a subagent runs on it; leave out model."};
+            std::string names;
+            for (const auto& a : allowed) names += (names.empty() ? "" : ", ") + a.name + " (tier " + std::to_string(a.tier) + (a.limited ? ", limited" : "") + ")";
+            return {false, "error: '" + asked + "' is not a model this session may hand a task to. The allowed models are: " + names + "."};
+        }
+        pick = {q->name, q->model, "asked for by the parent"};
+    } else if (own) {
+        pick = subagent_pick(presets, *own);
+    } else {
+        pick = {"", model, "the session's model"};
+    }
+    record["model"] = pick.model;
+    record["model_reason"] = pick.reason;
+
+    Agent child(harness_.workspace(), model);
     child.providers = providers;
     child.think = think;
+    child.presets = presets;
+    if (pick.model != model) {
+        if (auto q = preset_for_model(presets, pick.model)) child.use_preset(*q);
+        else child.model = pick.model;
+    }
+    child.model_reason_ = pick.reason;
     child.sampling = sampling;
     child.bans = bans;
     child.operator_note_in_turn = operator_note_in_turn;
@@ -1032,13 +1102,23 @@ ToolResult Agent::run_delegate(const nlohmann::json& args, Origin origin, AgentE
     child.compaction = compaction;
     child.review_with_model = review_with_model;
     child.reviewer_model = reviewer_model;
+    child.small_model = small_model;
+    if (review_with_model) review_budget_check(events);
+    {
+        // The reviewer's limits and spend are the session's: what failed stays failed, and the child gets
+        // what is left of the reviewer's budget.
+        std::lock_guard lock(usage_mu_);
+        child.reviewer_failed_ = reviewer_failed_;
+        child.reviewer_off_ = reviewer_off_;
+        if (reviewer_budget_tokens > 0) child.reviewer_budget_tokens = reviewer_budget_tokens - reviewer_tokens_;
+    }
     child.repeat_limit = repeat_limit;
     child.repeat_trip = repeat_trip;
     child.denials_limit = denials_limit;
     child.harness_.set_permission(harness_.permission());
     child.harness_.set_forbid(harness_.forbid());
     child.harness_.set_confined(harness_.confined());
-    child.set_profile(profile);
+    child.set_agent_def(def);
     if (budget_tokens > 0) {
         // The child's tokens count against this session, so it never gets more than what is left.
         UsageReport u = usage();
@@ -1055,12 +1135,13 @@ ToolResult Agent::run_delegate(const nlohmann::json& args, Origin origin, AgentE
         record["child"] = child_log->path().string();
     }
 
-    std::string task = args["task"];
+    std::string task = args["prompt"];
     if (args.contains("context") && args["context"].is_string() && !args["context"].get<std::string>().empty()) {
         task += "\n\nContext from the parent agent:\n" + args["context"].get<std::string>();
     }
-    ChildEvents child_events(events, profile.name);
-    if (child.remote() && !remote()) events.on_notice(profile.name + ": runs on " + child.model + ", a remote model; the task and what it reads leave this machine");
+    ChildEvents child_events(events, def.name);
+    events.on_tool_call("↳ " + def.name + " on " + (pick.preset.empty() ? pick.model : pick.preset) + " (" + pick.reason + ")");
+    if (child.remote() && !remote()) events.on_notice(def.name + ": runs on " + child.model + ", a remote model; the task and what it reads leave this machine");
     std::string failure;
     try {
         child.submit(task, origin, child_events, cancel);
@@ -1071,8 +1152,12 @@ ToolResult Agent::run_delegate(const nlohmann::json& args, Origin origin, AgentE
     long tokens = cu.total_input + cu.total_output;
     {
         std::lock_guard lock(usage_mu_);
+        std::lock_guard child_lock(child.usage_mu_);
         usage_.total_input += cu.total_input;
         usage_.total_output += cu.total_output;
+        reviewer_tokens_ += child.reviewer_tokens_;
+        reviewer_failed_.insert(child.reviewer_failed_.begin(), child.reviewer_failed_.end());
+        if (reviewer_off_.empty()) reviewer_off_ = child.reviewer_off_;
     }
     record["steps"] = child.steps();
     record["tokens"] = tokens;
@@ -1136,7 +1221,57 @@ void Agent::set_instruction_names(std::vector<std::string> names) {
     instruction_names_ = std::move(names);
 }
 
-Decision Agent::review(const Action& action, const std::string& summary, const std::string& preview) {
+Agent::ReviewerInfo Agent::reviewer() const {
+    std::lock_guard lock(usage_mu_);
+    if (!reviewer_off_.empty()) return {{"", "", reviewer_off_}, reviewer_tokens_};
+    return {reviewer_pick(presets, providers, model, reviewer_model, small_model, reviewer_failed_), reviewer_tokens_};
+}
+
+void Agent::use_preset(const ModelPreset& preset) {
+    model = preset.model;
+    if (preset.think >= 0) think = preset.think == 1;
+    set_preset_window(providers, preset);
+}
+
+std::string Agent::task_agents_text() const {
+    std::string out;
+    for (const auto& a : agents) {
+        if (a.runs_as_subagent()) out += (out.empty() ? "" : "; ") + a.name + (a.description.empty() ? "" : " (" + a.description + ")");
+    }
+    return out;
+}
+
+std::string Agent::task_models_text() const {
+    auto own = preset_for_model(presets, model);
+    if (!own) return "";
+    ModelPick pick = subagent_pick(presets, *own);
+    auto tier = [](const ModelPreset& p) { return "tier " + std::to_string(p.tier) + (p.limited ? ", limited" : ""); };
+    std::string list;
+    for (const auto& p : subagent_presets(presets, *own)) {
+        if (p.name == pick.preset) list = p.name + " (" + tier(p) + "; the default: " + (p.name == own->name ? "your own model" : pick.reason) + ")" + list;
+        else list += ", " + p.name + " (" + tier(p) + ")";
+    }
+    return "Its `model` may name one of these presets, the default first: " + list +
+           ". Leave it out for the default. Choose a lower tier for wide reads, searches and mechanical work, and a higher one only for a "
+           "hard reasoning subtask.";
+}
+
+void Agent::review_budget_check(AgentEvents& events) {
+    std::string off;
+    {
+        std::lock_guard lock(usage_mu_);
+        if (!reviewer_off_.empty() || reviewer_budget_tokens <= 0 || reviewer_tokens_ < reviewer_budget_tokens) return;
+        off = reviewer_off_ = "its token budget is used up (" + std::to_string(reviewer_tokens_) + " of " + std::to_string(reviewer_budget_tokens) + ")";
+    }
+    events.on_notice("reviewer: " + off + "; every action it would review is asked from now on");
+}
+
+Decision Agent::review(const Action& action, const std::string& summary, const std::string& preview, AgentEvents& events, nlohmann::json& record) {
+    review_budget_check(events);
+    ModelPick pick = reviewer().pick;
+    if (pick.model.empty()) return {Verdict::Ask, "no reviewer: " + pick.reason};
+    record["model"] = pick.model;
+    record["model_reason"] = pick.reason;
     // The recent conversation, from the model's side: the last few things the user said and the agent's
     // last words, so the reviewer judges the action against what was actually asked.
     std::string recent;
@@ -1167,8 +1302,8 @@ Decision Agent::review(const Action& action, const std::string& summary, const s
                      (last_words.empty() ? "" : "Agent's last words: " + last_words + "\n") + "\nThe action: " + summary + "\n" + what + "\n\nYour one line:"},
     };
     try {
-        std::string reviewer = reviewer_model;
-        if (reviewer.empty()) {
+        std::string reviewer = pick.model;
+        if (reviewer_model.empty() && reviewer == model) {
             // The side llama server, when it is up, reviews with the same model so the main server keeps its
             // model resident; otherwise the session's model reviews itself.
             auto [main_provider, main_name] = resolve_model(providers, model);
@@ -1178,11 +1313,17 @@ Decision Agent::review(const Action& action, const std::string& summary, const s
                 }
             }
         }
-        auto [provider, name] = resolve_model(providers, reviewer.empty() ? model : reviewer);
+        auto [provider, name] = resolve_model(providers, reviewer);
         ChatOptions opt{name, false};
         opt.retries = 1;
         std::atomic<bool> no{false};
         Message reply = chat(provider, opt, req, nlohmann::json::array(), [](std::string_view, bool) {}, no);
+        {
+            std::lock_guard lock(usage_mu_);
+            usage_.total_input += reply.usage.input;
+            usage_.total_output += reply.usage.output;
+            reviewer_tokens_ += reply.usage.input + reply.usage.output;
+        }
         std::string t = reply.content;
         if (auto p = t.find("</think>"); p != std::string::npos) t = t.substr(p + 8);
         size_t start = t.find_first_not_of(" \n\t*");
@@ -1201,6 +1342,20 @@ Decision Agent::review(const Action& action, const std::string& summary, const s
         if (word == "DENY") return {Verdict::Deny, reason.empty() ? "the reviewer refused it" : reason};
         if (word == "ASK") return {Verdict::Ask, reason.empty() ? "the reviewer wants you to decide" : reason};
         return {Verdict::Ask, "the reviewer gave no clear verdict"};
+    } catch (const ApiError& e) {
+        if (!is_usage_limit(e)) return {Verdict::Ask, std::string("the reviewer could not answer (") + e.what() + ")"};
+        // Never again this session: the next review goes to a cheaper model, or none is left and every action
+        // it would review is asked.
+        ModelPick next;
+        {
+            std::lock_guard lock(usage_mu_);
+            reviewer_failed_.insert(pick.model);
+            next = reviewer_pick(presets, providers, model, reviewer_model, small_model, reviewer_failed_);
+        }
+        std::string who = pick.preset.empty() ? pick.model : pick.preset;
+        events.on_notice(next.model.empty() ? "reviewer: " + next.reason + "; every action it would review is asked for the rest of the session"
+                                            : "reviewer: " + who + " hit its usage limit; reviewing on " + (next.preset.empty() ? next.model : next.preset));
+        return {Verdict::Ask, "the reviewer hit its usage limit"};
     } catch (const std::exception& e) {
         return {Verdict::Ask, std::string("the reviewer could not answer (") + e.what() + ")"};
     }

@@ -5,9 +5,10 @@
 #include "maic/instructions.hpp"
 #include "maic/llm.hpp"
 #include "maic/lua_tools.hpp"
-#include "maic/profile.hpp"
+#include "maic/agent_def.hpp"
 #include "maic/script_tools.hpp"
 #include "maic/session.hpp"
+#include "maic/settings.hpp"
 
 #include <atomic>
 #include <deque>
@@ -149,7 +150,7 @@ public:
     int repeat_trip = 5;
     // This many denials by the user in one turn end the turn.
     int denials_limit = 3;
-    // Model calls per turn before the agent stops and waits for the user (a profile sets a subagent's).
+    // Model calls per turn before the agent stops and waits for the user (an agent definition sets a subagent's).
     int max_steps = 40;
     int steps() const { return steps_; }  // model calls so far
 
@@ -159,13 +160,17 @@ public:
     void set_confined(bool on) { harness_.set_confined(on); }
     void set_forbid(std::vector<std::string> terms) { harness_.set_forbid(std::move(terms)); }
 
-    // Subagents. The `delegate` tool runs a child Agent in this workspace under one of these profiles, with
+    // Subagents. The `task` tool runs a child Agent in this workspace as one of these agents (role subagent or all), with
     // its own transcript (kind sub) and the parent's provider, permission, forbidden terms and operator text.
-    // A child's mode is its profile's capped by the parent's; it has no delegate, question or todo tool.
-    std::vector<Profile> profiles = default_profiles();
-    // Makes this agent a subagent under `profile` (already narrowed to the session's mode, see narrow_profile).
-    void set_profile(const Profile& profile);
-    const std::string& profile_name() const { return profile_name_; }  // "" for a session
+    // A child's mode is its agent's capped by the parent's; it has no task, question or todo tool.
+    std::vector<AgentDef> agents = default_agent_defs();
+    // Model presets (settings `models`). A subagent's model is, first match wins: its agent's model, the
+    // task call's `model` (one on this model's subagents list), this preset's subagent_pick, this model.
+    // A subagent whose model hits its usage limit continues once on that preset's on_limit_pick.
+    std::vector<ModelPreset> presets = default_presets();
+    // Makes this agent a subagent running as `def` (already narrowed to the session's mode, see narrow_agent_def).
+    void set_agent_def(const AgentDef& def);
+    const std::string& agent_name() const { return agent_name_; }  // "" for a session
 
     // Names of instruction files (MAIC.md, AGENTS.md, ...) looked for beside files the model reads.
     void set_instruction_names(std::vector<std::string> names);
@@ -174,8 +179,19 @@ public:
     // action before any command or write that the rules would let through without asking, and answers
     // ALLOW, ASK or DENY; ASK becomes an approval prompt, and a reviewer that cannot answer means ASK. Reads
     // are never reviewed. When off ("dumb" harness) the rule list alone decides.
+    // The reviewer's model is reviewer_pick's: reviewer_model (the user's pin), the preset's reviewer,
+    // small_model, the default small model. One that hits its usage limit is replaced for the session by a
+    // cheaper one, or the reviewer goes off; off, every action it would review is asked (fail closed). Its
+    // tokens count toward budget_tokens, and past reviewer_budget_tokens it goes off the same way.
     bool review_with_model = true;
-    std::string reviewer_model;  // "" = the session's model
+    std::string reviewer_model;
+    std::string small_model;
+    long reviewer_budget_tokens = 0;  // 0 = no cap of its own
+    struct ReviewerInfo {
+        ModelPick pick;  // pick.model "" when the reviewer is off for the session, pick.reason says why
+        long tokens = 0;
+    };
+    ReviewerInfo reviewer() const;
 
     // Things the model must not say; see bans.hpp. Changes apply from the next model call.
     Bans bans;
@@ -232,7 +248,7 @@ public:
 
 private:
     Message run_tool_call(const ToolCall& call, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel);
-    ToolResult run_delegate(const nlohmann::json& args, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel, nlohmann::json& record);
+    ToolResult run_task(const nlohmann::json& args, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel, nlohmann::json& record);
     // Policy, then this session's "always" answers, then the user. Never returns Ask: a No becomes Deny with the
     // user's words, a Trip has already tripped the lock. For Deny and Trip the reason is the text the model
     // sees. Every tool action, built-in or from a Lua tool, goes through here; `record` gets the log fields.
@@ -269,7 +285,11 @@ private:
     bool touches_harness(const Action& action) const;
     void save_undo_point(const std::filesystem::path& path, const std::string& summary);  // a file's content before a write; nothing for a directory
     void push_undo(UndoPoint u);
-    Decision review(const Action& action, const std::string& summary, const std::string& preview);
+    Decision review(const Action& action, const std::string& summary, const std::string& preview, AgentEvents& events, nlohmann::json& record);
+    void review_budget_check(AgentEvents& events);  // turns the reviewer off, with one notice, once its budget is spent
+    void use_preset(const ModelPreset& preset);  // its model, thinking and context window, as apply_preset sets them
+    std::string task_agents_text() const;    // the agents task can run, with what each is for
+    std::string task_models_text() const;    // the presets task may run a subagent on, for the parent model
     std::string with_operator_note(const std::string& text) const;
     std::string nested_instructions(const std::filesystem::path& file);  // instruction files between the workspace and `file`, each once
 
@@ -288,8 +308,15 @@ private:
     int denials_ = 0;
     int steps_ = 0;
     bool stuck_ = false;  // the same harmless call kept repeating: end the turn, do not trip
-    std::string profile_name_;  // set: this agent is a subagent
+    std::string agent_name_;  // set: this agent is a subagent
     std::string parent_id_;     // the parent's session id, for the start record
+    std::string model_reason_;  // a subagent: why it runs on its model, for the start record
+    std::string limit_from_;    // a subagent: the preset it left after a usage limit ("" = none yet)
+    // The reviewer's state, under usage_mu_: models that hit their usage limit while reviewing, why it is off
+    // ("" while on; the budget, or a parent's), and what it has spent.
+    std::set<std::string> reviewer_failed_;
+    std::string reviewer_off_;
+    long reviewer_tokens_ = 0;
 };
 
 }  // namespace maic

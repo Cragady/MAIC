@@ -28,7 +28,7 @@ constexpr int kDefaultShellTimeout = 120;
 constexpr int kMaxShellTimeout = 600;
 
 const char* const kToolNames[] = {"read_file", "list_dir", "glob", "search_files", "write_file", "edit_file", "multi_edit", "apply_patch",
-                                  "move_file", "copy_file", "delete_file", "make_dir", "run_shell", "question", "todo", "delegate"};
+                                  "move_file", "copy_file", "delete_file", "make_dir", "run_shell", "question", "todo", "task"};
 
 nlohmann::json fn(const char* name, const char* description, nlohmann::json properties, std::vector<std::string> required) {
     return {{"type", "function"},
@@ -903,19 +903,19 @@ const nlohmann::json& tool_schemas() {
                                   {"properties", {{"text", {{"type", "string"}}}, {"done", {{"type", "boolean"}}}}},
                                   {"required", {"text"}}}}}}},
            {"items"}),
-        fn("delegate",
-           "Hand a task to a subagent that runs in this workspace under a named profile and reports back; its "
-           "answer is the result. Profiles: scout (reads and read-only commands only, for a long search or a read "
-           "of many files you do not want in your own context: ask for a short report with paths and line numbers), "
-           "reviewer (read-only, plan mode: a review of a change you made, against what was asked), builder (edits "
-           "inside the workspace, for a self-contained piece of work). Give the whole task in `task`; the subagent "
-           "has none of this conversation. `context` carries what it needs to know (file names, decisions). A "
-           "subagent cannot delegate, ask the user or keep a plan; it works within its profile's budget and asks the "
-           "user through you when its mode requires.",
-           {{"profile", {{"type", "string"}, {"description", "scout, reviewer, builder, or a profile from settings"}}},
-            {"task", {{"type", "string"}, {"description", "What to do and what to report back"}}},
-            {"context", {{"type", "string"}, {"description", "Background the subagent needs (optional)"}}}},
-           {"profile", "task"}),
+        fn("task",
+           "Hand one job to a subagent that runs in this workspace as a named agent and reports back; its answer is "
+           "the result. The agents it can run are listed below (built in: explore for a long search or a read of many "
+           "files you do not want in your own context, plan for a read-only review of a change against what was asked, "
+           "general for a self-contained piece of editing). Give the whole job in `prompt`; the subagent has none of "
+           "this conversation. `context` carries what it needs to know (file names, decisions). A subagent cannot run "
+           "task, ask the user or keep a plan; it works within its agent's budget and asks the user through you when "
+           "its mode requires.",
+           {{"agent", {{"type", "string"}, {"description", "explore, plan, general, or an agent from settings"}}},
+            {"prompt", {{"type", "string"}, {"description", "What to do and what to report back"}}},
+            {"context", {{"type", "string"}, {"description", "Background the subagent needs (optional)"}}},
+            {"model", {{"type", "string"}, {"description", "A model preset for the subagent (optional): one this description lists; left out, the default"}}}},
+           {"agent", "prompt"}),
     });
     return schemas;
 }
@@ -1006,10 +1006,10 @@ std::string tool_summary(const std::string& name, const nlohmann::json& args) {
     if (name == "glob") return "glob " + args.value("pattern", "") + " in " + args.value("path", ".");
     if (name == "question") return "question: " + args.value("question", "");
     if (name == "todo") return "todo (" + std::to_string(args.contains("items") && args["items"].is_array() ? args["items"].size() : 0) + " items)";
-    if (name == "delegate") {
-        std::string task = args.value("task", "");
+    if (name == "task" || name == "delegate") {  // delegate {profile, task}: transcripts from before the rename
+        std::string task = args.value("prompt", args.value("task", ""));
         for (char& c : task) if (c == '\n') c = ' ';
-        return "delegate " + args.value("profile", "") + ": " + (task.size() > 100 ? task.substr(0, 97) + "..." : task);
+        return "task " + args.value("agent", args.value("profile", "")) + ": " + (task.size() > 100 ? task.substr(0, 97) + "..." : task);
     }
     if (name == "move_file" || name == "copy_file") return name + " " + args.value("from", "") + " -> " + args.value("to", "");
     if (name == "delete_file") return "delete_file " + args.value("path", "") + (flag(args, "recursive") ? " (recursive)" : "");

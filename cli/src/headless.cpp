@@ -172,6 +172,9 @@ int run_headless(const HeadlessOptions& options) {
     agent.mode = *mode;
     agent.review_with_model = settings.harness != "dumb";
     agent.reviewer_model = settings.reviewer_model;
+    agent.small_model = settings.small_model;
+    agent.reviewer_budget_tokens = settings.reviewer_budget_tokens;
+    agent.presets = settings.presets;
     if (*mode == Mode::Auto && !agent.review_with_model && !settings.dumb_auto_ok && !options.accept_dumb_auto) {
         fprintf(stderr, "dumb harness + auto mode: no model reads the conversation before the agent acts; only the rule list stands between it and your shell.\n");
         if (isatty(STDIN_FILENO) && options.prompt != "-") {
@@ -197,7 +200,7 @@ int run_headless(const HeadlessOptions& options) {
     agent.prefill = resolve_system_prompt(settings.prefill);
     agent.rules = settings.rules;
     agent.set_permission(settings.permission);
-    agent.profiles = settings.profiles;
+    agent.agents = settings.agents;
     agent.set_forbid(settings.forbid);
     if (settings.tripwire == "isolated" && !settings.allow_isolated) {
         fprintf(stderr, "maic: tripwire = \"isolated\" is not allowed: set allow_isolated = true in settings to permit it\n");

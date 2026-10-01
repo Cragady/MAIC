@@ -381,6 +381,72 @@ int main() {
         expect(notices.size() == 2 && msg.find("can't reach") != std::string::npos, "connection failures are retried too, then reported as TransportError");
     }
 
+    section("usage limits");
+    {
+        // Bodies as the providers send them. Anthropic's Fable cap is the exact message seen on 2026-10-01.
+        auto limit = [](int status, const char* body, const char* type) { return is_usage_limit(ApiError(status, std::string("x returned HTTP ") + std::to_string(status) + ": " + body, 0, type)); };
+        expect(limit(429, "You've reached your Fable limit. Run /usage-credits to continue or switch models with /model.", "rate_limit_error"), "Anthropic's Fable limit (rate_limit_error, 429) is a usage limit");
+        expect(limit(429, "You've reached your Fable limit. Run /usage-credits to continue or switch models with /model.", "rate_limit"), "also with the type spelled rate_limit");
+        expect(limit(429, "You have reached your specified workspace API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.", "rate_limit_error"), "Anthropic's workspace usage limit is one");
+        expect(limit(400, "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.", "invalid_request_error"), "Anthropic's credit balance is one");
+        expect(limit(429, "You exceeded your current quota, please check your plan and billing details.", "insufficient_quota"), "OpenAI's insufficient_quota is one");
+        expect(limit(402, "Insufficient credits. Add more using https://openrouter.ai/settings/credits", ""), "OpenRouter's 402 is one");
+        expect(limit(402, "Insufficient Balance", ""), "DeepSeek's 402 is one");
+        expect(!limit(429, "This request would exceed the rate limit for your organization of 30,000 input tokens per minute. Please reduce the prompt length or try again later.", "rate_limit_error"),
+               "a per-minute rate limit is not");
+        expect(!limit(429, "slow down", ""), "nor a plain 429 slow down");
+        expect(!limit(529, "Overloaded", "overloaded_error") && !limit(500, "quota service unavailable", ""), "nor an overload or a server error");
+    }
+    {
+        // Through a provider: the type reaches ApiError, and a usage limit is not retried.
+        Fake f;
+        int calls = 0;
+        f.srv.Post("/v1/messages", [&](const httplib::Request&, httplib::Response& res) {
+            ++calls;
+            res.status = 429;
+            res.set_content(R"({"type":"error","error":{"type":"rate_limit_error","message":"You've reached your Fable limit. Run /usage-credits to continue or switch models with /model."}})", "application/json");
+        });
+        f.start();
+        Provider p = anth;
+        p.base_url = f.url();
+        ChatOptions opt{"claude-fable-5-1"};
+        opt.retry_base_ms = 10;
+        std::string type;
+        bool usage = false;
+        try { chat(p, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError& e) { type = e.type, usage = is_usage_limit(e); }
+        expect(calls == 1 && type == "rate_limit_error" && usage, "the Fable limit comes back at once as a usage limit with Anthropic's error type (" + std::to_string(calls) + " calls)");
+    }
+    {
+        Fake f;
+        int calls = 0;
+        f.srv.Post("/chat/completions", [&](const httplib::Request&, httplib::Response& res) {
+            ++calls;
+            res.status = 429;
+            res.set_content(R"({"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","param":null,"code":"insufficient_quota"}})", "application/json");
+        });
+        f.start();
+        ChatOptions opt{"test-model"};
+        opt.retry_base_ms = 10;
+        std::string type;
+        try { chat({"lab", "openai", f.url()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError& e) { type = e.type; }
+        expect(calls == 1 && type == "insufficient_quota", "OpenAI's insufficient_quota likewise, typed");
+    }
+    {
+        Fake f;
+        int calls = 0;
+        f.srv.Post("/chat/completions", [&](const httplib::Request&, httplib::Response& res) {
+            ++calls;
+            res.status = 429;
+            res.set_content(R"({"error":{"message":"slow down","type":"rate_limit_error"}})", "application/json");
+        });
+        f.start();
+        ChatOptions opt{"test-model"};
+        opt.retries = 1;
+        opt.retry_base_ms = 10;
+        try { chat({"lab", "openai", f.url()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError&) {}
+        expect(calls == 2, "a plain 429 is still retried");
+    }
+
     section("generation controls");
     {
         Fake f;
