@@ -52,7 +52,7 @@ A MAIC session is told apart from a Claude Code transcript by its records, never
 
 ## The backup rule
 
-`trans-fairy-write` is the one exception to MAIC's rule that a session file is never rewritten, and it backs up first. Before any write, to a MAIC session or a Claude Code transcript, it copies the file to `~/.local/state/maic/sessions/.backups/<id>/<UTC time>.jsonl` (0600; `$XDG_STATE_HOME` moves it) and says where on stderr, beside the `--backup` cai always required. The new file lands through a temporary file in the same directory and a rename. A MAIC session then gets a `rewritten` record naming the copy and the command that wrote it; a Claude Code transcript stays byte for byte what `--from` gave. Nothing in the existing arguments or the JSON report changed. Two subcommands are new:
+`trans-fairy-write` rewrites a session file in place and backs up first; the other commands that rewrite one, and which of them keep a copy, are listed in [sessions.md](sessions.md). Before any write, to a MAIC session or a Claude Code transcript, it copies the file to `~/.local/state/maic/sessions/.backups/<id>/<UTC time>.jsonl` (0600; `$XDG_STATE_HOME` moves it) and says where on stderr, beside the `--backup` cai always required. The new file lands through a temporary file in the same directory and a rename. A MAIC session then gets a `rewritten` record naming the copy and the command that wrote it; a Claude Code transcript stays byte for byte what `--from` gave. Nothing in the existing arguments or the JSON report changed. Two subcommands are new:
 
 ```
 cai trans-fairy-write list-backups ID              the copies kept for a session
