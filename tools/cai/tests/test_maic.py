@@ -264,5 +264,106 @@ check("and is a live session for grant's caller lookup",
       any(r["sessionId"] == "20260105-120000-tui-1" for r in maic.live_sessions()))
 check("POSITIVE CONTROL -- a dead pid does not", not maic.live_reasons([dict(BY_TYPE["start"], type="start", pid=1 << 30)]))
 
+# --- reflow: MAIC sessions are refused like a Claude projects file; --rewrite-session ---
+from cai import reflow as reflowfam  # noqa: E402
+from cai.reflow import cli as reflowcli  # noqa: E402
+
+
+class _Stdin(io.StringIO):
+    def __init__(self, text, tty):
+        super().__init__(text)
+        self._tty = tty
+
+    def isatty(self):
+        return self._tty
+
+
+def _bytes(path):
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def _reflow(argv, typed=None, tty=False):
+    real = sys.stdin
+    sys.stdin = _Stdin(typed or "", tty)
+    try:
+        return run(reflowcli.main, argv)
+    finally:
+        sys.stdin = real
+
+
+rf_recs = [dict(BY_TYPE["start"], type="start", time=T),
+           dict(BY_TYPE["msg"], type="msg", time=T), dict(BY_TYPE["user"], type="user", time=T),
+           {"type": "msg", "role": "assistant", "content": "hi there", "time": T},
+           dict(BY_TYPE["assistant"], type="assistant", time=T)]
+rf_home = os.path.join(maic.sessions_dir(), "reflowtest")
+in_home = write_jsonl(os.path.join(rf_home, "20260201-120000-tui-7.jsonl"), rf_recs)
+outside = write_jsonl(os.path.join(tempfile.mkdtemp(), "copied-session.jsonl"), rf_recs)
+plain = os.path.join(tempfile.mkdtemp(), "notes.txt")
+with open(plain, "w", encoding="utf-8") as fh:
+    fh.write("one line.\ntwo line.\n\nnext paragraph.\n")
+orig_home, orig_out = _bytes(in_home), _bytes(outside)
+
+code, out, err = _reflow([in_home])
+check("reflow refuses a MAIC session in MAIC's sessions directory", code == 1 and "MAIC's sessions directory" in out, out[-200:])
+check("and leaves it byte-identical", _bytes(in_home) == orig_home)
+code, out, err = _reflow([outside])
+check("reflow refuses a MAIC session copied elsewhere, recognised by its records",
+      code == 1 and "is a MAIC session" in out and _bytes(outside) == orig_out, out[-200:])
+code, out, err = _reflow([plain])
+check("a plain text file is reflowed exactly as before", code == 0 and json.loads(out)["refused"] == 0, out[-200:])
+
+code, out, err = _reflow(["-n", in_home])
+check("a dry run on a MAIC session reports that the result would not load",
+      "would NOT load as a MAIC session" in err and _bytes(in_home) == orig_home, err[-200:])
+code, out, err = _reflow(["--rewrite-session", "-n", in_home])
+check("with --rewrite-session the invalid dry run exits 1 and writes nothing", code == 1 and _bytes(in_home) == orig_home)
+
+code, out, err = _reflow(["--rewrite-session", in_home], typed="yes, rewrite it\n", tty=False)
+check("--rewrite-session off a terminal refuses and writes nothing",
+      code == 1 and "needs a person at a terminal" in out and _bytes(in_home) == orig_home, out[-200:])
+check("and recommends the dry run with the exact command", ("cai reflow --rewrite-session %s --dry-run" % in_home) in err, err[-300:])
+code, out, err = _reflow(["--rewrite-session", in_home], typed="yes\n", tty=True)
+check("the wrong phrase aborts and writes nothing", code == 1 and "not confirmed" in out and _bytes(in_home) == orig_home)
+check("the validation verdict is shown before the question", err.find("validation:") != -1 and err.find("validation:") < err.find("type 'yes, rewrite it'"))
+
+before = len(writer.list_backups("20260201-120000-tui-7")["backups"])
+code, out, err = _reflow(["--rewrite-session", in_home], typed="yes, rewrite it\n", tty=True)
+backups = writer.list_backups("20260201-120000-tui-7")["backups"]
+check("the phrase rewrites it, after a backup", code == 0 and _bytes(in_home) != orig_home and len(backups) == before + 1, out[-300:])
+made = json.loads(out)["reports"][0]["backup"]
+check("the backup is byte-identical to the original", _bytes(made) == orig_home)
+check("the rewrite says the result does not load and how to restore",
+      "does NOT load" in err and "cai trans-fairy-write restore 20260201-120000-tui-7 --backup" in err, err[-300:])
+writer.restore("20260201-120000-tui-7", backup_ts=backups[-1]["taken"], ignore_live=True)
+restored = _bytes(in_home)
+tail = restored[len(orig_home):].decode().strip().splitlines()
+check("restore puts the original back, though the rewritten file no longer parses",
+      restored.startswith(orig_home) and len(tail) == 1 and json.loads(tail[0])["type"] == "rewritten", str(tail))
+
+os.utime(in_home, (time.time() - 9999, time.time() - 9999))  # a just-restored file looks live
+before_fault = _bytes(in_home)
+real_write = reflowfam.write
+reflowfam.write = lambda module, path, data: open(path, "w").write("torn\n")
+try:
+    code, out, err = _reflow(["--rewrite-session", in_home], typed="yes, rewrite it\n", tty=True)
+finally:
+    reflowfam.write = real_write
+check("a write that differs from what was validated is undone from the backup",
+      code == 1 and "was put back" in out and _bytes(in_home) == before_fault, "code %d; %s" % (code, out[out.find("refused\": \"") : out.find("refused\": \"") + 200] if "refused\": \"" in out else out[-120:]))
+
+cc_dir = os.path.join(tempfile.mkdtemp(), ".claude", "projects", "-x")
+cc = write_jsonl(os.path.join(cc_dir, "s.jsonl"), [
+    {"type": "user", "uuid": "u1", "parentUuid": None, "sessionId": "s", "message": {"role": "user", "content": "hi"}},
+    {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "sessionId": "s",
+     "message": {"role": "assistant", "content": [{"type": "text", "text": "hello"}]}}])
+code, out, err = _reflow([cc])
+check("a Claude projects file keeps its exact refusal",
+      code == 1 and "this file is in a Claude projects directory. A live session appends to it" in out, out[-200:])
+code, out, err = _reflow(["-n", cc])
+check("a plain dry run on it adds nothing to stderr (its contract)", err == "", err[-200:])
+code, out, err = _reflow(["--rewrite-session", "-n", cc])
+check("--rewrite-session -n reports its validity", "Claude Code transcript" in err, err[-200:])
+
 print("\n%d checks, %d failed" % (_total[0], len(fails)))
 sys.exit(1 if fails else 0)

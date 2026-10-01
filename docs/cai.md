@@ -30,7 +30,7 @@ Each in the README's words, or the tool's own first line where the README has no
 | `trans-fairy-write` | overwrite an installed transcript, safely and deliberately | A MAIC session is a valid target and `--from`, checked with MAIC's shapes; it looks live while the `maic` process that last opened it runs, or by cai's five-minute rule. The backup rule below applies to every target. |
 | `read` | project a transcript to what was said | The conversation, `--select tools`, the compaction slices and `--boundaries`, with `Ln` naming the session file's own lines. A fork is read as MAIC loads it: the parent's first records, then its own. |
 | `fabricate` | a testing tool for building transcripts | Into a MAIC session each turn is written as MAIC writes one, a `msg` and its `user` or `assistant` record, with the same marks cai puts on a Claude Code record. |
-| `reflow` | reshape data with any member of an open family, verifying content survived | `reflow context` reads a MAIC session through `read`'s projection. |
+| `reflow` | reshape data with any member of an open family, verifying content survived | `reflow context` reads a MAIC session through `read`'s projection. `reflow FILE` refuses a MAIC session as it refuses a Claude projects file (`--to` writes elsewhere); `-n` on a MAIC session says whether the result would still load. `--rewrite-session` is the operator's way through, below. |
 | `notation` | the living dictionary of markers, and the ledger of what changed | Reads no transcript; unchanged. |
 | `grant` | ask whether a time-scoped permission is in force, right now | A running MAIC session is a caller and a grantee like a live Claude Code session: its id, its title as the name, its workspace. MAIC keeps no session registry, so "running" is the `start` record's pid on this host. |
 | `commit` | commit only when the preconditions hold | Finds its session through `grant`, so the same. |
@@ -58,6 +58,17 @@ A MAIC session is told apart from a Claude Code transcript by its records, never
 cai trans-fairy-write list-backups ID              the copies kept for a session
 cai trans-fairy-write restore ID [--backup TS]     put the newest copy (or the one stamped TS) back
 ```
+
+### `reflow --rewrite-session`
+
+`cai reflow FILE` will not rewrite a transcript in place: a file under a Claude Code projects directory, and (added in MAIC, the same refusal applied to the new format) a MAIC session, in MAIC's sessions folder or recognised by its records wherever it is. `--to PATH` writes the result elsewhere and leaves the original alone. When the original really has to change, `--rewrite-session` does it, at a terminal only:
+
+1. it says which file, what kind of transcript it is, and that it will be rewritten in place;
+2. it shows whether the result would still load as that kind of transcript, with record and turn counts before and after (trans-fairy-write's own checks decide);
+3. it recommends the dry run, printing the exact command (`... --rewrite-session --dry-run`), which reports the same verdict and writes nothing (exit 1 when the result would not load);
+4. it asks for the exact phrase `yes, rewrite it`; anything else stops, and off a terminal it refuses outright, so no agent can pass it;
+5. it refuses a transcript that looks live, copies the original to `.backups/<id>/` (where `list-backups` and `restore` find it), writes, and checks that what landed is byte for byte what was validated, putting the copy back if not;
+6. for a MAIC session it appends a `rewritten` record, and when the result does not load it prints the `cai trans-fairy-write restore ID --backup TS` that undoes it. `restore` works on a session that no longer parses.
 
 `ID` is a MAIC session id, a unique prefix, or any transcript's path. `restore` copies what is there first, so it can itself be undone, refuses a session that looks live (`--ignore-live` as for a write, `-n` for a dry run), and appends a `rewritten` record naming both copies. `maic sessions` never lists the `.backups` directory. `maic sessions redact --in-place` takes its copy the same way, in the same place, so `list-backups` and `restore` see it too. `redact` and `reflow --replace` keep the in-place modes cai gave them, each behind the `--backup` it requires.
 
