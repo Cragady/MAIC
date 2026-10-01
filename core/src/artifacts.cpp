@@ -1,7 +1,9 @@
 #include "maic/artifacts.hpp"
 
+#include "maic/lua.hpp"
 #include "maic/paths.hpp"
 #include "maic/session.hpp"
+#include "maic/settings.hpp"
 
 #include <cstdlib>
 #include <fstream>
@@ -50,21 +52,36 @@ void require_safe(const fs::path& path) {
 }
 
 // diction's log directory as diction itself resolves it without flags: DICTION_LOG_DIR, then `log_dir` in
-// ~/.config/diction/config.toml, then diction-logs/ next to the document (here: the current directory).
+// diction.lua beside settings.lua (or, while that does not exist, in the old ~/.config/diction/config.toml), then
+// diction-logs/ next to the document (here: the current directory).
 Artifact diction_logs() {
     auto expand = [](std::string p) { return !p.empty() && p[0] == '~' ? std::string(std::getenv("HOME")) + p.substr(1) : p; };
     if (const char* env = std::getenv("DICTION_LOG_DIR"); env && *env) {
         return {"diction", "logs", "diction's session logs (raw, scribe, session, taptest), from DICTION_LOG_DIR", expand(env)};
     }
-    const char* xdg = std::getenv("XDG_CONFIG_HOME");
-    fs::path config = (xdg && *xdg ? fs::path(xdg) : fs::path(std::getenv("HOME")) / ".config") / "diction" / "config.toml";
-    std::ifstream in(config);
-    static const std::regex key(R"re(^\s*log_dir\s*=\s*["']([^"']+)["'])re");
-    std::smatch m;
-    for (std::string line; std::getline(in, line);) {
-        if (std::regex_search(line, m, key)) {
-            return {"diction", "logs", "diction's session logs (raw, scribe, session, taptest), from log_dir in " + config.string(), expand(m[1].str())};
+    fs::path config = settings_path().parent_path() / "diction.lua";
+    std::string log_dir;
+    std::error_code ec;
+    if (fs::exists(config, ec)) {
+        try {
+            nlohmann::json cfg = eval_restricted_table_file(config);
+            if (cfg.value("log_dir", nlohmann::json()).is_string()) log_dir = cfg["log_dir"].get<std::string>();
+        } catch (const std::exception&) {
+            // diction names the error when it runs; with the file broken it logs next to the document, as here
         }
+    } else {
+        const char* xdg = std::getenv("XDG_CONFIG_HOME");
+        fs::path toml = (xdg && *xdg ? fs::path(xdg) : fs::path(std::getenv("HOME")) / ".config") / "diction" / "config.toml";
+        if (fs::exists(toml, ec)) config = toml;
+        std::ifstream in(toml);
+        static const std::regex key(R"re(^\s*log_dir\s*=\s*["']([^"']+)["'])re");
+        std::smatch m;
+        for (std::string line; log_dir.empty() && std::getline(in, line);) {
+            if (std::regex_search(line, m, key)) log_dir = m[1].str();
+        }
+    }
+    if (!log_dir.empty()) {
+        return {"diction", "logs", "diction's session logs (raw, scribe, session, taptest), from log_dir in " + config.string(), expand(log_dir)};
     }
     return {"diction", "logs", "diction's session logs, next to the document: diction-logs/ here (log_dir in " + config.string() + " collects them in one place)",
             fs::current_path() / "diction-logs"};

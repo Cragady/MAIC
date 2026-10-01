@@ -7,6 +7,8 @@
 #include <memory>
 #include <string>
 
+struct lua_State;
+
 namespace maic {
 
 class NvimHost;
@@ -57,5 +59,15 @@ private:
 // one is set gets `maic.nvim`. The sandboxed tool states never see it (they get their own read-only pair).
 // nullptr clears it.
 void set_lua_nvim_host(std::shared_ptr<NvimHost> host);
+
+// A fresh state for configuration other programs read through maic (diction.lua): base, string, table, math, bit,
+// and os with only getenv, time, date and clock. No io, package, require, dofile, loadfile, debug, ffi or jit;
+// load and loadstring take text only; print goes to stderr; a run stops after a fixed instruction count. The caller
+// lua_close()s it.
+lua_State* make_restricted_lua_state();
+
+// Evaluates a file returning a table in that state, as JSON; {} when the file does not exist. Throws with the Lua
+// error (file:line: message).
+nlohmann::json eval_restricted_table_file(const std::filesystem::path& path);
 
 }  // namespace maic
