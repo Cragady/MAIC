@@ -33,6 +33,7 @@ struct StatusReport {
     std::string tripwire;  // contents of the lock file when tripped
     std::vector<ServiceReport> services;
     std::vector<std::string> actions;  // harness-level quick actions
+    std::string lazy_lock;  // nvim's lazy-lock.json (lazy_lock_summary), filled by the caller; "" prints nothing
 };
 
 StatusReport status_report(const std::vector<ServiceDef>& services);

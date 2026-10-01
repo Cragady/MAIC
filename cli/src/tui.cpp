@@ -8,6 +8,7 @@
 #include "maic/artifacts.hpp"
 #include "maic/clipboard.hpp"
 #include "maic/image.hpp"
+#include "maic/lazy_lock.hpp"
 #include "maic/places.hpp"
 #include "maic/vendor.hpp"
 #include "maic/lua.hpp"
@@ -607,6 +608,7 @@ private:
     std::string palette_for_;  // the command line the selection belongs to
     bool quit_armed_ = false;
     int view_height_ = 10;
+    std::unique_ptr<LazyLockWatch> lazy_lock_;  // nvim's lazy-lock.json; null when lazy_lock_notice is off
 };
 
 void App::welcome() {
@@ -616,6 +618,10 @@ void App::welcome() {
     for (const auto& f : agent_.instructions()) files += (files.empty() ? "" : ", ") + f.path.string();
     if (!settings_.theme_error.empty()) view_.append(Kind::Error, settings_.theme_error + "; the default theme is in use (:theme reload after fixing it)");
     if (session_tripped()) view_.append(Kind::Error, "this session is tripped (its own lock, from an earlier run): :unlock removes it");
+    if (settings_.lazy_lock_notice) {
+        lazy_lock_ = std::make_unique<LazyLockWatch>(lazy_lock_path(settings_.lazy_lock));
+        if (std::string n = lazy_lock_notice(lazy_lock_->check()); !n.empty()) view_.append(Kind::Notice, n);
+    }
     view_.append(Kind::Notice, "session transcript: " + log_path() + (files.empty() ? "" : "\ninstructions: " + files));
     if (!agent_.tools().empty() || !agent_.script_tools().empty()) {
         std::string names;
@@ -1010,6 +1016,7 @@ Element App::render_top_status() {
     if (lua_mode_) right.push_back(text(" · LUA MODE (:chat returns)") | decorate(settings_.style("shell")));
     if (!agent_.review_with_model) right.push_back(text(" · DUMB HARNESS") | decorate(settings_.style("error")));
     if (agent_.harness().confined()) right.push_back(text(" · ISOLATED") | decorate(settings_.style("notice")));
+    if (lazy_lock_ && lazy_lock_->marker()) right.push_back(text(" · lock≠") | decorate(settings_.style("notice")));
     right.push_back(text(" "));
     return hbox({hbox(left), filler(), hbox(right)}) | decorate(settings_.style("status"));
 }
@@ -1498,6 +1505,7 @@ void App::start_turn(const std::string& text_in) {
             next.clear();
             for (const auto& p : agent_.take_queued()) next += (next.empty() ? "" : "\n\n") + p;
         }
+        if (lazy_lock_) lazy_lock_->check();
         busy_ = false;
         if (quit_when_idle_.load() && !cancel_.load()) {
             quit_when_idle_ = false;
@@ -1850,7 +1858,9 @@ void App::run_command(const std::string& line) {
             }
         } else if (cmd == "status") {
             auto [provider, name] = resolve_model(agent_.providers, agent_.model);
-            std::string out = format_status(status_report(services()));
+            StatusReport report = status_report(services());
+            report.lazy_lock = lazy_lock_summary(lazy_lock_ ? lazy_lock_->check() : lazy_lock_state(lazy_lock_path(settings_.lazy_lock)));
+            std::string out = format_status(report);
             out += "model: " + name + " via " + provider.name + " at " + provider.base_url + (provider.remote() ? "  [REMOTE: data leaves this machine]" : "  [local]") + "\n";
             out += "session: " + log_path() + "\n";
             out += "mode: " + std::string(mode_name(agent_.mode.load())) + (busy_ ? "  (working)" : "  (idle)");
@@ -2217,6 +2227,12 @@ void App::run_command(const std::string& line) {
             post(Kind::Notice, "this session: " + log_path() + (settings_.record ? "\nhome: " + log_->path().parent_path().lexically_relative(sessions_dir()).string() +
                                    "  (maic sessions rehome " + log_->path().stem().string() + " project|general|NAME moves it)" : "\nnot kept: it lives in the runtime directory and is gone at logout") + "\n"
                                    "all sessions: " + sessions_dir().string() + "\n`maic sessions` lists them, `maic artifacts` cleans");
+        } else if (cmd == "lazylock" || cmd == "lazy-lock" || cmd == "lazy_lock") {
+            std::string out;
+            int rc = lazy_lock_command(arg, lazy_lock_path(settings_.lazy_lock), out);
+            if (lazy_lock_) lazy_lock_->check();
+            if (!out.empty() && out.back() == '\n') out.pop_back();
+            post(rc == 2 ? Kind::Error : Kind::Notice, out);
         } else if (cmd == "gpu" || cmd == "vram") {
             try {
                 if (arg.rfind("free", 0) == 0) {

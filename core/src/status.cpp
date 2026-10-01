@@ -202,6 +202,7 @@ std::string format_status(const StatusReport& rep) {
         if (!s.detail.empty()) out += "     " + s.detail + "\n";
         for (const auto& a : s.actions) out += "  -> " + a + "\n";
     }
+    if (!rep.lazy_lock.empty()) out += "nvim lazy-lock: " + rep.lazy_lock + "\n";
     return out;
 }
 

@@ -136,9 +136,25 @@ def main():
                and all(("cai %s" % n) in t.stdout for n in ("trans-fairy", "trans-fairy-write", "fabricate", "read", "reflow"))
                and "maic trans-fairy-write" in t.stdout and "maic cai read" in t.stdout)
     print(("ok" if exit_ok else "FAIL") + ": the dispatcher's exit code comes through and maic tools lists the cai block" + ("" if exit_ok else "\n" + r.stderr[-600:] + t.stdout[-1200:]))
+    # maic lazy-lock over a lock file in the throwaway XDG_CONFIG_HOME: none, not recorded, record, in sync, a lazy.nvim update.
+    lazy = lambda *a: subprocess.run([maic, "lazy-lock", *a], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    lock = os.path.join(home, "config", "nvim", "lazy-lock.json")
+    steps = [(lazy(), 2, "no lazy-lock.json at")]
+    os.makedirs(os.path.dirname(lock))
+    with open(lock, "w") as f:
+        f.write('{\n  "lazy.nvim": { "branch": "main", "commit": "1111111aaaa" }\n}\n')
+    steps.append((lazy(), 1, "not recorded yet"))
+    steps.append((lazy("record"), 0, "old: none"))
+    steps.append((lazy(), 0, "in sync"))
+    with open(lock, "w") as f:
+        f.write('{\n  "lazy.nvim": { "branch": "main", "commit": "2222222bbbb" }\n}\n')
+    steps.append((lazy("diff"), 1, "updated  lazy.nvim  commit 1111111..2222222  (package manager updated)"))
+    lazy_ok = all(r.returncode == rc and want in r.stdout and "AddressSanitizer" not in r.stderr for r, rc, want in steps)
+    print(("ok" if lazy_ok else "FAIL") + ": maic lazy-lock status, record and diff with their exit codes" +
+          ("" if lazy_ok else "\n" + "\n".join("exit %d: %s" % (r.returncode, r.stdout + r.stderr) for r, _, _ in steps)))
     models_ok = models_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and models_ok else 1)
+    sys.exit(0 if ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and models_ok else 1)
 
 
 def models_smoke(maic, port):

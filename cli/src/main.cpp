@@ -4,6 +4,7 @@
 #include "setup.hpp"
 #include "maic/artifacts.hpp"
 #include "maic/import.hpp"
+#include "maic/lazy_lock.hpp"
 #include "maic/paths.hpp"
 #include "maic/redact.hpp"
 #include "maic/service.hpp"
@@ -105,6 +106,8 @@ void usage(std::ostream& out = std::cerr) {
                  "                             active one marked, with where each comes from (maic help theme)\n"
                  "  themes import NAME [--as FILE]   a neovim colorscheme as a theme file, from a headless nvim with your config\n"
                  "  doctor                     what this machine has, what MAIC needs, a recommended setup\n"
+                 "  lazy-lock [record|diff]    is nvim's lazy-lock.json as recorded? record its hash (a file to commit with your\n"
+                 "                             dotfiles), or list what changed per plugin; exit 0 in sync, 1 changed, 2 no file\n"
                  "  setup                      a guided first run: prerequisites, settings, llama.cpp, ComfyUI, a model, the\n"
                  "                             tripwire; every step is a yes/no question, nothing runs without a yes\n"
                  "  status                     harness, services (host process or docker container), what each holds, quick actions\n"
@@ -1492,6 +1495,12 @@ int main(int argc, char** argv) {
         if (cmd == "cd") return cmd_cd(cargs);
         if (cmd == "gpu" || cmd == "vram") return cmd_gpu(cargs);
         if (cmd == "models") return cmd_models(cargs);
+        if (cmd == "lazy-lock" || cmd == "lazylock") {
+            std::string out;
+            int rc = maic::lazy_lock_command(cargs.empty() ? "" : cargs[0], maic::lazy_lock_path(maic::load_settings().lazy_lock), out);
+            std::cout << out;
+            return rc;
+        }
         if (cmd == "shell-init") {
             std::string shell = cargs.empty() ? "" : cargs[0];
             if (shell.empty()) {
@@ -1504,7 +1513,13 @@ int main(int argc, char** argv) {
 
         auto services = maic::load_services(maic::root_dir() / "services");
         if (cmd == "status") {
-            std::cout << maic::format_status(maic::status_report(services));
+            maic::StatusReport report = maic::status_report(services);
+            try {
+                report.lazy_lock = maic::lazy_lock_summary(maic::lazy_lock_state(maic::lazy_lock_path(maic::load_settings().lazy_lock)));
+            } catch (const std::exception&) {
+                // a broken settings file must not hide the services; the commands that need settings report it
+            }
+            std::cout << maic::format_status(report);
             return 0;
         }
         if (cmd == "up" || cmd == "down") {

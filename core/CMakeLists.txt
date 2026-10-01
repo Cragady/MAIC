@@ -9,6 +9,7 @@ add_library(maic_core
     src/harness.cpp
     src/import.cpp
     src/instructions.cpp
+    src/lazy_lock.cpp
     src/llm.cpp
     src/lua.cpp
     src/lua_tools.cpp
@@ -41,7 +42,7 @@ target_compile_options(maic_core PRIVATE -Wall -Wextra -Wpedantic -Wno-missing-f
 set(MAIC_SOURCE_ROOT "${PROJECT_SOURCE_DIR}" CACHE PATH "MAIC repository the built binary uses as its root")
 target_compile_definitions(maic_core PRIVATE MAIC_VERSION="${MAIC_GIT_VERSION}" MAIC_ROOT="${MAIC_SOURCE_ROOT}")
 
-foreach(t harness robustness llm agent session lua_tools script_tools models)
+foreach(t harness robustness llm agent session lua_tools script_tools models lazy_lock)
     add_executable(${t}_test tests/${t}_test.cpp)
     target_link_libraries(${t}_test PRIVATE maic_core httplib::httplib)
     target_compile_options(${t}_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)

@@ -2,6 +2,7 @@
 #include "doctor.hpp"
 
 #include "maic/instructions.hpp"
+#include "maic/lazy_lock.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
@@ -194,6 +195,8 @@ int run_doctor() {
     bool clip = has_program("wl-copy") || has_program("xclip") || has_program("xsel");
     line("clipboard tool (wl-copy / xclip / xsel)", clip, clip ? "" : "yanks still reach the terminal through OSC 52");
     line("nvim (for :e)", has_program("nvim"), "");
+    LazyLockState lock = lazy_lock_state(lazy_lock_path(settings.lazy_lock));
+    if (std::string s = lazy_lock_summary(lock); !s.empty()) line("nvim lazy-lock.json", lock.kind == LazyLockState::Kind::InSync, s);
     std::cout << "\n";
 
     // ---- models and the recommendation
