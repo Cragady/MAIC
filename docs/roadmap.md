@@ -6,11 +6,7 @@ Status of the built parts in detail: [README.md](../README.md), [cli/README.md](
 
 ## Next, in order
 
-### 1. Rendezvous relay for the phone
-
-An outbound WebSocket from the workstation to a small relay, end-to-end encrypted after a one-time pairing on the LAN, so the phone reaches home without an open port and the relay sees nothing. Design in [remote.md](remote.md). The tripwire stays local-only: no route on the relay can unlock. Depends on nothing; the web client works over it unchanged.
-
-### 2. Accounts on maic-server
+### 1. Accounts on maic-server
 
 Micaiah's decision (2026-09-30): accounts belong to MAIC's own server, never to llama.cpp (which has API keys only, no identities). Design document first, then build; security-sensitive, so the design is reviewed before code.
 
@@ -21,36 +17,36 @@ Micaiah's decision (2026-09-30): accounts belong to MAIC's own server, never to 
 * Best practice throughout: **argon2id** for password hashing (a hard requirement), short-lived session tokens with refresh and revocation, rate limits on login and codes, no secrets in URLs, a recovery path that does not weaken 2FA, the audit log naming the user.
 * Per-user session ownership, an admin list, the per-device tokens folded into per-user ones.
 
-Depends on 1 for phone use away from the LAN, not for the LAN itself.
+The relay (done) already carries the phone away from the LAN; accounts ride inside its tunnel unchanged.
 
-### 3. One remote interface: MAIC plus llama.cpp
+### 2. One remote interface: MAIC plus llama.cpp
 
-The web app and the phone apps present one clean interface that combines the MAIC server (sessions, approvals, the harness, services) and the llama.cpp server (models, loading and switching, sampling and XTC, a plain chat with the loaded model), so remote access gives both. llama.cpp stays behind MAIC's server, never exposed on its own; MAIC's server proxies what the app needs. A native client (Android first) follows the web app: notifications for pending approvals, pairing in the app, background reattach. Depends on 2.
+The web app and the phone apps present one clean interface that combines the MAIC server (sessions, approvals, the harness, services) and the llama.cpp server (models, loading and switching, sampling and XTC, a plain chat with the loaded model), so remote access gives both. llama.cpp stays behind MAIC's server, never exposed on its own; MAIC's server proxies what the app needs. A native client (Android first) follows the web app: notifications for pending approvals, pairing in the app, background reattach. Depends on 1.
 
-### 4. Prompt profiles per backend
+### 3. Prompt profiles per backend
 
 Measured on 2026-09-30 with qwen3.5:4b: under Ollama and under llama.cpp alike, with MAIC's tool schemas attached, a short operator rule was ignored in every system-side placement and followed when it closed the user turn; the `operator_note` provider option came out of that. Next: a profile per backend (where operator text goes, whether a per-turn note is sent, how tools are described, prefill) chosen by provider kind and overridable in settings, measured rather than assumed, and re-measured with the 9B. Depends on nothing.
 
-### 5. Tools and the polyglot spokes
+### 4. Tools and the polyglot spokes
 
 * The rest of the `tools/` design from `programming-lang-for-agentic-cli.md`: tools as manifests plus scripts in Perl, Python, TypeScript, Go, WASM and shell, run through the same authorisation step, with per-tool network grants declared in the manifest.
 * More MAIC-owned helpers in the style of `maic-storyboard`: single-entry drivers that do the mechanical part and hand a small model one decision per turn.
 
-### 6. Absorbing the rest of cai-tools
+### 5. Absorbing the rest of cai-tools
 
 `~/dev2/cai-tools` is Claude-specific tooling; import, redact and fork-at are in MAIC ([sessions.md](sessions.md)). Still in cai, each a candidate once it is clear what it means against a MAIC session: `trans-fairy compose`, `install --graft-onto`, `install --inject`, `state`, `trans-fairy-write`, `redact --project`, and the subtools notation, grant, commit, enroll, hook, edit, time, document, name, fabricate, sync, flow, read, reflow.
 
-### 7. Windows
+### 6. Windows
 
 The tripwire design for Windows is in [harness.md](harness.md); the rest needs a port of the sandbox (AppContainer), the service manager (job objects with kill-on-close, junctions instead of symlinks, portable git on PATH, `%LOCALAPPDATA%\maic` for state and the uv cache), the runtime directory for temporary transcripts, and the terminal layer.
 
-### 8. Editor and UI
+### 7. Editor and UI
 
 * nvim as the highlighter for the input (an embedded `nvim --embed` over msgpack-rpc, one instance kept alive) for people who have it; the built-in highlighter stays the default.
 * Macros, `W B E` and `%` in the input; diff rendering for edits in the conversation window.
 * A settings key to make Enter send on one-line inputs, if it ever turns out to matter.
 
-### 9. Tests and tooling
+### 8. Tests and tooling
 
 * Make the timing-sensitive agent tests (cancel, mid-turn delivery) robust under load; they have flaked once under a parallel build.
 * A UI test harness that drives the TUI through a pty in CI, like the ad-hoc driver used during development.
@@ -77,4 +73,5 @@ Built, in the order it landed, so the list above is only what is left.
 * **Two models at once (2026-10-01)**: a second llama-server, `llamacpp-2` on port 8082 over the same GGUFs with its own `context_2`; the `llamacpp-2` provider; `--ctx2` / `:ctx2`; `maic gpu` and `maic doctor` say whether the two models fit the card; the smart harness reviews on the side server when it is up, so the main model is never evicted; the Story chat deep pass points at it.
 * **Services: Docker, setup, health (2026-10-01)**: `"runtime": "docker"` in a service file (image, volumes under MAIC's trees, env, `--gpus all`), loopback only, shown as `[docker]` with its container, started, inspected, logged and stopped through docker, `services/comfyui-docker.json.example` as the shape; `maic setup`, the first run as yes/no questions over prerequisites, settings (asks `models_dir`), llama.cpp, ComfyUI, a checked Qwen3.5 GGUF and the tripwire, the plan alone off a terminal; health beyond the port: the resident model, ComfyUI's VRAM and queue under `maic status`, `ready_pattern` in the service files, the torch-versus-driver CUDA check in `maic doctor`; from the Stability Matrix assessment: `maic vendor wire comfyui` regenerating the `maic:` block of `extra_model_paths.yaml` from the manifest's models map, `maic-workflow-edit check` for node types nobody provides (offline), adopt reading the git remote and ref.
 * **Remote access, first slice**: `maic-server` with per-device tokens, TLS off loopback, audit log, SSE streaming, approvals over the API, a one-file phone-friendly web client; `Origin::Remote` always asked.
+* **Rendezvous relay for the phone (2026-10-01)**: `maic-relay`, a second binary from the same tree (cpp-httplib and OpenSSL only), which the workstation's `maic-server` dials out to with `server.relay` and holds open with backoff; the phone connects to the same relay and the two are joined by a pairing id; `maic server pair` prints a one-time code and a `maic://pair/...` string, the web client's "Pair with a relay" screen exchanges X25519 keys over the LAN through `POST /api/pair`, `pairs.json` keeps the phones, `pairs` and `unpair` manage them, `status` shows the link; frames are `len | nonce(24) | XChaCha20-Poly1305` under per-connection HKDF-SHA256 keys from a triple Diffie-Hellman, counters in the nonce refuse replays, and the relay sees pairing ids, sizes and times; requests out of the tunnel replay against the server's own listener, so the token check, audit and routes are the LAN's and there is no unlock anywhere. libsodium joined the build for it.
 * **Subagents and role profiles (2026-10-01)**: the `delegate` tool runs a child agent in the workspace under a profile (`orchestrator`, `builder`, `scout`, `reviewer`, or one from `profiles` in settings) that only narrows: mode capped by the session's, write paths, tool list, step and token budgets, its own transcript of kind `sub` listed under the parent, approvals through the parent, one level only. The additive `permission` block (allow / ask / deny over `tool:pattern`) with the `allow` list folded in; it runs after the trip patterns, secrets and system paths and never touches them.
