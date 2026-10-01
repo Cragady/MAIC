@@ -1015,7 +1015,9 @@ int main() {
         expect(find_preset(d.presets, "opus55") && find_preset(d.presets, "claude-opus-5-5") && find_preset(d.presets, "OPUS_5.5"), "hyphens, dots, spaces, underscores and a claude- prefix all match");
         expect(!find_preset(d.presets, "gpt-9"), "an unknown name is no preset");
         auto q9 = find_preset(d.presets, "qwen-9b");
-        expect(q9 && q9->model == "llamacpp/Qwen3.5-9B-Q4_K_M" && q9->context == 8192 && q9->reviewer == "same", "the local 9B preset keeps the vision-sized context");
+        auto q9v = find_preset(d.presets, "qwen-9b-vision");
+        expect(q9 && q9->model == "llamacpp/Qwen3.5-9B-Q4_K_M-text" && q9->context == 16384 && q9v && q9v->model == "llamacpp/Qwen3.5-9B-Q4_K_M" && q9v->context == 8192,
+               "the 9B has a text preset at 16k and a vision preset at 8k");
         write_file(ws / "proj" / ".maic" / "settings.lua", "return { models = { ['opus-5.5'] = { model = 'anthropic/claude-opus-5-5', context = 500000, reviewer = 'same' }, mine = { model = 'llamacpp/Other', context = 4096 } } }");
         Settings sp = load_settings(ws / "proj");
         auto over = find_preset(sp.presets, "opus-5.5");

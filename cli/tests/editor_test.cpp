@@ -716,7 +716,7 @@ int main() {
                    "applying the Opus preset sets the model, the reviewer, thinking and the context window");
             Settings sl;
             apply_preset(sl, "qwen-9b");
-            expect(sl.model == "llamacpp/Qwen3.5-9B-Q4_K_M" && sl.reviewer_model == "llamacpp/Qwen3.5-9B-Q4_K_M" && sl.context == 8192, "a local preset also sets the server's context size and reviews with itself");
+            expect(sl.model == "llamacpp/Qwen3.5-9B-Q4_K_M-text" && sl.reviewer_model == "llamacpp/Qwen3.5-9B-Q4_K_M-text" && sl.context == 16384, "a local preset also sets the server's context size and reviews with itself");
             Settings sn;
             expect(apply_preset(sn, "llamacpp/current").empty() && sn.model == Settings{}.model, "a plain model name is not a preset and changes nothing");
         }

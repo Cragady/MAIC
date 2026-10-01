@@ -24,7 +24,10 @@ std::vector<ModelPreset> default_presets() {
         {"sonnet-5", "anthropic/claude-sonnet-5", 1000000, "same", 1},
         {"haiku-4.5", "anthropic/claude-haiku-4-5-20251001", 200000, "same", 0},
         {"qwen-4b", "llamacpp/Qwen3.5-4B-Q4_K_M", 16384, "same", 0},
-        {"qwen-9b", "llamacpp/Qwen3.5-9B-Q4_K_M", 8192, "same", 0},
+        // The 9B twice: text-only (a folder with a link to the weights and no projector) at 16k, and with its
+        // vision projector at 8k, the most an 8 GB card holds for it.
+        {"qwen-9b", "llamacpp/Qwen3.5-9B-Q4_K_M-text", 16384, "same", 0},
+        {"qwen-9b-vision", "llamacpp/Qwen3.5-9B-Q4_K_M", 8192, "same", 0},
     };
 }
 
@@ -437,7 +440,7 @@ void write_default_settings(bool as_json) {
         {"server", {{"listen", d.server.listen}, {"workspaces", json::array()}, {"cert", ""}, {"key", ""}}},
         {"providers", providers},
         {"models", json::object()},
-        {"//models", "presets by short name, adding to or overriding the built-in ones (opus-5.5, sonnet-5, haiku-4.5, fable-5.1, qwen-4b, qwen-9b): models = { [\"opus-5.5\"] = { model = \"anthropic/claude-opus-5-5\", context = 1000000, reviewer = \"anthropic/claude-sonnet-5\", think = true } }. reviewer \"same\" means the model reviews itself; context sizes are your plan's figures"},
+        {"//models", "presets by short name, adding to or overriding the built-in ones (opus-5.5, sonnet-5, haiku-4.5, fable-5.1, qwen-4b, qwen-9b, qwen-9b-vision): models = { [\"opus-5.5\"] = { model = \"anthropic/claude-opus-5-5\", context = 1000000, reviewer = \"anthropic/claude-sonnet-5\", think = true } }. reviewer \"same\" means the model reviews itself; context sizes are your plan's figures"},
         {"style", styles},
     };
     std::ofstream out(p);
