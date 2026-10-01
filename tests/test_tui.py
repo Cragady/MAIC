@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The TUI through a pty: maic as a person sees it, against the fake server from cli_smoke.py.
 
-    python3 tests/test_tui.py [PATH_TO_MAIC] [-v]           (re-runs itself under `uv run --with pyte` if pyte is missing)
+    python3 tests/test_tui.py [PATH_TO_MAIC] [-v]           (re-runs itself under `uv run --offline --with pyte` if pyte is missing)
 
 Exit 77 when neither pyte nor uv is available, which ctest reports as a skip. Every case starts its own maic in
 a throwaway home (XDG_* under a temp dir, --no-record, the dumb harness, no instruction files), 120x40."""
@@ -20,8 +20,12 @@ except ImportError:
     if not uv:
         print("skipped: the TUI test needs pyte (pip install pyte, or uv on PATH to fetch it)")
         sys.exit(77)
-    sys.exit(subprocess.call([uv, "run", "--quiet", "--with", "pyte", "python", __file__] + sys.argv[1:],
-                             env=dict(os.environ, MAIC_TUI_REEXEC="1", MAIC_BIN=os.path.abspath(MAIC))))
+    # uv asks PyPI about pyte on most runs; the gate stays offline unless MAIC_NETWORK_TESTS=1 (docs/testing.md).
+    run = [uv, "run", "--quiet"] + ([] if os.environ.get("MAIC_NETWORK_TESTS") == "1" else ["--offline"]) + ["--with", "pyte", "python"]
+    if subprocess.call(run + ["-c", "import pyte"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
+        print("skipped: pyte is not in uv's cache and the network is off (MAIC_NETWORK_TESTS=1 lets uv fetch it)")
+        sys.exit(77)
+    sys.exit(subprocess.call(run + [__file__] + sys.argv[1:], env=dict(os.environ, MAIC_TUI_REEXEC="1", MAIC_BIN=os.path.abspath(MAIC))))
 
 sys.path.insert(0, HERE)
 import cli_smoke  # noqa: E402

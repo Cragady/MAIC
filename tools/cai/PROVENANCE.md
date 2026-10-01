@@ -11,7 +11,7 @@ This directory is cai-tools, Micaiah's own code, moved into MAIC whole. How to r
 | file | what |
 | :--- | :--- |
 | `bin/cai` | The wrapper: puts `src/` (a checkout) or `share/maic/tools/cai/src` (installed) and MAIC's top-level directory on `sys.path`, calls `cai.dispatch.main` with argv untouched, returns its exit code. Installed as `bin/cai`, with `bin/maic-cai` a link to it. |
-| `run_tests.py` | ctest `cai_tools`: every `tests/test_*.py` as written, from this directory, with a dist-info generated from `pyproject.toml` on the path (the entry-point registry an installed copy has, which `test_surfaces` reads), MAIC's state and runtime directories and cai's temp and grant stores in a temp dir, and `CAI_NO_REMOTE` as the default. |
+| `run_tests.py` | ctest `cai_tools`: every `tests/test_*.py` as written, from this directory, with a dist-info generated from `pyproject.toml` on the path (the entry-point registry an installed copy has, which `test_surfaces` reads), MAIC's state and runtime directories and cai's temp and grant stores in a temp dir, and `CAI_NO_REMOTE` as the default. Without `MAIC_NETWORK_TESTS=1` it skips `test_remote.py` and sets `GIT_ALLOW_PROTOCOL=file` for every suite (below, Tests). |
 | `src/cai/grammar/maic.py` | MAIC sessions as a transcript format: detection by content, where sessions live, forks (`resumed_from` and its record count, by path then by id), the projection onto the record grammar, and the record shapes this suite writes into a session. |
 | `src/cai/transfairy/maic.py` | trans-fairy's cut, compose, graft and inject on a MAIC session, producing a MAIC session. |
 | `tests/test_maic.py` | The MAIC tests: every record type detected and projected, forks, read, fabricate, trans-fairy, the backup rule, `restore`, `list-backups`, liveness. |
@@ -37,6 +37,8 @@ Every change keeps the existing behaviour on Claude Code transcripts and claude.
 ## Tests
 
 None of cai's 26 test suites was changed. `tests/test_maic.py` was added. All 27 pass under `run_tests.py` (ctest `cai_tools`).
+
+Three suites reach the network, by lifting `CAI_NO_REMOTE` so that `source.remote_payload` calls `remote.read`, which clones or fetches SOPIA over ssh into `~/.local/state/cai/mirror/SOPIA.git`: `test_remote.py` (all of its remote checks), `test_sync.py` (after it pops `CAI_NO_REMOTE`: "without it, SOPIA answers", `cli.main([])`, `cli.main(["list"])`) and `test_notation.py` (after it pops it: `cli.main([])`, `lookup`, `audit`). No other suite reaches the network; every remote lookup goes through the same `CAI_NO_REMOTE` check. MAIC's gate keeps the network off unless `MAIC_NETWORK_TESTS=1`: the runner skips `test_remote.py` and gives every suite `GIT_ALLOW_PROTOCOL=file`, so git refuses the transport before connecting and the other two take cai's unreachable-remote path. 26 suites run and pass that way ([docs/testing.md](../../docs/testing.md#the-network)).
 
 ## --help
 

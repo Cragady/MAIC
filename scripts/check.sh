@@ -40,7 +40,7 @@ echo "== python3 tests/test_tui.py $build/cli/maic -v"
 python3 tests/test_tui.py "$build/cli/maic" -v
 rc=$?
 if [ "$rc" = 77 ]; then
-    echo "check: the TUI suite was skipped (no pyte and no uv); install one of them to run it"
+    echo "check: the TUI suite was skipped (no pyte, and no uv with pyte cached; MAIC_NETWORK_TESTS=1 lets uv fetch it)"
 elif [ "$rc" != 0 ]; then
     echo "check: FAILED at: tests/test_tui.py" >&2
     exit 1

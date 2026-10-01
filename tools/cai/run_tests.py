@@ -5,8 +5,14 @@ Each tests/test_*.py is a plain script that exits 0 on pass; none use pytest or 
 run as written, from tools/cai, with the package at tools/cai/src where their own `../src` line looks
 for it. The entry-point registry they probe through importlib.metadata is served from a dist-info
 generated out of pyproject.toml, which is what an installed copy would have. MAIC's state and
-runtime directories and cai's temp and grant stores are temp dirs; CAI_NO_REMOTE is set as a default,
-and test_remote lifts it for its own remote checks as it always has.
+runtime directories and cai's temp and grant stores are temp dirs; CAI_NO_REMOTE is set as a default.
+
+The network stays off unless MAIC_NETWORK_TESTS=1. Three suites lift CAI_NO_REMOTE and so reach SOPIA's
+remote (a `git clone`/`git fetch` over ssh into ~/.local/state/cai/mirror): test_remote throughout, and
+test_sync and test_notation in the cases after they pop it. test_remote is skipped; every suite runs with
+GIT_ALLOW_PROTOCOL=file, so git refuses any network transport before connecting, and the remote cases of
+test_sync and test_notation take cai's own unreachable-remote path (the stale mirror or the local tiers).
+With MAIC_NETWORK_TESTS=1 every suite runs with the network as written (docs/testing.md).
 """
 import os
 import re
@@ -16,6 +22,7 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+NETWORK_SUITES = {"test_remote.py"}  # every case needs SOPIA's remote
 
 
 def dist_info(into):
@@ -47,11 +54,18 @@ def main(names):
             env[var] = os.path.join(tmp, var.lower())
             os.makedirs(env[var], mode=0o700)
         env["CAI_NO_REMOTE"] = "1"
+        network = os.environ.get("MAIC_NETWORK_TESTS") == "1"
+        if not network:
+            env["GIT_ALLOW_PROTOCOL"] = "file"
         env.pop("CAI_SESSION_ID", None)
         tests = sorted(f for f in os.listdir(os.path.join(HERE, "tests")) if re.match(r"test_.*\.py$", f))
         if names:
             tests = [t for t in tests if t[:-3] in names or t in names]
         failed = []
+        skipped = [] if network else [t for t in tests if t in NETWORK_SUITES]
+        tests = [t for t in tests if t not in skipped]
+        for t in skipped:
+            print("skip  %s (the network; MAIC_NETWORK_TESTS=1 runs it)" % t, flush=True)
         for t in tests:
             r = subprocess.run([sys.executable, os.path.join(HERE, "tests", t)], cwd=HERE, env=env,
                                capture_output=True, text=True, timeout=600)
@@ -60,7 +74,7 @@ def main(names):
             if not ok:
                 failed.append(t)
                 print(r.stdout[-3000:], r.stderr[-3000:], sep="\n", flush=True)
-        print("%d suites, %d failed" % (len(tests), len(failed)))
+        print("%d suites, %d failed, %d skipped" % (len(tests), len(failed), len(skipped)))
         return 1 if failed else 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

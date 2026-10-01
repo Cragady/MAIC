@@ -39,6 +39,18 @@ git config core.hooksPath .githooks         # .githooks/pre-push runs scripts/ch
 | `tui` | the real binary in a pty, read back with pyte | `tests/test_tui.py`, `tests/tui_driver.py` |
 | `lint_includes` | cpp-httplib only through `maic/http.hpp` | `tests/lint_includes.py` |
 | `comfy_node`, `workflow_edit`, `storyboard`, `danbooru_tags` | the ComfyUI node and the helper CLIs | `vendor/comfyui-maic-llamacpp`, `tools/comfyui` |
+| `cai_tools` | cai-tools' own suites as written plus `test_maic.py`, through MAIC's runner; the network stays off (below) | `tools/cai/run_tests.py`, `tools/cai/tests/` |
+| `diction` | diction against a fake whisper-server and scribe, WAV files for the mic | `diction/test_diction.py` |
+
+### The network
+
+The gate makes no outbound connection. The only suites that would are three of cai's, which reach SOPIA's published repository through a mirror (`git clone --bare` or `git fetch` over ssh into `~/.local/state/cai/mirror/SOPIA.git`, `tools/cai/src/cai/remote.py`) once they lift `CAI_NO_REMOTE`:
+
+* `test_remote.py`: every remote check (`dstore.load()` with the remote on, `remote.read()`). Skipped.
+* `test_sync.py`: the cases after it pops `CAI_NO_REMOTE` ("without it, SOPIA answers", `cli.main([])`, `cli.main(["list"])`). Runs.
+* `test_notation.py`: the cases after it pops `CAI_NO_REMOTE` (`cli.main([])`, `lookup`, `audit`). Runs.
+
+`tools/cai/run_tests.py` skips `test_remote.py` and runs every suite with `GIT_ALLOW_PROTOCOL=file`, so git refuses an ssh or https transport before it connects and the remote cases of the other two take cai's unreachable-remote path (an existing mirror as it stands, else the local tiers). cai's test files are unchanged. `MAIC_NETWORK_TESTS=1 scripts/check.sh` (or `ctest -R cai_tools` with it set) runs all of them with the network as written. The TUI suite, when python3 has no pyte, re-runs itself under `uv run --offline --with pyte`, so pyte comes from uv's cache (without `--offline` uv asks PyPI on most runs); with nothing cached it is skipped (77) unless `MAIC_NETWORK_TESTS=1` lets uv fetch it.
 
 A single suite: `build/core/agent_test`, or `ctest --preset default -R agent`. Every C++ suite prints one line per check and exits with the failure count (`core/tests/check.hpp`).
 
