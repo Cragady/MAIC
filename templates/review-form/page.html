@@ -85,6 +85,15 @@ button:disabled { opacity: .45; cursor: default; }
 .check { display: inline-flex; gap: 6px; align-items: center; font-size: .9rem; color: var(--muted); }
 .sent { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; display: grid; gap: 4px; }
 .sent p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.flag { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.switch { display: inline-flex; gap: 8px; align-items: center; font-size: .9rem; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.slider { width: 36px; height: 20px; border-radius: 999px; background: var(--line); position: relative; transition: background .15s; flex: none; }
+.slider::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface); transition: transform .15s; }
+.switch input:checked + .slider { background: var(--accent); }
+.switch input:checked + .slider::after { transform: translateX(16px); }
+.switch input:focus-visible + .slider { outline: 2px solid var(--accent); outline-offset: 2px; }
+del { color: var(--muted); }
 .errbar { background: var(--open-soft); color: var(--open); border: 1px solid var(--open); border-radius: 6px; padding: 6px 10px; margin: 0; font-weight: 700; }
 .fb { margin: 0; font-size: .88rem; min-height: 1.3em; }
 .fb.ok { color: var(--res); }
@@ -130,6 +139,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   <p class="errbar" id="page-err" hidden></p>
   <div class="bar">
     <span class="grow"><span class="status" id="status">Loading saved answers…</span><br><span class="counts" id="counts"></span></span>
+    <span class="flag"><label class="switch" for="flag-bridge"><input type="checkbox" role="switch" id="flag-bridge"><span class="slider" aria-hidden="true"></span> Ctrl+G bridge</label><span class="fb err" id="flag-bridge-msg" aria-live="polite"></span></span>
     <button id="fold-all" type="button">Collapse all boxes</button>
     <button id="unfold-all" type="button">Expand all boxes</button>
     <button class="primary" id="submit" type="button">Submit</button>
@@ -180,8 +190,8 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   var DOC = "review/" + DATA.id;
   var LOCAL = "review-draft:" + DATA.id;
   var STATES = ["open", "addressed", "resolved"];
-  var state = { answers: {}, status: {}, doc_status: "open", folded: {}, merges: {}, kept: {}, side_prompts: [], resolve_requested: false, submitted: false, submittedAt: null, savedAt: null };
-  var VERSION = 8;
+  var state = { answers: {}, status: {}, doc_status: "open", folded: {}, merges: {}, kept: {}, side_prompts: [], flags: { ctrl_g_bridge: false }, resolve_requested: false, submitted: false, submittedAt: null, savedAt: null };
+  var VERSION = 9;
   var db = null, comments = null, timer = null, queue = Promise.resolve(), pending = 0, replies = [];
   function logEvent(what, ok, detail) {
     state.events = (state.events || []).concat([{ at: new Date().toISOString(), what: what, ok: ok, detail: detail || "" }]).slice(-30);
@@ -194,7 +204,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   window.addEventListener("error", function (e) { showError((e.message || "error") + (e.lineno ? " (line " + e.lineno + ")" : "")); });
   window.addEventListener("unhandledrejection", function (e) { showError("unhandled: " + (e.reason && (e.reason.code || e.reason.message) || e.reason)); });
   var KEY = {
-    version: 3,
+    version: 4,
     note: "One-off definition: this key describes how this submission's data is laid out. It holds until the next submit from this page; that submit carries its own key, the same one if nothing is applied differently, a changed one if it is.",
     answers: "Reply text by field id.",
     ids: {
@@ -217,6 +227,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     merges: "Combined boxes by merge id: card, members (field ids in order), text (each part starts with a line '── <field id> ──'), originals (each member's text when combined). A member's own answers entry is stale while it is merged; read the merge text.",
     kept: "Field id to combined text kept beside that box after a back-to-default whose marker lines were damaged.",
     side_prompts: "Sent side prompts in order: { text, at, with ('own' or 'document'), refs (field ids referenced as [[field id]] in the text), after_reply (id of the most recent reply when it was sent, or null) }. A side prompt's reply is the item in review-replies whose side_prompt is its 1-based position.",
+    flags: "Feature switches the viewer set: ctrl_g_bridge (true or false) records the choice for the Ctrl+G bridge, which is not built; the switch changes nothing else yet.",
     events: "The last 30 page events { at, what, ok, detail }: references, sends, failed saves and page errors, for diagnosis.",
     submitted: "true after the overall Submit; editing afterwards sets it back to false.",
     times: "submittedAt, savedAt and side prompt at are ISO 8601 UTC."
@@ -226,11 +237,11 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function btn(text, cls) { var b = el("button", cls, text); b.type = "button"; return b; }
   function inline(text, into) {
-    var re = /(`[^`]+`|\*\*[^*]+\*\*)/g, last = 0, m;
+    var re = /(`[^`]+`|\*\*[^*]+\*\*|~~[^~]+~~)/g, last = 0, m;
     while ((m = re.exec(text))) {
       if (m.index > last) into.appendChild(document.createTextNode(text.slice(last, m.index)));
       var t = m[0];
-      into.appendChild(t[0] === "`" ? el("code", null, t.slice(1, -1)) : el("strong", null, t.slice(2, -2)));
+      into.appendChild(t[0] === "`" ? el("code", null, t.slice(1, -1)) : t[0] === "~" ? el("del", null, t.slice(2, -2)) : el("strong", null, t.slice(2, -2)));
       last = re.lastIndex;
     }
     if (last < text.length) into.appendChild(document.createTextNode(text.slice(last)));
@@ -464,7 +475,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     $("misc-sec").hidden = !misc.length;
     renderCards(misc, $("misc"), function (m) { return m.who; });
     var own = $("own"); own.textContent = "";
-    [["Improvements", DATA.improvements || []], ["To do", DATA.todo || []]].forEach(function (pair) {
+    [["Improvements", DATA.improvements || []], ["To do", DATA.todo || []], ["Notes", DATA.notes || []]].forEach(function (pair) {
       if (!pair[1].length) return;
       var g = el("div", "group"); g.appendChild(el("h3", null, pair[0]));
       var ul = el("ul"); pair[1].forEach(function (t) { ul.appendChild(inline(t, el("li"))); }); g.appendChild(ul); own.appendChild(g);
@@ -599,6 +610,15 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     if (e.key === "Escape") closeModal(false);
     if (e.key === "Tab") { var y = $("modal-yes"), n = $("modal-no"); if (e.shiftKey && document.activeElement === y) { e.preventDefault(); n.focus(); } else if (!e.shiftKey && document.activeElement === n) { e.preventDefault(); y.focus(); } }
   });
+  var flag = $("flag-bridge");
+  function showFlag() {
+    flag.checked = !!(state.flags && state.flags.ctrl_g_bridge);
+    $("flag-bridge-msg").textContent = flag.checked ? "Not built yet: the switch only records your choice." : "";
+  }
+  flag.addEventListener("change", function () {
+    state.flags = Object.assign({}, state.flags, { ctrl_g_bridge: flag.checked });
+    logEvent("flag ctrl_g_bridge", true, String(flag.checked)); showFlag(); touch();
+  });
   $("fold-all").addEventListener("click", function () { foldIn(document, true); });
   $("unfold-all").addEventListener("click", function () { state.folded = {}; touch(); render(); });
 
@@ -610,6 +630,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
       Object.keys(saved.addressed).forEach(function (k) { state.status[k] = saved.addressed[k] ? "addressed" : "open"; });
     }
     delete state.addressed;
+    state.flags = state.flags || { ctrl_g_bridge: false };
     state.status = state.status || {}; state.folded = state.folded || {}; state.side_prompts = state.side_prompts || []; state.doc_status = state.doc_status || "open";
   }
   function rescue() {
@@ -621,7 +642,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     if (got) { logEvent("rescued text from boxes", true, String(got)); touch(); say("Recovered " + got + " box" + (got === 1 ? "" : "es") + " of text the page had not saved. It is saving now.", true); }
   }
   try { var d0 = JSON.parse(localStorage.getItem(LOCAL) || "null"); if (d0) adopt(d0); } catch (e) {}
-  render(); mark.checked = !!state.resolve_requested;
+  render(); mark.checked = !!state.resolve_requested; showFlag();
   setTimeout(rescue, 2000);
   var use = window.claude && window.claude.use ? window.claude.use.bind(window.claude) : function () { return Promise.resolve(null); };
   use("comments").then(function (c) { comments = c; });
@@ -641,7 +662,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
       render();
       Object.keys(typed).forEach(function (id) { var t = $("f-" + id); if (t && !/\S/.test(t.value)) t.value = typed[id]; });
       rescue();
-      mark.checked = !!state.resolve_requested; setStatus(state.savedAt ? "Loaded answers saved " + new Date(state.savedAt).toLocaleString() : "Ready. Nothing saved yet.");
+      mark.checked = !!state.resolve_requested; showFlag(); setStatus(state.savedAt ? "Loaded answers saved " + new Date(state.savedAt).toLocaleString() : "Ready. Nothing saved yet.");
     });
   }).catch(function () { setStatus("Shared store unavailable: answers save in this browser only", true); });
 })();

@@ -36,4 +36,10 @@ python3 -c "import sys; p=open('page.html').read(); d=open('review.json').read()
 
 * Adding textareas (more boxes than the blocks give).
 * More expressive references from the Side Prompt (ranges, excerpts, whole cards).
-* Optional, leaning no: a Ctrl+G bridge that writes the After and Side prompts to a markdown file Claude Code's prompt editor can read in (under an hour).
+* The Ctrl+G bridge, behind a switch the page already shows and records (`flags.ctrl_g_bridge`, with "not built yet" beside it): sync on demand with a file under MAIC's state directory; flipping the switch clears the linked sections on both sides. The full version needs MAIC's own artifact system, where a watched file syncs both ways.
+* A view of an artifact in MAIC's TUI with keychords for the same functions; nvim makes moving, yanking and editing several fields easier, and the `--bare` TUI may not reach full parity.
+* `notes` in the data renders as a Notes list among the page's own docs (`~~strike~~` supported).
+
+## Notes
+
+* ~~Affair Prompt~~ `After Prompt`: a misreading worth keeping, given the tool is about to be renamed `maid`.
