@@ -126,9 +126,9 @@
         "turn": {"type": "integer", "minimum": 1},
         "origin": {"$ref": "#/$defs/Origin"},
         "final": {"type": "boolean"},
-        "ended_by": {"type": "string"},
+        "ended_by": {"description": "What ended the response: cancel, error, a steering action (steer, drop, further, interrupt, keep, halt), or steer for a response.steer.", "type": "string"},
         "sequence_number": {"type": "integer", "minimum": 0},
-        "queued": {"description": "response.create on a busy lane: the input was delivered into this running response.", "type": "boolean"},
+        "queued": {"description": "response.create on a busy lane: the response waits behind the running one (status queued); with maic.now, the input went into the running response.", "type": "boolean"},
         "code": {"description": "A failed response's code when OpenAI's closed ResponseErrorCode has none for it.", "type": "string", "pattern": "^maic_"}
       },
       "required": ["turn", "origin"]
@@ -297,6 +297,19 @@
       }
     },
     "Choice": {"enum": ["yes", "no", "always", "trip"]},
+    "SteerAction": {"description": "The six steering actions of section 11.", "enum": ["steer", "drop", "further", "interrupt", "keep", "halt"]},
+    "SteerResult": {
+      "description": "response.steer and maic.steer: the steer the engine accepted, OpenAI's `steer` object.",
+      "type": "object",
+      "properties": {
+        "steer": {
+          "type": "object",
+          "properties": {"id": {"type": "string", "minLength": 1}, "previous_response_id": {"type": "string", "minLength": 1}},
+          "required": ["id", "previous_response_id"]
+        }
+      },
+      "required": ["steer"]
+    },
     "IndexParams": {
       "description": "maic.index: one entry changed, or one left the index. Replaces state; carries no sequence_number.",
       "anyOf": [

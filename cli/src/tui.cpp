@@ -310,7 +310,9 @@ private:
     bool remote_ = false, think_ = false, dumb_ = false, confined_ = false;
     size_t queued_ = 0;
     nlohmann::json usage_ = nlohmann::json::object();
-    std::string response_;   // the running response
+    std::string response_;   // the running response (a paused turn's last)
+    bool paused_ = false;    // an interrupt (Ctrl-S) paused the turn
+    bool pause_menu_ = false;  // its menu is up: Ctrl-Q, s, d, f, k, h; Esc leaves it to type a message
     long turn_seq_ = -1;     // the stream's position before the turn this client started: an idle at or before it is an earlier turn's
     std::chrono::steady_clock::time_point response_t0_;
     bool last_cancelled_ = false;
@@ -377,6 +379,7 @@ private:
     void answer(Approval a, std::string feedback = "");
     void answer_question(std::string text);
     void cancel_turn();
+    void steer(const std::string& action);  // maic.steer on the running response; the input, if any, is its note
     void submit(std::string text, bool now);
     void start_turn(const std::string& text);
     std::string take_dropped_image(const std::string& text);
@@ -403,6 +406,8 @@ private:
     std::optional<PendingConfirm> confirm_;
     Element render_confirm();
     bool handle_confirm(const Event& e);
+    Element render_pause_menu();
+    bool handle_pause_menu(const Event& e);
     std::vector<TodoItem> todo_;
 
     std::atomic<bool> busy_{false};
@@ -627,9 +632,25 @@ void App::on_event(const nlohmann::json& e) {
         view_.append(Kind::User, text + (pics == 0 ? "" : "\n(with " + std::to_string(pics) + " image" + (pics == 1 ? "" : "s") + ")"));
     } else if (type == "response.created") {
         response_ = e["response"].value("id", "");
-        response_t0_ = std::chrono::steady_clock::now();
-        tool_calls_ = 0;
-        fire("MaicTurnStart", {{"model", e["response"].value("model", model_)}});
+        paused_ = pause_menu_ = false;
+        // A successor (a steer's, or a paused turn resumed) continues the turn: its footer comes at the turn's end.
+        if (!e["response"]["previous_response_id"].is_string()) {
+            response_t0_ = std::chrono::steady_clock::now();
+            tool_calls_ = 0;
+            fire("MaicTurnStart", {{"model", e["response"].value("model", model_)}});
+        }
+    } else if (type == "maic.steer.applied") {
+        std::string action = e.value("action", ""), note = e.value("note", "");
+        std::string line = "↯ " + action + (e.value("trigger", "") == "ban" ? " (a ban's steer)" : "") + (note.empty() ? "" : ": " + note);
+        if (e.contains("waits_for")) line += "  (at the next step)";
+        if (!e["withdrawn"].empty()) line += "  (withdrew " + std::to_string(e["withdrawn"].size()) + " waiting)";
+        view_.append(Kind::Notice, line);
+    } else if (type == "maic.turn.paused") {
+        paused_ = pause_menu_ = true;
+    } else if (type == "error") {
+        view_.append(Kind::Notice, "halted: " + e.value("message", ""));
+    } else if (type == "response.output_text.done") {
+        if (e.contains("maic") && e["maic"].contains("trimmed")) view_.replace_last(Kind::Assistant, e.value("text", ""));
     } else if (type == "response.output_text.delta" || type == "response.reasoning_text.delta") {
         view_.append_to_last(type == "response.output_text.delta" ? Kind::Assistant : Kind::Thinking, e.value("delta", ""));
     } else if (type == "response.output_item.added") {
@@ -673,6 +694,10 @@ void App::on_event(const nlohmann::json& e) {
     } else if (type == "response.output_item.done") {
         const nlohmann::json& item = e["item"];
         std::string kind = item.value("type", "");
+        if (kind == "message" && item.contains("maic") && item["maic"].value("status", "") == "discarded") {
+            view_.append(Kind::Notice, "(the reply above was discarded: the model never sees it)");
+            return;
+        }
         if ((kind != "function_call_output" && kind != "shell_call_output") || !item.contains("maic")) return;  // a call that never ran keeps its live lines
         std::string text = kind == "function_call_output" ? item.value("output", "")
                                                           : item["output"].empty() ? "" : item["output"][0].value("stdout", "");
@@ -745,8 +770,13 @@ void App::on_event(const nlohmann::json& e) {
     } else if (type == "maic.session.title") {
         std::string text = e.value("text", "");
         view_.append(Kind::Notice, e.value("source", "") == "auto" ? "titled: " + text + "  (:rename changes it)" : "titled: " + text);
-    } else if (type == "response.completed" || type == "response.failed" || type == "maic.response.cancelled") {
+    } else if (type == "response.completed" || type == "response.failed" || type == "maic.response.cancelled" || type == "response.incomplete") {
         const nlohmann::json& r = e["response"];
+        if (!r["maic"].value("final", true)) {
+            if (type == "maic.response.cancelled") view_.append(Kind::Notice, "paused · Ctrl-Q resumes · s steer · d drop · f further · k keep · h halt · Esc types a message");
+            screen_.PostEvent(Event::Custom);
+            return;  // the turn goes on
+        }
         if (type == "response.failed") view_.append(Kind::Error, r.contains("error") && r["error"].is_object() ? r["error"].value("message", "") : "");
         last_cancelled_ = type == "maic.response.cancelled";
         // The footer: model, how long the response took, how many tools ran.
@@ -1200,7 +1230,8 @@ Element App::render_top_status() {
         right.push_back(text(" · todo " + std::to_string(done) + "/" + std::to_string(todo_.size()) + " done") | decorate(settings_.style("notice")));
     }
     if (queued_) right.push_back(text(" · " + std::to_string(queued_) + " queued (:w now)") | decorate(settings_.style("notice")));
-    if (busy_) right.push_back(text(" · working… ctrl-c interrupts") | decorate(settings_.style("notice")));
+    if (paused_) right.push_back(text(" · PAUSED: ctrl-q resumes") | decorate(settings_.style("notice")));
+    else if (busy_) right.push_back(text(" · working… ctrl-c interrupts, ctrl-s pauses") | decorate(settings_.style("notice")));
     if (shell_busy_) right.push_back(text(" · shell running") | decorate(settings_.style("shell")));
     if (lua_mode_) right.push_back(text(" · LUA MODE (:chat returns)") | decorate(settings_.style("shell")));
     if (dumb_) right.push_back(text(" · DUMB HARNESS") | decorate(settings_.style("error")));
@@ -1336,10 +1367,11 @@ Element App::render() {
     // saved settings on exit.
     {
         termios t;
-        if (tcgetattr(STDIN_FILENO, &t) == 0 && (t.c_cc[VINTR] != _POSIX_VDISABLE || t.c_cc[VQUIT] != _POSIX_VDISABLE || !(t.c_lflag & ISIG))) {
+        if (tcgetattr(STDIN_FILENO, &t) == 0 && (t.c_cc[VINTR] != _POSIX_VDISABLE || t.c_cc[VQUIT] != _POSIX_VDISABLE || !(t.c_lflag & ISIG) || (t.c_iflag & IXON))) {
             t.c_lflag |= ISIG;
             t.c_cc[VINTR] = _POSIX_VDISABLE;
             t.c_cc[VQUIT] = _POSIX_VDISABLE;
+            t.c_iflag &= ~IXON;  // Ctrl-S and Ctrl-Q are the pause keys, not flow control
             tcsetattr(STDIN_FILENO, TCSANOW, &t);
         }
     }
@@ -1361,10 +1393,11 @@ Element App::render() {
         if (confirm_) approval_rows += static_cast<int>(confirm_->lines.size()) + 2;
         if (question_) approval_rows = 4 + static_cast<int>(question_->options.size());
     }
+    if (pause_menu_ && paused_) approval_rows += 4;
     view_height_ = std::max(1, size.dimy - input_rows - palette_rows - 3 - approval_rows - (focused ? 2 : 0));
     Element conversation = view_.render(settings_, focused ? width - 2 : width, view_height_);
     if (focused) conversation = conversation | borderLight | decorate(settings_.style("focus"));
-    return vbox({conversation, render_approval(), render_question(), render_confirm(), render_top_status(), separator() | decorate(settings_.style("separator")), input, palette,
+    return vbox({conversation, render_approval(), render_question(), render_confirm(), render_pause_menu(), render_top_status(), separator() | decorate(settings_.style("separator")), input, palette,
                  render_bottom_status()});
 }
 
@@ -1433,6 +1466,11 @@ bool App::handle(Event e) {
     if (question_) return handle_question(e);
     if (!approval_ && confirm_) return handle_confirm(e);
     if (asking()) return handle_approval(e);
+    if (pause_menu_ && paused_) return handle_pause_menu(e);
+    // Ctrl-S pauses a running turn (the interrupt steer), Ctrl-Q resumes a paused one: MAIC keeps the terminal's
+    // flow control off, so neither stops the output.
+    if (raw == "\x13" && busy_ && !paused_ && !response_.empty()) return steer("interrupt"), true;
+    if (raw == "\x11" && paused_) return steer("steer"), true;
 
     if (raw == "\x03") {  // Ctrl-C: interrupt, then clear input, then quit
         if (quit_when_idle_.exchange(false)) post(Kind::Notice, "staying after the reply (:wq cancelled)");
@@ -1616,6 +1654,43 @@ void App::cancel_turn() {
     drain();
 }
 
+// Ctrl-S (interrupt), Ctrl-Q (steer, to resume) and the pause menu: a steering action on the running response or the
+// paused turn. What is in the input goes with steer, drop and further as their note.
+void App::steer(const std::string& action) {
+    nlohmann::json params = {{"session", session_}, {"response_id", response_}, {"action", action}};
+    std::string note = editor_.text();
+    while (!note.empty() && std::isspace(static_cast<unsigned char>(note.back()))) note.pop_back();
+    bool with_note = !note.empty() && (action == "steer" || action == "drop" || action == "further");
+    if (with_note) params["note"] = note;
+    nlohmann::json reply = call("maic.steer", params);
+    drain();
+    if (reply.contains("error")) {
+        post(Kind::Error, reply["error"].value("message", "the engine refused the steer"));
+        return;
+    }
+    if (with_note) editor_.clear();
+    pause_menu_ = false;
+}
+
+Element App::render_pause_menu() {
+    if (!pause_menu_ || !paused_) return emptyElement();
+    return window(text(" paused ") | bold, vbox({text("[Ctrl-Q] resume  [s] steer  [d] drop  [f] further  [k] keep  [h] halt"),
+                                                text("what is in the input goes with s, d and f as their note; Esc leaves this to type a message (Enter resumes with it)") | dim})) |
+           decorate(settings_.style("approval"));
+}
+
+bool App::handle_pause_menu(const Event& e) {
+    const std::string& k = e.input();
+    if (e == Event::Escape) pause_menu_ = false;
+    else if (k == "\x11" || k == "s") steer("steer");
+    else if (k == "d") steer("drop");
+    else if (k == "f") steer("further");
+    else if (k == "k") steer("keep");
+    else if (k == "h") steer("halt");
+    else if (k == "\x03") cancel_turn();
+    return true;
+}
+
 void App::set_focus(Focus f) {
     focus_ = f;
     view_.set_focused(f == Focus::Conversation);
@@ -1650,6 +1725,16 @@ void App::submit(std::string text, bool now) {
     if (lua_mode_) {
         run_lua(text, false);
         return;
+    }
+    if (busy_ && !now && !response_.empty()) {
+        // A message for the running response (or the paused turn, which it resumes): OpenAI's response.steer.
+        nlohmann::json reply = call("response.steer", {{"previous_response_id", response_}, {"input", text}});
+        if (!reply.contains("error")) {
+            drain();
+            if (!paused_) post(Kind::Notice, "queued; it reaches the model at its next step (:w now to force it)");
+            return;
+        }
+        // It ended meanwhile: this one starts the next turn.
     }
     if (busy_) {
         nlohmann::json params = {{"conversation", session_}, {"input", text}};
@@ -1851,7 +1936,7 @@ void App::run_command(const std::string& line) {
     static const std::set<std::string> engine_owned = {"mode", "harness", "model", "models", "think", "undo", "export", "rename", "title", "budget", "compact",
                                                        "clear", "trip", "status", "todo", "tools", "init", "cd", "ban", "sampling", "sampler", "image", "img",
                                                        "forbid", "allow", "rule", "rules", "ctx", "context-size", "ctx2", "prefill", "prefix", "system",
-                                                       "instructions", "session"};
+                                                       "instructions", "session", "steer", "steering"};
     try {
         if (cmd == "wq") {
             // Send, then leave once the reply is in. With nothing to send it is just :q.

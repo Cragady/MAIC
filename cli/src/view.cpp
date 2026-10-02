@@ -161,6 +161,14 @@ void View::append_to_last(Kind kind, std::string_view delta) {
     ++version_;
 }
 
+void View::replace_last(Kind kind, std::string text) {
+    std::lock_guard lock(mu_);
+    auto it = std::find_if(entries_.rbegin(), entries_.rend(), [&](const Entry& e) { return e.kind == kind; });
+    if (it == entries_.rend()) return;
+    it->text = std::move(text);
+    ++version_;
+}
+
 void View::live_output(std::string_view text) {
     std::lock_guard lock(mu_);
     auto it = std::find_if(entries_.rbegin(), entries_.rend(), [](const Entry& e) { return e.live; });

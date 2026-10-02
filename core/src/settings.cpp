@@ -284,6 +284,74 @@ std::pair<std::string, size_t> literal_lua_choice(const fs::path& lua_path) {
     return out;
 }
 
+}  // namespace
+
+bool SteeringSettings::allows(const std::string& action, bool remote) const {
+    const auto& side = remote ? clients_remote : clients_local;
+    return std::find(actions.begin(), actions.end(), action) != actions.end() && std::find(side.begin(), side.end(), action) != side.end();
+}
+
+void read_steering(SteeringSettings& into, const json& t, const std::string& where, bool global, bool narrow_only, std::vector<std::string>& warnings) {
+    if (!t.is_object()) throw std::runtime_error(where + " must be a table");
+    const auto all = SteeringSettings::steer_actions();
+    auto list = [&](const json& v, const std::string& key) {
+        if (v.is_string() && (v == "all" || v == "none")) return v == "all" ? all : std::vector<std::string>{};
+        if (!v.is_array()) throw std::runtime_error(where + "." + key + " must be a list of actions, \"all\" or \"none\"");
+        std::vector<std::string> out;
+        for (const auto& a : v) {
+            std::string name = a.is_string() ? a.get<std::string>() : "";
+            if (std::find(all.begin(), all.end(), name) == all.end()) throw std::runtime_error(where + "." + key + ": no steering action " + a.dump() + " (steer, drop, further, interrupt, keep, halt)");
+            out.push_back(name);
+        }
+        return out;
+    };
+    auto narrowed = [&](std::vector<std::string>& current, const std::vector<std::string>& given, const std::string& key) {
+        if (narrow_only) {
+            for (const auto& a : given) {
+                if (std::find(current.begin(), current.end(), a) == current.end()) throw std::runtime_error(where + "." + key + ": " + a + " is not allowed above; this layer can only remove actions");
+            }
+        }
+        current = given;
+        into.from[key] = where;
+    };
+    for (const auto& [key, v] : t.items()) {
+        if (key == "actions") {
+            narrowed(into.actions, list(v, key), key);
+        } else if (key == "ban_actions") {
+            auto given = list(v, key);
+            if (std::find(given.begin(), given.end(), "further") != given.end()) throw std::runtime_error(where + ".ban_actions: further is never a ban's (it would go deeper into the banned topic)");
+            narrowed(into.ban_actions, given, key);
+        } else if (key == "halt_message") {
+            if (!v.is_string() || v.get<std::string>().empty()) throw std::runtime_error(where + ".halt_message must be text");
+            into.halt_message = v;
+            into.from[key] = where;
+        } else if (key == "drop_trim") {
+            std::string d = v.is_string() ? v.get<std::string>() : "";
+            if (d != "none" && d != "sentence" && d != "paragraph" && d != "all") throw std::runtime_error(where + ".drop_trim must be none, sentence, paragraph or all");
+            into.drop_trim = d;
+            into.from[key] = where;
+        } else if (key == "on_running_tool") {
+            std::string d = v.is_string() ? v.get<std::string>() : "";
+            if (d != "cancel" && d != "wait") throw std::runtime_error(where + ".on_running_tool must be cancel or wait");
+            into.on_running_tool = d;
+            into.from[key] = where;
+        } else if (key == "clients") {
+            if (!global) {
+                warnings.push_back(where + ".clients is ignored: only your global settings file sets it");
+                continue;
+            }
+            if (!v.is_object()) throw std::runtime_error(where + ".clients must be a table: { [\"local\"] = \"all\", remote = \"all\" }");
+            if (v.contains("local")) into.clients_local = list(v["local"], "clients.local");
+            if (v.contains("remote")) into.clients_remote = list(v["remote"], "clients.remote");
+            into.from["clients"] = where;
+        } else {
+            throw std::runtime_error(where + ": steering has no key " + key + " (actions, halt_message, drop_trim, on_running_tool, clients, ban_actions)");
+        }
+    }
+}
+
+namespace {
+
 // Applies one settings location over `s`: `<stem>.lua` when it exists (a chunk returning a table), else
 // `<stem>.json`. Scalars replace, providers merge by name, styles merge by role. `global` is the user's own
 // file: its Lua runs at the tier it names literally (full by default), and only it sets global_lua,
@@ -469,6 +537,13 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
                 }
                 if (pj.contains("reviewer")) p.reviewer = pj["reviewer"].get<bool>();
                 p.model = pj.value("model", p.model);
+                if (pj.contains("steering")) {
+                    // Checked now against the full set; the session's own narrows it again when it runs as the agent.
+                    SteeringSettings check;
+                    read_steering(check, pj["steering"], where + ".steering", global, true, s.warnings);
+                    p.steering = pj["steering"];
+                    if (!global) p.steering.erase("clients");
+                }
                 bool replaced = false;
                 for (auto& existing : s.agents) {
                     if (existing.name == name) existing = p, replaced = true;
@@ -495,12 +570,11 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.reviewer_model = j.value("reviewer_model", s.reviewer_model);
         s.reviewer_budget_tokens = j.value("reviewer_budget_tokens", s.reviewer_budget_tokens);
         s.dumb_auto_ok = j.value("dumb_auto_ok", s.dumb_auto_ok);
+        if (j.contains("steering")) read_steering(s.steering, j["steering"], path.string() + ": steering", global, !global, s.warnings);
         if (j.contains("bans")) {
             Bans b = Bans::from_json(j["bans"]);
-            // Layers add strings and tokens; the scalar knobs take the nearest value.
-            s.bans.strings.insert(s.bans.strings.end(), b.strings.begin(), b.strings.end());
-            s.bans.tokens.insert(s.bans.tokens.end(), b.tokens.begin(), b.tokens.end());
-            s.bans.patterns.insert(s.bans.patterns.end(), b.patterns.begin(), b.patterns.end());
+            // Layers add strings, patterns and tokens; the scalar knobs take the nearest value.
+            s.bans.add(b);
             if (j["bans"].contains("window")) s.bans.window = b.window;
             if (j["bans"].contains("retries")) s.bans.retries = b.retries;
             if (j["bans"].contains("replacement")) s.bans.replacement = b.replacement;
@@ -602,6 +676,16 @@ Settings load_settings(const fs::path& workspace) {
         for (const auto& n : p.subagents) known(n, "subagents");
         if (!p.subagent.empty() && p.subagent != "same") known(p.subagent, "subagent");
         if (!p.on_limit.empty()) known(p.on_limit, "on_limit");
+    }
+    // A ban's steer is checked once every layer has said which actions bans may name.
+    for (const auto& steers : {s.bans.string_steers, s.bans.pattern_steers}) {
+        for (const auto& b : steers) {
+            if (b.action.empty()) continue;
+            if (std::find(s.steering.ban_actions.begin(), s.steering.ban_actions.end(), b.action) == s.steering.ban_actions.end()) {
+                throw std::runtime_error("bans: an entry names steer = \"" + b.action + "\", which is not in steering.ban_actions" +
+                                         (b.action == "further" ? " (further never is: it would go deeper into the banned topic)" : ""));
+            }
+        }
     }
     if (const char* bare = std::getenv("MAIC_BARE"); bare && std::string(bare) == "1") s.bare = true;
     // The theme is read once every layer has had its say; a broken one leaves the built-in default and the reason.
@@ -760,6 +844,7 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"//reviewer_budget_tokens", "the reviewer's own token cap (it also counts toward budget_tokens); past it every action it would review is asked. 0: none"},
         {"dumb_auto_ok", d.dumb_auto_ok},
         {"bans", {{"strings", nlohmann::json::array()}, {"patterns", nlohmann::json::array()}, {"tokens", nlohmann::json::array()}, {"retries", 3}, {"replacement", "[banned]"}, {"ignore_case", false}, {"window", 64}}},
+        {"//steering", "the six steering actions (steer, drop, further, interrupt, keep, halt): which a session accepts (actions), from which clients (clients, this file only), drop's trim, what steer and drop do to a running tool, the halt message, and which actions a ban entry may name. :steering shows them. docs/design/engine-protocol.md section 11"},
         {"//bans", "strings and POSIX regex patterns the model must not say (cut and re-asked, then replaced); tokens (ids, or text) become logit_bias on OpenAI-compatible providers. docs/bans.md"},
         {"sampling", nlohmann::json::object()},
         {"//sampling", "sampler keys sent with every request: temperature, top_k, top_p, min_p, seed, repeat_penalty; xtc_probability / xtc_threshold on llama.cpp-style servers only. :sampling changes them live"},

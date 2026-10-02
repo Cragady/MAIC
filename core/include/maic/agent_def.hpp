@@ -2,6 +2,8 @@
 
 #include "maic/harness.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <string>
 #include <vector>
 
@@ -31,6 +33,7 @@ struct AgentDef {
     std::vector<std::string> tools;        // allow-list of tool names; empty = all
     bool reviewer = true;                  // the smart harness reads its commands and writes (when the session's is on)
     std::string model;                     // "" = chosen by the session's preset (docs/settings.md)
+    nlohmann::json steering;               // `agents.NAME.steering`, as written: narrows the session's when it runs as this agent
 
     // An agent with no write tool on its list changes nothing: writes and commands that could write are denied.
     bool read_only() const;

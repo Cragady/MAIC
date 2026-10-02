@@ -365,12 +365,23 @@ struct Server::Impl {
         });
 
         // response.create, then the session's stream from just before its input until the turn is over. Mid-turn the
-        // message is delivered into the running response at its next boundary.
+        // message is response.steer: it reaches the running response at its next boundary (or resumes a paused turn).
         srv->Post(R"(/api/sessions/([^/]+)/messages)", [this](const httplib::Request& req, httplib::Response& res) {
             std::string text = body_of(req).value("text", "");
             if (text.empty()) throw HttpError{400, "text is empty"};
             auto c = std::make_shared<Conn>(*engine, token_name(req).value_or("-"));
             std::string id = req.matches[1];
+            json entry = c->call("getConversation", {{"conversation_id", id}})["maic"]["entry"];
+            if (entry["response"].is_string()) {
+                json snap = c->call("maic.session.attach", {{"session", id}});
+                try {
+                    c->call("response.steer", {{"previous_response_id", entry["response"]}, {"input", text}});
+                    stream(c, snap["sequence_number"], -1, res);
+                    return;
+                } catch (const HttpError&) {
+                    c->call("maic.session.unsubscribe", {{"session", id}});  // it ended meanwhile: the message starts a turn
+                }
+            }
             json r = c->call("response.create", {{"conversation", id}, {"input", text}});
             long from = r["maic"]["sequence_number"];
             c->call("maic.session.subscribe", {{"session", id}, {"starting_after", from}});

@@ -41,9 +41,21 @@ struct ApprovalRequest {
 };
 
 // The user's answer; `feedback` is a sentence for the model when the answer is No ("use the test config").
+// `withdrawn`: a steer took the approval's place, and `feedback` is what the call's result says instead.
 struct ApprovalAnswer {
     Approval choice = Approval::No;
     std::string feedback;
+    bool withdrawn = false;
+};
+
+// What a turn its front end stopped does next (AgentEvents::stopped): a cancel ends it; the steering actions of
+// docs/design/engine-protocol.md section 11 keep the partial reply or not, and go on, pause or end.
+struct Redirect {
+    enum class Then { End, Continue, Pause, Keep, Halt };
+    Then then = Then::End;
+    std::optional<std::string> kept;  // the partial reply as it stays in the history (trimmed for a drop); nullopt: none
+    std::string say;                  // Continue: the user turn the model gets; Halt: the halt message
+    std::string unrun;                // the result of each call the stop leaves unrun
 };
 
 // One line of the model's plan (the todo tool).
@@ -92,6 +104,15 @@ public:
     // Right before on_tool_result, when the call's whole output outgrew the model's cap and was kept beside the
     // session (`file`, its .out; Agent::full_output). Display only: the result is what the model got.
     virtual void on_tool_full_output(const std::filesystem::path& file) { (void)file; }
+    // Messages typed during the turn are about to reach the model, at a boundary between two model calls; `remote`
+    // when one came from a remote client.
+    virtual void on_delivered(const std::vector<std::string>& texts, bool remote) { (void)texts, (void)remote; }
+    // The turn was stopped (its cancel flag rose, or `ban` names a ban entry's steer that fired): what to do now.
+    // The default ends the turn, as a cancel; for a ban that leaves the cut, tell and re-ask of bans.hpp.
+    virtual Redirect stopped(const BanHit* ban) {
+        (void)ban;
+        return {};
+    }
 };
 
 // An action that would change which directories are trusted or at what tier (a write to <state>/trust*, a
@@ -349,7 +370,10 @@ private:
     std::atomic<Origin> turn_origin_{Origin::Local};
     std::vector<ImageData> pending_images_;
     std::atomic<bool> deliver_now_{false};
-    bool drain_mailbox();  // appends queued messages as user turns; true if any
+    bool drain_mailbox(AgentEvents& events);  // appends queued messages as user turns; true if any
+    // Applies a stop the front end decided (AgentEvents::stopped) to the history: the kept part of the reply, then
+    // what the model is told. True when the turn goes on.
+    bool redirected(const Redirect& r, AgentEvents& events);
     void rewrite_log();    // after compaction: a reset record and the new history, so resume sees the same thing
     size_t history_bytes() const;
     std::string summarise(size_t from, size_t to, const std::atomic<bool>& cancel);  // messages [from, to) -> summary text

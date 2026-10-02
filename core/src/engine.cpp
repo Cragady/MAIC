@@ -34,6 +34,7 @@
 #include <optional>
 #include <random>
 #include <set>
+#include <sstream>
 #include <thread>
 
 namespace maic {
@@ -49,15 +50,18 @@ constexpr size_t kMaxMessage = 1 << 20;          // the relay's frame cap; secti
 constexpr size_t kSlowQueue = 2 << 20;           // behind this, tool output becomes skips and deltas merge
 constexpr size_t kTooSlow = 8 << 20;             // behind this, the connection is closed
 constexpr double kRemoteOutputRate = 64 * 1024;  // bytes a second of tool output per session, remote connections
+constexpr size_t kMaxPendingSteers = 16;          // accepted steers waiting for their successor (too_many_pending_steers)
+const char* const kNotRun = "not run: the user redirected";
 
 // The event types the engine sends; protocol_schema_test holds this to event.schema.json's union.
 const std::vector<std::string> kEventTypes = {
     "response.created", "response.in_progress", "response.completed", "response.failed",
+    "response.incomplete", "error", "response.steer.accepted", "response.steer.failed",
     "response.output_item.added", "response.output_item.done", "response.content_part.added", "response.content_part.done",
     "response.output_text.delta", "response.output_text.done", "response.reasoning_text.delta", "response.reasoning_text.done",
     "response.function_call_arguments.done", "response.shell_call_command.added", "response.shell_call_command.done",
     "response.shell_call_output_content.delta", "response.shell_call_output_content.done",
-    "maic.response.cancelled", "maic.input.added", "maic.approval.requested", "maic.approval.answered", "maic.question.asked",
+    "maic.response.cancelled", "maic.steer.applied", "maic.turn.paused", "maic.input.added", "maic.approval.requested", "maic.approval.answered", "maic.question.asked",
     "maic.question.answered", "maic.tool.output.delta", "maic.file.written", "maic.notice", "maic.todo.updated",
     "maic.session.state", "maic.session.settings", "maic.session.title", "maic.usage.updated"};
 
@@ -302,16 +306,29 @@ struct PendingQuestion {
     json event;  // maic.question.asked
     std::optional<std::string> answer;
     json by;
+    bool withdrawn = false;  // a steer took its place
 };
 
 // The response being run: what its events carry.
 struct Run {
     std::string id;
     int turn = 0;
+    std::string previous;  // the response of the turn it continues; "" for a turn's first
     long created_at = 0;
     Origin origin = Origin::Local;
     json output = json::array();
+    long next_index = 0;  // the next output_index
     Agent::UsageReport usage_before;
+};
+
+// A steer of section 11, from a client or a ban entry.
+struct Steer {
+    std::string id, action, note, trigger = "client", response;
+    json by, ban;
+    Origin origin = Origin::Local;    // its note's: a remote note raises the turn's origin
+    std::string trim = "paragraph";   // drop: none, sentence, paragraph, all
+    long at = -1;                     // drop: a byte offset chosen in the client, over trim
+    size_t keep = std::string::npos;  // how much of the reply being written stays
 };
 
 struct Session {
@@ -356,6 +373,35 @@ struct Session {
     int reported_calls = 0;      // the model calls the last maic.usage.updated covered
     size_t reported_queued = 0;  // the queued messages the index last showed
 
+    // Responses and turns: ids <session>.r<k> by `responses`; queued turns reserve their number at arrival.
+    long responses = 0;
+    int turns_reserved = 0;
+    int turn = 0;  // the running (or paused) turn's number
+    Run last;      // the last response that ended: a paused turn's, what a successor continues
+    struct Queued {
+        Run run;
+        std::string text;
+        Origin origin;
+    };
+    std::deque<Queued> lane;  // response.create on a busy lane, run in order after the running turn
+
+    // Steering (section 11).
+    struct Text {
+        bool thinking;
+        std::string id;
+        long index;
+        std::string text;
+    };
+    std::optional<Text> text;          // the reply being written
+    std::string running_call;          // the call_id of the tool in progress
+    std::optional<Steer> steer;        // a stop-now steer the worker has yet to apply; cancel is up
+    json accepted = json::array();     // accepted steers waiting for their successor: {id, previous_response_id, text}
+    std::string successor_by = "steer";  // what the next steered response ends by
+    std::string ended_by;              // keep or halt: the turn ends that way, and later steers answer response_not_active
+    bool paused = false;
+    std::optional<Queued> resume;      // the successor that resumes a paused turn, and its input
+    std::optional<Steer> pause_end;    // keep or halt on a paused turn
+
     Session(fs::path ws, std::string model) : workspace(std::move(ws)), agent(workspace, std::move(model)) {}
 };
 
@@ -374,7 +420,7 @@ struct Engine::Impl {
 
     EngineOptions options;
     std::string epoch;
-    std::atomic<long> clients_made{0}, approvals_made{0}, questions_made{0};
+    std::atomic<long> clients_made{0}, approvals_made{0}, questions_made{0}, steers_made{0};
     std::atomic<bool> stopped{false};
 
     std::mutex mu;  // sessions and clients; never held while taking a session's lock
@@ -494,8 +540,8 @@ struct Engine::Impl {
                   {"last_activity", s.last_activity},
                   {"turns", s.turns},
                   {"unseen", false},
-                  {"queued", s.agent.queued()},
-                  {"response", s.run ? json(s.run->id) : json()},
+                  {"queued", s.agent.queued() + s.lane.size()},
+                  {"response", s.run ? json(s.run->id) : s.paused ? json(s.last.id) : json()},
                   {"waiting", s.waiting}};
         if (s.log) e["transcript"] = s.log->path().string();
         return e;
@@ -645,7 +691,7 @@ struct Engine::Impl {
                   {"tool_choice", "auto"},
                   {"temperature", nullptr},
                   {"top_p", nullptr},
-                  {"previous_response_id", nullptr},
+                  {"previous_response_id", r.previous.empty() ? json() : json(r.previous)},
                   {"conversation", {{"id", s.id}}},
                   {"maic", {{"turn", r.turn}, {"origin", origin_name(r.origin)}}}};
         if (!s.title.empty()) o["metadata"]["title"] = s.title;
@@ -676,19 +722,24 @@ struct Engine::Impl {
 
     class TurnEvents;
     void run_turns(std::shared_ptr<Session> s, std::string text, Origin origin);
-    void start_turn(const std::shared_ptr<Session>& s, const std::string& text, Origin origin) {
+    // Opens the turn's first response now, under the session's lock, and runs it on the worker.
+    void start_turn(const std::shared_ptr<Session>& s, Run r, std::string text, Origin origin) {
         if (s->worker.joinable()) s->worker.join();  // it set running = false and needs the lock no more
         s->running = true;
         s->cancel = false;
         s->cancel_by = nullptr;
+        take_leftovers(*s, text, origin);
+        open_response(*s, std::move(r));
         s->worker = std::thread([this, s, text, origin] { run_turns(s, text, origin); });
     }
 
-    // Stops what runs: the turn is cancelled, and what waits for a person is answered `answer`.
+    // Stops what runs: the turn is cancelled, and what waits for a person is answered `answer`. A cancel wins over
+    // a steer not yet applied.
     void interrupt(Session& s, const json& by, ApprovalAnswer answer) {
         if (!s.running) return;
         s.cancel = true;
         s.cancel_by = by;
+        s.steer.reset();
         for (auto& [id, p] : s.approvals) {
             if (!p.answer) {
                 p.answer = answer;
@@ -881,7 +932,8 @@ struct Engine::Impl {
         s->log = std::make_unique<SessionLog>(SessionLog::Reopen{}, info->path);
         s->id = info->id;
         s->title = info->title;
-        s->turns = static_cast<int>(info->turns);
+        s->turns = s->turns_reserved = static_cast<int>(info->turns);
+        s->responses = s->turns;
         s->agent.set_log(s->log.get());
         s->agent.restore(old.messages);
         open_session(s, c);
@@ -1006,14 +1058,72 @@ struct Engine::Impl {
         return out;
     }
 
-    // The response a turn about to start will be: its id and turn number are the next ones.
-    Run next_run(Session& s, Origin origin) {
+    // A new turn's first response: its id and turn number, taken now (a queued one keeps them until it runs).
+    Run reserve_turn(Session& s, Origin origin) {
         Run r;
-        r.id = s.id + ".r" + std::to_string(s.turns + 1);
-        r.turn = s.turns + 1;
+        r.turn = ++s.turns_reserved;
+        r.id = s.id + ".r" + std::to_string(++s.responses);
         r.created_at = static_cast<long>(std::time(nullptr));
         r.origin = origin;
         return r;
+    }
+
+    // The next response of the turn, continuing the last one; the turn's origin only rises.
+    Run successor(Session& s, Origin origin) {
+        Run r;
+        r.turn = s.turn;
+        r.id = s.id + ".r" + std::to_string(++s.responses);
+        r.previous = s.last.id;
+        r.created_at = static_cast<long>(std::time(nullptr));
+        r.origin = s.last.origin == Origin::Remote ? Origin::Remote : origin;
+        return r;
+    }
+
+    // `r` becomes the running response: response.created, the commit point of every accepted steer.
+    void open_response(Session& s, Run r) {
+        if (r.previous.empty()) {
+            ++s.turns;
+            s.turn = r.turn;
+        }
+        r.usage_before = s.agent.usage();
+        s.run = std::move(r);
+        s.accepted = json::array();
+        emit(s, {{"type", "response.created"}, {"response", response_object(s, *s.run, "in_progress")}});
+        set_activity(s, "working");
+        emit(s, {{"type", "response.in_progress"}, {"response", response_object(s, *s.run, "in_progress")}});
+    }
+
+    // Ends the running response: `type` with `status`, what ended it, whether the turn ends with it.
+    void end_response(Session& s, const std::string& type, const std::string& status, const std::string& ended_by, bool final, json extra = json::object()) {
+        Run& r = *s.run;
+        if (s.agent.turn_origin() == Origin::Remote) r.origin = Origin::Remote;
+        json usage = usage_update(s);
+        usage["type"] = "maic.usage.updated";
+        s.reported_calls = usage["calls"];
+        emit(s, usage);
+        json resp = response_object(s, r, status);
+        for (const auto& [k, v] : extra.items()) resp[k] = v;
+        if (!ended_by.empty()) resp["maic"]["ended_by"] = ended_by;
+        Agent::UsageReport u = s.agent.usage();
+        resp["usage"] = usage_json(u.total_input - r.usage_before.total_input, u.total_output - r.usage_before.total_output);
+        resp["completed_at"] = static_cast<long>(std::time(nullptr));
+        resp["maic"]["final"] = final;
+        emit(s, {{"type", type}, {"response", resp}});
+        s.last = std::move(r);
+        s.run.reset();
+    }
+
+    // A halted turn's error, OpenAI's error event, before its maic.response.cancelled.
+    void halt_error(Session& s) {
+        emit(s, {{"type", "error"}, {"code", "maic_halted"}, {"message", s.settings.steering.halt_message}, {"param", nullptr}});
+    }
+
+    // What a cancel or an earlier turn left in the mailbox joins the input of the turn starting now.
+    void take_leftovers(Session& s, std::string& text, Origin& origin) {
+        for (const auto& q : s.agent.take_queued()) {
+            text += (text.empty() ? "" : "\n\n") + q.text;
+            if (q.origin == Origin::Remote) origin = Origin::Remote;
+        }
     }
 
     json response_create(Client& c, const json& p) {
@@ -1033,46 +1143,310 @@ struct Engine::Impl {
         std::lock_guard lock(s->mu);
         long before = s->next - 1;
         if (text.empty()) {
-            if (!s->running) throw refuse("response_not_active", "nothing is running to deliver into", "input");
+            if (!s->running || !s->run) throw refuse("response_not_active", "nothing is running to deliver into", "input");
             s->agent.deliver_now();
-            json r = response_object(*s, s->run ? *s->run : next_run(*s, c.origin), "in_progress");
+            json r = response_object(*s, *s->run, "in_progress");
             r["maic"]["queued"] = true;
             r["maic"]["sequence_number"] = before;
             return r;
         }
         json item = {{"id", "~" + std::to_string(s->next)}, {"type", "message"}, {"role", "user"}, {"content", {{{"type", "input_text"}, {"text", text}}}}};
-        if (s->running) {
-            // Into the running response at its next boundary, as typing mid-turn does; a remote message raises the
-            // turn's origin. Step 7 splits this into response.steer and a FIFO queue on the lane.
-            s->agent.post_message(text, c.origin);
-            if (now) s->agent.deliver_now();
+        if (s->paused) {
+            // The paused turn resumes: a successor of its last response carries the input.
+            emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", false}, {"by", c.by()}});
+            if (!s->resume) s->resume = Session::Queued{successor(*s, c.origin), text, c.origin};
+            else s->resume->text += "\n\n" + text;
+            s->cv.notify_all();
+            json r = response_object(*s, s->resume->run, "in_progress");
+            r["maic"]["sequence_number"] = before;
+            return r;
+        }
+        if (s->running && now && s->run) {
+            // Into the running response at once, as a steer: its model call is abandoned and a successor has it.
+            std::string id = "st" + std::to_string(++steers_made);
+            emit(*s, {{"type", "response.steer.accepted"}, {"steer", {{"id", id}, {"previous_response_id", s->run->id}}}});
             emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", true}, {"by", c.by()}});
+            s->accepted.push_back({{"id", id}, {"previous_response_id", s->run->id}, {"text", text}});
+            s->agent.post_message(text, c.origin);
+            s->agent.deliver_now();
             index_changed(*s);
-            // Between two turns (queued messages starting the next) it goes into the next one.
-            json r = response_object(*s, s->run ? *s->run : next_run(*s, c.origin), "in_progress");
+            json r = response_object(*s, *s->run, "in_progress");
             r["maic"]["queued"] = true;
             r["maic"]["sequence_number"] = before;
             return r;
         }
+        if (s->running) {
+            // FIFO on the lane: a turn of its own once the running one (and those queued before it) end.
+            Run r = reserve_turn(*s, c.origin);
+            emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", true}, {"by", c.by()}});
+            s->lane.push_back({r, text, c.origin});
+            index_changed(*s);
+            json resp = response_object(*s, r, "queued");
+            resp["maic"]["queued"] = true;
+            resp["maic"]["sequence_number"] = before;
+            return resp;
+        }
         // The pictures attached since the last message go with this one.
         if (auto pics = s->agent.pending_images(); !pics.empty()) item["maic"] = {{"images", pics}};
         emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", false}, {"by", c.by()}});
-        json r = response_object(*s, next_run(*s, c.origin), "in_progress");
-        start_turn(s, text, c.origin);
+        Run run = reserve_turn(*s, c.origin);
+        json r = response_object(*s, run, "in_progress");
+        start_turn(s, std::move(run), text, c.origin);
         r["maic"]["sequence_number"] = before;
         return r;
     }
 
+    // The session a response id names (<session id>.r<k>).
+    std::shared_ptr<Session> session_of(const std::string& rid, const std::string& code, const std::string& param) {
+        size_t dot = rid.rfind(".r");
+        if (dot == std::string::npos) throw refuse(code, "no response " + rid, param);
+        try {
+            return session(rid.substr(0, dot));
+        } catch (const RpcError&) {
+            throw refuse(code, "no response " + rid, param);
+        }
+    }
+
+    // Whether the session ever had a response of this id.
+    static bool known_response(const Session& s, const std::string& rid) {
+        size_t dot = rid.rfind(".r");
+        if (dot == std::string::npos || rid.substr(0, dot) != s.id) return false;
+        long k = std::atol(rid.c_str() + dot + 2);
+        return k >= 1 && k <= s.responses;
+    }
+
     json cancel_response(Client& c, const json& p) {
         std::string rid = p.at("response_id");
-        size_t dot = rid.rfind(".r");
-        if (dot == std::string::npos) throw refuse("maic_not_found", "no response " + rid, "response_id");
-        auto s = session(rid.substr(0, dot));
+        auto s = session_of(rid, "maic_not_found", "response_id");
         std::lock_guard lock(s->mu);
-        // The running response, or (between two responses of a turn, or before the first opens) the turn itself.
-        if (!s->running || (s->run && s->run->id != rid)) throw refuse("maic_not_found", "response " + rid + " is not running", "response_id");
+        for (auto it = s->lane.begin(); it != s->lane.end(); ++it) {
+            if (it->run.id != rid) continue;
+            // Still waiting on the lane: it never runs, and the turns queued behind it move up a number.
+            json r = response_object(*s, it->run, "cancelled");
+            for (auto later = std::next(it); later != s->lane.end(); ++later) --later->run.turn;
+            --s->turns_reserved;
+            s->lane.erase(it);
+            index_changed(*s);
+            return r;
+        }
+        bool current = s->run && s->run->id == rid, paused = s->paused && s->last.id == rid;
+        if (!s->running || !(current || paused)) throw refuse("maic_not_found", "response " + rid + " is not running", "response_id");
         interrupt(*s, c.by(), ApprovalAnswer{Approval::No, "interrupted by the user"});
-        return response_object(*s, s->run ? *s->run : next_run(*s, c.origin), "cancelled");
+        return response_object(*s, current ? *s->run : s->last, "cancelled");
+    }
+
+    // ---------- steering (section 11) ----------
+
+    // What a steer's target must be: the running response, or a paused turn's last.
+    void steer_target(Session& s, const std::string& rid, const std::string& param) {
+        for (const auto& q : s.lane) {
+            if (q.run.id == rid) throw refuse("response_not_active", "response " + rid + " waits on the lane; it takes no steer until it runs", param);
+        }
+        if (s.running && !s.ended_by.empty()) throw refuse("response_not_active", "the turn is ending (" + s.ended_by + "): it takes no more steers", param);
+        if (s.running && ((s.run && s.run->id == rid) || (s.paused && s.last.id == rid))) return;
+        if (known_response(s, rid)) throw refuse("response_already_completed", "response " + rid + " has ended", param);
+        throw refuse("response_not_found", "no response " + rid + " on this session", param);
+    }
+
+    // The text the model gets for an action and its note.
+    std::string steer_text(const Session& s, const std::string& action, const std::string& note) {
+        std::string more = note.empty() ? "" : " " + note;
+        if (action == "steer") {
+            if (note.empty()) return "Continue from where you stopped.";
+            bool stop = std::string(".!?").find(note.back()) != std::string::npos;
+            return "The user redirected you: " + note + (stop ? "" : ".") + " Continue from where you stopped, following it.";
+        }
+        if (action == "drop") return "The user dropped the topic you had started; it was removed from your reply. Leave it and do not return to it." + more;
+        if (action == "further") return "The user asks you to go deeper on what you were just saying." + more;
+        if (action == "halt") return s.settings.steering.halt_message;
+        return "";
+    }
+
+    // How much of a partial reply a drop keeps: up to where the paragraph or sentence being written began, none
+    // of it, or all of it; `at`, a byte offset chosen in the client, overrides.
+    static size_t trim_to(const std::string& text, const std::string& trim, long at) {
+        if (at >= 0) return whole_chars(text, std::min(static_cast<size_t>(at), text.size()));
+        if (trim == "none") return text.size();
+        if (trim == "all") return 0;
+        if (trim == "paragraph") {
+            size_t p = text.rfind("\n\n");
+            return p == std::string::npos ? 0 : p + 2;
+        }
+        for (size_t i = text.size(); i-- > 0;) {
+            if (text[i] == '\n') return i + 1;
+            if ((text[i] == '.' || text[i] == '!' || text[i] == '?') && i + 1 < text.size() && text[i + 1] == ' ') return i + 2;
+        }
+        return 0;
+    }
+
+    // Accepted steers a keep or halt leaves uncommitted: back out of the mailbox, and response.steer.failed.
+    void fail_accepted(Session& s) {
+        if (s.accepted.empty()) return;
+        std::vector<std::string> texts;
+        for (const auto& a : s.accepted) texts.push_back(a["text"]);
+        for (const auto& q : s.agent.take_queued()) {
+            auto it = std::find(texts.begin(), texts.end(), q.text);
+            if (it != texts.end()) texts.erase(it);
+            else s.agent.post_message(q.text, q.origin);
+        }
+        for (const auto& a : s.accepted) {
+            emit(s, {{"type", "response.steer.failed"},
+                     {"steer", {{"id", a["id"]}, {"previous_response_id", a["previous_response_id"]}, {"input", a["text"]}}},
+                     {"error", {{"type", "invalid_request_error"}, {"code", "response_not_active"}, {"message", "the turn ended (" + s.ended_by + ") before this input reached the model; send it again to start the next turn"}}}});
+        }
+        s.accepted = json::array();
+    }
+
+    // Applies a steer under the session's lock: redirects that wait go to the mailbox for the next boundary; the rest
+    // stop now (cancel rises) and the worker finishes them in TurnEvents::stopped. `tool`: cancel or wait.
+    json apply_steer(Session& s, Steer st, const std::string& tool) {
+        bool redirect = st.action == "steer" || st.action == "drop" || st.action == "further";
+        json result = {{"steer", {{"id", st.id}, {"previous_response_id", st.response}}}};
+        json applied = {{"type", "maic.steer.applied"}, {"steer", st.id},    {"action", st.action},         {"trigger", st.trigger},
+                        {"by", st.by},                  {"trimmed", nullptr}, {"withdrawn", json::array()}, {"cancelled_tool", nullptr}};
+        if (!st.ban.is_null()) applied["ban"] = st.ban;
+        if (!st.note.empty()) applied["note"] = st.note;
+        json record = {{"steer", st.id}, {"action", st.action}, {"by", st.by}, {"trigger", st.trigger}, {"note", st.note}, {"response", st.response}};
+        if (!st.ban.is_null()) record["ban"] = st.ban;
+        std::string say = steer_text(s, st.action, st.note);
+        auto accept = [&] {
+            if (s.accepted.size() >= kMaxPendingSteers) throw refuse("too_many_pending_steers", "too many steers wait for this response already", "action");
+            emit(s, {{"type", "response.steer.accepted"}, {"steer", result["steer"]}});
+            s.accepted.push_back({{"id", st.id}, {"previous_response_id", st.response}, {"text", say}});
+        };
+        if (s.paused) {
+            if (st.action == "interrupt") throw refuse("response_not_active", "the turn is paused already", "action");
+            if (redirect) accept();
+            emit(s, applied);
+            s.log->write("steer", record);
+            if (redirect) {
+                if (!s.resume) s.resume = Session::Queued{successor(s, st.origin), say, st.origin};
+                else s.resume->text += "\n\n" + say;
+            } else {
+                s.pause_end = st;
+                s.ended_by = st.action;
+                fail_accepted(s);
+            }
+            s.cv.notify_all();
+            return result;
+        }
+        std::string pending;  // an approval or question waiting for a person
+        for (const auto& [id, a] : s.approvals) {
+            if (!a.answer && pending.empty()) pending = id;
+        }
+        for (const auto& [id, q] : s.questions) {
+            if (!q.answer && pending.empty()) pending = id;
+        }
+        std::string running = pending.empty() ? s.running_call : "";
+        if (st.action == "further" || (redirect && tool == "wait" && !running.empty())) {
+            accept();
+            applied["waits_for"] = !pending.empty() ? pending : !running.empty() ? running : "boundary";
+            emit(s, applied);
+            s.log->write("steer", record);
+            s.agent.post_message(say, st.origin);
+            s.successor_by = st.action;
+            index_changed(s);
+            return result;
+        }
+        if (s.steer) throw refuse("too_many_pending_steers", "a steer is stopping this response already", "action");
+        if (redirect) accept();
+        if (s.text && !s.text->thinking) {
+            const std::string& t = s.text->text;
+            st.keep = st.action == "drop" ? trim_to(t, st.trim, st.at) : st.action == "halt" ? 0 : t.size();
+            if (st.action == "drop" && st.keep < t.size()) applied["trimmed"] = {{"item_id", s.text->id}, {"from", st.keep}, {"to", t.size()}};
+            if (st.action == "halt") record["discarded"] = t.size();
+        }
+        for (auto& [id, a] : s.approvals) {
+            if (a.answer) continue;
+            a.answer = ApprovalAnswer{Approval::No, kNotRun, true};
+            a.by = st.by;
+            applied["withdrawn"].push_back(id);
+        }
+        for (auto& [id, q] : s.questions) {
+            if (q.answer) continue;
+            q.answer = "";
+            q.by = st.by;
+            q.withdrawn = true;
+            applied["withdrawn"].push_back(id);
+        }
+        if (!running.empty()) applied["cancelled_tool"] = running;
+        record["trimmed"] = applied["trimmed"];
+        record["withdrawn"] = applied["withdrawn"];
+        emit(s, applied);
+        s.log->write("steer", record);
+        s.steer = std::move(st);
+        s.cancel = true;
+        s.cv.notify_all();
+        return result;
+    }
+
+    // A ban entry's steer, applied as a person's would be, by the engine on the bans' behalf.
+    void ban_steer(Session& s, const BanHit& hit) {
+        Steer st;
+        st.id = "st" + std::to_string(++steers_made);
+        st.action = hit.action;
+        st.note = hit.note;
+        st.trigger = "ban";
+        st.by = {{"client", "engine"}, {"name", "bans"}, {"origin", origin_name(s.agent.turn_origin())}};
+        st.ban = {{"list", hit.list}, {"index", hit.index}};
+        st.response = s.run->id;
+        st.trim = s.settings.steering.drop_trim;
+        apply_steer(s, std::move(st), "cancel");
+    }
+
+    // maic.steer, and :steer: one of the six actions on the running response, by a client.
+    json steer_locked(Session& s, Client& c, const json& p) {
+        std::string rid = p.at("response_id"), action = p.at("action");
+        auto all = SteeringSettings::steer_actions();
+        if (std::find(all.begin(), all.end(), action) == all.end()) throw bad_params("action must be steer, drop, further, interrupt, keep or halt", "action");
+        const SteeringSettings& st = s.settings.steering;
+        if (!st.allows(action, c.origin == Origin::Remote)) {
+            throw refuse("maic_steer_disabled", "the " + action + " steer is not accepted " + (c.origin == Origin::Remote ? "from a remote client " : "") + "here (steering in settings; :steering shows it)", "action");
+        }
+        steer_target(s, rid, "response_id");
+        Steer steer;
+        steer.id = "st" + std::to_string(++steers_made);
+        steer.action = action;
+        steer.note = p.value("note", "");
+        steer.by = c.by();
+        steer.response = rid;
+        steer.origin = steer.note.empty() ? Origin::Local : c.origin;
+        steer.trim = p.value("trim", st.drop_trim);
+        steer.at = p.value("at", -1L);
+        return apply_steer(s, std::move(steer), p.value("tool", st.on_running_tool));
+    }
+
+    json maic_steer(Client& c, const json& p) {
+        auto s = session(p.at("session"));
+        std::lock_guard lock(s->mu);
+        return steer_locked(*s, c, p);
+    }
+
+    // OpenAI's response.steer: a message for the running response, delivered at its next boundary.
+    json response_steer(Client& c, const json& p) {
+        std::string rid = p.at("previous_response_id");
+        std::string text = input_text(p.at("input"));
+        if (text.empty()) throw refuse("invalid_input", "the input is empty", "input");
+        auto s = session_of(rid, "response_not_found", "previous_response_id");
+        std::lock_guard lock(s->mu);
+        steer_target(*s, rid, "previous_response_id");
+        if (s->accepted.size() >= kMaxPendingSteers) throw refuse("too_many_pending_steers", "too many steers wait for this response already", "input");
+        std::string id = "st" + std::to_string(++steers_made);
+        json steer = {{"id", id}, {"previous_response_id", rid}};
+        emit(*s, {{"type", "response.steer.accepted"}, {"steer", steer}});
+        json item = {{"id", "~" + std::to_string(s->next)}, {"type", "message"}, {"role", "user"}, {"content", {{{"type", "input_text"}, {"text", text}}}}};
+        emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", true}, {"by", c.by()}});
+        s->accepted.push_back({{"id", id}, {"previous_response_id", rid}, {"text", text}});
+        if (s->paused) {
+            if (!s->resume) s->resume = Session::Queued{successor(*s, c.origin), text, c.origin};
+            else s->resume->text += "\n\n" + text;
+            s->cv.notify_all();
+        } else {
+            s->agent.post_message(text, c.origin);
+            s->successor_by = "steer";
+        }
+        index_changed(*s);
+        return {{"steer", steer}};
     }
 
     json approval_answer(Client& c, const json& p) {
@@ -1134,6 +1508,31 @@ struct Engine::Impl {
     json session_command(Client& c, const json& p) {
         auto s = session(p.at("session"));
         std::lock_guard lock(s->mu);
+        if (!p.contains("ask")) {
+            // :steer ACTION [NOTE]: maic.steer on whatever runs; the steering settings decide who may.
+            std::istringstream in(p.at("line").get<std::string>());
+            std::string cmd, action, note;
+            in >> cmd >> action;
+            std::getline(in >> std::ws, note, '\0');
+            if (cmd == "steer") {
+                CommandOutput out;
+                if (action.empty()) {
+                    out.error(":steer ACTION [NOTE]: steer, drop, further, interrupt, keep or halt (:steering shows what is in force)");
+                } else if (!s->running || (!s->run && !s->paused)) {
+                    out.error("nothing is running to steer");
+                } else {
+                    json params = {{"response_id", s->run ? s->run->id : s->last.id}, {"action", action}};
+                    if (!note.empty()) params["note"] = note;
+                    try {
+                        steer_locked(*s, c, params);
+                        out.info(action == "interrupt" ? "pausing; Ctrl-Q resumes" : "steering: " + action);
+                    } catch (const RpcError& e) {
+                        out.error(e.message);
+                    }
+                }
+                return out.json();
+            }
+        }
         // A question a command asked is the local person's: one answers a :cd's trust prompt, for one.
         if (c.origin == Origin::Remote && p.contains("ask")) throw refuse("maic_forbidden_remote", "a remote client cannot answer a command's question", "ask");
         if (c.origin == Origin::Remote) {
@@ -1275,6 +1674,8 @@ const std::map<std::string, Engine::Impl::Handler>& Engine::Impl::handlers() {
         {"maic.session.set", &Impl::session_set},
         {"response.create", &Impl::response_create},
         {"cancelResponse", &Impl::cancel_response},
+        {"response.steer", &Impl::response_steer},
+        {"maic.steer", &Impl::maic_steer},
         {"maic.approval.answer", &Impl::approval_answer},
         {"maic.question.reply", &Impl::question_reply},
         {"updateConversation", &Impl::update_conversation},
@@ -1294,10 +1695,11 @@ public:
 
     void on_text(std::string_view delta, bool thinking) override {
         std::lock_guard lock(s_.mu);
-        if (text_ && text_->thinking != thinking) close_text("completed");
-        if (!text_) open_text(thinking);
-        text_->text.append(delta);
-        json ev = {{"type", thinking ? "response.reasoning_text.delta" : "response.output_text.delta"}, {"item_id", text_->id}, {"output_index", text_->index},
+        if (s_.steer) return;  // a steer stopped the reply where it stood; what streams until the call ends is not shown
+        if (s_.text && s_.text->thinking != thinking) close_text("completed");
+        if (!s_.text) open_text(thinking);
+        s_.text->text.append(delta);
+        json ev = {{"type", thinking ? "response.reasoning_text.delta" : "response.output_text.delta"}, {"item_id", s_.text->id}, {"output_index", s_.text->index},
                    {"content_index", 0}, {"delta", std::string(delta)}};
         if (!thinking) ev["logprobs"] = json::array();
         e_.emit(s_, ev);
@@ -1327,8 +1729,9 @@ public:
             return;
         }
         close_text("completed");
-        f.index = next_index_++;
+        f.index = s_.run->next_index++;
         f.item_id = "~" + std::to_string(s_.next);
+        s_.running_call = call.id;
         json item;
         if (f.shell) {
             std::string command = call.arguments.is_object() ? call.arguments.value("command", "") : "";
@@ -1384,6 +1787,7 @@ public:
         if (calls_.empty()) return;
         Frame f = calls_.back();
         calls_.pop_back();
+        if (!f.child) s_.running_call.clear();
         if (f.child) {
             say_child_call(f, "", "");
             json ev = {{"type", "maic.notice"}, {"text", text}, {"level", "info"}, {"kind", "tool_result"}, {"ok", ok}};
@@ -1392,6 +1796,16 @@ public:
             return;
         }
         open_output(f);
+        if (s_.steer && s_.steer->action == "halt") {
+            // A halt discards what the call printed: the item closes empty.
+            json item = f.shell ? json{{"type", "shell_call_output"}, {"id", f.out_id}, {"call_id", f.call_id}, {"status", "incomplete"}, {"output", json::array()},
+                                       {"max_output_length", nullptr}}
+                                : json{{"type", "function_call_output"}, {"id", f.out_id}, {"call_id", f.call_id}, {"output", ""}, {"status", "incomplete"}};
+            item["maic"] = {{"ok", false}, {"status", "discarded"}};
+            e_.emit(s_, {{"type", "response.output_item.done"}, {"output_index", f.out_index}, {"item", item}});
+            output().push_back(item);
+            return;
+        }
         json item;
         if (f.shell) {
             json out = shell_output(text);
@@ -1451,7 +1865,7 @@ public:
         s_.answered.insert(id);
         ApprovalAnswer answer = p.answer.value_or(ApprovalAnswer{Approval::No, "interrupted by the user"});
         json by = p.by.is_null() ? (s_.cancel_by.is_null() ? json{{"client", "engine"}, {"name", "engine"}, {"origin", "local"}} : s_.cancel_by) : p.by;
-        json done = {{"type", "maic.approval.answered"}, {"id", id}, {"choice", choice_name(answer.choice)}, {"by", by}};
+        json done = {{"type", "maic.approval.answered"}, {"id", id}, {"choice", answer.withdrawn ? "withdrawn" : choice_name(answer.choice)}, {"by", by}};
         if (!call_id.empty()) done["call_id"] = call_id;
         e_.emit(s_, done);
         settle_activity();
@@ -1472,14 +1886,60 @@ public:
         s_.questions.erase(id);
         s_.answered.insert(id);
         json by = q.by.is_null() ? (s_.cancel_by.is_null() ? json{{"client", "engine"}, {"name", "engine"}, {"origin", "local"}} : s_.cancel_by) : q.by;
-        e_.emit(s_, {{"type", "maic.question.answered"}, {"id", id}, {"by", by}, {"withdrawn", false}});
+        e_.emit(s_, {{"type", "maic.question.answered"}, {"id", id}, {"by", by}, {"withdrawn", q.withdrawn}});
         settle_activity();
         return q.answer.value_or("");
+    }
+
+    // Messages typed during the turn reach the model at this boundary: the response ends steered, and a successor,
+    // the commit point of the steers accepted for it, carries them.
+    void on_delivered(const std::vector<std::string>&, bool remote) override {
+        std::lock_guard lock(s_.mu);
+        close_all("incomplete");  // a reply abandoned for :w now
+        std::string by = s_.successor_by;
+        s_.successor_by = "steer";
+        e_.end_response(s_, "response.incomplete", "incomplete", by, false, {{"incomplete_details", {{"reason", "steered"}}}});
+        e_.open_response(s_, e_.successor(s_, remote ? Origin::Remote : Origin::Local));
+    }
+
+    // The turn stopped: a cancel ends it; a steer (a client's, or a ban entry's that fired) is finished here.
+    Redirect stopped(const BanHit* ban) override {
+        std::lock_guard lock(s_.mu);
+        if (ban && !s_.steer && !s_.cancel.load()) e_.ban_steer(s_, *ban);
+        if (!s_.steer) return {};
+        Steer st = std::move(*s_.steer);
+        s_.steer.reset();
+        s_.cancel = false;
+        Redirect r;
+        r.unrun = st.action == "halt" ? "[discarded: the user halted this turn]" : kNotRun;
+        if (s_.text) {
+            if (!s_.text->thinking && st.action != "halt") r.kept = s_.text->text.substr(0, std::min(st.keep, s_.text->text.size()));
+            close_text("incomplete", st.action == "drop" ? st.keep : std::string::npos, st.action == "halt");
+        }
+        if (st.action == "steer" || st.action == "drop") {
+            r.then = Redirect::Then::Continue;
+            s_.agent.post_message(e_.steer_text(s_, st.action, st.note), st.origin);
+            s_.successor_by = st.action;
+        } else if (st.action == "interrupt") {
+            r.then = Redirect::Then::Pause;
+            close_all("incomplete");
+            e_.end_response(s_, "maic.response.cancelled", "cancelled", "interrupt", false);
+            s_.paused = true;
+            e_.emit(s_, {{"type", "maic.turn.paused"}, {"turn", s_.turn}, {"steer", st.id}, {"response_id", s_.last.id}});
+            e_.set_activity(s_, "waiting", {{"kind", "steer"}, {"id", st.id}, {"summary", "paused"}});
+        } else {
+            r.then = st.action == "keep" ? Redirect::Then::Keep : Redirect::Then::Halt;
+            if (st.action == "halt") r.say = s_.settings.steering.halt_message;
+            s_.ended_by = st.action;
+            e_.fail_accepted(s_);
+        }
+        return r;
     }
 
     // The response is ending: what is still open closes, `status` for a reply cut short.
     void close_all(const std::string& status) {
         close_text(status);
+        s_.running_call.clear();
         while (!calls_.empty()) {
             Frame f = calls_.back();
             calls_.pop_back();
@@ -1493,12 +1953,6 @@ public:
     }
 
 private:
-    struct Text {
-        bool thinking;
-        std::string id;
-        long index;
-        std::string text;
-    };
     struct Frame {
         std::string call_id, name;
         bool shell = false, child = false;
@@ -1527,37 +1981,43 @@ private:
     }
 
     void open_text(bool thinking) {
-        text_ = Text{thinking, "~" + std::to_string(s_.next), next_index_++, ""};
-        json item = thinking ? json{{"type", "reasoning"}, {"id", text_->id}, {"summary", json::array()}, {"content", json::array()}, {"status", "in_progress"}}
-                             : json{{"type", "message"}, {"id", text_->id}, {"role", "assistant"}, {"status", "in_progress"}, {"content", json::array()}};
-        e_.emit(s_, {{"type", "response.output_item.added"}, {"output_index", text_->index}, {"item", item}});
-        e_.emit(s_, {{"type", "response.content_part.added"}, {"item_id", text_->id}, {"output_index", text_->index}, {"content_index", 0}, {"part", part("")}});
+        s_.text = Session::Text{thinking, "~" + std::to_string(s_.next), s_.run->next_index++, ""};
+        const auto& t = *s_.text;
+        json item = thinking ? json{{"type", "reasoning"}, {"id", t.id}, {"summary", json::array()}, {"content", json::array()}, {"status", "in_progress"}}
+                             : json{{"type", "message"}, {"id", t.id}, {"role", "assistant"}, {"status", "in_progress"}, {"content", json::array()}};
+        e_.emit(s_, {{"type", "response.output_item.added"}, {"output_index", t.index}, {"item", item}});
+        e_.emit(s_, {{"type", "response.content_part.added"}, {"item_id", t.id}, {"output_index", t.index}, {"content_index", 0}, {"part", part("")}});
     }
 
     json part(const std::string& text) const {
-        if (text_->thinking) return {{"type", "reasoning_text"}, {"text", text}};
+        if (s_.text->thinking) return {{"type", "reasoning_text"}, {"text", text}};
         return {{"type", "output_text"}, {"text", text}, {"annotations", json::array()}, {"logprobs", json::array()}};
     }
 
-    void close_text(const std::string& status) {
-        if (!text_) return;
-        const Text& t = *text_;
+    // The reply being written closes: `keep` bytes of it when a drop trimmed it (the done events carry what stays,
+    // maic.trimmed the range removed), all of it marked discarded when a halt threw it away.
+    void close_text(const std::string& status, size_t keep = std::string::npos, bool discarded = false) {
+        if (!s_.text) return;
+        const Session::Text& t = *s_.text;
+        std::string shown = keep < t.text.size() ? t.text.substr(0, keep) : t.text;
         json done = {{"type", t.thinking ? "response.reasoning_text.done" : "response.output_text.done"}, {"item_id", t.id}, {"output_index", t.index},
-                     {"content_index", 0}, {"text", t.text}};
+                     {"content_index", 0}, {"text", shown}};
         if (!t.thinking) done["logprobs"] = json::array();
+        if (keep < t.text.size()) done["maic"] = {{"trimmed", {{"from", keep}, {"to", t.text.size()}}}};
         e_.emit(s_, done);
-        e_.emit(s_, {{"type", "response.content_part.done"}, {"item_id", t.id}, {"output_index", t.index}, {"content_index", 0}, {"part", part(t.text)}});
-        json item = t.thinking ? json{{"type", "reasoning"}, {"id", t.id}, {"summary", json::array()}, {"content", {part(t.text)}}, {"status", status}}
-                               : json{{"type", "message"}, {"id", t.id}, {"role", "assistant"}, {"status", status}, {"content", {part(t.text)}}};
+        e_.emit(s_, {{"type", "response.content_part.done"}, {"item_id", t.id}, {"output_index", t.index}, {"content_index", 0}, {"part", part(shown)}});
+        json item = t.thinking ? json{{"type", "reasoning"}, {"id", t.id}, {"summary", json::array()}, {"content", {part(shown)}}, {"status", status}}
+                               : json{{"type", "message"}, {"id", t.id}, {"role", "assistant"}, {"status", status}, {"content", {part(shown)}}};
+        if (discarded) item["maic"] = {{"status", "discarded"}};
         e_.emit(s_, {{"type", "response.output_item.done"}, {"output_index", t.index}, {"item", item}});
         output().push_back(item);
-        text_.reset();
+        s_.text.reset();
     }
 
     // The call's output item, announced when its first output or its result comes.
     void open_output(Frame& f) {
         if (f.out_index >= 0) return;
-        f.out_index = next_index_++;
+        f.out_index = s_.run->next_index++;
         f.out_id = "~" + std::to_string(s_.next);
         json item = f.shell ? json{{"type", "shell_call_output"}, {"id", f.out_id}, {"call_id", f.call_id}, {"status", "in_progress"}, {"output", json::array()},
                                    {"max_output_length", nullptr}}
@@ -1574,68 +2034,90 @@ private:
 
     Impl& e_;
     Session& s_;
-    std::optional<Text> text_;
     std::optional<ToolCall> proposed_;
     std::vector<Frame> calls_;  // the call running, then a subagent's inside it
-    long next_index_ = 0;
 };
 
+// The worker of a session's turns. The first turn's first response is open already (start_turn); each response
+// runs the agent once, then ends by what stopped it: a paused turn waits for its resume or its end, steers that came
+// as a reply ended continue in a successor, and queued turns come off the lane in order.
 void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origin origin) {
-    for (bool first = true;; first = false) {
-        TurnEvents events(*this, *s);
-        {
-            std::lock_guard lock(s->mu);
-            if (!first && s->cancel.load()) {
-                // Cancelled between two turns: what was queued waits for the next message.
-                s->agent.post_message(text, origin);
-                s->running = false;
-                set_activity(*s, "idle");
-                return;
+    for (;;) {
+        std::string first_text = text;
+        bool cancelled = false;
+        for (;;) {
+            TurnEvents events(*this, *s);
+            std::string failure;
+            try {
+                s->agent.submit(text, origin, events, s->cancel);
+            } catch (const std::exception& e) {
+                failure = failure_text(s->agent, e);
             }
-            Run r = next_run(*s, origin);
-            ++s->turns;
-            r.usage_before = s->agent.usage();
-            s->run = r;
-            emit(*s, {{"type", "response.created"}, {"response", response_object(*s, r, "in_progress")}});
-            set_activity(*s, "working");
-            emit(*s, {{"type", "response.in_progress"}, {"response", response_object(*s, r, "in_progress")}});
-        }
-        std::string failure;
-        try {
-            s->agent.submit(text, origin, events, s->cancel);
-        } catch (const std::exception& e) {
-            failure = failure_text(s->agent, e);
+            std::unique_lock lock(s->mu);
+            if (s->steer) {
+                // Accepted as the reply ended: applied now, over what the history holds already.
+                lock.unlock();
+                Redirect r = events.stopped(nullptr);
+                lock.lock();
+                if (r.then == Redirect::Then::Halt) s->agent.add_context(r.say);
+            }
+            if (s->paused) {
+                s->cv.wait(lock, [&] { return s->resume || s->pause_end || s->cancel.load(); });
+                s->paused = false;
+                if (s->resume && !s->cancel.load()) {
+                    Session::Queued next = std::move(*s->resume);
+                    s->resume.reset();
+                    text = next.text;
+                    origin = next.run.origin;
+                    take_leftovers(*s, text, origin);  // a `!cmd` run while it was paused
+                    open_response(*s, std::move(next.run));
+                    continue;
+                }
+                // Ended while paused: a successor opens and ends at once, so the turn closes on a final event.
+                s->resume.reset();
+                open_response(*s, successor(*s, Origin::Local));
+                if (s->pause_end && !s->cancel.load() && s->pause_end->action == "keep") {
+                    end_response(*s, "response.completed", "completed", "keep", true);
+                } else if (s->pause_end && !s->cancel.load()) {
+                    halt_error(*s);
+                    end_response(*s, "maic.response.cancelled", "cancelled", "halt", true);
+                    s->agent.add_context(s->settings.steering.halt_message);
+                } else {
+                    end_response(*s, "maic.response.cancelled", "cancelled", "cancel", true);
+                    cancelled = true;
+                }
+                s->pause_end.reset();
+                break;
+            }
+            cancelled = s->cancel.load();
+            events.close_all(cancelled || !failure.empty() ? "incomplete" : "completed");
+            if (s->ended_by == "halt") {
+                halt_error(*s);
+                end_response(*s, "maic.response.cancelled", "cancelled", "halt", true);
+            } else if (s->ended_by == "keep") {
+                end_response(*s, "response.completed", "completed", "keep", true);
+            } else if (cancelled) {
+                end_response(*s, "maic.response.cancelled", "cancelled", "cancel", true);
+            } else if (!failure.empty()) {
+                end_response(*s, "response.failed", "failed", "error", true, {{"error", {{"code", "server_error"}, {"message", failure}}}});
+            } else if (s->agent.queued() > 0 && !stopped.load()) {
+                // Steers that came after the turn's last model call: an automatic successor carries them.
+                end_response(*s, "response.completed", "completed", "", false);
+                text.clear();
+                origin = Origin::Local;
+                take_leftovers(*s, text, origin);
+                Run next = successor(*s, origin);
+                origin = next.origin;
+                open_response(*s, std::move(next));
+                continue;
+            } else {
+                end_response(*s, "response.completed", "completed", "", true);
+            }
+            break;
         }
         std::unique_lock lock(s->mu);
-        bool cancelled = s->cancel.load();
-        events.close_all(cancelled || !failure.empty() ? "incomplete" : "completed");
-        Run& r = *s->run;
-        r.origin = s->agent.turn_origin();
-        json usage = usage_update(*s);
-        usage["type"] = "maic.usage.updated";
-        s->reported_calls = usage["calls"];
-        emit(*s, usage);
-        json resp;
-        std::string type;
-        if (cancelled) {
-            resp = response_object(*s, r, "cancelled");
-            resp["maic"]["ended_by"] = "cancel";
-            type = "maic.response.cancelled";
-        } else if (!failure.empty()) {
-            resp = response_object(*s, r, "failed");
-            resp["error"] = {{"code", "server_error"}, {"message", failure}};
-            resp["maic"]["ended_by"] = "error";
-            type = "response.failed";
-        } else {
-            resp = response_object(*s, r, "completed");
-            type = "response.completed";
-        }
-        Agent::UsageReport u = s->agent.usage();
-        resp["usage"] = usage_json(u.total_input - r.usage_before.total_input, u.total_output - r.usage_before.total_output);
-        resp["completed_at"] = static_cast<long>(std::time(nullptr));
-        resp["maic"]["final"] = true;
-        emit(*s, {{"type", type}, {"response", resp}});
-        s->run.reset();
+        s->ended_by.clear();
+        s->successor_by = "steer";
         if (s->titles && !s->titled && !cancelled && !stopped.load() && !s->settings.small_model.empty()) {
             // After the first turn, a title from small_model. A remote one never titles a local session, so
             // nothing leaves the machine that would not have anyway.
@@ -1650,26 +2132,28 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
                 lock.unlock();
                 std::string title;
                 try {
-                    title = generate_title(pick->first, pick->second, text);
+                    title = generate_title(pick->first, pick->second, first_text);
                 } catch (const std::exception&) {
                 }
                 lock.lock();
                 if (!title.empty()) retitle(*s, title, "auto", nullptr);
             }
         }
-        // Messages queued after the turn's last model call start the next turn on their own, as typing mid-turn does.
-        bool again = !cancelled && failure.empty() && s->agent.queued() > 0 && !stopped.load();
-        if (!again) {
+        if (s->lane.empty() || stopped.load()) {
             s->running = false;
             set_activity(*s, "idle");
             return;
         }
-        text.clear();
-        origin = Origin::Local;
-        for (const auto& q : s->agent.take_queued()) {
-            text += (text.empty() ? "" : "\n\n") + q.text;
-            if (q.origin == Origin::Remote) origin = Origin::Remote;
-        }
+        // The next turn on the lane: what a cancel left in the mailbox joins it.
+        Session::Queued next = std::move(s->lane.front());
+        s->lane.pop_front();
+        s->cancel = false;
+        s->cancel_by = nullptr;
+        text = next.text;
+        origin = next.origin;
+        take_leftovers(*s, text, origin);
+        next.run.origin = origin;
+        open_response(*s, std::move(next.run));
         index_changed(*s);
     }
 }

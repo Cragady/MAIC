@@ -356,6 +356,9 @@ LoadedSession load_session(const fs::path& path, size_t records) {
             out.transcript.push_back({"tool_result", j.value("result", ""), j.value("ok", true), j.value("full_output", nlohmann::json())});
         } else if (type == "context") {
             out.transcript.push_back({"notice", j.value("text", "")});
+        } else if (type == "steer") {
+            std::string note = j.value("note", "");
+            out.transcript.push_back({"notice", "↯ " + j.value("action", "") + (j.value("trigger", "") == "ban" ? " (a ban's steer)" : "") + (note.empty() ? "" : ": " + note)});
         }
     });
     return out;

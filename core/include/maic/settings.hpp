@@ -101,6 +101,24 @@ ModelPick default_small_model(const std::vector<ModelPreset>& presets, const std
 ModelPick reviewer_pick(const std::vector<ModelPreset>& presets, const std::vector<Provider>& providers, const std::string& model,
                         const std::string& pin, const std::string& small_model, const std::set<std::string>& failed);
 
+// `steering` (docs/design/engine-protocol.md section 11): what the six steering actions may do in a session. Per
+// agent, `agents.NAME.steering` takes the same keys and only narrows (AgentDef::steering).
+struct SteeringSettings {
+    std::vector<std::string> actions = steer_actions();  // what a session accepts; anything else is maic_steer_disabled
+    std::string halt_message = "The user halted this turn. What was in progress was discarded; do not continue it. Wait for the next message.";
+    std::string drop_trim = "paragraph";   // none, sentence, paragraph, all
+    std::string on_running_tool = "cancel";  // what steer and drop do to a running tool unless they say: cancel or wait
+    std::vector<std::string> clients_local = steer_actions(), clients_remote = steer_actions();  // global file only
+    std::vector<std::string> ban_actions = {"steer", "drop", "interrupt", "keep", "halt"};  // what a ban entry may name
+    std::map<std::string, std::string> from;  // key -> the file that set it, for :steering
+
+    static std::vector<std::string> steer_actions() { return {"steer", "drop", "further", "interrupt", "keep", "halt"}; }
+    bool allows(const std::string& action, bool remote) const;  // in actions and in the client side's list
+};
+// Reads one `steering` table over `into`: `narrow_only` for a project layer or an agent (actions and ban_actions
+// only lose entries), `global` for the file that may set `clients`. `where` names it in errors and warnings.
+void read_steering(SteeringSettings& into, const nlohmann::json& table, const std::string& where, bool global, bool narrow_only, std::vector<std::string>& warnings);
+
 struct Settings {
     std::string model = "llamacpp/current";  // the vendored llama-server serves the linked GGUF as `current`
     std::string mode = "manual";
@@ -164,6 +182,7 @@ struct Settings {
                          {"run_shell:cai read* --o*", "run_shell:maic-cai read* --o*"}, {}};
     std::vector<AgentDef> agents = default_agent_defs();  // `agents` in settings (older: `profiles`) adds or narrows, by name
     Bans bans;                      // strings, patterns and tokens the model must not produce (docs/bans.md)
+    SteeringSettings steering;
     nlohmann::json sampling = nlohmann::json::object();  // sampler keys for every provider; a provider's options.sampling overrides
     std::string tripwire = "machine";  // "machine": the root-owned lock (default); "session": a lock beside this transcript, no sudo; "isolated": session lock and the machine lock ignored (needs allow_isolated)
     bool allow_isolated = false;       // may a session opt out of the machine lock (tripwire = "isolated")? Confined when it does

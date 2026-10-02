@@ -16,6 +16,18 @@
       "$ref": "#/$defs/response.failed"
     },
     {
+      "$ref": "#/$defs/response.incomplete"
+    },
+    {
+      "$ref": "#/$defs/error"
+    },
+    {
+      "$ref": "#/$defs/response.steer.accepted"
+    },
+    {
+      "$ref": "#/$defs/response.steer.failed"
+    },
+    {
       "$ref": "#/$defs/response.output_item.added"
     },
     {
@@ -56,6 +68,12 @@
     },
     {
       "$ref": "#/$defs/maic.response.cancelled"
+    },
+    {
+      "$ref": "#/$defs/maic.steer.applied"
+    },
+    {
+      "$ref": "#/$defs/maic.turn.paused"
     },
     {
       "$ref": "#/$defs/maic.input.added"
@@ -236,6 +254,93 @@
               "required": [
                 "maic"
               ]
+            }
+          }
+        }
+      ]
+    },
+    "response.incomplete": {
+      "description": "A response that stopped short. `incomplete_details.reason: \"steered\"` when a steer ended it at a boundary; its successor's response.created follows.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseIncompleteEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            },
+            "response": {
+              "type": "object",
+              "properties": {
+                "maic": {
+                  "$ref": "maic.schema.json#/$defs/ResponseMaic"
+                }
+              },
+              "required": [
+                "maic"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "error": {
+      "description": "OpenAI's error event: a halted turn's (`code: \"maic_halted\"`, the halt message), before its maic.response.cancelled.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseErrorEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            }
+          }
+        }
+      ]
+    },
+    "response.steer.accepted": {
+      "description": "The engine owns a steer's input (response.steer, or maic.steer's steer, drop and further); the successor's response.created commits it.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseSteerAcceptedEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            }
+          }
+        }
+      ]
+    },
+    "response.steer.failed": {
+      "description": "Accepted input that cannot be committed (a keep or halt ended the turn first), returned with OpenAI's steering error code.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseSteerFailedEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
             }
           }
         }
@@ -522,7 +627,7 @@
       ]
     },
     "maic.response.cancelled": {
-      "description": "A response ended by cancelResponse: OpenAI defines no stream event for a cancelled response, so MAIC adds one.",
+      "description": "A response ended by cancelResponse, or by an interrupt (final: false, the turn paused) or a halt steer: OpenAI defines no stream event for a cancelled response, so MAIC adds one.",
       "allOf": [
         {
           "$ref": "#/$defs/Envelope"
@@ -552,6 +657,156 @@
           "required": [
             "type",
             "response"
+          ]
+        }
+      ]
+    },
+    "maic.steer.applied": {
+      "description": "One of the six steering actions (section 11), before every event it causes: what it trimmed, which approvals and questions it withdrew, the tool it cancelled or waits for.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.steer.applied"
+            },
+            "steer": {
+              "description": "The steer's id.",
+              "type": "string",
+              "minLength": 1
+            },
+            "action": {
+              "$ref": "maic.schema.json#/$defs/SteerAction"
+            },
+            "trigger": {
+              "enum": [
+                "client",
+                "ban"
+              ]
+            },
+            "by": {
+              "$ref": "maic.schema.json#/$defs/By"
+            },
+            "ban": {
+              "description": "A ban's steer: which entry fired, never the matched text.",
+              "type": "object",
+              "properties": {
+                "list": {
+                  "enum": [
+                    "strings",
+                    "patterns"
+                  ]
+                },
+                "index": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "list",
+                "index"
+              ]
+            },
+            "note": {
+              "type": "string"
+            },
+            "trimmed": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "from": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "to": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "item_id",
+                    "from",
+                    "to"
+                  ]
+                }
+              ]
+            },
+            "withdrawn": {
+              "description": "The approvals and questions it withdrew.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "cancelled_tool": {
+              "description": "The call it stopped, by call_id.",
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "waits_for": {
+              "description": "A steer that waits: the running call's call_id, the open approval or question, or \"boundary\" (the end of the model call).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "steer",
+            "action",
+            "trigger",
+            "by",
+            "trimmed",
+            "withdrawn",
+            "cancelled_tool"
+          ]
+        }
+      ]
+    },
+    "maic.turn.paused": {
+      "description": "An interrupt paused the turn after its response was cancelled (final: false); a steer or a message resumes it, keep, halt or cancelResponse ends it.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.turn.paused"
+            },
+            "turn": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "steer": {
+              "type": "string",
+              "minLength": 1
+            },
+            "response_id": {
+              "description": "The paused turn's last response.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "turn",
+            "steer",
+            "response_id"
           ]
         }
       ]

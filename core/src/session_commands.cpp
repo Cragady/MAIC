@@ -41,7 +41,7 @@ const std::vector<std::vector<std::string>>& spellings() {
         {"rename", "title"}, {"budget"},       {"compact"},     {"clear"},   {"trip"},           {"status"},  {"todo"},
         {"tools"},         {"init"},           {"cd"},          {"ban"},     {"sampling", "sampler"}, {"image", "img"},
         {"forbid"},        {"allow"},          {"rule", "rules"}, {"ctx", "context-size", "ctx2"}, {"prefill", "prefix"},
-        {"system"},        {"instructions"},   {"session"},     {"lua", "luafile"}, {"trust"},
+        {"system"},        {"instructions"},   {"session"},     {"lua", "luafile"}, {"trust"},   {"steering"},
     };
     return all;
 }
@@ -105,7 +105,7 @@ bool SessionCommands::remote_allowed(const std::string& line, Mode current, std:
     std::getline(in >> std::ws, arg, '\0');
     std::string cmd = command_name(typed);
     why = "`:" + typed + "` is not available to a remote client";
-    static const std::set<std::string> open = {"model", "think", "compact", "rename", "todo", "tools", "status", "trip"};
+    static const std::set<std::string> open = {"model", "think", "compact", "rename", "todo", "tools", "status", "trip", "steering"};
     if (open.count(cmd)) return true;
     if (cmd == "mode") {
         auto m = parse_mode(arg);
@@ -472,6 +472,29 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
                 for (const auto& t : agent.script_tools()) text += " " + t.name;
             }
             if (std::string todo = todo_text(agent.todo()); !todo.empty()) text += "\n" + todo;
+            out.info(text);
+        } else if (cmd == "steering") {
+            const SteeringSettings& st = s.settings.steering;
+            auto list = [](const std::vector<std::string>& v) {
+                std::string out;
+                for (const auto& a : v) out += (out.empty() ? "" : ", ") + a;
+                return out.empty() ? std::string("none") : out;
+            };
+            auto from = [&](const char* key) {
+                auto it = st.from.find(key);
+                return "  (" + (it == st.from.end() ? std::string("default") : it->second) + ")";
+            };
+            std::string text = "steering in force:\n";
+            text += "  actions: " + list(st.actions) + from("actions") + "\n";
+            text += "  clients: local " + list(st.clients_local) + "; remote " + list(st.clients_remote) + from("clients") + "\n";
+            text += "  drop_trim: " + st.drop_trim + from("drop_trim") + "\n";
+            text += "  on_running_tool: " + st.on_running_tool + from("on_running_tool") + "\n";
+            text += "  ban_actions: " + list(st.ban_actions) + from("ban_actions") + "\n";
+            text += "  halt_message: \"" + st.halt_message + "\"" + from("halt_message");
+            for (const auto& a : agent.agents) {
+                if (!a.steering.is_null() && !a.steering.empty()) text += "\n  agents." + a.name + ".steering: " + a.steering.dump();
+            }
+            text += "\nCtrl-S pauses a running turn (interrupt), Ctrl-Q resumes it; :steer ACTION [NOTE] sends any of them";
             out.info(text);
         } else if (cmd == "todo") {
             std::string todo = todo_text(agent.todo());

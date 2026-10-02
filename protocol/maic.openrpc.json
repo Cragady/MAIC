@@ -444,7 +444,7 @@
     },
     {
       "name": "response.create",
-      "summary": "Input on a session's lane: starts a turn when the session is idle. On a busy lane it is delivered into the running response at its next boundary, as typing mid-turn does (until steering, step 7, splits that into response.steer and FIFO queueing).",
+      "summary": "Input on a session's lane: starts a turn when the session is idle and resumes a paused one. On a busy lane the response waits behind the running one (FIFO, status queued); a message for the running response is response.steer. With maic.now the input goes into the running response at once.",
       "paramStructure": "by-name",
       "params": [
         {
@@ -573,7 +573,7 @@
     },
     {
       "name": "cancelResponse",
-      "summary": "Ends the running response, its partial output kept; the turn ends with it. Open to every client.",
+      "summary": "Ends the running response (or a paused turn, by its last response), its partial output kept; the turn ends with it. A response still waiting on the lane is taken off it. Open to every client.",
       "paramStructure": "by-name",
       "params": [
         {
@@ -589,6 +589,91 @@
         "name": "response",
         "schema": {
           "$ref": "schemas/maic.schema.json#/$defs/MaicResponse"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "response.steer",
+      "summary": "OpenAI's steering: queues user input for the running response (or a paused turn's last, which it resumes). response.steer.accepted follows; the response finishes at its next boundary with response.incomplete (steered) and a successor's response.created commits the input.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "previous_response_id",
+          "description": "The running response, or a paused turn's last.",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "input",
+          "required": true,
+          "schema": {"$ref": "openai/subset.json#/components/schemas/ResponseSteerInput"}
+        }
+      ],
+      "result": {
+        "name": "steer",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/SteerResult"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.steer",
+      "summary": "One of the six steering actions on a running response (section 11): steer, drop and further redirect with a note, interrupt pauses the turn, keep accepts the partial reply, halt discards it. The action must be in steering.actions and allowed for the client's side (maic_steer_disabled).",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "response_id",
+          "description": "The running response, or a paused turn's last.",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "action",
+          "required": true,
+          "schema": {"$ref": "schemas/maic.schema.json#/$defs/SteerAction"}
+        },
+        {
+          "name": "note",
+          "description": "Text for the model: steer's direction, drop's and further's addition. A note is input: a remote one raises the turn's origin.",
+          "required": false,
+          "schema": {"type": "string"}
+        },
+        {
+          "name": "trim",
+          "description": "drop: how much of the partial reply goes; steering.drop_trim by default.",
+          "required": false,
+          "schema": {"enum": ["none", "sentence", "paragraph", "all"]}
+        },
+        {
+          "name": "at",
+          "description": "drop: the byte offset in the partial reply to cut from, chosen in the client; overrides trim.",
+          "required": false,
+          "schema": {"type": "integer", "minimum": 0}
+        },
+        {
+          "name": "tool",
+          "description": "steer and drop: a running tool is cancelled, or waited for; steering.on_running_tool by default.",
+          "required": false,
+          "schema": {"enum": ["cancel", "wait"]}
+        },
+        {
+          "name": "step_up",
+          "description": "The step-up proof the airtight tier asks of a remote client (step 18).",
+          "required": false,
+          "schema": {"type": "string"}
+        }
+      ],
+      "result": {
+        "name": "steer",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/SteerResult"
         }
       },
       "x-maic-remote": true
