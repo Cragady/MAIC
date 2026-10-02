@@ -589,7 +589,7 @@ int Server::bind() {
     for (const auto& w : o.workspaces) im.roots.push_back(fs::weakly_canonical(w, ec));
     if (im.roots.empty()) throw std::runtime_error("no allowed workspace root");
 
-    bool loopback = im.host == "localhost" || im.host == "::1" || im.host.rfind("127.", 0) == 0;
+    bool loopback = loopback_host(im.host);
     fs::path cert = o.settings.server.cert, key = o.settings.server.key;
     if (cert.empty() != key.empty()) throw std::runtime_error("server.cert and server.key go together");
     // Off loopback TLS is not optional; on loopback it is used when a pair is configured.

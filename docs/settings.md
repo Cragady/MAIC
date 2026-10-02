@@ -179,7 +179,7 @@ Where models come from. MAIC ships with `llamacpp` (local, the default), `llamac
 
 Use a provider with `:model anthropic/claude-opus-5-5`, `:model deepseek/deepseek-chat`, `:model lmstudio/whatever-it-serves`, or `maic --model openrouter/some/model`. A bare name with no known prefix goes to the first provider, `llamacpp` (model names can contain `/`).
 
-**Remote providers send data off this machine**: your prompts, every file the agent reads, and every command's output. MAIC says so when you switch to one and shows `REMOTE` in the status line. A provider is local when its `base_url` is on 127.0.0.1, localhost or ::1.
+**Remote providers send data off this machine**: your prompts, every file the agent reads, and every command's output. MAIC says so when you switch to one and shows `REMOTE` in the status line. A provider is local only when its `base_url`, parsed (scheme, userinfo, host, port), is an `http` or `https` URL whose host is exactly a loopback address (`127.0.0.0/8` as a dotted quad, `::1`, `localhost`), or a unix socket (`unix:PATH`); anything else is remote, including a URL that merely contains `://127.` in its path or query, a host such as `127.0.0.1.example.com`, or `127.0.0.1@host` userinfo.
 
 Anthropic models get thinking on by default with `effort` controlling depth, streamed tool input, and refusal fallbacks. Their history is replayed exactly as received (thinking blocks included) and never edited, which the newer models require; mode changes and instruction updates are appended as system messages instead.
 

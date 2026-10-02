@@ -53,11 +53,50 @@ Message message_from_json(const nlohmann::json& j) {
     return m;
 }
 
-bool Provider::remote() const {
-    for (const char* local : {"://127.", "://localhost", "://[::1]"}) {
-        if (base_url.find(local) != std::string::npos) return false;
+bool loopback_host(std::string host) {
+    if (host.size() > 1 && host.front() == '[' && host.back() == ']') host = host.substr(1, host.size() - 2);
+    for (auto& c : host) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (host == "localhost" || host == "::1") return true;
+    int octets = 0, value = -1;
+    for (size_t i = 0; i <= host.size(); ++i) {
+        if (i == host.size() || host[i] == '.') {
+            if (value < 0 || value > 255 || (octets == 0 && value != 127)) return false;
+            ++octets;
+            value = -1;
+        } else if (std::isdigit(static_cast<unsigned char>(host[i])) && (value != 0)) {  // no leading zeros: 0177 is octal to some resolvers
+            value = (value < 0 ? 0 : value * 10) + (host[i] - '0');
+            if (value > 255) return false;
+        } else {
+            return false;
+        }
     }
-    return true;
+    return octets == 4;
+}
+
+bool local_url(const std::string& url) {
+    if (url.rfind("unix:", 0) == 0) return true;
+    size_t sep = url.find("://");
+    if (sep == std::string::npos) return false;
+    std::string scheme = url.substr(0, sep);
+    for (auto& c : scheme) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (scheme != "http" && scheme != "https") return false;
+    std::string authority = url.substr(sep + 3, url.find_first_of("/?#", sep + 3) - (sep + 3));
+    for (unsigned char c : authority) {
+        if (c <= ' ' || c == '\\' || c >= 0x7f) return false;  // nothing a parser could read two ways
+    }
+    std::string host = authority.substr(authority.rfind('@') == std::string::npos ? 0 : authority.rfind('@') + 1);
+    if (!host.empty() && host.front() == '[') {
+        size_t close = host.find(']');
+        if (close == std::string::npos || (close + 1 < host.size() && host[close + 1] != ':')) return false;
+        host = host.substr(0, close + 1);
+    } else if (size_t colon = host.find(':'); colon != std::string::npos) {
+        host = host.substr(0, colon);
+    }
+    return loopback_host(host);
+}
+
+bool Provider::remote() const {
+    return !local_url(base_url);
 }
 
 std::string Provider::api_key() const {
