@@ -56,9 +56,10 @@ Your global file runs with LuaJIT and the standard library; `maic.home`, `maic.h
 | `record` | Keep transcripts of interactive sessions (default `true`). `false` writes them to the runtime directory instead, where they vanish at logout; `--record` / `--no-record` override per session. |
 | `compact_at` | Auto-compact when the last model call used this share of the context window (default `0.75`; `0` disables). Old tool results are stubbed first; the oldest turns are summarised only if that was not enough. See `:h compact`. |
 | `compact_keep_results` | Tool results that are never stubbed, counting from the most recent (default `4`). |
+| `compact_model` | The model that writes compaction summaries, a preset or `provider/model` (`claude-sonnet-cli` puts them on your Claude plan). Default empty: the session's model. A remote one is used only when the session's model is remote too, so a local session's history stays on the machine; one that hits its usage limit hands that summary to the session's model. |
 | `context` | The context window in tokens (default `16384`): the local llama.cpp server's `--ctx-size` and the readout. `--ctx N` and `:ctx N` override and restart the server. |
 | `context_2` | The same for the side server, `llamacpp-2` on port 8082 (default `8192`; `${MAIC_CONTEXT_2}` in its service file). `--ctx2 N` and `:ctx2 N` override and restart it. Two models share the card, so this is the window to lower first; `maic gpu` says whether the pair fits ([llamacpp.md](llamacpp.md), Two servers). |
-| `models` | Presets by short name, adding to the built-in ones or changing them field by field: `models = { ["opus-5.5"] = { limited = true } }` changes only that field. A new name needs `model`. Fields: `model`, `context` (the provider's window for the readout, and the server's size for a local model: `context` for `llamacpp`, `context_2` for `llamacpp-2`), `think`, `reviewer`, `tier`, `limited`, `subagents`, `subagent`, `on_limit`; see [Model presets and tiers](#model-presets-and-tiers). Built in: `fable-5.1`, `opus-5.5`, `sonnet-5`, `haiku-4.5`, `qwen-4b`, `qwen-9b` (text, 16k), `qwen-9b-vision` (8k). None is shipped for the side server; the pattern is `models = { ["qwen-4b-side"] = { model = "llamacpp-2/Qwen3.5-4B-Q4_K_M", context = 8192 } }`. `--model NAME` and `:model NAME` accept a preset's name. |
+| `models` | Presets by short name, adding to the built-in ones or changing them field by field: `models = { ["opus-5.5"] = { limited = true } }` changes only that field. A new name needs `model`. Fields: `model`, `context` (the provider's window for the readout, and the server's size for a local model: `context` for `llamacpp`, `context_2` for `llamacpp-2`), `think`, `reviewer`, `tier`, `limited`, `subagents`, `subagent`, `on_limit`; see [Model presets and tiers](#model-presets-and-tiers). Built in: `fable-5.1`, `opus-5.5`, `sonnet-5`, `haiku-4.5`, `claude-haiku-cli`, `claude-sonnet-cli` (text only, see [Claude Code as a provider](#claude-code-as-a-provider)), `qwen-4b`, `qwen-9b` (text, 16k), `qwen-9b-vision` (8k). None is shipped for the side server; the pattern is `models = { ["qwen-4b-side"] = { model = "llamacpp-2/Qwen3.5-4B-Q4_K_M", context = 8192 } }`. `--model NAME` and `:model NAME` accept a preset's name. |
 | `models_dir` | Where model files live. llama.cpp's router serves every GGUF under `<models_dir>/llamacpp/` (`${MAIC_MODELS}` in service files). Also ComfyUI's model folders (`checkpoints/ diffusion_models/ loras/ text_encoders/ vae/ upscale_models/ ...`): `maic vendor wire comfyui` writes its `extra_model_paths.yaml` from them; a docker service may mount it. `maic setup` asks for it (see [vendor.md](vendor.md)). |
 | `forbid` | Terms no tool call may contain, in any letter case (`/.../` for a POSIX extended regex): a search pattern, a command, a path or any argument with one is halted before it runs, under the dumb harness too. Layers add to the built-in list; `:forbid` at run time. |
 | `permission` | `{ allow = {...}, ask = {...}, deny = {...} }` of `tool:pattern` entries, a glob over the tool's argument: `run_shell:pytest *`, `write_file:src/**`, `read_file:/etc/**`; `write:` and `read:` stand for any writing or reading tool, a file pattern matches the path as given and relative to the workspace, `~` expands. `deny` wins over `ask` wins over `allow`. An `allow` entry runs in every mode but plan without an approval prompt or the reviewer (that is the allow list, `:allow`), and a `run_shell:` one matches only one simple command (no `;`, `&`, `|`, line break, backtick, `$(`, `<`, `>`); `ask` turns an action the mode would run silently into a prompt; `deny` refuses it with a reason the model reads. A `run_shell:` deny or ask entry matches the whole line and also each command in it: the line split on `;`, `&`, `|`, `&&`, `||` and line breaks, plus what is inside `$(...)`, `(...)` and backticks, each without a leading `{`, `!`, shell keyword or `VAR=value`, so `true; git push`, `x | git push`, `$(git push)` and `GIT_TRACE=1 git push` all meet a `run_shell:git push*` entry. The block is additive: it runs after the trip patterns, secret and system paths, forbidden terms and an isolated session's fence and cannot lift any of them, and `allow` entries are ignored for a remote origin. MAIC's own helpers are always allowed. Layers add up. See `:h permission`. |
@@ -81,7 +82,7 @@ Your global file runs with LuaJIT and the standard library; `maic.home`, `maic.h
 | `bans` | `{ strings = {...}, patterns = {...}, tokens = {...}, retries = 3, replacement = "[banned]", ignore_case = false, window = 64 }`. Strings and POSIX regex patterns are enforced by MAIC on every provider (cut before they show, re-asked, then replaced); tokens (ids or text) become `logit_bias` on OpenAI-compatible providers. Layers add strings, patterns and tokens. `--ban`, `--ban-pattern` and `:ban` at run time. See [bans.md](bans.md). |
 | `sampling` | Sampler keys sent with every request: `temperature`, `top_k`, `top_p`, `min_p`, `seed`, `repeat_penalty`, and on llama.cpp-style servers `xtc_probability` / `xtc_threshold`. A provider's `options.sampling` overrides it; `:sampling` changes it live. Nothing is sent to Anthropic. |
 | `budget_tokens` | Stop the agent once input plus output tokens over the session reach this (default `0`, unlimited); `:budget` changes it live. |
-| `small_model` | opencode's `small_model`: one cheap model for auxiliary calls, a preset or `provider/model`. It titles each session after its first turn, for `maic sessions` (empty: no titles; a remote model is never used for a local session), and it is the reviewer's default when the preset names none. `title_model` is its older name and is read when `small_model` is unset. |
+| `small_model` | opencode's `small_model`: one cheap model for auxiliary calls, a preset or `provider/model`. It titles each session after its first turn, for `maic sessions` (empty: no titles; a remote model is never used for a local session), and it is the reviewer's default when the preset names none. `claude-haiku-cli` runs both on your Claude plan instead of API billing ([Claude Code as a provider](#claude-code-as-a-provider)). `title_model` is its older name and is read when `small_model` is unset. |
 | `timestamps` | Show a time beside each conversation entry (default `false`; `:set timestamps on`). |
 | `leader` | The vim leader key for normal and visual modes: `"space"` (default) or a single character. `<leader>y` yanks to the system clipboard, `<leader>p` pastes from it. |
 | `server` | `maic server`: `listen` (default `127.0.0.1:7373`; any other address turns TLS on), `workspaces` (directories a remote session may open; default `~/dev2`, else the current directory), `cert` and `key` (a PEM pair; empty makes a self-signed one under `~/.local/state/maic/server/`), `relay` (`https://host:port` of a `maic-relay` the server dials out to and holds open, so a phone paired with `maic server pair` reaches it from anywhere, end to end encrypted; default empty, no relay), `relay_cert` (a PEM that pins a self-signed relay certificate; empty means the system CA store). See [remote.md](remote.md). |
@@ -125,8 +126,10 @@ Shipped:
 | `haiku-4.5` | 20 | no | the same four | itself | haiku-4.5 |
 | `qwen-9b`, `qwen-9b-vision` | 12 | no | qwen-9b, qwen-9b-vision, qwen-4b | itself | itself |
 | `qwen-4b` | 10 | no | the same three | itself | itself |
+| `claude-haiku-cli` | 20 | no | none (text only) | n/a | n/a |
+| `claude-sonnet-cli` | 30 | no | none (text only) | n/a | n/a |
 
-`fable-5.1` ships limited because Fable plans commonly carry a usage cap. The local presets list only local presets, so a local session's data leaves the machine only when you add a cloud preset to a list.
+`fable-5.1` ships limited because Fable plans commonly carry a usage cap. The two `-cli` presets are Claude Code's `haiku` and `sonnet` on your own login and plan, text only: for `small_model`, `reviewer_model` and `compact_model`, never a session's or a subagent's model, and on no preset's `subagents` list. The local presets list only local presets, so a local session's data leaves the machine only when you add a cloud preset to a list.
 
 **A subagent's model**, first match wins (each recorded as `model_reason` in the parent's tool record and the child's start record): the agent's `model` (your pin); the `task` call's `model`, which may be any preset on the session preset's `subagents` list (anything else is an error that lists them with their tiers); the preset's `subagent`; the rule: the same model when it is not limited; when it is, the strongest non-limited preset on its list below its tier, else the strongest non-limited one on the list, else the same model; the session's model when it is not a preset. The parent model is told the presets it may use with their tiers, the default first and why, and to choose lower for wide reads, searches and mechanical work and higher only for a hard reasoning subtask.
 
@@ -147,7 +150,7 @@ small_model = "sonnet-5"
 
 ## Providers
 
-Where models come from. MAIC ships with `llamacpp` (local, the default), `llamacpp-2` (the local side server), `anthropic`, `deepseek` and `openrouter`; a `providers` entry adds a new one or changes a shipped one by name.
+Where models come from. MAIC ships with `llamacpp` (local, the default), `llamacpp-2` (the local side server), `anthropic`, `deepseek`, `openrouter` and `claude-cli`; a `providers` entry adds a new one or changes a shipped one by name.
 
 | Shipped | Kind | `base_url` | Key |
 | :--- | :--- | :--- | :--- |
@@ -156,6 +159,7 @@ Where models come from. MAIC ships with `llamacpp` (local, the default), `llamac
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
 | `deepseek` | `openai` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` |
 | `openrouter` | `openai` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
+| `claude-cli` | `cli` | none: runs `claude`, see [below](#claude-code-as-a-provider) | your Claude login |
 
 ```json
 "providers": {
@@ -169,21 +173,38 @@ Where models come from. MAIC ships with `llamacpp` (local, the default), `llamac
 
 | Field | What |
 | :--- | :--- |
-| `kind` | `anthropic` (Messages API), or `openai` (any OpenAI-compatible `/chat/completions`: llama.cpp server, DeepSeek, OpenRouter, vLLM, LM Studio, ...). |
-| `base_url` | Where it listens. A path prefix is fine (`https://openrouter.ai/api/v1`). |
+| `kind` | `anthropic` (Messages API), `openai` (any OpenAI-compatible `/chat/completions`: llama.cpp server, DeepSeek, OpenRouter, vLLM, LM Studio, ...), or `cli` (an agent CLI run headless as a text-only model, below). |
+| `base_url` | Where it listens. A path prefix is fine (`https://openrouter.ai/api/v1`). Required for every kind but `cli`. |
 | `api_key_env` | Environment variable holding the key. |
 | `api_key_command` | A command that prints the key (a password manager). Keys themselves never go in this file; MAIC refuses an `api_key` field. |
 | `options.mid_system` | OpenAI-compatible kinds only. `false` (default): a system message after the first (mode changes, resume notes, ban cuts) is sent as a user-role `[system note]`, because local chat templates such as Qwen's reject a second system message. `true` sends them as system, for servers that accept that. |
 | `options.thinking_controls` | OpenAI-compatible kinds only. `true` sends `chat_template_kwargs.enable_thinking` and, when thinking is off, `reasoning_effort: "none"` (llama-server honours both; OpenAI's own API rejects unknown fields, so it is on only for `llamacpp` by default). |
 | `options.operator_note` | Whether `system_prompt` / `--system` text is also appended to each user turn as the model sees it (default `true`; `false` for Anthropic, whose models follow the system prompt). Measured necessary for small local models once tool schemas are attached. |
 | `options.sampling` | Any kind: a table merged into every request to that provider (`temperature`, `top_k`, `top_p`, `min_p`, `seed`, `repeat_penalty`, and for llama.cpp-style servers their own keys such as `xtc_probability`). Anthropic's current models reject sampling parameters, so leave it unset there. |
-| `options` | Kind-specific. Anthropic: `max_tokens` (64000), `effort` (`high`), `think_effort` (`xhigh`, used when `:think on`), `fallbacks` (`"default"` turns on server-side refusal fallbacks), `auth: "bearer"` for an OAuth token. OpenAI kinds: `extra_body`, merged into every request. |
+| `options` | Kind-specific. Anthropic: `max_tokens` (64000), `effort` (`high`), `think_effort` (`xhigh`, used when `:think on`), `fallbacks` (`"default"` turns on server-side refusal fallbacks), `auth: "bearer"` for an OAuth token. OpenAI kinds: `extra_body`, merged into every request. `cli`: `command` (default `claude`), `args` (extra arguments, default none), `timeout` (seconds per request, default 300), `max_requests` (requests one process serves before a new one replaces it, default 20). |
 
 Use a provider with `:model anthropic/claude-opus-5-5`, `:model deepseek/deepseek-chat`, `:model lmstudio/whatever-it-serves`, or `maic --model openrouter/some/model`. A bare name with no known prefix goes to the first provider, `llamacpp` (model names can contain `/`).
 
 **Remote providers send data off this machine**: your prompts, every file the agent reads, and every command's output. MAIC says so when you switch to one and shows `REMOTE` in the status line. A provider is local when its `base_url` is on 127.0.0.1, localhost or ::1.
 
 Anthropic models get thinking on by default with `effort` controlling depth, streamed tool input, and refusal fallbacks. Their history is replayed exactly as received (thinking blocks included) and never edited, which the newer models require; mode changes and instruction updates are appended as system messages instead.
+
+### Claude Code as a provider
+
+The `cli` kind runs an agent CLI headless and uses it as a text-only model. The shipped `claude-cli` runs Claude Code (`claude -p`), and the presets `claude-haiku-cli` (`claude-cli/haiku`) and `claude-sonnet-cli` (`claude-cli/sonnet`) name its models; `claude-cli/opus` or a full model id work too. **They run on your own Claude login and plan, not API billing**: MAIC removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the CLI's environment, so it never switches to the API, and what it spends counts against your plan's usage limits. The `anthropic` provider and its presets are the API-billed counterparts.
+
+```lua
+small_model = "claude-haiku-cli",      -- titles and the reviewer on your plan
+compact_model = "claude-sonnet-cli",   -- compaction summaries too
+```
+
+* **Text only.** A `cli` provider never receives tool schemas: as a session's or a subagent's model the agent loop is refused ("claude-cli is a text-only provider here; use it for small_model, the reviewer, titles or compaction; agent use arrives with level 2"). It is for `small_model`, `reviewer_model` and `compact_model`. Pictures are refused; thinking, sampling and stop sequences are not sent.
+* **Its own tools are off.** It runs as `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' --permission-mode dontAsk --no-session-persistence --system-prompt PROMPT --model MODEL`: no built-in tool, none of your MCP servers, a permission mode that refuses anything not pre-approved, and nothing kept on disk. `options.args` are added after these, and may not set `--tools`, `--mcp-config`, `--strict-mcp-config`, `--permission-*`, `--allowedTools` or `--dangerously-*`.
+* **One process per purpose.** The system prompt is fixed when the CLI starts, so the reviewer, titles and summaries each get their own process per model, kept and reused across requests (the conversation is sent as one user turn), replaced after `max_requests`, started again when it has died, and ended when MAIC exits. It runs in `<state>/cli/<provider>/`, so no project's `CLAUDE.md` is read, and its stderr goes to `<state>/logs/<provider>.log`. Each request has `timeout` seconds; past that the process is stopped and the next request starts a new one.
+* **Usage limits.** A failed `result` line becomes an API error: "You've reached your Fable limit" and other limit wording count as a usage limit, so the reviewer moves to a cheaper preset (from `claude-haiku-cli` on an Anthropic session, the API's `haiku-4.5`) and a summary goes to the session's model, as with any provider.
+* **No `claude` on PATH** is an error naming the preset and its API counterpart; `options.command` points at another binary.
+
+The CLI is remote: what it is sent leaves the machine, as with `anthropic`. Known limits are in [limits.md](limits.md#model-providers).
 
 ## Styles and themes
 

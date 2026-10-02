@@ -5,9 +5,15 @@
 
 #include "maic/http.hpp"
 
+#include "fake_claude.hpp"
+
+#include <signal.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <thread>
 
 using namespace maic;
@@ -537,6 +543,118 @@ int main() {
         bool ok = false;
         try { ok = run({"lab", "openai", f.url()}, msgs).content == "ok"; } catch (const std::exception&) {}
         expect(ok && json::parse(f.last_body, nullptr, false).is_object(), "invalid UTF-8 in history is sent as valid JSON");
+    }
+
+    section("claude-cli: Claude Code as a text-only provider (a fake claude on PATH)");
+    {
+        namespace fs = std::filesystem;
+        fs::path dir = fs::temp_directory_path() / ("maic-llm-test-cli-" + std::to_string(getpid()));
+        fs::remove_all(dir);
+        std::string saved_path = std::getenv("PATH") ? std::getenv("PATH") : "";
+        setenv("XDG_STATE_HOME", (dir / "state").c_str(), 1);  // the CLI's directory and log, never ~/.local/state/maic
+        setenv("ANTHROPIC_API_KEY", "sk-not-for-the-cli", 1);
+        fake_claude::install(dir);
+        Provider cli = by_name("claude-cli");
+        expect(cli.kind == "cli" && cli.options.value("command", "") == "claude" && cli.remote(), "claude-cli is shipped: kind cli, command claude, remote");
+        auto ask = [&](const Provider& p, const std::string& model, const std::string& sys, const std::string& text, std::string* streamed = nullptr, int* pieces = nullptr,
+                       const std::atomic<bool>& cancel = no_cancel) {
+            return chat(p, {model}, {{"system", sys}, {"user", text}}, json::array(), [&](std::string_view d, bool) {
+                if (streamed) *streamed += d;
+                if (pieces) ++*pieces;
+            }, cancel);
+        };
+        auto pid_of = [](const Message& m) { return m.content.rfind("pid ", 0) == 0 ? std::atoi(m.content.c_str() + 4) : 0; };
+
+        std::string streamed;
+        int pieces = 0;
+        Message a = ask(cli, "haiku", "be brief", "hello there", &streamed, &pieces);
+        int pid = pid_of(a);
+        expect(pid > 0 && a.content.find("call 1: hello there") != std::string::npos && streamed == a.content && pieces > 1,
+               "the reply streams through the callback in pieces and comes back whole: " + a.content);
+        expect(a.usage.input == 10 && a.usage.output == 5 && a.usage.context == 200000, "usage from the result line: input with cache reads, output, the window");
+        auto starts = fake_claude::spawns(dir);
+        json argv = starts.empty() ? json::array() : starts[0]["argv"];
+        auto after = [&](const std::string& flag) {
+            for (size_t i = 0; i + 1 < argv.size(); ++i) if (argv[i] == flag) return argv[i + 1].get<std::string>();
+            return std::string("(absent)");
+        };
+        auto has = [&](const std::string& flag) { return std::find(argv.begin(), argv.end(), flag) != argv.end(); };
+        expect(starts.size() == 1 && after("--tools").empty() && has("--strict-mcp-config") && after("--mcp-config") == R"({"mcpServers":{}})" && after("--permission-mode") == "dontAsk",
+               "its own tools are off: --tools \"\", strict and empty MCP, the dontAsk permission mode: " + argv.dump());
+        expect(has("-p") && after("--input-format") == "stream-json" && after("--output-format") == "stream-json" && has("--verbose") && has("--include-partial-messages") &&
+                   has("--no-session-persistence") && after("--system-prompt") == "be brief" && after("--model") == "haiku",
+               "headless, stream-json both ways, no session persistence, the system prompt and --model from the model name");
+        expect(!starts.empty() && !starts[0].value("api_key", true) && starts[0].value("cwd", "") == fs::weakly_canonical(dir / "state" / "maic" / "cli" / "claude-cli").string(),
+               "the user's plan, not the API: ANTHROPIC_API_KEY is kept from it, and it runs in a directory of its own");
+
+        Message b = ask(cli, "haiku", "be brief", "again");
+        expect(pid_of(b) == pid && b.content.find("call 2: again") != std::string::npos && fake_claude::spawns(dir).size() == 1, "the next request reuses the process: " + b.content);
+        Message other = ask(cli, "haiku", "another purpose", "x");
+        expect(pid_of(other) != pid && pid_of(other) > 0 && fake_claude::spawns(dir).size() == 2, "another system prompt (another purpose) has a process of its own");
+
+        Provider short_lived = cli;
+        short_lived.options["max_requests"] = 2;
+        int first = pid_of(ask(short_lived, "haiku", "recycled", "1"));
+        int second = pid_of(ask(short_lived, "haiku", "recycled", "2"));
+        Message third = ask(short_lived, "haiku", "recycled", "3");
+        expect(first == second && pid_of(third) != first && third.content.find("call 1: 3") != std::string::npos, "after max_requests a new process takes over: " + third.content);
+
+        kill(pid, SIGKILL);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        Message c = ask(cli, "haiku", "be brief", "after the kill");
+        expect(pid_of(c) != pid && pid_of(c) > 0 && c.content.find("call 1: after the kill") != std::string::npos, "a dead process is reaped and a new one started: " + c.content);
+        ask(cli, "haiku", "be brief", "EXIT now");
+        Message d = ask(cli, "haiku", "be brief", "after it exited");
+        expect(pid_of(d) != pid_of(c) && d.content.find("call 1: after it exited") != std::string::npos, "one that exits between requests is replaced too: " + d.content);
+
+        bool usage = false;
+        int status = 0;
+        std::string what;
+        try { ask(cli, "haiku", "be brief", "LIMIT please"); } catch (const ApiError& e) { usage = is_usage_limit(e), status = e.status, what = e.what(); }
+        expect(usage && status == 429 && what == "claude-cli/haiku: You've reached your Fable limit. Run /usage-credits to continue or switch models with /model.",
+               "a usage limit in the result line is an ApiError that is_usage_limit knows: " + what);
+        expect(ask(cli, "haiku", "be brief", "still there").content.find("still there") != std::string::npos, "and the process stays usable after it");
+
+        size_t before = fake_claude::spawns(dir).size();
+        std::string refused;
+        try { chat(cli, {"sonnet"}, hello, kTools, [](std::string_view, bool) {}, no_cancel); } catch (const std::exception& e) { refused = e.what(); }
+        expect(refused == "claude-cli is a text-only provider here; use it for small_model, the reviewer, titles or compaction; agent use arrives with level 2" &&
+                   fake_claude::spawns(dir).size() == before,
+               "tool schemas are refused before anything starts: " + refused);
+
+        expect(generate_title(cli, "haiku", "How big should the ears be?") == "Title from haiku", "titles work through it");
+
+        Provider slow = cli;
+        slow.options["timeout"] = 1;
+        std::string timed_out;
+        auto t0 = std::chrono::steady_clock::now();
+        try { ask(slow, "haiku", "slow", "HANG"); } catch (const std::exception& e) { timed_out = e.what(); }
+        expect(timed_out.find("claude-cli/haiku: no reply in 1 s") == 0 && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(4), "a request has a timeout: " + timed_out);
+        expect(ask(slow, "haiku", "slow", "back").content.find("call 1: back") != std::string::npos, "and the next request starts a new process");
+        std::atomic<bool> cancel{false};
+        std::thread canceller([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            cancel = true;
+        });
+        bool cancelled = false;
+        try { ask(cli, "haiku", "be brief", "HANG", nullptr, nullptr, cancel); } catch (const Cancelled&) { cancelled = true; }
+        canceller.join();
+        expect(cancelled, "cancel stops a request in flight");
+
+        Provider widened = cli;
+        widened.options["args"] = json::array({"--tools", "default"});
+        std::string args_err;
+        try { ask(widened, "haiku", "be brief", "x"); } catch (const std::exception& e) { args_err = e.what(); }
+        expect(args_err.find("may not contain --tools") != std::string::npos, "options.args cannot turn its tools back on: " + args_err);
+
+        fs::create_directories(dir / "empty");
+        setenv("PATH", (dir / "empty").c_str(), 1);
+        std::string missing;
+        try { ask(cli, "haiku", "a new purpose", "x"); } catch (const std::exception& e) { missing = e.what(); }
+        expect(missing.find("claude-cli/haiku (the claude-haiku-cli preset): `claude` is not on PATH") == 0 && missing.find("the API preset haiku-4.5") != std::string::npos,
+               "no claude on PATH: the error names the preset and the API alternative: " + missing);
+        setenv("PATH", saved_path.c_str(), 1);
+        unsetenv("ANTHROPIC_API_KEY");
     }
 
     return finish();

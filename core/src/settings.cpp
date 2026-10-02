@@ -35,6 +35,9 @@ std::vector<ModelPreset> default_presets() {
         // vision projector at 8k, the most an 8 GB card holds for it.
         {"qwen-9b", "llamacpp/Qwen3.5-9B-Q4_K_M-text", 16384, "same", 0, 12, false, local},
         {"qwen-9b-vision", "llamacpp/Qwen3.5-9B-Q4_K_M", 8192, "same", 0, 12, false, local},
+        // Claude Code on the user's own login and plan, text only: for small_model, the reviewer and summaries.
+        {"claude-haiku-cli", "claude-cli/haiku", 200000, "", -1, 20, false, {}},
+        {"claude-sonnet-cli", "claude-cli/sonnet", 1000000, "", -1, 30, false, {}},
     };
 }
 
@@ -378,6 +381,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.timestamps = j.value("timestamps", s.timestamps);
         s.compact_at = j.value("compact_at", s.compact_at);
         s.compact_keep_results = j.value("compact_keep_results", s.compact_keep_results);
+        s.compact_model = j.value("compact_model", s.compact_model);
         if (s.leader == "space" || s.leader == "<space>") s.leader = " ";
         if (j.contains("instruction_files")) s.instruction_files = j["instruction_files"].get<std::vector<std::string>>();
         s.load_instructions = j.value("load_instructions", s.load_instructions);
@@ -542,7 +546,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             if (pj.contains("api_key")) throw std::runtime_error("providers." + name + ": keys don't go in settings; use api_key_env or api_key_command");
             json opts = pj.value("options", json::object());
             for (const auto& [k, v] : opts.items()) p->options[k] = v;
-            if (p->base_url.empty()) throw std::runtime_error("providers." + name + ": base_url is required");
+            if (p->base_url.empty() && p->kind != "cli") throw std::runtime_error("providers." + name + ": base_url is required");
         }
         json styles = j.value("style", json::object());
         for (const auto& [name, sj] : styles.items()) {
@@ -575,6 +579,7 @@ Settings load_settings(const fs::path& workspace) {
         if (auto preset = find_preset(s.presets, p.model)) p.model = preset->model;
     }
     if (auto preset = find_preset(s.presets, s.small_model)) s.small_model = preset->model;
+    if (auto preset = find_preset(s.presets, s.compact_model)) s.compact_model = preset->model;
     for (const auto& p : s.presets) {
         auto known = [&](const std::string& n, const char* field) {
             if (!find_preset(s.presets, n)) throw std::runtime_error("models." + p.name + "." + field + ": no preset named " + n);
@@ -700,6 +705,8 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"timestamps", d.timestamps},
         {"compact_at", d.compact_at},
         {"compact_keep_results", d.compact_keep_results},
+        {"compact_model", d.compact_model},
+        {"//compact_model", "the model that writes compaction summaries (a preset or provider/model, e.g. claude-sonnet-cli); empty: the session's model. A remote one is used only when the session's model is remote too"},
         {"//sessions_home", "auto: a project's transcripts (it has a MAIC.md) go under sessions/projects/, others under sessions/general/. Or: general, project, a name."},
         {"instruction_files", d.instruction_files},
         {"load_instructions", d.load_instructions},

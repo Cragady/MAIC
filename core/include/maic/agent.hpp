@@ -131,6 +131,7 @@ public:
         double at = 0.75;         // auto-compact when the last call used this share of the context window
         int keep_results = 4;     // the most recent tool results always stay intact
         double head_fraction = 0.5;  // Head summarises this share of the turns, oldest first
+        std::string model;           // writes the summaries; "" = the session's model, and a remote one only for a remote session
     };
     CompactionSettings compaction;
 

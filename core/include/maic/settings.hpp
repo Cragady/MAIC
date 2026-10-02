@@ -124,6 +124,7 @@ struct Settings {
     bool record = true;
     double compact_at = 0.75;      // auto-compact at this share of the context window; 0 turns it off
     int compact_keep_results = 4;  // tool results that never get pruned (the most recent)
+    std::string compact_model;     // writes the summaries ("" = the session's model; a remote one only for a remote session)
     std::vector<std::filesystem::path> sources;  // the files that were read, in order
     nlohmann::json layered = nlohmann::json::object();  // every file's table merged in order, for :cd to say what changed
     std::vector<Provider> providers = default_providers();

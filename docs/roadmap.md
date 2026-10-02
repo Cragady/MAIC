@@ -20,6 +20,8 @@ Other agent CLIs as parts of MAIC, at three levels, each on the user's own login
 
 Claude Code first (the only one installed here), opencode next.
 
+Level 1 built (2026-10-01): the provider kind `cli` and the shipped `claude-cli` provider run `claude -p` headless with stream-json in and out, as a text-only model for `small_model`, `reviewer_model` and the new `compact_model`; presets `claude-haiku-cli` and `claude-sonnet-cli` on the user's own login and plan; one persistent process per provider, model and purpose (reused, replaced after `max_requests`, respawned when dead, reaped on exit, stderr to `<state>/logs/claude-cli.log`, a timeout per request); usage limits from the CLI's result lines become `ApiError`s, so the reviewer's and summaries' fallbacks work; tool schemas are refused. Verified (fake-`claude` tests in `llm_test` and `agent_test`): the CLI is started with every built-in tool off (`--tools ""`), no MCP server (`--strict-mcp-config` and an empty `--mcp-config`) and `--permission-mode dontAsk`, so it takes no actions and MAIC's harness stays the only judge of what runs. Levels 2 and 3 remain, and diction's scribe still runs its own `claude` process ([settings.md](settings.md#claude-code-as-a-provider)).
+
 ### 3. Side conversations (`:btw` and `:aside`)
 
 `:btw QUESTION` opens a side thread forked from the main conversation at that point (a fork pointer, sharing the history without copying it), in a side pane in MAIC's interface and a split or float in maic.nvim. It answers, and the user keeps chatting in that thread afterwards; the main conversation is untouched, and a running main turn keeps running. `:aside QUESTION` is the same with no main-conversation context: a fresh thread with the session's workspace, settings and harness.

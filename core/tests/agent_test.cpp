@@ -12,6 +12,8 @@
 
 #include "maic/http.hpp"
 
+#include "fake_claude.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -1608,6 +1610,103 @@ int main() {
         fa.reply = fb.reply = nullptr;
         fa.tool_call = json();
         reset();
+    }
+
+    section("the reviewer and summaries on claude-cli (a fake claude on PATH)");
+    {
+        // The session's model is on the fake server; the reviewer and summaries go to a fake `claude`.
+        fs::path dir = ws / "fake-claude";
+        std::string saved_path = std::getenv("PATH") ? std::getenv("PATH") : "";
+        fake_claude::install(dir);
+        FakeServer fake;
+        Provider cli;
+        for (const auto& p : default_providers()) if (p.name == "claude-cli") cli = p;
+        std::vector<ModelPreset> presets = default_presets();
+        for (auto& p : presets) {
+            if (p.name == "opus-5.5") p.model = "fake/opus";
+            if (p.name == "haiku-4.5") p.model = "fake/haiku";
+        }
+        auto is_review = [](const json& b) { return b["messages"][0]["content"].get<std::string>().rfind("You review one action", 0) == 0; };
+        fake.reply = [&](const json& b) { return is_review(b) ? std::string("ALLOW: fine") : std::string(); };
+        auto reviews_on_fake = [&] { return std::count_if(fake.requests.begin(), fake.requests.end(), is_review); };
+        auto make = [&] {
+            auto a = std::make_unique<Agent>(ws, "fake/opus");
+            a->providers = {fake.provider(), cli};
+            a->presets = presets;
+            a->mode = Mode::Auto;
+            a->small_model = "claude-cli/haiku";
+            return a;
+        };
+        int n = 0;
+        auto write_turn = [&](Agent& a, Recorder& r, const std::string& word) {
+            std::string path = "cli" + std::to_string(++n) + "-" + word + ".txt";
+            fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", path}, {"content", "x"}}}};
+            fake.calls_left = 1;
+            a.submit("please write " + path, Origin::Local, r, no_cancel);
+            return fs::exists(ws / path);
+        };
+        {
+            SessionLog log("agent-test");
+            auto a = make();
+            a->set_log(&log);
+            Recorder r;
+            bool wrote = write_turn(*a, r, "ok");
+            json review;
+            std::ifstream in(log.path());
+            for (std::string l; std::getline(in, l);) {
+                json j = json::parse(l, nullptr, false);
+                if (j.is_object() && j.value("type", "") == "tool" && j.contains("review")) review = j["review"];
+            }
+            expect(wrote && r.asked.empty() && reviews_on_fake() == 0 && review.value("model", "") == "claude-cli/haiku" && review.value("model_reason", "") == "small_model" &&
+                       review.value("verdict", "") == "allow",
+                   "small_model = claude-cli/haiku reviews the write through the CLI, which allows it: " + review.dump());
+            bool started = false;
+            for (const auto& sp : fake_claude::spawns(dir)) {
+                const json& av = sp["argv"];
+                for (size_t i = 0; i + 1 < av.size(); ++i) started = started || (av[i] == "--system-prompt" && av[i + 1].get<std::string>().rfind("You review one action", 0) == 0);
+            }
+            expect(started && a->reviewer().tokens == 15, "the reviewer's prompt is the CLI's system prompt, and its tokens count (" + std::to_string(a->reviewer().tokens) + ")");
+            fs::remove(log.path());
+        }
+        {
+            // The plan runs out: this action is asked, and reviews move to the API's Haiku.
+            auto a = make();
+            Recorder r;
+            r.reply = {Approval::Yes, ""};
+            bool wrote = write_turn(*a, r, "LIMIT");
+            expect(wrote && r.asked.size() == 1 && has_notice(r, "reviewer: claude-haiku-cli hit its usage limit; reviewing on haiku-4.5"),
+                   "a usage limit from the CLI asks this action and moves the reviewer to the API preset");
+            Recorder r2;
+            expect(write_turn(*a, r2, "next") && r2.asked.empty() && reviews_on_fake() == 1, "the next review runs on haiku-4.5");
+        }
+        {
+            Agent a(ws, "claude-cli/sonnet");
+            a.providers = {fake.provider(), cli};
+            Recorder r;
+            std::string err;
+            try { a.submit("hello", Origin::Local, r, no_cancel); } catch (const std::exception& e) { err = e.what(); }
+            expect(err.find("claude-cli is a text-only provider here") == 0, "as the session's model it refuses the agent loop's tools: " + err);
+        }
+        std::vector<Message> hist = {{"system", "sys"}, {"user", "turn 1"}, {"assistant", "reply 1"}, {"user", "turn 2"}, {"assistant", "reply 2"}};
+        {
+            // A remote session (never contacted here) with compact_model on the CLI.
+            Agent a(ws, "cloud/model");
+            a.providers = {{"cloud", "openai", "https://cloud.invalid/v1"}, cli};
+            a.compaction.model = "claude-cli/sonnet";
+            a.restore(hist);
+            a.compact(Agent::Compaction::All, no_cancel);
+            expect(a.messages().size() == 2 && a.messages()[1].content.find("summarised by sonnet") != std::string::npos, "compact_model = claude-cli/sonnet writes the summary");
+        }
+        {
+            // A local session keeps its history on the machine: the remote compact_model is passed over.
+            Agent a(ws, "fake/opus");
+            a.providers = {fake.provider(), cli};
+            a.compaction.model = "claude-cli/sonnet";
+            a.restore(hist);
+            a.compact(Agent::Compaction::All, no_cancel);
+            expect(a.messages().size() == 2 && a.messages()[1].content.find("echo: The conversation") != std::string::npos, "a local session's summary stays on its own model");
+        }
+        setenv("PATH", saved_path.c_str(), 1);
     }
 
     section("context files");

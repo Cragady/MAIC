@@ -1427,6 +1427,20 @@ int main() {
         write_file(ws / "proj" / ".maic" / "settings.lua", "return { title_model = 'a/b', small_model = 'haiku-4.5', reviewer_budget_tokens = 9000 }");
         Settings st = load_settings(ws / "proj");
         expect(st.small_model == haiku && st.reviewer_budget_tokens == 9000, "small_model wins over title_model, and reviewer_budget_tokens loads");
+
+        // The Claude Code presets: tiers like their API counterparts, not limited, usable as small_model and compact_model.
+        expect(P(d, "claude-haiku-cli").model == "claude-cli/haiku" && P(d, "claude-haiku-cli").tier == P(d, "haiku-4.5").tier && !P(d, "claude-haiku-cli").limited &&
+                   P(d, "claude-sonnet-cli").model == "claude-cli/sonnet" && P(d, "claude-sonnet-cli").tier == P(d, "sonnet-5").tier && !P(d, "claude-sonnet-cli").limited,
+               "claude-haiku-cli and claude-sonnet-cli are shipped, tiered like haiku-4.5 and sonnet-5, not limited");
+        write_file(ws / "proj" / ".maic" / "settings.lua",
+                   "return { small_model = 'claude-haiku-cli', compact_model = 'claude-sonnet-cli', providers = { ['claude-cli'] = { options = { args = { '--fallback-model', 'sonnet' } } }, "
+                   "other = { kind = 'cli', options = { command = 'other-agent' } } } }");
+        Settings cs = load_settings(ws / "proj");
+        auto prov = [&](const std::string& n) { return *std::find_if(cs.providers.begin(), cs.providers.end(), [&](const Provider& p) { return p.name == n; }); };
+        expect(cs.small_model == "claude-cli/haiku" && cs.compact_model == "claude-cli/sonnet" && rev(cs, opus, "", cs.small_model).model == "claude-cli/haiku",
+               "small_model and compact_model take the CLI presets by name, and the reviewer follows small_model");
+        expect(prov("claude-cli").options.value("command", "") == "claude" && prov("claude-cli").options["args"].size() == 2 && prov("other").kind == "cli" && prov("other").remote(),
+               "a cli provider needs no base_url, and options merge into the shipped one");
         fs::remove(ws / "proj" / ".maic" / "settings.lua");
     }
 

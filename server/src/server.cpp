@@ -239,6 +239,7 @@ struct Server::Impl {
         s->agent.think = st.think;
         s->agent.compaction.at = st.compact_at;
         s->agent.compaction.keep_results = st.compact_keep_results;
+        s->agent.compaction.model = st.compact_model;
         s->agent.budget_tokens = st.budget_tokens;
         s->agent.set_instruction_names(st.instruction_files);
         return s;

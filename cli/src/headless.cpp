@@ -198,6 +198,7 @@ int run_headless(const HeadlessOptions& options) {
     agent.think = options.think || settings.think;
     agent.compaction.at = settings.compact_at;
     agent.compaction.keep_results = settings.compact_keep_results;
+    agent.compaction.model = settings.compact_model;
     agent.budget_tokens = settings.budget_tokens;
     agent.set_instruction_names(settings.instruction_files);
     agent.load_instruction_files = settings.load_instructions;

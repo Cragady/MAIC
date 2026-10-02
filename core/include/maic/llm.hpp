@@ -49,7 +49,8 @@ Message message_from_json(const nlohmann::json& j);
 // Where a model lives. Model strings are "<provider>/<model>", e.g. "anthropic/claude-opus-5-5".
 struct Provider {
     std::string name;
-    std::string kind;      // "anthropic" or "openai" (any OpenAI-compatible API: llama.cpp server, DeepSeek, OpenRouter, ...)
+    std::string kind;      // "anthropic", "openai" (any OpenAI-compatible API: llama.cpp server, DeepSeek, OpenRouter, ...)
+                           // or "cli" (an agent CLI run headless as a text-only model: `claude -p`)
     std::string base_url;  // e.g. http://127.0.0.1:8081/v1, https://api.anthropic.com, https://api.deepseek.com
     std::string api_key_env;      // environment variable holding the API key
     std::string api_key_command;  // or a command that prints it (a password manager); never a key in a file
@@ -60,7 +61,7 @@ struct Provider {
     std::string api_key() const;  // throws with a clear message when it can't be found
 };
 
-// llamacpp (local), anthropic, deepseek, openrouter. Settings can add or override providers by name.
+// llamacpp (local), anthropic, deepseek, openrouter, claude-cli. Settings can add or override providers by name.
 std::vector<Provider> default_providers();
 
 // "anthropic/claude-opus-5-5" -> the anthropic provider and "claude-opus-5-5". A string whose prefix isn't a

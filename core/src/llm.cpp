@@ -54,6 +54,7 @@ Message message_from_json(const nlohmann::json& j) {
 }
 
 bool Provider::remote() const {
+    if (kind == "cli") return true;  // the CLI sends everything to its own service
     for (const char* local : {"://127.", "://localhost", "://[::1]"}) {
         if (base_url.find(local) != std::string::npos) return false;
     }
@@ -93,6 +94,8 @@ std::vector<Provider> default_providers() {
          {{"max_tokens", 64000}, {"effort", "high"}, {"think_effort", "xhigh"}, {"fallbacks", "default"}}},
         {"deepseek", "openai", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "", nlohmann::json::object()},
         {"openrouter", "openai", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "", nlohmann::json::object()},
+        // Claude Code run headless as a text-only model, on the user's own login and plan (docs/settings.md).
+        {"claude-cli", "cli", "", "", "", {{"command", "claude"}, {"args", nlohmann::json::array()}}},
     };
 }
 
@@ -155,7 +158,8 @@ Message chat_once(const Provider& provider, const ChatOptions& options, const st
                   const nlohmann::json& tools, const TextSink& on_text, const std::atomic<bool>& cancel) {
     if (provider.kind == "anthropic") return detail::chat_anthropic(provider, options, messages, tools, on_text, cancel);
     if (provider.kind == "openai") return detail::chat_openai(provider, options, messages, tools, on_text, cancel);
-    throw std::runtime_error(provider.name + ": unknown provider kind '" + provider.kind + "' (anthropic, openai)");
+    if (provider.kind == "cli") return detail::chat_cli(provider, options, messages, tools, on_text, cancel);
+    throw std::runtime_error(provider.name + ": unknown provider kind '" + provider.kind + "' (anthropic, openai, cli)");
 }
 
 bool sleep_unless_cancelled(int ms, const std::atomic<bool>& cancel) {

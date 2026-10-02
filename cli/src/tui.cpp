@@ -247,6 +247,7 @@ public:
         view_.set_leader(settings_.leader);
         agent_.compaction.at = settings_.compact_at;
         agent_.compaction.keep_results = settings_.compact_keep_results;
+        agent_.compaction.model = settings_.compact_model;
         agent_.budget_tokens = settings_.budget_tokens;
         agent_.set_instruction_names(settings_.instruction_files);
         agent_.load_instruction_files = settings_.load_instructions;
@@ -707,6 +708,7 @@ void App::cd_to(const std::filesystem::path& ws, const std::filesystem::path& to
     if (has("budget_tokens")) agent_.budget_tokens = settings_.budget_tokens;
     if (has("compact_at")) agent_.compaction.at = settings_.compact_at;
     if (has("compact_keep_results")) agent_.compaction.keep_results = settings_.compact_keep_results;
+    if (has("compact_model")) agent_.compaction.model = settings_.compact_model;
     if (has("system_prompt")) agent_.set_system_prefix(resolve_system_prompt(settings_.system_prompt));
     if (has("prefill")) agent_.prefill = resolve_system_prompt(settings_.prefill);
     if (has("rules")) agent_.set_rules(settings_.rules);
@@ -1896,7 +1898,7 @@ void App::run_command(const std::string& line) {
             if (arg.empty()) {
                 std::string list = "model: " + agent_.model + "\npresets (:model NAME):" + preset_lines(settings_);
                 list += "\nproviders:";
-                for (const auto& p : agent_.providers) list += "\n  " + p.name + "/<model>  (" + p.kind + ", " + p.base_url + (p.remote() ? ", REMOTE)" : ")");
+                for (const auto& p : agent_.providers) list += "\n  " + p.name + "/<model>  (" + p.kind + ", " + (p.kind == "cli" ? p.options.value("command", "") + ", text only" : p.base_url) + (p.remote() ? ", REMOTE)" : ")");
                 post(Kind::Notice, list);
             } else if (idle()) {
                 set_model(arg);

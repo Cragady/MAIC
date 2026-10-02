@@ -5,6 +5,7 @@ add_library(maic_core
     src/anthropic.cpp
     src/artifacts.cpp
     src/bans.cpp
+    src/cli_provider.cpp
     src/clipboard.cpp
     src/harness.cpp
     src/import.cpp

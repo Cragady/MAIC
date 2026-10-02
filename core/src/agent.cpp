@@ -417,10 +417,19 @@ std::string Agent::summarise(size_t from, size_t to, const std::atomic<bool>& ca
                    "that context was compacted."},
         {"user", "The conversation:\n\n" + transcript + "\nWrite the handover note."},
     };
-    auto [provider, model_name] = resolve_model(providers, model);
-    ChatOptions options{model_name, false};
-    Message reply = chat(provider, options, req, nlohmann::json::array(), [](std::string_view, bool) {}, cancel);
-    return reply.content;
+    auto ask = [&](const std::string& m) {
+        auto [provider, model_name] = resolve_model(providers, m);
+        return chat(provider, ChatOptions{model_name, false}, req, nlohmann::json::array(), [](std::string_view, bool) {}, cancel).content;
+    };
+    // compaction.model writes the note when set, a remote one only for a remote session so a local session's
+    // history stays on the machine; when it hits its usage limit, the session's model writes it.
+    if (compaction.model.empty() || compaction.model == model || (!remote() && resolve_model(providers, compaction.model).first.remote())) return ask(model);
+    try {
+        return ask(compaction.model);
+    } catch (const ApiError& e) {
+        if (!is_usage_limit(e)) throw;
+        return ask(model);
+    }
 }
 
 std::string Agent::compact(Compaction stage, const std::atomic<bool>& cancel) {
