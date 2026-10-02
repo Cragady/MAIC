@@ -5,6 +5,7 @@
 #include "maic/session.hpp"
 #include "maic/settings.hpp"
 #include "maic/tripwire.hpp"
+#include "maic/trust.hpp"
 #include "maic/vendor.hpp"
 
 #include <unistd.h>
@@ -114,7 +115,11 @@ private:
 }  // namespace
 
 int run_headless(const HeadlessOptions& options) {
+    // Nothing is asked here: an untrusted project directory stays untrusted unless --trust was given.
+    for (const auto& n : trust_notices(std::filesystem::current_path())) fprintf(stderr, "※ %s\n", n.c_str());
+    for (const auto& n : settle_trust(std::filesystem::current_path())) fprintf(stderr, "※ %s\n", n.c_str());
     Settings settings = load_settings();
+    for (const auto& w : settings.warnings) fprintf(stderr, "※ %s\n", w.c_str());
     if (options.model) settings.model = *options.model;
     apply_preset(settings, settings.model);
     settings.model = resolve_model_alias(settings.model);

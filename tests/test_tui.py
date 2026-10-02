@@ -244,7 +244,13 @@ class TuiTest(unittest.TestCase):
             f.write("return { timestamps = true }\n")
         tui = self.start()
         tui.send(":cd cd-sub<cr>")
+        text = tui.wait_for(" trust this directory? ")  # a project directory: :cd asks as a start there would
+        self.assertIn("settings:     .maic/settings.lua", text)
+        self.assertIn("[s] trust sandboxed", text)
+        tui.send("s")
         text = tui.wait_for("settings changed: timestamps")
+        self.assertIn("trusted sandboxed: " + sub, text)  # its settings.lua ran in the sandbox, and applied
+
         self.assertIn("workspace: " + sub, text)
         self.assertIn(" · in " + sub, text)  # the status strip
         tui.send(":pwd<cr>")
@@ -281,9 +287,74 @@ class TuiTest(unittest.TestCase):
             self.assertIn('"type":"rehomed"', f.read().replace(" ", ""))
 
     def test_init_leaves_an_unrecorded_session(self):
-        tui = self.start()
+        ws = tempfile.mkdtemp(prefix="maic-tui-init-", dir=self.home)  # its own: :init makes it a project directory
+        tui = Tui([MAIC, "--no-record", "--harness", "dumb", "--no-instructions"], env=self.env, cwd=ws)
+        self.addCleanup(tui.close)
+        tui.wait_for(STRIP)
         tui.send(":init<cr>")
         tui.wait_for("this session stays out of the project's home: it is not recorded")
+        tui.wait_for("is not trusted, so its MAIC.md")
+
+    def test_cd_into_a_project_directory_not_now(self):
+        sub = os.path.join(self.ws, "cd-untrusted")
+        os.makedirs(os.path.join(sub, ".maic"), exist_ok=True)
+        with open(os.path.join(sub, ".maic", "settings.lua"), "w") as f:
+            f.write("return { timestamps = true }\n")
+        tui = self.start()
+        tui.send(":cd cd-untrusted<cr>")
+        tui.wait_for(" trust this directory? ")
+        tui.send("n")
+        text = tui.wait_for("workspace: " + sub)
+        self.assertIn("not now: " + sub + " is untrusted for this session", text)
+        self.assertIn("settings: unchanged", text)  # its settings.lua was not read
+
+
+    def trust_case(self, settings):
+        """A workspace with a project settings file, a state directory of its own, and maic started there (not
+        waiting for the screen: the trust prompt comes first)."""
+        ws = tempfile.mkdtemp(prefix="maic-tui-trust-", dir=self.home)
+        os.makedirs(os.path.join(ws, ".maic"))
+        with open(os.path.join(ws, ".maic", "settings.lua"), "w") as f:
+            f.write(settings)
+        env = dict(self.env, XDG_STATE_HOME=tempfile.mkdtemp(prefix="maic-tui-state-", dir=self.home))
+
+        def start():
+            tui = Tui([MAIC, "--no-record", "--harness", "dumb", "--no-instructions"], env=env, cwd=ws)
+            self.addCleanup(tui.close)
+            return tui
+        return ws, start
+
+    def test_trust_prompt_then_trusted(self):
+        ws, start = self.trust_case("return { timestamps = true }\n")
+        tui = start()
+        text = tui.wait_for("[t] trust fully")
+        self.assertIn("a project directory you have not trusted", text)
+        self.assertIn(ws, text)
+        self.assertIn("settings:     .maic/settings.lua", text)
+        self.assertIn("tier standard;", text)
+        self.assertIn("[s] trust sandboxed: its Lua runs in a child process that cannot reach the system", text)
+
+        tui.send("t<cr>", settle=False)
+        tui.wait_for(STRIP)
+        tui.send(":settings<cr>")
+        self.assertIn(os.path.join(ws, ".maic", "settings.lua"), tui.text())  # applied
+        again = start()
+        text = again.wait_for(STRIP)
+        self.assertNotIn("[t] trust fully", text)  # remembered: not asked twice
+
+    def test_trust_prompt_not_now_then_trust_command(self):
+        ws, start = self.trust_case("return { timestamps = true }\n")
+        tui = start()
+        tui.wait_for("[t] trust fully")
+        tui.send("n<cr>", settle=False)
+        text = tui.wait_for(STRIP)
+        self.assertIn("untrusted (untrusted this session): " + ws, text)
+        tui.send(":settings<cr>")
+        self.assertNotIn(os.path.join(ws, ".maic", "settings.lua"), tui.text())  # not applied
+        tui.send(":trust<cr>")
+        self.assertIn("trusted " + ws, tui.wait_for("trusted " + ws))
+        again = start()
+        self.assertNotIn("[t] trust fully", again.wait_for(STRIP))
 
     def test_quit_prints_the_transcript_line(self):
         tui = self.start()

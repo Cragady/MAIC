@@ -64,7 +64,8 @@ Artifact diction_logs() {
     std::error_code ec;
     if (fs::exists(config, ec)) {
         try {
-            nlohmann::json cfg = eval_restricted_table_file(config);
+            LuaDataLimits limits = lua_data_limits();  // global_lua, from the settings main() read first
+            nlohmann::json cfg = eval_lua_data_file(config, fs::current_path(), limits.tier, limits.memory_mb);
             if (cfg.value("log_dir", nlohmann::json()).is_string()) log_dir = cfg["log_dir"].get<std::string>();
         } catch (const std::exception&) {
             // diction names the error when it runs; with the file broken it logs next to the document, as here

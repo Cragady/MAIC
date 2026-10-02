@@ -3,6 +3,7 @@
 #include "check.hpp"
 
 #include "maic/script_tools.hpp"
+#include "maic/trust.hpp"
 
 #include <unistd.h>
 
@@ -68,6 +69,7 @@ int main() {
     fs::remove_all(ws);
     fs::create_directories(ws / "cfg");
     setenv("XDG_CONFIG_HOME", (ws / "cfg").c_str(), 1);
+    trust_for_session(ws);  // the tools below are this test's own (trust_test covers untrusted ones)
     Harness h(ws);
     std::atomic<bool> no_cancel{false};
 

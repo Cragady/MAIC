@@ -467,7 +467,8 @@ class Pipeline(unittest.TestCase):
     def test_a_broken_diction_lua_is_named_and_ignored(self):
         lua = self.tmp / "config" / "maic" / "diction.lua"
         lua.parent.mkdir(parents=True)
-        lua.write_text("return { log_dir = os.execute('true') }\n")
+        lua.write_text("return { log_dir = nil .. '/logs' }\n")
+
         p, _ = self.run_diction(["hello there"])
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertRegex(p.stdout, rf"ignoring {re.escape(str(lua))}: {re.escape(str(lua))}:1: ")
@@ -724,19 +725,27 @@ class Maic(unittest.TestCase):
                                                 "presets": {"mine": {"scribe": "qwen-4b"}}})
         self.assertEqual(p.stderr, "to stderr\n")
 
-    def test_settings_read_diction_runs_in_a_restricted_state(self):
+    def test_settings_read_diction_runs_at_global_lua(self):
+        # diction.lua is the user's own file: full Lua by default, as settings.lua; global_lua = "sandbox" or
+        # "restricted" in settings.lua runs it that way (docs/harness.md, Settings Lua runs at a level you choose).
         path = self.tmp / "config" / "maic" / "diction.lua"
-        for line in ("os.execute('touch " + str(self.tmp / "ran") + "')", "io.open('/etc/hostname')", "require('os')",
-                     "local _ = ffi.C", "require('ffi')", "jit.off()", "debug.getinfo(1)", "package.loaded.os.exit(0)",
-                     "dofile('/dev/null')", "loadfile('/dev/null')", "os.exit(0)", "os.remove('x')",
-                     "local f, e = load(string.dump(function() end)); if not f then error(e) end",
-                     "while true do end", "while true do pcall(function() while true do end end) end", "return {"):
-            p = self.settings_read("local x = 1\n" + line + "\nreturn {}\n")
-            self.assertEqual((p.returncode, p.stdout), (1, ""), line)
-            self.assertRegex(p.stderr, rf"^maic: {re.escape(str(path))}:[23]: ", line)
-        p = self.settings_read("return 1\n")
-        self.assertEqual((p.returncode, p.stderr), (1, f"maic: {path}: must return a table\n"))
-        self.assertFalse((self.tmp / "ran").exists())
+        p = self.settings_read("os.execute('touch " + str(self.tmp / "full") + "')\nreturn { a = 1 }\n")
+        self.assertEqual((p.returncode, json.loads(p.stdout)), (0, {"a": 1}), p.stderr)
+        self.assertTrue((self.tmp / "full").exists(), "by default it runs as the user")
+        for tier in ("sandbox", "restricted"):
+            (self.tmp / "config" / "maic" / "settings.lua").write_text(f'return {{ global_lua = "{tier}" }}\n')
+            for line in ("os.execute('touch " + str(self.tmp / "ran") + "')", "io.open('/etc/hostname')", "require('os')",
+                         "local _ = ffi.C", "require('ffi')", "jit.off()", "debug.getinfo(1)", "package.loaded.os.exit(0)",
+                         "dofile('/dev/null')", "loadfile('/dev/null')", "os.exit(0)", "os.remove('x')",
+                         "local f, e = load(string.dump(function() end)); if not f then error(e) end",
+                         "while true do end", "while true do pcall(function() while true do end end) end", "return {"):
+                p = self.settings_read("local x = 1\n" + line + "\nreturn {}\n")
+                self.assertEqual((p.returncode, p.stdout), (1, ""), tier + ": " + line)
+                self.assertRegex(p.stderr, rf"^maic: {re.escape(str(path))}:[23]: ", tier + ": " + line)
+            p = self.settings_read("return 1\n")
+            self.assertEqual((p.returncode, p.stderr), (1, f"maic: {path}: must return a table\n"), tier)
+            self.assertFalse((self.tmp / "ran").exists(), tier)
+
 
     def test_maic_diction_passes_through(self):
         p = self.maic("diction", "--help")

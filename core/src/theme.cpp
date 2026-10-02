@@ -129,13 +129,13 @@ Theme load_theme_file(const fs::path& path) {
     std::string source = read_text(path);
     json table;
     try {
-        // Named by the file alone: Lua cuts a long chunk name to its last 60 characters, which loses the path.
-        Lua lua(path.parent_path());
-        table = lua.eval_table(source, "@" + path.filename().string());
+        // A theme is a data file of the user's (or MAIC's own): it runs at the tier of the user's files, global_lua.
+        LuaDataLimits limits = lua_data_limits();
+        table = eval_lua_data(source, "@" + path.string(), path.parent_path(), limits.tier, limits.memory_mb);
     } catch (const std::exception& e) {
         std::string msg = e.what();
         if (msg[0] == '@') msg.erase(0, 1);
-        throw std::runtime_error(msg.rfind(path.filename().string(), 0) == 0 ? (path.parent_path() / msg).string() : path.string() + ": " + msg);
+        throw std::runtime_error(msg.rfind(path.string(), 0) == 0 ? msg : path.string() + ": " + msg);
     }
     Theme t = parse_theme(table, path.string(), source);
     t.name = path.stem().string();  // the file name is the theme's name; the name inside is for the reader

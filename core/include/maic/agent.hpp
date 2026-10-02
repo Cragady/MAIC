@@ -77,6 +77,11 @@ public:
     virtual void on_file_written(const std::filesystem::path& path, const std::string& tool) { (void)path, (void)tool; }
 };
 
+// An action that would change which directories are trusted or at what tier (a write to <state>/trust*, a
+// `maic trust` / `maic untrust` / `maic ... --trust` command). The agent's authorise step never lets one run:
+// the smart harness trips on it, the dumb one refuses it.
+bool touches_trust(const Action& action);
+
 class Agent {
 public:
     Agent(std::filesystem::path workspace, std::string model);

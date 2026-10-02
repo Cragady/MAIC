@@ -1,6 +1,7 @@
 #include "maic/instructions.hpp"
 
-#include <algorithm>
+#include "maic/trust.hpp"
+
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -40,19 +41,10 @@ std::vector<InstructionFile> load_instructions(const fs::path& workspace, const 
     std::vector<InstructionFile> out;
     add_if_present(out, global_instructions_path());
 
-    // Directories from just below $HOME down to the workspace. Outside $HOME, only the workspace itself.
-    fs::path home = fs::weakly_canonical(std::getenv("HOME"));
-    fs::path ws = fs::weakly_canonical(workspace);
-    std::vector<fs::path> dirs;
-    for (fs::path d = ws; !d.empty(); d = d.parent_path()) {
-        if (d == home) break;
-        dirs.push_back(d);
-        auto rel = d.lexically_relative(home);
-        if (rel.empty() || *rel.begin() == "..") break;  // not under $HOME
-        if (d == d.root_path()) break;
-    }
-    std::reverse(dirs.begin(), dirs.end());
-    for (const auto& d : dirs) {
+    // The config chain: the project root (or just below $HOME) down to the workspace. Outside $HOME, only the
+    // workspace itself.
+    for (const auto& d : config_chain(workspace)) {
+        if (!trusted(d)) continue;  // an untrusted project's instructions never reach the model
         for (const auto& name : names) {
             add_if_present(out, d / name);
         }

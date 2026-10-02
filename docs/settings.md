@@ -3,10 +3,11 @@
 Settings are Lua files that return a table (JSON with the same keys works too). They are layered, and every key is optional; MAIC runs fine with no files at all:
 
 1. `~/.config/maic/settings.lua` (or `$XDG_CONFIG_HOME/maic/settings.lua`): yours, for every project. `maic settings init` writes one with every default and a comment; `maic settings path` shows where it goes.
-2. `<dir>/.maic/settings.lua` for each directory from just under `$HOME` down to the workspace: the project's, meant to be committed.
+2. `<dir>/.maic/settings.lua` for each directory on the [chain](#project-layers-trust-and-the-chain), from the project root (or just under `$HOME`) down to the workspace: the project's, meant to be committed. Only a directory you trusted counts.
 3. `<dir>/.maic/settings.local.lua` next to each of those: personal overrides, keep it out of git.
 
-diction's settings are a file of their own beside the global one, `~/.config/maic/diction.lua`, read only by diction and evaluated in a restricted Lua state with no file or command access (`maic settings read diction`; see [diction.md](diction.md#configuration)).
+diction's settings are a file of their own beside the global one, `~/.config/maic/diction.lua`, read only by diction and evaluated at `global_lua`, like this file (`maic settings read diction`; see [diction.md](diction.md#configuration)).
+
 
 At each location a `settings.lua` is used when it exists, else a `settings.json` (`maic settings init --json` writes that form). Nearer files win. Scalars replace (`theme` too), `providers` merge by name, `style` merges by role. `:settings` in a session lists the files that were read; `maic init` (or `:init`, which also has the agent draft the `MAIC.md`) scaffolds a project's.
 
@@ -25,7 +26,8 @@ return {
 }
 ```
 
-The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`, `maic.workspace` and `maic.version` are set. Keys in the JSON examples below are the same in Lua (`sessions_home = "auto"`).
+Your global file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`, `maic.workspace` and `maic.version` are set. A project's file runs at the Lua level you trusted its directory with: fully, like yours, or sandboxed or restricted when the project is only partly yours ([below](#lua-levels)). Keys in the JSON examples below are the same in Lua (`sessions_home = "auto"`).
+
 
 ```jsonc
 // the same keys, in JSON form
@@ -50,7 +52,7 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 | `think` | Ask the model to reason before answering. Slower; better on hard problems. |
 | `markdown` | Render markdown in the conversation window (`:set markdown off` for raw text). The input box always highlights markdown. |
 | `mouse` | Scroll wheel support. With it on, the terminal's own text selection needs Shift+drag; `:set mouse off` turns it off for a session. |
-| `instruction_files` | File names looked for from `$HOME` down to the workspace, like CLAUDE.md. See [Instructions](#instructions). |
+| `instruction_files` | File names looked for on the chain (the project root, or just under `$HOME`, down to the workspace), like CLAUDE.md. See [Instructions](#instructions). |
 | `record` | Keep transcripts of interactive sessions (default `true`). `false` writes them to the runtime directory instead, where they vanish at logout; `--record` / `--no-record` override per session. |
 | `compact_at` | Auto-compact when the last model call used this share of the context window (default `0.75`; `0` disables). Old tool results are stubbed first; the oldest turns are summarised only if that was not enough. See `:h compact`. |
 | `compact_keep_results` | Tool results that are never stubbed, counting from the most recent (default `4`). |
@@ -90,6 +92,13 @@ The file runs with LuaJIT and the standard library; `maic.home`, `maic.hostname`
 | `colors` | The colour depth: `"auto"` (default: truecolor when `COLORTERM` is `truecolor` or `24bit`, else 256 colours when `TERM` (or `COLORTERM`) contains `256`, else the 16 ANSI colours), `"truecolor"`, `"256"` or `"16"`. Below truecolor a `#rrggbb` becomes the nearest xterm-256 colour (the 6x6x6 cube and the grey ramp, by squared distance in sRGB) or the nearest of the 16. |
 | `enter_sends` | `true`: in insert mode Enter sends a one-line input, Shift+Enter or Alt+Enter inserts the line break, and an input that already has several lines keeps Enter as a line break. Default `false`, the vim-like behaviour: Enter is always a line break and Alt+Enter or `:w` sends. `:set enter_sends on\|off` for a session. |
 | `server` | `maic server`: `listen` (default `127.0.0.1:7373`; any other address turns TLS on), `workspaces` (directories a remote session may open; default `~/dev2`, else the current directory), `cert` and `key` (a PEM pair; empty makes a self-signed one under `~/.local/state/maic/server/`). See [remote.md](remote.md). |
+| `global_lua` | Global file only. How your own Lua data files run: `settings.lua`, your themes and MAIC's shipped ones, `diction.lua`. `"full"` (default): the full standard library, as they always have. `"sandbox"`: a child process that cannot reach the system; `"restricted"`: the restricted state in MAIC's own process ([Lua levels](#lua-levels)). MAIC has to know before the file runs, so it reads this from the file's text: write it literally, `global_lua = "sandbox"`; a value computed in Lua is an error. |
+| `lua_memory_mb` | Global file only. The memory cap of settings Lua at the sandbox and restricted levels, in MB (default `256`): the sandbox's child process may grow by this much, and the restricted state's heap may reach it. Read literally from the global file for the global file itself, like `global_lua`. |
+
+| `trust_strictness` | Global file only. The default trust tier for a trusted directory whose files change: `"strict"`, `"standard"` (default) or `"relaxed"`. See [Project layers, trust and the chain](#project-layers-trust-and-the-chain). |
+| `trust_identities` | Global file only. The author emails that are yours, for the standard tier (`{ "me@example.com", "work@example.com" }`). Empty (default): `git config --global user.email`. Never read from a repository. |
+| `trust_levels` | Global file only. A tier per directory, `{ ["~/dev2/app"] = "relaxed" }`. A tier set with `maic trust PATH --level L` (kept in `<state>/trust.json`) comes first. |
+| `instructions` | Global file only. `{ project_markers = { ".git", ".maic", "MAIC.md" }, bound = "project" }`: where the chain of project directories ends. `bound = "project"` (default) stops at the project root, the nearest directory at or above the workspace holding a marker; `"home"` goes up to just under `$HOME` as MAIC did before. |
 | `sessions_home` | Where new transcripts go. `auto` (default): under `sessions/projects/<encoded workspace>/` when the workspace has a `MAIC.md` (or one is in effect from a parent directory), else `sessions/general/`. Or force it: `general`, `project`, or any name (`sessions/<name>/`). A project can set this in its `.maic/settings.json`; `maic sessions rehome` moves existing transcripts. |
 | `init_move_outside_reads` | `:init` moves the running session into the project's home without asking when it wrote nothing outside the project and read at most this many files outside it (default `3`); with more, it asks. See [sessions.md](sessions.md#homes). |
 
@@ -263,11 +272,44 @@ A style is `{ fg, bg, bold, dim, italic, underline, inverted }`. Colours are FTX
 
 Normal, StatusLineNC, PmenuSel, Todo and DiffChange are read too but no role takes from them yet. The theme's `background` is nvim's `'background'` after the colorscheme ran.
 
+## Project layers, trust and the chain
+
+**The chain.** Project settings and instruction files are read from the workspace up to the project root: the nearest directory at or above the workspace that holds a project marker (`.git`, `.maic/` or `MAIC.md`; `instructions.project_markers` changes the list). Nothing above the root is read or asked about. With no marker anywhere above the workspace the chain goes up to just under `$HOME`, as before; `instructions.bound = "home"` makes that the rule everywhere. Outside `$HOME` the chain is the workspace alone. `$HOME` and `/` are never on it.
+
+**Trust.** A directory on the chain that holds `.maic/`, `MAIC.md` or `AGENTS.md` is a project directory, and nothing from it is used until you trust it: its `.maic/settings.*` are not applied, its instruction files are not given to the model, its `.maic/tools/` are not loaded, and an `AGENTS.md` below the workspace is attached only when the workspace itself is trusted. MAIC asks once per directory on the terminal before the screen is drawn (and in a modal when `:cd` reaches one): trust fully, trust sandboxed, not now (untrusted this session) or never (remembered). Headless runs and runs off a terminal ask nothing and stay untrusted unless `--trust` (fully) or `--trust=sandbox` is given. `:trust`, `maic trust [PATH] [--lua L] [--level L]`, `maic trust --list` and `maic untrust PATH` manage it;
+ the record is `<state>/trust.json` (0600), per absolute path, with a SHA-256 over every settings, instruction and tool file. Your global files (`~/.config/maic/`) are always trusted. The details, and why, are in [harness.md](harness.md#directory-trust-and-restricted-settings-lua-built).
+
+**Tiers.** When a trusted directory's files change:
+
+| Tier | A change passes when | Asked again for |
+| :--- | :--- | :--- |
+| `strict` | never | any change |
+| `standard` (default) | it is yours: an uncommitted edit in a git working tree, or commits whose author email is one of `trust_identities` (else your global git email) | a commit by anyone else (a pull, a merge), a checkout or reset that moved the history, a new untracked file, any change outside a git working tree |
+| `relaxed` | it widens nothing | a new `permission.allow` (or `allow`) entry, a removed `ask` or `deny` entry, a looser `mode`, `harness = "dumb"`, a `tripwire` other than `machine`, `allow_isolated`, `dumb_auto_ok`, a new or changed provider, settings that no longer load, a new tool or a manifest whose `run`, `reads` or `writes` changed, a new instruction file |
+
+Under `relaxed`, a changed `settings.lua` in a directory trusted fully is always asked about: its code runs as you, so it can't be judged as data. A change that passes is named in a one-line notice at start, and the record takes the new contents. The tier comes only from you: `trust_strictness`, `trust_levels`, and `maic trust PATH --level L` / `:trust --level L`. In a project's own file `trust_*`, `global_lua`, `lua_memory_mb`, `instructions.project_markers` and `instructions.bound` are ignored, each with a warning naming the file.
+
+### Lua levels
+
+How a settings-like Lua file runs. A trusted directory's level is a separate axis from its tier: the tier says how often to ask again, the level what its Lua may do.
+
+| Level | Who gets it | What the file can do |
+| :--- | :--- | :--- |
+| `full` | your own files by default (`global_lua`); a project directory you trust fully (`t`, `maic trust PATH`, `--trust`) | anything you can: the whole standard library, `maic.read`, `maic.shell`, `maic.nvim`. It runs as you |
+| `sandbox` | a project directory you trust sandboxed (`s`, `--lua sandbox`, `--trust=sandbox`); your own files with `global_lua = "sandbox"` | the restricted environment below, in a forked child process: its address space may grow by `lua_memory_mb` (RLIMIT_AS), its CPU time is capped (RLIMIT_CPU), it has no file descriptor but its result pipe (stdin, stdout and stderr on /dev/null, any open session file closed) and at most 8; it sends its table back as JSON. A child killed by a limit or a signal is an error naming the file ("exceeded its memory limit (256 MB)", "exceeded its time limit (2 s)", "crashed with signal N"); MAIC carries on and applies nothing from the file |
+| `restricted` | `--lua restricted`; your own files with `global_lua = "restricted"` | the restricted environment in MAIC's own process, with the early memory checks only |
+
+### Restricted Lua
+
+The environment of the sandbox and restricted levels: base,
+ `string`, `table`, `math` and `bit`; `os.getenv`, `os.time`, `os.date` and `os.clock` and no other `os` function; `load` and `loadstring` for text chunks only, compiled into the same environment; no `io`, `package`, `require`, `module`, `dofile`, `loadfile`, `debug`, `collectgarbage`, `gcinfo`, `ffi`, `jit`, `newproxy`, `setfenv`, `getfenv` or `string.dump`; `maic` holds only `workspace`, `version`, `home` and `hostname`. The JIT is off and a file that runs longer than 2 seconds is stopped. Its heap is checked against `lua_memory_mb` every 1000 instructions, and `string.rep` and `table.concat` refuse a result that would pass it before allocating (LuaJIT's own `string.format` already refuses a width or precision over two digits). The table it returns may hold only tables, strings, numbers and booleans: a function is an error naming its key (`providers.lab.hook is a function`). Reaching for anything missing is an error naming the file and line (`.maic/settings.lua:2: os.execute is not available in restricted settings Lua`), a bytecode file or chunk is refused, and nothing from the file is applied.
+
+
 ## Instructions
 
 Standing instructions the model sees on every turn, like CLAUDE.md:
 
 1. `~/.config/maic/MAIC.md` (global; `$XDG_CONFIG_HOME` respected)
-2. every `MAIC.md` or `AGENTS.md` from just under `$HOME` down to the workspace, outermost first
+2. every `MAIC.md` or `AGENTS.md` on the [chain](#project-layers-trust-and-the-chain) (the project root, or just under `$HOME`, down to the workspace), outermost first, from trusted directories only
 
 Files are re-read at the start of each turn, so edits apply to the next message. Each is capped at 32 KB. `:instructions` shows what is in effect. The model is told to follow them and never to infer your name or pronouns from paths, usernames or commit authors.

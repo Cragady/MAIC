@@ -31,6 +31,11 @@ maic artifacts                     # where MAIC and its services keep transcript
 maic diction                       # dictation into ./<dir>.md through whisper-server and a local scribe (docs/diction.md); maic help diction
 maic model resolve qwen-4b         # what a preset or provider/model means here, as JSON (provider, kind, base_url, model, context)
 maic settings init                 # a documented settings file (docs/settings.md)
+maic trust                         # trust this directory's project files (settings, MAIC.md / AGENTS.md, .maic/tools/); :h trust
+maic trust ~/dev2/app --lua sandbox     # its settings.lua in a child process that cannot reach the system (default full: as you)
+maic trust ~/dev2/app --level relaxed   # how often to ask again: strict, standard (default) or relaxed; maic trust --list, maic untrust PATH
+maic -p "run the tests" --trust    # headless runs ask nothing: --trust (fully) or --trust=sandbox, for that run only
+
 maic themes                        # the themes (yours in ~/.config/maic/themes, then the shipped ones), the active one marked
 maic themes import habamax         # a neovim colorscheme as a theme file, from a headless nvim with your config (docs/themes.md)
 maic doctor                        # the machine, the tools MAIC needs, installed models, a recommended setup
@@ -110,6 +115,8 @@ The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"
 | `:cd PATH\|-\|PLACE` / `:pwd` | move this session's workspace (when idle): an absolute path, one relative to the workspace, `~/...`, a place name, or `-` for the previous one; the harness root, shell commands, the project settings layers and the instruction files follow, the model gets a note and the transcript a `workspace` record. `:cd` alone or `:pwd` shows it. See `:h cd` |
 | `:settings` | which settings files are in effect and where this session's transcript lives |
 | `:instructions` | the MAIC.md / AGENTS.md files in effect |
+| `:trust [PATH] [--lua full\|sandbox\|restricted] [--level strict\|standard\|relaxed]` / `:untrust [PATH]` | trust this workspace's project directories (or one), or forget it. `--lua` is how its settings.lua runs (full: as you; sandbox: in a child process that cannot reach the system; restricted: a restricted state in process), `--level` how often it is asked about again. Until trusted, a directory's `.maic/settings.*` are not applied, its instruction files are not given to the model and its `.maic/tools/` are not loaded; MAIC asks once on the terminal before the screen is drawn (trust fully, trust sandboxed, not now, never). `maic trust [PATH] [--lua L] [--level L]`, `maic trust --list`, `maic untrust PATH` in the shell. See `:h trust` and docs/harness.md |
+
 | `:session` / `:artifacts` | where this transcript is; where everything is kept, with sizes |
 | `:path [NAME] [copy]` / `:open NAME` | every place maic knows by a short name (`workspace`, `session`, `sessions`, `models`, `workflows`, `templates`, `vendor/llamacpp`, `comfyui/outputs`, ...); show one, copy it to the clipboard, or open it in the file manager. `maic path`, `maic open`, and `eval "$(maic shell-init)"` for `mcd NAME` in your shell. See `:h path` |
 | `:gpu [free [llamacpp\|llamacpp-2\|llamacpp-fim\|whisper\|comfyui] \| load llamacpp-fim]` | who holds the card (each llama server's resident model, the code completion server's as loaded, unloaded or not linked, whisper's, ComfyUI's VRAM view) and one sentence on whether the models fit it; `free` unloads without stopping anything (whisper cannot, and says so); `load llamacpp-fim` loads the coder, which never loads by itself. `maic gpu` in the shell. A failed `maic up` explains a CUDA out of memory in plain words |

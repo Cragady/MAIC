@@ -6,6 +6,8 @@
 #include "maic/agent.hpp"
 #include "maic/settings.hpp"
 #include "maic/tripwire.hpp"
+#include "maic/trust.hpp"
+#include "maic/paths.hpp"
 #include "maic/session.hpp"
 
 #include "maic/http.hpp"
@@ -410,6 +412,19 @@ int main() {
         fs::create_directories(ws / "svc");
         std::ofstream(ws / "svc" / "AGENTS.md") << "svc rules: use tabs";
         std::ofstream(ws / "svc" / "a.txt") << "old\n";
+        not_now(ws);
+        {
+            Agent untrusted(ws, "test");
+            untrusted.providers = {fake.provider()};
+            untrusted.mode = Mode::Auto;
+            untrusted.review_with_model = false;
+            Recorder r0;
+            fake.tool_call = json{{"name", "read_file"}, {"arguments", {{"path", "svc/a.txt"}}}};
+            fake.calls_left = 1;
+            untrusted.submit("read it", Origin::Local, r0, no_cancel);
+            expect(!r0.results.empty() && r0.results[0].find("svc rules") == std::string::npos, "an untrusted workspace's nested AGENTS.md is not attached");
+        }
+        trust_for_session(ws);
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
         agent.mode = Mode::Auto;
@@ -1128,6 +1143,30 @@ int main() {
         auto r3 = attempt(true, "notes.txt");
         expect(!fs::exists(lock) && fs::exists(ws / "notes.txt"), "an ordinary write is untouched by the guard");
         fs::remove(ws / "notes.txt");
+
+        // Trust is the user's alone: the agent can't grant it, change a tier, or write the record, under either harness.
+        auto call = [&](bool smart, const json& c) {
+            fake.tool_call = c;
+            fake.calls_left = 1;
+            Agent agent(ws, "test");
+            agent.providers = {fake.provider()};
+            agent.mode = Mode::Auto;
+            agent.review_with_model = smart;
+            Recorder r;
+            r.reply = {Approval::Yes, ""};
+            agent.submit("trust it", Origin::Local, r, no_cancel);
+            return r;
+        };
+        auto t1 = call(true, json{{"name", "run_shell"}, {"arguments", {{"command", "maic trust ."}}}});
+        tripped = false;
+        for (const auto& n : t1.notices) tripped = tripped || n.rfind("HARNESS TRIPPED", 0) == 0;
+        expect(tripped && fs::exists(lock), "under the smart harness, the agent running `maic trust` trips the lock");
+        fs::remove(lock);
+        auto t2 = call(false, json{{"name", "run_shell"}, {"arguments", {{"command", "maic trust . --level relaxed"}}}});
+        expect(t2.asked.empty() && !t2.results.empty() && t2.results[0].find("trust is the user's alone") != std::string::npos && !fs::exists(lock),
+               "the dumb harness refuses it without asking, so no approval can let it through");
+        auto t3 = call(false, json{{"name", "write_file"}, {"arguments", {{"path", (state_dir() / "trust.json").string()}, {"content", "{}"}}}});
+        expect(t3.asked.empty() && !fs::exists(state_dir() / "trust.json"), "nor can it write trust.json");
     }
 
     section("forbidden terms halt a call under any harness");

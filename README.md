@@ -86,6 +86,8 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 **Set up and measured on this machine** (not AI transcripts — these were installed and tested):
 
 * [harness.md](docs/harness.md) — the safety harness: tripwire (built) and planned layers.
+* [limits.md](docs/limits.md): the known limits across MAIC in one list, each accepted, expected, open or addressed, with what would address it.
+
 * [tools.md](docs/tools.md): the model's tools, and writing your own, in Lua or any language, behind the harness.
 * [settings.md](docs/settings.md) — the settings file: model providers (local and remote), styles, instruction files.
 * [themes.md](docs/themes.md): themes (default, gruvbox dark and light, mono), writing one, importing a neovim colorscheme, colour depth.

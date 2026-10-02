@@ -2,6 +2,7 @@
 
 #include "maic/lua_tools.hpp"
 #include "maic/sandbox.hpp"
+#include "maic/trust.hpp"
 
 #include <unistd.h>
 
@@ -238,6 +239,7 @@ ScriptToolSet load_script_tools(const fs::path& workspace, const std::vector<std
     for (const fs::path& dir : {workspace / ".maic" / "tools", global_tools_dir()}) {
         std::error_code ec;
         if (!fs::is_directory(dir, ec)) continue;
+        if (dir != global_tools_dir() && !trusted(workspace)) continue;  // an untrusted project's tools are never loaded
         std::vector<fs::path> manifests;
         for (const auto& e : fs::directory_iterator(dir, ec)) {
             if (e.is_directory(ec) && fs::is_regular_file(e.path() / "tool.json", ec)) manifests.push_back(e.path() / "tool.json");

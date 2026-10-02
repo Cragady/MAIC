@@ -21,6 +21,7 @@
 #include "maic/theme.hpp"
 #include "maic/tools.hpp"
 #include "maic/tripwire.hpp"
+#include "maic/trust.hpp"
 #include "style.hpp"
 #include "view.hpp"
 
@@ -186,7 +187,9 @@ struct PendingApproval {
 struct PendingConfirm {
     std::string title;
     std::vector<std::string> lines;
-    std::function<void(bool)> then;
+    std::function<void(bool)> then;  // y / n
+    std::string keys = "";           // instead: one of these keys (Esc and Ctrl-C give "n") goes to `pick`
+    std::function<void(const std::string&)> pick = {};
 };
 
 struct PendingQuestion {
@@ -612,6 +615,8 @@ private:
     std::unique_ptr<Lua> lua_;  // created on first :lua; keeps globals between calls
     bool lua_mode_ = false;     // :lua with no argument: sends go to Lua until :chat (or :lua again)
     void run_lua(const std::string& code, bool from_file);
+    void cd_to(const std::filesystem::path& ws, const std::filesystem::path& to);
+    void ask_cd_trust(std::vector<ProjectDir> dirs, const std::filesystem::path& ws, const std::filesystem::path& to);
     bool ctrl_w_pending_ = false;
     bool ctrl_x_pending_ = false;
     size_t palette_sel_ = 0;
@@ -659,6 +664,97 @@ void App::welcome() {
     } catch (const std::exception& e) {
         view_.append(Kind::Error, e.what());
     }
+}
+
+// Moves the workspace to `to` once its project directories are settled: the settings re-read there use the trust
+// and Lua level of the new chain.
+void App::cd_to(const std::filesystem::path& ws, const std::filesystem::path& to) {
+    for (const auto& n : trust_notices(to)) post(Kind::Notice, n);
+    for (const auto& n : settle_trust(to)) post(Kind::Notice, n);
+    Settings next = settings_at(to);
+    agent_.set_workspace(to, Origin::Local);
+    std::filesystem::current_path(to);
+    previous_ws_ = ws;
+    // What a start there would read, but the session's safety stays its own: a directory never changes these.
+    const std::set<std::string> keep = {"tripwire", "allow_isolated", "forbid", "record", "harness", "dumb_auto_ok", "bare"};
+    next.tripwire = settings_.tripwire;
+    next.allow_isolated = settings_.allow_isolated;
+    next.forbid = settings_.forbid;
+    next.record = settings_.record;
+    next.harness = settings_.harness;
+    next.dumb_auto_ok = settings_.dumb_auto_ok;
+    next.bare = settings_.bare;
+    std::vector<std::string> changed, kept;
+    std::set<std::string> keys;
+    for (const auto& [k, v] : settings_.layered.items()) keys.insert(k);
+    for (const auto& [k, v] : next.layered.items()) keys.insert(k);
+    for (const auto& k : keys) {
+        if (k.rfind("//", 0) == 0 || settings_.layered.value(k, nlohmann::json()) == next.layered.value(k, nlohmann::json())) continue;
+        (keep.count(k) ? kept : changed).push_back(k);
+    }
+    settings_ = std::move(next);
+    auto has = [&](const char* k) { return std::find(changed.begin(), changed.end(), k) != changed.end(); };
+    if (has("providers") || has("context") || has("context_2")) {
+        agent_.providers = settings_.providers;
+        set_context(agent_.providers, settings_.context);
+        set_context(agent_.providers, settings_.context_2, "llamacpp-2");
+    }
+    if (has("models")) agent_.presets = settings_.presets;
+    if (has("think")) agent_.think = settings_.think;
+    if (has("reviewer_model")) agent_.reviewer_model = settings_.reviewer_model;
+    if (has("small_model") || has("title_model")) agent_.small_model = settings_.small_model;
+    if (has("reviewer_budget_tokens")) agent_.reviewer_budget_tokens = settings_.reviewer_budget_tokens;
+    if (has("budget_tokens")) agent_.budget_tokens = settings_.budget_tokens;
+    if (has("compact_at")) agent_.compaction.at = settings_.compact_at;
+    if (has("compact_keep_results")) agent_.compaction.keep_results = settings_.compact_keep_results;
+    if (has("system_prompt")) agent_.set_system_prefix(resolve_system_prompt(settings_.system_prompt));
+    if (has("prefill")) agent_.prefill = resolve_system_prompt(settings_.prefill);
+    if (has("rules")) agent_.set_rules(settings_.rules);
+    if (has("permission")) agent_.set_permission(settings_.permission);
+    if (has("agents")) agent_.agents = settings_.agents;
+    if (has("bans")) agent_.bans = settings_.bans;
+    if (has("markdown")) view_.set_markdown(settings_.markdown);
+    if (has("leader")) editor_.set_leader(settings_.leader), view_.set_leader(settings_.leader);
+    if (has("enter_sends")) editor_.set_enter_sends(settings_.enter_sends);
+    if (has("timestamps")) view_.set_timestamps(settings_.timestamps);
+    if (has("instruction_files") || has("load_instructions")) {
+        agent_.set_instruction_names(settings_.instruction_files);
+        agent_.load_instruction_files = settings_.load_instructions;
+        agent_.reload_instructions();
+    }
+    apply_sampling();
+    auto list = [](const std::vector<std::string>& v) {
+        std::string out;
+        for (const auto& x : v) out += (out.empty() ? "" : ", ") + x;
+        return out;
+    };
+    std::vector<std::string> files;
+    for (const auto& f : agent_.instructions()) files.push_back(f.path.string());
+    post(Kind::Notice, "workspace: " + to.string() + "  (was " + ws.string() + "; :cd - returns)" +
+                           (files.empty() ? "\ninstructions: none there" : "\ninstructions: " + list(files)) +
+                           (changed.empty() ? "\nsettings: unchanged" : "\nsettings changed: " + list(changed)) +
+                           (kept.empty() ? "" : "\nkept as they were (a directory never changes them mid-session): " + list(kept)));
+    // Last: these can ask or fail on their own, and the move itself is done.
+    if (has("mode")) {
+        if (auto md = parse_mode(settings_.mode)) request_mode(*md);
+    }
+    if (has("model")) set_model(settings_.model);
+}
+
+// :cd's trust prompt: each untrusted project directory of the new chain in turn, in a modal (t, s, n or v), then the move.
+void App::ask_cd_trust(std::vector<ProjectDir> dirs, const std::filesystem::path& ws, const std::filesystem::path& to) {
+    if (dirs.empty()) return cd_to(ws, to);
+    ProjectDir p = dirs.front();
+    dirs.erase(dirs.begin());
+    std::lock_guard lock(mu_);
+    std::vector<std::string> lines = trust_prompt(p);
+    lines.push_back("[t] trust fully: its Lua runs as you   [s] trust sandboxed: its Lua runs in a child process that cannot reach the system");
+    lines.push_back("[n] not now (untrusted this session)   [v] never (remember)");
+    confirm_ = PendingConfirm{" trust this directory? ", lines, {}, "tsnv", [this, p, dirs, ws, to](const std::string& answer) {
+                                  post(Kind::Notice, answer_trust(p, answer));
+                                  ask_cd_trust(dirs, ws, to);
+                              }};
+    screen_.PostEvent(Event::Custom);
 }
 
 // When lazy-lock.json is not the one the keymap check last ran at (a plugin update, or no check yet), the check runs
@@ -1180,7 +1276,23 @@ Element App::render_confirm() {
 bool App::handle_confirm(const Event& e) {
     const std::string& k = e.input();
     std::function<void(bool)> then;
+    std::function<void(const std::string&)> pick;
+    std::string key;
     bool yes = false;
+    {
+        std::lock_guard lock(mu_);
+        if (!confirm_) return true;
+        if (confirm_->pick) {
+            key = e == Event::Escape || k == "\x03" ? "n" : k;
+            if (key.size() != 1 || confirm_->keys.find(key) == std::string::npos) return true;
+            pick = std::move(confirm_->pick);
+            confirm_.reset();
+        }
+    }
+    if (pick) {
+        pick(key);
+        return true;
+    }
     {
         std::lock_guard lock(mu_);
         if (!confirm_) return true;
@@ -2002,6 +2114,15 @@ void App::run_command(const std::string& line) {
                 }
             }
             if (!found) post(Kind::Error, "unknown service: " + arg + (arg.empty() ? " (:up NAME)" : " (see :status)"));
+        } else if (cmd == "trust" || cmd == "untrust") {
+            std::istringstream words(arg);
+            std::vector<std::string> args;
+            for (std::string w; words >> w;) args.push_back(w);
+            try {
+                post(Kind::Notice, trust_command(cmd, args, agent_.harness().workspace()));
+            } catch (const std::exception& e) {
+                post(Kind::Error, e.what());
+            }
         } else if (cmd == "settings") {
             std::string out = "settings files in effect (nearest last, wins):";
             for (const auto& p : settings_.sources) out += "\n  " + p.string();
@@ -2012,6 +2133,10 @@ void App::run_command(const std::string& line) {
             std::filesystem::path ws = agent_.harness().workspace();
             std::string made = init_project(ws);
             post(Kind::Notice, made.empty() ? "already initialised: MAIC.md and .maic/settings.lua exist" : made);
+            if (!trusted(ws)) {
+                post(Kind::Notice, ws.string() + " is not trusted, so its MAIC.md and .maic/settings.lua are not read until it is: "
+                                   ":trust (fully: its Lua runs as you) or :trust --lua sandbox (its Lua in a child process that cannot reach the system)");
+            }
             // The session joins the project's transcripts when it worked here throughout (docs/sessions.md, Homes).
             InitMove m = init_move_check(log_->path(), ws, settings_.record, static_cast<size_t>(std::max(0, settings_.init_move_outside_reads)));
             std::filesystem::path dest = sessions_home("project:" + ws.string());
@@ -2066,74 +2191,8 @@ void App::run_command(const std::string& line) {
                 post(Kind::Notice, "already in " + ws.string());
                 return;
             }
-            Settings next = settings_at(to);
-            agent_.set_workspace(to, Origin::Local);
-            std::filesystem::current_path(to);
-            previous_ws_ = ws;
-            // What a start there would read, but the session's safety stays its own: a directory never changes these.
-            const std::set<std::string> keep = {"tripwire", "allow_isolated", "forbid", "record", "harness", "dumb_auto_ok", "bare"};
-            next.tripwire = settings_.tripwire;
-            next.allow_isolated = settings_.allow_isolated;
-            next.forbid = settings_.forbid;
-            next.record = settings_.record;
-            next.harness = settings_.harness;
-            next.dumb_auto_ok = settings_.dumb_auto_ok;
-            next.bare = settings_.bare;
-            std::vector<std::string> changed, kept;
-            std::set<std::string> keys;
-            for (const auto& [k, v] : settings_.layered.items()) keys.insert(k);
-            for (const auto& [k, v] : next.layered.items()) keys.insert(k);
-            for (const auto& k : keys) {
-                if (k.rfind("//", 0) == 0 || settings_.layered.value(k, nlohmann::json()) == next.layered.value(k, nlohmann::json())) continue;
-                (keep.count(k) ? kept : changed).push_back(k);
-            }
-            settings_ = std::move(next);
-            auto has = [&](const char* k) { return std::find(changed.begin(), changed.end(), k) != changed.end(); };
-            if (has("providers") || has("context") || has("context_2")) {
-                agent_.providers = settings_.providers;
-                set_context(agent_.providers, settings_.context);
-                set_context(agent_.providers, settings_.context_2, "llamacpp-2");
-            }
-            if (has("models")) agent_.presets = settings_.presets;
-            if (has("think")) agent_.think = settings_.think;
-            if (has("reviewer_model")) agent_.reviewer_model = settings_.reviewer_model;
-            if (has("small_model") || has("title_model")) agent_.small_model = settings_.small_model;
-            if (has("reviewer_budget_tokens")) agent_.reviewer_budget_tokens = settings_.reviewer_budget_tokens;
-            if (has("budget_tokens")) agent_.budget_tokens = settings_.budget_tokens;
-            if (has("compact_at")) agent_.compaction.at = settings_.compact_at;
-            if (has("compact_keep_results")) agent_.compaction.keep_results = settings_.compact_keep_results;
-            if (has("system_prompt")) agent_.set_system_prefix(resolve_system_prompt(settings_.system_prompt));
-            if (has("prefill")) agent_.prefill = resolve_system_prompt(settings_.prefill);
-            if (has("rules")) agent_.set_rules(settings_.rules);
-            if (has("permission")) agent_.set_permission(settings_.permission);
-            if (has("agents")) agent_.agents = settings_.agents;
-            if (has("bans")) agent_.bans = settings_.bans;
-            if (has("markdown")) view_.set_markdown(settings_.markdown);
-            if (has("leader")) editor_.set_leader(settings_.leader), view_.set_leader(settings_.leader);
-            if (has("enter_sends")) editor_.set_enter_sends(settings_.enter_sends);
-            if (has("timestamps")) view_.set_timestamps(settings_.timestamps);
-            if (has("instruction_files") || has("load_instructions")) {
-                agent_.set_instruction_names(settings_.instruction_files);
-                agent_.load_instruction_files = settings_.load_instructions;
-                agent_.reload_instructions();
-            }
-            apply_sampling();
-            auto list = [](const std::vector<std::string>& v) {
-                std::string out;
-                for (const auto& x : v) out += (out.empty() ? "" : ", ") + x;
-                return out;
-            };
-            std::vector<std::string> files;
-            for (const auto& f : agent_.instructions()) files.push_back(f.path.string());
-            post(Kind::Notice, "workspace: " + to.string() + "  (was " + ws.string() + "; :cd - returns)" +
-                                   (files.empty() ? "\ninstructions: none there" : "\ninstructions: " + list(files)) +
-                                   (changed.empty() ? "\nsettings: unchanged" : "\nsettings changed: " + list(changed)) +
-                                   (kept.empty() ? "" : "\nkept as they were (a directory never changes them mid-session): " + list(kept)));
-            // Last: these can ask or fail on their own, and the move itself is done.
-            if (has("mode")) {
-                if (auto md = parse_mode(settings_.mode)) request_mode(*md);
-            }
-            if (has("model")) set_model(settings_.model);
+            // A start there would ask about its project directories first: so does :cd, in a modal.
+            ask_cd_trust(trust_to_ask(to), ws, to);
         } else if (cmd == "ban") {
             std::istringstream a(arg);
             std::string sub;
@@ -2570,7 +2629,13 @@ int run_tui(const TuiOptions& options) {
     std::string host_refused;
     std::shared_ptr<HostNvim> host = bare ? nullptr : HostNvim::from_env(host_refused);
     set_lua_nvim_host(host);
-    Settings settings = tui_settings(options, std::filesystem::current_path());
+    // Trust is settled before any project file is read: asked on the terminal, before the screen is drawn.
+    std::filesystem::path ws = std::filesystem::current_path();
+    if (isatty(STDIN_FILENO) && isatty(STDOUT_FILENO)) ask_trust(ws, std::cin, std::cout);
+    std::vector<std::string> trust_lines = trust_notices(ws);
+    for (const auto& n : settle_trust(ws)) trust_lines.push_back(n);
+    Settings settings = tui_settings(options, ws);
+    trust_lines.insert(trust_lines.end(), settings.warnings.begin(), settings.warnings.end());
     if (settings.bare) {
         set_lua_nvim_host(nullptr);
         host.reset();
@@ -2605,6 +2670,7 @@ int run_tui(const TuiOptions& options) {
         if (!r.empty()) app.startup_notice(r);
     }
     app.welcome();
+    for (const auto& n : trust_lines) app.startup_notice(n);
     app.attach_context(options.context);
     for (const auto& im : options.images) app.attach_image(im);
     if (!first.empty()) app.send(first);

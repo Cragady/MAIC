@@ -4,11 +4,13 @@
 #include "maic/settings.hpp"
 #include "maic/tools.hpp"
 #include "maic/tripwire.hpp"
+#include "maic/trust.hpp"
 
 #include <unistd.h>
 
 #include <algorithm>
 #include <fstream>
+#include <regex>
 #include <iostream>
 #include <iterator>
 #include <thread>
@@ -1060,6 +1062,7 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     }
     Decision d = harness_.check(action, mode, origin);
     if (action.kind != Action::Kind::Read && touches_harness(action) && d.verdict == Verdict::Allow) d = {Verdict::Ask, "changes the harness's own files"};
+    if (touches_trust(action) && d.verdict != Verdict::Trip) d = {Verdict::Deny, "trust is the user's alone: only they grant it, at the terminal (:trust, maic trust PATH)"};
     record["decision"] = verdict_name(d.verdict);
     record["reason"] = d.reason;
     bool user_allowed = false;
@@ -1276,7 +1279,21 @@ const ScriptTool* Agent::find_script_tool(const std::string& name) const {
     return nullptr;
 }
 
+// Which directories are trusted, and at what tier, is the user's alone (docs/harness.md, Trust): no write to the
+// record, no `maic trust`, `maic untrust` or `maic ... --trust` from the agent, a tool, or a remote request.
+bool touches_trust(const Action& action) {
+    if (action.kind == Action::Kind::Write) {
+        std::error_code ec;
+        std::filesystem::path p = std::filesystem::weakly_canonical(action.path, ec);
+        return p.parent_path() == std::filesystem::weakly_canonical(state_dir(), ec) && p.filename().string().rfind("trust", 0) == 0;
+    }
+    if (action.kind != Action::Kind::Shell) return false;
+    static const std::regex re(R"((^|[\s;&|(`])(\S*/)?maic\s+(un)?trust(\s|$)|(^|[\s;&|(`])(\S*/)?maic\s[^;&|\n]*--trust(\s|=|$)|maic/trust[.-])");
+    return std::regex_search(action.command, re);
+}
+
 bool Agent::touches_harness(const Action& action) const {
+    if (touches_trust(action)) return true;
     std::error_code ec;
     auto under = [&](const std::filesystem::path& p, const std::filesystem::path& dir) {
         if (dir.empty()) return false;
@@ -1483,7 +1500,7 @@ std::string Agent::undo(size_t count) {
 }
 
 std::string Agent::nested_instructions(const std::filesystem::path& file) {
-    if (!load_instruction_files) return "";
+    if (!load_instruction_files || !trusted(harness_.workspace())) return "";  // nested files come with a trusted workspace only
     std::error_code ec;
     std::filesystem::path ws = std::filesystem::weakly_canonical(harness_.workspace(), ec);
     std::filesystem::path dir = std::filesystem::weakly_canonical(file, ec).parent_path();

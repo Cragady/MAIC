@@ -19,6 +19,7 @@
 #include "maic/lua.hpp"
 #include "maic/places.hpp"
 #include "maic/tripwire.hpp"
+#include "maic/trust.hpp"
 #include "maic/paths.hpp"
 
 #include <netinet/in.h>
@@ -79,6 +80,7 @@ int main() {
     fs::remove_all(ws);
     fs::create_directories(ws);
     Harness h(ws);
+    for (const char* p : {"", "proj", "themeproj"}) trust_for_session(ws / p);  // the project files below are this test's own (trust_test covers trust)
 
     section("tool arguments of the wrong shape");
     expect(!tool(h, "read_file", json::object()).ok, "read_file with no path -> error");

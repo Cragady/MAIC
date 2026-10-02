@@ -183,8 +183,9 @@ def slugify(text: str) -> str:
 def run(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="diction", description="Narrate a task; get a written procedure.",
                                  epilog=f"Settings (presets, log_dir) live in {CONFIG_PATH}, a Lua file returning a "
-                                        f"table, beside MAIC's settings.lua; maic evaluates it in a restricted Lua "
-                                        f"state (`maic settings read diction`). Without it, the old {TOML_PATH} is "
+                                        f"table, beside MAIC's settings.lua; maic evaluates it at the settings' "
+                                        f"global_lua level (`maic settings read diction`). Without it, the old {TOML_PATH} is "
+
                                         f"still read, and `diction migrate-config` writes diction.lua from it.")
     ap.add_argument("command", nargs="?", default="start",
                     choices=["start", "devices", "taptest", "presets", "migrate-config"],
