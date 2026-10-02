@@ -125,13 +125,24 @@ void spawn(CliProcess& p, const Provider& provider, const std::string& model, co
     std::string command = provider.options.value("command", "claude");
     // Headless and stream-json both ways. Text only, so MAIC's harness stays the one judge of what runs: every
     // built-in tool off, no MCP server (an empty config, and strict so the user's own are not loaded), and the
-    // dontAsk permission mode, which refuses anything not pre-approved. Nothing is kept on disk.
+    // dontAsk permission mode, which refuses anything not pre-approved. Nothing is kept on disk. No settings
+    // files either (the user's CLAUDE.md, plugins and hooks among them) unless `setting_sources` names some.
+    std::string sources = provider.options.value("setting_sources", "");
+    for (size_t at = 0; !sources.empty() && at <= sources.size();) {
+        size_t comma = std::min(sources.find(',', at), sources.size());
+        std::string s = sources.substr(at, comma - at);
+        if (s != "user" && s != "project" && s != "local") {
+            throw std::runtime_error("providers." + provider.name + ".options.setting_sources: '" + s + "' is not user, project or local");
+        }
+        at = comma + 1;
+    }
     std::vector<std::string> args = {command, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                                      "--include-partial-messages", "--tools", "", "--strict-mcp-config", "--mcp-config", R"({"mcpServers":{}})",
-                                     "--permission-mode", "dontAsk", "--no-session-persistence", "--system-prompt", system, "--model", model};
+                                     "--permission-mode", "dontAsk", "--setting-sources", sources, "--no-session-persistence",
+                                     "--system-prompt", system, "--model", model};
     for (const auto& a : provider.options.value("args", json::array())) {
         std::string s = a.get<std::string>();
-        for (const char* ours : {"--tools", "--mcp-config", "--strict-mcp-config", "--permission-", "--allowedTools", "--allowed-tools", "--dangerously-", "--allow-dangerously-"}) {
+        for (const char* ours : {"--tools", "--mcp-config", "--strict-mcp-config", "--permission-", "--allowedTools", "--allowed-tools", "--dangerously-", "--allow-dangerously-", "--setting-sources"}) {
             if (s.rfind(ours, 0) == 0) throw std::runtime_error("providers." + provider.name + ".options.args may not contain " + s + ": a cli provider runs text only, with its tools off");
         }
         args.push_back(s);

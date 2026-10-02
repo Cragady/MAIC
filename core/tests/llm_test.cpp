@@ -581,6 +581,7 @@ int main() {
         auto has = [&](const std::string& flag) { return std::find(argv.begin(), argv.end(), flag) != argv.end(); };
         expect(starts.size() == 1 && after("--tools").empty() && has("--strict-mcp-config") && after("--mcp-config") == R"({"mcpServers":{}})" && after("--permission-mode") == "dontAsk",
                "its own tools are off: --tools \"\", strict and empty MCP, the dontAsk permission mode: " + argv.dump());
+        expect(has("--setting-sources") && after("--setting-sources").empty(), "no settings files by default: --setting-sources \"\"");
         expect(has("-p") && after("--input-format") == "stream-json" && after("--output-format") == "stream-json" && has("--verbose") && has("--include-partial-messages") &&
                    has("--no-session-persistence") && after("--system-prompt") == "be brief" && after("--model") == "haiku",
                "headless, stream-json both ways, no session persistence, the system prompt and --model from the model name");
@@ -641,11 +642,27 @@ int main() {
         canceller.join();
         expect(cancelled, "cancel stops a request in flight");
 
+        Provider opted = cli;
+        opted.options["setting_sources"] = "user,project";
+        Message with_settings = ask(opted, "haiku", "with settings", "x");
+        json last_argv = fake_claude::spawns(dir).back()["argv"];
+        bool user_project = false;
+        for (size_t i = 0; i + 1 < last_argv.size(); ++i) user_project = user_project || (last_argv[i] == "--setting-sources" && last_argv[i + 1] == "user,project");
+        expect(pid_of(with_settings) > 0 && user_project, "setting_sources opts back into settings files: " + last_argv.dump());
+        opted.options["setting_sources"] = "user,global";
+        std::string bad_sources;
+        try { ask(opted, "haiku", "bad settings", "x"); } catch (const std::exception& e) { bad_sources = e.what(); }
+        expect(bad_sources == "providers.claude-cli.options.setting_sources: 'global' is not user, project or local", "an unknown setting source is an error: " + bad_sources);
+
         Provider widened = cli;
         widened.options["args"] = json::array({"--tools", "default"});
         std::string args_err;
         try { ask(widened, "haiku", "be brief", "x"); } catch (const std::exception& e) { args_err = e.what(); }
         expect(args_err.find("may not contain --tools") != std::string::npos, "options.args cannot turn its tools back on: " + args_err);
+        widened.options["args"] = json::array({"--setting-sources", "user"});
+        args_err.clear();
+        try { ask(widened, "haiku", "be brief", "x"); } catch (const std::exception& e) { args_err = e.what(); }
+        expect(args_err.find("may not contain --setting-sources") != std::string::npos, "nor set --setting-sources (setting_sources does): " + args_err);
 
         fs::create_directories(dir / "empty");
         setenv("PATH", (dir / "empty").c_str(), 1);

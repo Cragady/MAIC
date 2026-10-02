@@ -11,8 +11,9 @@
 //   EXIT    the usual reply, then it exits
 //   reviewer / handover note / title system prompts: "ALLOW: fine", a note, a title
 //   anything else: "pid <pid> call <n>: <text>"
-// It refuses to start (a failed result, exit 2) unless its tools are off, MCP is strict and empty and the
-// permission mode is dontAsk: the tests' check that MAIC passes those flags.
+// It refuses to start (a failed result, exit 2) unless its tools are off, MCP is strict and empty, the
+// permission mode is dontAsk and --setting-sources is given ("" by default, or a subset of user,project,local):
+// the tests' check that MAIC passes those flags.
 
 #include <cstdlib>
 #include <filesystem>
@@ -37,7 +38,9 @@ def out(j):
 
 with open(os.path.join(os.environ["FAKE_CLAUDE_DIR"], "spawns.jsonl"), "a") as f:
     f.write(json.dumps({"pid": os.getpid(), "argv": args, "api_key": "ANTHROPIC_API_KEY" in os.environ, "cwd": os.getcwd()}) + "\n")
-if opt("--tools") != "" or "--strict-mcp-config" not in args or opt("--mcp-config") != '{"mcpServers":{}}' or opt("--permission-mode") != "dontAsk":
+sources = opt("--setting-sources")
+if (opt("--tools") != "" or "--strict-mcp-config" not in args or opt("--mcp-config") != '{"mcpServers":{}}' or opt("--permission-mode") != "dontAsk"
+        or sources is None or (sources and not set(sources.split(",")) <= {"user", "project", "local"})):
     out({"type": "result", "subtype": "error_during_execution", "is_error": True, "result": "fake claude: started with tools reachable"})
     sys.exit(2)
 system = opt("--system-prompt") or ""
