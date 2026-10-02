@@ -90,6 +90,12 @@ note. <Esc> closes the menu to type a message, which resumes the turn when
 sent. <C-q> resumes from either buffer, and |:MaicSteer| does any of them.
 The keys are |maic-buffer_keymaps|.
 
+                                                              *maic-history*
+A resumed session shows its last three exchanges, and a reply or a command
+still running as it goes on. While earlier history is left, the first line
+says so: moving the cursor there, or |:MaicOlder|, loads the ten exchanges
+before what is shown, above it.
+
 maic.nvim fires the |maic-events| itself and runs |:checktime| after MAIC
 writes a file. Closing nvim ends the engine, which parks the session.
 
@@ -112,6 +118,11 @@ writes a file. Closing nvim ends the engine, which parks the session.
                                                                *:MaicTerminal*
 :MaicTerminal [args]
     MAIC's own TUI in a terminal, as |:Maic| with `ui = "terminal"`.
+
+                                                                  *:MaicOlder*
+:MaicOlder
+    Loads the conversation's ten exchanges before the oldest one shown,
+    above it. See |maic-history|.
 
                                                                   *:MaicSteer*
 :MaicSteer {action} [note]

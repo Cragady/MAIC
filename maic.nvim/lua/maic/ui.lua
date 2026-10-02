@@ -417,6 +417,100 @@ local function duration(s)
   return ("%dh %dm"):format(s / 3600, (s % 3600) / 60)
 end
 
+-- ---------- history ----------
+
+-- A history item (maic.session.attach, listConversationItems) drawn as its live events would have drawn it. A
+-- collapsed one shows its head; the engine's maic.item.expand has the rest.
+local function render_item(ui, item)
+  local m = item.maic or {}
+  local function shown(text) return m.collapsed and ((m.head or "") .. ("\n… %d bytes in all"):format(m.size or 0)) or text end
+  if item.type == "message" and item.role == "user" then
+    user_block(ui, item_text(item))
+  elseif item.type == "message" then
+    add(ui, item_text(item), { gap = true })
+  elseif item.type == "function_call_output" or item.type == "shell_call_output" then
+    add(ui, "⏺ " .. (m.summary or "tool"), { gap = true, hl = "MaicTool", id = "call:" .. item.call_id })
+    local text = item.type == "function_call_output" and (type(item.output) == "string" and item.output or "")
+      or (item.output and item.output[1] and item.output[1].stdout or "")
+    finish_output(ui, add(ui, "", { prefix = "  ", id = item.id }), item.call_id, shown(text), m.ok ~= false, m.full_output)
+  elseif item.type == "maic.notice" then
+    local b = notice(ui, shown(item.text or ""), nil, true)
+    if item.kind == "context" or item.kind == "compact" then fold(ui, b) end
+  end
+end
+
+-- What attach's inflight holds: the reply being written and a running tool's output so far, as blocks the
+-- events that follow keep writing into.
+local function render_inflight(ui, inflight)
+  for _, f in ipairs(inflight and inflight.items or {}) do
+    local item = f.item
+    if item.type == "message" or item.type == "reasoning" then
+      append(ui, add(ui, "", { gap = true, id = item.id, hl = item.type == "reasoning" and "MaicThinking" or nil }), f.text or "")
+    elseif item.type == "function_call_output" or item.type == "shell_call_output" then
+      local call = f.call or {}
+      add(ui, "⏺ " .. ((call.maic or {}).summary or call.name or "tool"), { gap = true, hl = "MaicTool", id = "call:" .. (item.call_id or "") })
+      local text = f.text or ""
+      append(ui, output_block(ui, item.id, item.call_id), (f.size or 0) > #text and ("…" .. text) or text)
+    end
+  end
+end
+
+-- The line at the top while older history is left to load: reaching it (or :MaicOlder) loads the next page.
+local function set_marker(ui, on)
+  if (ui.marker ~= nil) == on then return end
+  local d = on and 1 or -1
+  edit(ui, function(buf)
+    if on then
+      vim.api.nvim_buf_set_lines(buf, 0, 0, false, { "⋯ earlier history: move here or :MaicOlder" })
+    else
+      vim.api.nvim_buf_del_extmark(buf, ns, ui.marker)
+      vim.api.nvim_buf_set_lines(buf, 0, 1, false, {})
+    end
+  end)
+  for _, b in ipairs(ui.blocks) do b.start, b.stop = b.start + d, b.stop + d end
+  ui.marker = on and vim.api.nvim_buf_set_extmark(ui.conv, ns, 0, 0, { end_row = 1, end_col = 0, hl_group = "MaicNotice" }) or nil
+end
+
+-- Draws with `draw(t)` into a scratch buffer, with the functions that draw everything else, and moves the result
+-- above all that is shown, its blocks with it.
+local function prepend(ui, draw)
+  local t = setmetatable({ conv = vim.api.nvim_create_buf(false, true), blocks = {}, by_id = {}, empty = true }, { __index = ui })
+  draw(t)
+  local rows = vim.api.nvim_buf_get_lines(t.conv, 0, -1, false)
+  vim.api.nvim_buf_delete(t.conv, { force = true })
+  if t.empty then return end
+  rows[#rows + 1] = ""
+  edit(ui, function(buf) vim.api.nvim_buf_set_lines(buf, 0, 0, false, rows) end)
+  for _, b in ipairs(ui.blocks) do b.start, b.stop = b.start + #rows, b.stop + #rows end
+  for _, b in ipairs(t.blocks) do
+    b.mark = nil
+    mark(ui, b)
+  end
+  ui.blocks = vim.list_extend(t.blocks, ui.blocks)
+  for id, b in pairs(t.by_id) do ui.by_id[id] = ui.by_id[id] or b end
+  for _, w in ipairs(vim.fn.win_findbuf(ui.conv)) do refold(ui, w) end
+end
+
+-- The page of history before the oldest item shown, drawn above it.
+function U.older(ui)
+  ui = ui or U.here()
+  if not ui or not ui.more_before or ui.loading then return end
+  ui.loading = true
+  request(ui, "listConversationItems", { conversation_id = ui.session, after = ui.oldest, maic = { exchanges = 10 } }, function(r, err)
+    ui.loading = false
+    if err then return notice(ui, "✗ " .. err_text(err), "MaicError") end
+    local items = {}
+    for i = #r.data, 1, -1 do items[#items + 1] = r.data[i] end
+    set_marker(ui, false)
+    prepend(ui, function(t)
+      for _, item in ipairs(items) do render_item(t, item) end
+    end)
+    if items[1] then ui.oldest = items[1].id end
+    ui.more_before = r.has_more
+    set_marker(ui, ui.more_before)
+  end)
+end
+
 local handlers = {}
 
 handlers["maic.input.added"] = function(ui, e)
@@ -839,6 +933,9 @@ function U.start(args, o)
   vim.api.nvim_create_autocmd("BufWinEnter", { buffer = ui.conv, callback = function()
     window_opts(ui, vim.api.nvim_get_current_win())
   end })
+  vim.api.nvim_create_autocmd("CursorMoved", { buffer = ui.conv, callback = function()
+    if ui.marker and vim.api.nvim_win_get_cursor(0)[1] == 1 then U.older(ui) end
+  end })
   uis[tab] = ui
   set_keys(ui)
   show(ui, o.win)
@@ -888,15 +985,10 @@ function U.start(args, o)
         local entry = r.entry or {}
         ui.workspace, ui.model, ui.mode, ui.title, ui.activity = entry.workspace, entry.model, entry.mode, entry.title, entry.activity
         ui.response = entry.response
-        for _, item in ipairs(r.items or {}) do
-          if item.type == "message" and item.role == "user" then user_block(ui, item_text(item))
-          elseif item.type == "message" then add(ui, item_text(item), { gap = true })
-          elseif item.maic and item.maic.summary then
-            tool_line(ui, "call:" .. (item.call_id or item.id), item.maic.summary)
-            local b = add(ui, item.maic.head or "", { prefix = "  " })
-            fold(ui, b)
-          end
-        end
+        for _, item in ipairs(r.items or {}) do render_item(ui, item) end
+        render_inflight(ui, r.inflight)
+        ui.oldest, ui.more_before = r.items and r.items[1] and r.items[1].id, r.more_before
+        set_marker(ui, ui.more_before and ui.oldest ~= nil)
         for _, a in ipairs(r.pending or {}) do handlers["maic.approval.requested"](ui, a) end
         for _, q in ipairs(r.questions or {}) do handlers["maic.question.asked"](ui, q) end
         status(ui)

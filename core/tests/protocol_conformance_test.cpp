@@ -1184,6 +1184,174 @@ int main() {
         asked_rec.finish();
     }
 
+    section("history: attach's exchanges, listConversationItems paging back lazily, collapsing, maic.item.expand, a fork");
+    Recording hist("history");
+    {
+        // A transcript written here: 60 exchanges of a question, a command and an answer, an attached file and a
+        // title before them, a compaction every 20 exchanges, and skeleton and bookkeeping lines between.
+        fs::path dir = root / "hist";
+        fs::create_directories(dir);
+        fs::path parent = dir / "20260101-090000-tui-4242.jsonl", child = dir / "20260102-090000-tui-4343.jsonl";
+        std::vector<std::string> expected;   // every displayable record's id, in order
+        std::vector<size_t> starts;          // where each exchange starts, into `expected`
+        std::map<std::string, std::string> results;
+        std::string attached;
+        for (int i = 0; attached.size() < 100 * 1024; ++i) attached += "line " + std::to_string(i) + ": フェネックの耳と大きな尻尾\n";
+        size_t inherited = 0, inherited_lines = 0;
+        {
+            std::ofstream f(parent);
+            size_t line = 0;
+            auto put = [&](json r, bool shown) {
+                r["time"] = "2026-01-01T09:00:00+00:00";
+                f << r.dump() << "\n";
+                std::string id = parent.stem().string() + "#" + std::to_string(++line);
+                if (r["type"] == "user") starts.push_back(expected.size());
+                if (shown) expected.push_back(id);
+                return id;
+            };
+            f << json{{"type", "skeleton"}, {"of", "start"}, {"hash", "sha256:0"}, {"canonical", "RFC 8785"}, {"skeleton", json::object()}}.dump() << "\n";
+            put({{"type", "start"}, {"workspace", ws.string()}, {"model", "test"}, {"mode", "manual"}}, false);
+            put({{"type", "context"}, {"text", attached}}, true);
+            put({{"type", "title"}, {"text", "fennec history"}}, true);
+            for (int k = 0; k < 60; ++k) {
+                put({{"type", "user"}, {"text", "question " + std::to_string(k)}}, true);
+                std::string out = "exit code 0\n";
+                while (out.size() < 5000) out += "output of " + std::to_string(k) + "\n";
+                results[put({{"type", "tool"}, {"tool", "run_shell"}, {"arguments", {{"command", "echo " + std::to_string(k)}}}, {"ok", true}, {"result", out}}, true)] = out;
+                put({{"type", "usage"}, {"input_tokens", 10}, {"output_tokens", 2}}, false);
+                if (k == 30) f << json{{"type", "skeleton"}, {"of", "usage"}, {"hash", "sha256:1"}, {"canonical", "RFC 8785"}, {"skeleton", json::object()}}.dump() << "\n";
+                put({{"type", "assistant"}, {"text", "answer " + std::to_string(k)}}, true);
+                if (k % 20 == 19) put({{"type", "compact"}, {"stage", "head"}, {"summary", "the first " + std::to_string(k + 1) + " exchanges"}}, true);
+                if (k == 9) inherited = expected.size(), inherited_lines = line;
+            }
+        }
+        {
+            std::ofstream f(child);
+            f << json{{"type", "resumed_from"}, {"path", parent.string()}, {"id", parent.stem().string()}, {"records", inherited_lines}}.dump() << "\n";
+            f << json{{"type", "start"}, {"workspace", ws.string()}, {"model", "test"}, {"mode", "manual"}}.dump() << "\n";
+            f << json{{"type", "user"}, {"text", "forked question"}}.dump() << "\n";
+            f << json{{"type", "assistant"}, {"text", "forked answer"}}.dump() << "\n";
+        }
+        auto ids = [](const json& items) {
+            std::vector<std::string> out;
+            for (const auto& i : items) out.push_back(i["id"]);
+            return out;
+        };
+
+        TestClient a(*engine, hist, Origin::Local, "tui");
+        a.hello();
+        std::string hid = a.ok("maic.session.resume", {{"session", parent.string()}})["id"];
+        json snap = a.ok("maic.session.attach", {{"session", hid}});
+        std::vector<std::string> last3(expected.begin() + static_cast<long>(starts[starts.size() - 3]), expected.end());
+        expect(snap["more_before"] == true && ids(snap["items"]) == last3,
+               "attach answers the last three exchanges from the transcript, each item `<file id>#<line>` (skeleton lines are not lines)");
+        const json& first = snap["items"][0];
+        expect(first["type"] == "message" && first["role"] == "user" && first["content"][0]["text"] == "question 57", "a user record is OpenAI's user message");
+        const json& out57 = snap["items"][1];
+        expect(out57["type"] == "shell_call_output" && out57["maic"]["summary"] == "$ echo 57" && out57["maic"]["ok"] == true &&
+                   out57["output"][0]["stdout"] == results[out57["id"]] && !out57["maic"].contains("collapsed"),
+               "a run_shell record is a shell_call_output with the harness's summary, whole under a local client's 64 KiB");
+        expect(snap["items"].back()["type"] == "maic.notice" && snap["items"].back()["kind"] == "compact", "a compaction shows as a maic.notice");
+
+        std::vector<std::string> older;
+        std::string after = snap["items"][0]["id"];
+        int pages = 0;
+        for (bool more = true; more && pages < 20; ++pages) {
+            json page = a.ok("listConversationItems", {{"conversation_id", hid}, {"after", after}, {"maic", {{"exchanges", 25}}}});
+            std::vector<std::string> got = ids(page["data"]);
+            older.insert(older.begin(), got.rbegin(), got.rend());
+            more = page["has_more"];
+            if (!got.empty()) after = page["last_id"];
+            expect(page["object"] == "list" && (got.empty() || (page["first_id"] == got.front() && page["last_id"] == got.back())), "a page is OpenAI's item list");
+        }
+        older.insert(older.end(), last3.begin(), last3.end());
+        expect(older == expected && pages == 3, "listConversationItems pages back newest first, 25 exchanges a page, to the first record and no further");
+        json page5 = a.ok("listConversationItems", {{"conversation_id", hid}, {"after", snap["items"][0]["id"]}, {"maic", {{"exchanges", 5}}}});
+        std::vector<std::string> want5(expected.begin() + static_cast<long>(starts[starts.size() - 8]), expected.begin() + static_cast<long>(starts[starts.size() - 3]));
+        std::vector<std::string> got5 = ids(page5["data"]);
+        std::reverse(got5.begin(), got5.end());
+        expect(got5 == want5 && page5["has_more"] == true, "maic.exchanges takes whole exchanges");
+        json asc = a.ok("listConversationItems", {{"conversation_id", hid}, {"order", "asc"}, {"limit", 7}});
+        json asc2 = a.ok("listConversationItems", {{"conversation_id", hid}, {"order", "asc"}, {"limit", 7}, {"after", asc["last_id"]}});
+        expect(ids(asc["data"]) == std::vector<std::string>(expected.begin(), expected.begin() + 7) &&
+                   ids(asc2["data"]) == std::vector<std::string>(expected.begin() + 7, expected.begin() + 14) && asc2["has_more"] == true,
+               "order asc pages forward from the start by limit");
+        json latest = a.ok("listConversationItems", {{"conversation_id", hid}, {"limit", 2}});
+        expect(ids(latest["data"]) == std::vector<std::string>{expected.back(), expected[expected.size() - 2]}, "with no `after`, desc starts at the newest");
+
+        json ctx = a.ok("getConversationItem", {{"conversation_id", hid}, {"item_id", expected[0]}});
+        expect(ctx["type"] == "maic.notice" && ctx["kind"] == "context" && ctx["text"] == "" && ctx["maic"]["collapsed"] == true &&
+                   ctx["maic"]["size"] == attached.size() && ctx["maic"]["head"] == attached.substr(0, ctx["maic"]["head"].get<std::string>().size()) &&
+                   ctx["maic"]["head"].get<std::string>().size() <= 200,
+               "an attached file over collapse_over comes collapsed, with its size and a head of at most 200 bytes");
+        std::string whole;
+        size_t offset = 0;
+        int parts = 0;
+        bool contiguous = true, done = false;
+        while (!done && parts < 10) {
+            json part = a.ok("maic.item.expand", {{"session", hid}, {"item_id", expected[0]}, {"offset", offset}, {"length", 40000}});
+            contiguous = contiguous && part["offset"] == offset && part["size"] == attached.size();
+            whole += part["text"].get<std::string>();
+            offset += part["text"].get<std::string>().size();
+            done = part["done"];
+            ++parts;
+        }
+        expect(whole == attached && parts == 3 && contiguous, "maic.item.expand serves it in parts cut on characters, end to end");
+        expect(a.error("getConversationItem", {{"conversation_id", hid}, {"item_id", "nope#1"}}) == "maic_not_found" &&
+                   a.error("maic.item.expand", {{"session", hid}, {"item_id", "nope#1"}}) == "maic_not_found" &&
+                   a.error("listConversationItems", {{"conversation_id", hid}, {"after", "nope#1"}}) == "maic_not_found",
+               "an item that is not there is maic_not_found");
+
+        TestClient r(*engine, hist, Origin::Remote, "phone");
+        r.hello();
+        json rsnap = r.ok("maic.session.attach", {{"session", hid}, {"exchanges", 1}});
+        const json& rout = rsnap["items"][1];
+        expect(rout["type"] == "shell_call_output" && rout["output"].empty() && rout["maic"]["collapsed"] == true && rout["maic"]["size"] == results[rout["id"]].size() &&
+                   rout["maic"]["head"] == "exit code 0\noutput of 59\noutput of 59",
+               "a remote client's 2 KiB collapses a command's output to its first three lines");
+        TestClient n(*engine, hist, Origin::Local, "maic.nvim");
+        n.ok("maic.hello", {{"protocol", 1}, {"client", {{"name", "maic.nvim"}}}, {"capabilities", {"tool_output"}}, {"view", {{"collapse_over", 0}}}});
+        expect(n.ok("getConversationItem", {{"conversation_id", hid}, {"item_id", expected[0]}})["text"] == attached, "collapse_over 0 never collapses");
+
+        std::string cid = a.ok("maic.session.resume", {{"session", child.string()}})["id"];
+        json csnap = a.ok("maic.session.attach", {{"session", cid}, {"exchanges", 100}});
+        std::vector<std::string> want(expected.begin(), expected.begin() + static_cast<long>(inherited));
+        want.push_back(child.stem().string() + "#3");
+        want.push_back(child.stem().string() + "#4");
+        expect(ids(csnap["items"]) == want && csnap["more_before"] == false, "a fork's history starts with its parent's records under the parent's ids");
+
+        // A live turn on the resumed session: its records join the history as they are written.
+        a.pump(0ms);  // attach subscribed it
+        size_t mark = a.events.size();
+        a.ok("response.create", {{"conversation", hid}, {"input", "one more"}});
+        expect(a.until_idle(mark) > 0, "a turn on the resumed session finishes");
+        json after_turn = a.ok("maic.session.attach", {{"session", hid}, {"exchanges", 1}});
+        const json& items = after_turn["items"];
+        auto line_of = [](const std::string& id) { return std::stol(id.substr(id.find('#') + 1)); };
+        expect(items.size() == 2 && items[0]["content"][0]["text"] == "one more" && items[1]["content"][0]["text"] == "echo: one more" &&
+                   line_of(items[0]["id"]) > line_of(expected.back()),
+               "what was appended is read on the next request, after the records before it");
+
+        // Attach while a command runs: inflight carries its output so far and the call.
+        plan({shell("echo first; sleep 1; echo second")});
+        mark = a.events.size();
+        a.ok("response.create", {{"conversation", hid}, {"input", "run it"}});
+        long ask = a.until_type("maic.approval.requested", mark);
+        a.ok("maic.approval.answer", {{"session", hid}, {"approval", ask > 0 ? a.events[ask]["id"] : json("")}, {"choice", "yes"}});
+        a.until([](const json& e) { return e["type"] == "response.shell_call_output_content.delta" && e["delta"]["stdout"].get<std::string>().find("first") != std::string::npos; }, mark);
+        json live = n.ok("maic.session.attach", {{"session", hid}, {"exchanges", 1}});
+        bool running = false;
+        for (const auto& i : live["inflight"].value("items", json::array())) {
+            running = running || (i["item"]["type"] == "shell_call_output" && i["text"].get<std::string>().find("first") != std::string::npos &&
+                                  i["call"]["type"] == "shell_call");
+        }
+        expect(running, "attach mid-command answers inflight: the output item with what it printed so far, and its call");
+        expect(a.until_idle(mark) > 0, "and the turn finishes");
+        engine->disconnect(r.id);
+        engine->disconnect(n.id);
+        hist.finish();
+    }
+
     // The epoch a load ran under, and the number its stream reached, before the restart.
     std::string epoch_before;
     long numbers_before = -1;
@@ -1206,7 +1374,12 @@ int main() {
         TestClient a(again, after, Origin::Local, "tui");
         a.hello();
         json entries = a.ok("maic.index.get")["entries"];
-        expect(entries.size() == 1 && entries[0]["id"] == sid && entries[0]["state"] == "parked", "after a restart the session is listed parked");
+        bool parked = !entries.empty(), listed = false;
+        for (const auto& e : entries) {
+            parked = parked && e["state"] == "parked";
+            listed = listed || e["id"] == sid;
+        }
+        expect(listed && parked, "after a restart the session is listed parked, with the others that were loaded");
         json entry = a.ok("maic.session.resume", {{"session", sid}});
         expect(entry["state"] == "live" && entry["turns"].get<int>() >= 5, "maic.session.resume loads it again, its turns counted from the transcript");
         // A client that held everything up to the last load's close (shutdown's `parked`, the number after the attach) resumes across the restart.

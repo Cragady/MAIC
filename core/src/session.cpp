@@ -372,6 +372,65 @@ size_t walk_records(const fs::path& path, size_t limit, const std::function<void
     return top;
 }
 
+void TranscriptIndex::scan(const fs::path& path, size_t limit, int depth) {
+    static const std::set<std::string> displayable = {"user", "assistant", "tool", "context", "compact", "title", "undo", "workspace", "steer"};
+    if (depth > 32) throw std::runtime_error("session fork chain too deep at " + path.string());
+    bool top = depth == 0;
+    size_t file = std::find(files_.begin(), files_.end(), path) - files_.begin();
+    if (file == files_.size()) files_.push_back(path);
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw std::runtime_error("can't read " + path.string());
+    std::streamoff pos = top ? top_bytes_ : 0;
+    size_t n = top ? top_lines_ : 0;
+    in.seekg(pos);
+    for (std::string line; n < limit;) {
+        std::streamoff start = pos;
+        if (!std::getline(in, line)) break;
+        if (top && in.eof()) break;  // still being written: its newline is not there yet
+        pos = in.tellg();
+        auto j = nlohmann::json::parse(line, nullptr, false);
+        std::string type = j.is_object() ? j.value("type", "") : "";
+        if (type != "skeleton") ++n;
+        if (top) top_bytes_ = pos, top_lines_ = n;
+        if (type == "resumed_from") scan(pointer_target(j), j.value("records", size_t(0)), depth + 1);
+        if (!displayable.count(type)) continue;
+        Entry e{path.stem().string() + "#" + std::to_string(n), type, file, start};
+        by_id_[e.id] = entries_.size();
+        if (type == "user") exchanges_.push_back(entries_.size());
+        entries_.push_back(std::move(e));
+    }
+}
+
+void TranscriptIndex::refresh(const fs::path& path) {
+    if (path != top_) {
+        *this = TranscriptIndex();
+        top_ = path;
+    }
+    scan(path, ~size_t(0), 0);
+}
+
+std::optional<size_t> TranscriptIndex::find(const std::string& id) const {
+    auto it = by_id_.find(id);
+    if (it == by_id_.end()) return std::nullopt;
+    return it->second;
+}
+
+nlohmann::json TranscriptIndex::record(size_t i) const {
+    const Entry& e = entries_.at(i);
+    std::ifstream in(files_[e.file], std::ios::binary);
+    std::string line;
+    if (!in.seekg(e.offset) || !std::getline(in, line)) throw std::runtime_error("can't read " + e.id + " from " + files_[e.file].string());
+    auto j = nlohmann::json::parse(line, nullptr, false);
+    if (!j.is_object()) throw std::runtime_error(e.id + " in " + files_[e.file].string() + " is not a record any more");
+    return j;
+}
+
+size_t TranscriptIndex::exchanges_before(size_t end, size_t n) const {
+    if (n == 0) return end;
+    size_t k = std::lower_bound(exchanges_.begin(), exchanges_.end(), end) - exchanges_.begin();
+    return k <= n ? 0 : exchanges_[k - n];
+}
+
 LoadedSession load_session(const fs::path& path, size_t records) {
     LoadedSession out;
     out.records = walk_records(path, records, [&](const nlohmann::json& j) {

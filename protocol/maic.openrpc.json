@@ -344,6 +344,120 @@
       "x-maic-remote": true
     },
     {
+      "name": "listConversationItems",
+      "summary": "OpenAI's: a page of the conversation's history from its transcript, after an item, newest first unless order is asc; maic.exchanges pages by exchanges instead of limit.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "conversation_id",
+          "description": "A session id.",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "after",
+          "description": "An item id; the page starts past it in the order asked.",
+          "required": false,
+          "schema": {"type": "string"}
+        },
+        {
+          "name": "order",
+          "required": false,
+          "schema": {"enum": ["asc", "desc"]}
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "schema": {"type": "integer", "minimum": 1, "maximum": 100}
+        },
+        {
+          "name": "include",
+          "description": "Accepted as OpenAI's; history has nothing more to include.",
+          "required": false,
+          "schema": {"type": "array", "items": {"type": "string"}}
+        },
+        {
+          "name": "maic",
+          "required": false,
+          "schema": {"type": "object", "properties": {"exchanges": {"type": "integer", "minimum": 0}}}
+        }
+      ],
+      "result": {
+        "name": "list",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/ItemList"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "getConversationItem",
+      "summary": "OpenAI's: one item of the conversation's history, collapsed over the client's collapse_over as a page is.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "conversation_id",
+          "description": "A session id.",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "item_id",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "include",
+          "description": "Accepted as OpenAI's.",
+          "required": false,
+          "schema": {"type": "array", "items": {"type": "string"}}
+        }
+      ],
+      "result": {
+        "name": "item",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/HistoryItem"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.item.expand",
+      "summary": "Up to 256 KiB of a history item's text from offset: a tool's recorded result, an attached file, a message.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id.",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "item_id",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "offset",
+          "description": "In bytes; a part starts on a character.",
+          "required": false,
+          "schema": {"type": "integer", "minimum": 0}
+        },
+        {
+          "name": "length",
+          "required": false,
+          "schema": {"type": "integer", "minimum": 1, "maximum": 262144}
+        }
+      ],
+      "result": {
+        "name": "expanded",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/Expanded"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
       "name": "maic.session.subscribe",
       "summary": "The session's events after starting_after, replayed from the ring, then as they come. maic_resync when they left the ring or the epoch changed.",
       "paramStructure": "by-name",

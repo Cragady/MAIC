@@ -18,7 +18,7 @@ vim.fn.mkdir(tmp, "p")
 vim.cmd.cd(tmp)
 
 io.write("commands\n")
-for _, c in ipairs({ "Maic", "MaicTerminal", "MaicSend", "MaicDiagnostics", "MaicQuickfix", "MaicToggle", "MaicInterrupt", "MaicSteer" }) do
+for _, c in ipairs({ "Maic", "MaicTerminal", "MaicSend", "MaicDiagnostics", "MaicQuickfix", "MaicToggle", "MaicInterrupt", "MaicSteer", "MaicOlder" }) do
   expect(vim.fn.exists(":" .. c) == 2, ":" .. c .. " is defined")
 end
 

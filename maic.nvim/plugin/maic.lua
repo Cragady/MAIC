@@ -19,5 +19,7 @@ vim.api.nvim_create_user_command("MaicInterrupt", function() maic().interrupt() 
 vim.api.nvim_create_user_command("MaicSteer", function(o) require("maic.ui").steer_command(o.fargs) end,
   { nargs = "+", complete = function() return { "steer", "drop", "further", "interrupt", "keep", "halt" } end,
     desc = "Steer the interface's running or paused turn: steer|drop|further|interrupt|keep|halt [note]" })
+vim.api.nvim_create_user_command("MaicOlder", function() require("maic.ui").older() end,
+  { desc = "Load the conversation's earlier history above what is shown" })
 vim.api.nvim_create_user_command("MaicQuickfix", function() maic().send_quickfix() end,
   { desc = "Send the quickfix list into MAIC's input" })

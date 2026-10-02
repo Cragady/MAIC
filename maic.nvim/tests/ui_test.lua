@@ -205,6 +205,20 @@ vim.wait(30000, function()
 end, 20)
 expect(ui.state() and ui.state().session == s.session and again.conv ~= conv, "a new engine resumes the session (what maic --ui nvim -c does)")
 conv, input = again.conv, again.input
+expect(wait_for("echo: two") and text():find("⋯ earlier history", 1, true) == 1 and not text():find("echo: ping", 1, true),
+  "the resumed session shows its last exchanges, and a line at the top for the earlier ones")
+focus(conv)
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+vim.api.nvim_exec_autocmds("CursorMoved", { buffer = conv }) -- a headless -l run never fires it on its own
+expect(wait_for("❯ hold on"), "moving to that line loads the page before them")
+vim.wait(30000, function()
+  if not text():find("⋯ earlier history", 1, true) then return true end
+  vim.cmd("MaicOlder")
+  return false
+end, 50)
+local ping, nv, two = text():find("echo: ping", 1, true), text():find("nv-42", 1, true), text():find("echo: two", 1, true)
+expect(ping and nv and two and ping < nv and nv < two and not text():find("⋯ earlier history", 1, true),
+  ":MaicOlder loads the rest, oldest at the top, until there is nothing before it")
 send("again")
 expect(wait_for("echo: again"), "and runs a turn in it")
 idle()

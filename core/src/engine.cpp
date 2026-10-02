@@ -11,6 +11,7 @@
 #include "maic/skeleton.hpp"
 #include "maic/status.hpp"
 #include "maic/service.hpp"
+#include "maic/tools.hpp"
 #include "maic/tripwire.hpp"
 #include "maic/trust.hpp"
 #include "maic/vendor.hpp"
@@ -54,6 +55,11 @@ constexpr size_t kTooSlow = 8 << 20;             // behind this, the connection 
 constexpr double kRemoteOutputRate = 64 * 1024;  // bytes a second of tool output per session, remote connections
 constexpr size_t kMaxPendingSteers = 16;          // accepted steers waiting for their successor (too_many_pending_steers)
 const char* const kNotRun = "not run: the user redirected";
+constexpr size_t kLocalCollapse = 64 * 1024;    // collapse_over when a client names none: section 5
+constexpr size_t kRemoteCollapse = 2 * 1024;
+constexpr size_t kMaxExpand = 256 * 1024;      // maic.item.expand's largest part
+constexpr size_t kPageBudget = 768 * 1024;     // a history page stays well inside kMaxMessage
+constexpr size_t kInflightTail = 8 * 1024;     // of a running tool's output in attach's inflight
 
 // The event types the engine sends; protocol_schema_test holds this to event.schema.json's union.
 const std::vector<std::string> kEventTypes = {
@@ -153,6 +159,69 @@ json shell_output(const std::string& text) {
     return json::array({{{"stdout", text}, {"stderr", ""}, {"outcome", outcome}}});
 }
 
+// History (section 5): a transcript record as the client sees it. Tool results and attached files (`context`) over
+// the client's collapse_over (0: never) arrive without their content and with maic {size, head, collapsed};
+// maic.item.expand serves the text. User turns and replies are never collapsed.
+std::string history_text(const json& r) {
+    std::string type = r.value("type", "");
+    if (type == "tool") return r.value("result", "");
+    if (type == "compact") return "compacted (" + r.value("stage", "") + ")" + (r.contains("summary") ? ":\n" + r.value("summary", "") : "");
+    if (type == "undo") return "undo: " + r.value("summary", "");
+    if (type == "workspace") return "workspace: " + r.value("from", "") + " → " + r.value("to", "");
+    if (type == "steer") {
+        std::string note = r.value("note", "");
+        return "↯ " + r.value("action", "") + (r.value("trigger", "") == "ban" ? " (a ban's steer)" : "") + (note.empty() ? "" : ": " + note);
+    }
+    return r.value("text", "");
+}
+
+// The first three lines, in at most 200 bytes, cut on a character.
+std::string head_of(const std::string& text) {
+    size_t end = 0;
+    for (int lines = 0; lines < 3; ++lines) {
+        end = text.find('\n', end);
+        if (end == std::string::npos) break;
+        if (lines < 2) ++end;
+    }
+    end = std::min({end, text.size(), size_t(200)});
+    while (end > 0 && end < text.size() && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) --end;
+    return text.substr(0, end);
+}
+
+json history_item(const json& r, const std::string& id, size_t collapse_over) {
+    std::string type = r.value("type", "");
+    json maic = json::object();
+    if (r.contains("time")) maic["time"] = r["time"];
+    if (type == "user" || type == "assistant") {
+        json part = type == "user" ? json{{"type", "input_text"}, {"text", r.value("text", "")}}
+                                   : json{{"type", "output_text"}, {"text", r.value("text", "")}, {"annotations", json::array()}, {"logprobs", json::array()}};
+        return {{"id", id}, {"type", "message"}, {"role", type}, {"status", "completed"}, {"content", {part}}, {"maic", maic}};
+    }
+    std::string text = history_text(r);
+    bool collapsed = (type == "tool" || type == "context") && collapse_over > 0 && text.size() > collapse_over;
+    if (collapsed) {
+        maic["size"] = text.size();
+        maic["head"] = head_of(text);
+        maic["collapsed"] = true;
+        text.clear();
+    }
+    if (type != "tool") return {{"id", id}, {"type", "maic.notice"}, {"kind", type}, {"text", text}, {"status", "completed"}, {"maic", maic}};
+    std::string tool = r.value("tool", "");
+    maic["summary"] = tool_summary(tool, r.value("arguments", json::object()));
+    maic["ok"] = r.value("ok", true);
+    if (const json& full = r.contains("full_output") ? r["full_output"] : json(); full.is_object()) {
+        fs::path kept = full.value("path", "");
+        maic["full_output"] = {{"session", kept.parent_path().stem().string()}, {"call", kept.stem().string()}, {"bytes", full.value("bytes", size_t(0))},
+                               {"label", kFullOutputLabel}};
+    }
+    // A record keeps no call id: the item's own id stands in for it.
+    json item = tool == "run_shell" ? json{{"type", "shell_call_output"}, {"id", id}, {"call_id", id}, {"status", "completed"},
+                                           {"output", collapsed ? json::array() : shell_output(text)}, {"max_output_length", nullptr}}
+                                    : json{{"type", "function_call_output"}, {"id", id}, {"call_id", id}, {"output", text}, {"status", "completed"}};
+    item["maic"] = maic;
+    return item;
+}
+
 // A command the user runs themselves (`!cmd`, maic.session.shell): their shell, their environment, no sandbox.
 // Output streams to `on_output`; cancel kills the whole process group.
 int run_user_shell(const std::string& command, const fs::path& cwd, const std::atomic<bool>& cancel, const std::function<void(std::string_view)>& on_output) {
@@ -221,6 +290,7 @@ struct Client {
     bool index = false;              // subscribed to maic.index
     std::set<std::string> exclude;          // event types its hello filters out
     std::map<std::string, long> skip_from;  // per session: the first number filtered out since the last event sent
+    size_t collapse_over = kLocalCollapse;  // history items bigger than this arrive collapsed (its hello's view)
     struct Bucket {
         double budget = kRemoteOutputRate;
         Clock::time_point at = Clock::now();
@@ -377,6 +447,7 @@ struct Session {
     std::set<std::string> answered;  // approvals and questions already answered, for maic_already_answered
     std::map<std::string, PendingQuestion> questions;
     json todo = json::array();
+    TranscriptIndex history;  // its transcript's displayable records, read lazily (section 5)
 
     Settings settings;          // the session's own: its `:` commands read and change them
     SessionCommands commands;   // and keep their state here
@@ -830,6 +901,8 @@ struct Engine::Impl {
             std::lock_guard lock(c.mu);
             c.exclude = exclude;
         }
+        c.collapse_over = c.origin == Origin::Local ? kLocalCollapse : kRemoteCollapse;
+        if (const json& view = p.contains("view") ? p["view"] : json(); view.is_object() && view.contains("collapse_over")) c.collapse_over = view["collapse_over"];
         c.hello = true;
         // A local client names itself; a remote one is named by its token or pairing (section 2).
         if (c.origin == Origin::Local && p.contains("client") && p["client"].is_object()) {
@@ -839,7 +912,7 @@ struct Engine::Impl {
                 {"engine", {{"version", MAIC_VERSION}, {"instance", instance}}},
                 {"client", c.id},
                 {"origin", origin_name(c.origin)},
-                {"capabilities", {"tool_output", "index"}},
+                {"capabilities", {"tool_output", "collapse", "index"}},
                 {"exclude", exclude},
                 {"limits", {{"always", c.origin == Origin::Local}, {"max_message", kMaxMessage}}},
                 {"tier", options.tier},
@@ -1079,17 +1152,178 @@ struct Engine::Impl {
         for (const auto& [id, q] : s->questions) {
             if (!q.answer) questions.push_back(q.event);
         }
-        // History comes from the transcript with step 11 (the line-offset index, listConversationItems).
+        auto& h = history_of(*s);
+        size_t end = h.entries().size(), from = h.exchanges_before(end, p.value("exchanges", size_t(3)));
+        json items = page(*s, from, end, c, true);
         return {{"entry", for_client(entry(*s), c)},
                 {"epoch", s->epoch},
                 {"sequence_number", s->next - 1},
-                {"more_before", false},
-                {"items", json::array()},
-                {"inflight", nullptr},
+                {"more_before", from > 0},
+                {"items", items},
+                {"inflight", inflight(*s)},
                 {"pending", pending},
                 {"questions", questions},
                 {"todo", s->todo},
                 {"usage", usage_update(*s)}};
+    }
+
+    // ---------- history (section 5) ----------
+
+    // The index follows the transcript wherever it moved and reads only what was appended since the last call.
+    TranscriptIndex& history_of(Session& s) {
+        s.history.refresh(s.log->path());
+        return s.history;
+    }
+
+    // Entries [from, end) as the client's items, in order, within kPageBudget: what does not fit leaves the page at
+    // its far end (the oldest when `newest`, else the newest), moving `from` or `end`, and a tool result or an attached
+    // file collapses before it pushes a turn out.
+    json page(Session& s, size_t& from, size_t& end, const Client& c, bool newest) {
+        const auto& h = s.history;
+        json items = json::array();
+        size_t bytes = 0, lo = from, hi = end;
+        while (lo < hi) {
+            size_t i = newest ? hi - 1 : lo;
+            const auto& e = h.entries()[i];
+            json r = h.record(i);
+            json item = history_item(r, e.id, c.collapse_over);
+            size_t n = dump(item).size();
+            if (bytes + n > kPageBudget && (e.type == "tool" || e.type == "context")) {
+                item = history_item(r, e.id, 1);
+                n = dump(item).size();
+            }
+            if (bytes + n > kPageBudget && !items.empty()) break;
+            bytes += n;
+            items.push_back(std::move(item));
+            newest ? --hi : ++lo;
+        }
+        if (newest) {
+            std::reverse(items.begin(), items.end());
+            from = hi;
+        } else {
+            end = lo;
+        }
+        return items;
+    }
+
+    // What attach's snapshot cannot read from the transcript yet: the open response's items still in progress (the
+    // reply being written, a running tool's output item with its call and the last 8 KiB of its output), rebuilt
+    // from the ring's events of that response.
+    json inflight(const Session& s) {
+        if (!s.run) return nullptr;
+        std::map<std::string, json> open, calls;
+        std::vector<std::string> order;
+        bool in = false;
+        for (const auto& [e, size] : s.ring) {
+            std::string type = e.value("type", "");
+            std::string item_id = e.contains("item_id") ? e.value("item_id", "") : "";
+            if (type == "response.created") {
+                in = e["response"].value("id", "") == s.run->id;
+                open.clear();
+                order.clear();
+            } else if (!in) {
+                continue;
+            } else if (type == "response.output_item.added") {
+                const json& item = e["item"];
+                std::string t = item.value("type", "");
+                if (t == "function_call" || t == "shell_call") calls[item.value("call_id", "")] = item;
+                open[item.value("id", "")] = {{"item", item}, {"text", ""}};
+                order.push_back(item.value("id", ""));
+            } else if (type == "response.output_item.done") {
+                open.erase(e["item"].value("id", ""));
+            } else if (!open.count(item_id)) {
+                continue;
+            } else if (type == "response.output_text.delta" || type == "response.reasoning_text.delta") {
+                open[item_id]["text"] = open[item_id]["text"].get<std::string>() + e.value("delta", "");
+            } else if (type == "response.shell_call_output_content.delta") {
+                open[item_id]["text"] = open[item_id]["text"].get<std::string>() + e["delta"].value("stdout", "") + e["delta"].value("stderr", "");
+            } else if (type == "maic.tool.output.delta") {
+                open[item_id]["text"] = open[item_id]["text"].get<std::string>() + e.value("data", "");
+            }
+        }
+        json items = json::array();
+        for (const auto& id : order) {
+            auto it = open.find(id);
+            if (it == open.end()) continue;
+            json entry = it->second;
+            const json& item = entry["item"];
+            std::string t = item.value("type", "");
+            if (t == "function_call_output" || t == "shell_call_output") {
+                std::string text = entry["text"];
+                if (text.size() > kInflightTail) {
+                    size_t cut = text.size() - kInflightTail;
+                    while (cut < text.size() && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80) ++cut;
+                    entry["text"] = text.substr(cut);
+                    entry["size"] = text.size();
+                }
+                if (auto call = calls.find(item.value("call_id", "")); call != calls.end()) entry["call"] = call->second;
+            }
+            items.push_back(std::move(entry));
+        }
+        return {{"response_id", s.run->id}, {"items", items}};
+    }
+
+    // OpenAI's listConversationItems over the transcript: `after` an item, newest first (`desc`, the default) or
+    // oldest first, `limit` items or, with maic.exchanges, that many exchanges.
+    json list_items(Client& c, const json& p) {
+        auto s = session(p.at("conversation_id"));
+        std::lock_guard lock(s->mu);
+        auto& h = history_of(*s);
+        size_t n = h.entries().size();
+        std::string order = p.value("order", "desc");
+        if (order != "desc" && order != "asc") throw bad_params("order is asc or desc", "order");
+        long limit = p.value("limit", 20L);
+        if (limit < 1 || limit > 100) throw bad_params("limit is 1 to 100", "limit");
+        bool desc = order == "desc";
+        size_t at = desc ? n : 0;
+        if (p.contains("after") && !p["after"].is_null()) {
+            auto i = h.find(p["after"]);
+            if (!i) throw refuse("maic_not_found", "no item " + p["after"].get<std::string>() + " in this conversation", "after");
+            at = desc ? *i : *i + 1;
+        }
+        json mx = p.value("maic", json::object());
+        size_t from = at, end = at;
+        if (desc) {
+            from = mx.contains("exchanges") ? h.exchanges_before(at, mx["exchanges"]) : at - std::min(at, size_t(limit));
+        } else if (mx.contains("exchanges")) {
+            const auto& ex = h.exchanges();
+            auto next = std::upper_bound(ex.begin(), ex.end(), at);
+            size_t k = mx["exchanges"];  // the exchange `at` is in counts as the first
+            end = k == 0 ? at : size_t(ex.end() - next) >= k ? *(next + (k - 1)) : n;
+        } else {
+            end = std::min(n, at + size_t(limit));
+        }
+        json items = page(*s, from, end, c, desc);
+        if (desc) std::reverse(items.begin(), items.end());
+        json first = items.empty() ? json("") : items.front()["id"], last = items.empty() ? json("") : items.back()["id"];
+        return {{"object", "list"}, {"data", items}, {"first_id", first}, {"last_id", last}, {"has_more", desc ? from > 0 : end < n}};
+    }
+
+    json get_item(Client& c, const json& p) {
+        auto s = session(p.at("conversation_id"));
+        std::lock_guard lock(s->mu);
+        auto& h = history_of(*s);
+        auto i = h.find(p.at("item_id"));
+        if (!i) throw refuse("maic_not_found", "no item " + p["item_id"].get<std::string>() + " in this conversation", "item_id");
+        return history_item(h.record(*i), h.entries()[*i].id, c.collapse_over);
+    }
+
+    // maic.item.expand: up to 256 KiB of an item's text from `offset`, cut on characters: a tool's recorded result,
+    // an attached file, a message.
+    json item_expand(Client&, const json& p) {
+        auto s = session(p.at("session"));
+        std::lock_guard lock(s->mu);
+        auto& h = history_of(*s);
+        auto i = h.find(p.at("item_id"));
+        if (!i) throw refuse("maic_not_found", "no item " + p["item_id"].get<std::string>() + " in this session", "item_id");
+        std::string text = history_text(h.record(*i));
+        size_t offset = std::min(p.value("offset", size_t(0)), text.size());
+        while (offset < text.size() && (static_cast<unsigned char>(text[offset]) & 0xC0) == 0x80) ++offset;
+        size_t end = offset + std::min(p.value("length", kMaxExpand), kMaxExpand);
+        if (end >= text.size()) end = text.size();
+        else
+            while (end > offset && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) --end;
+        return {{"text", text.substr(offset, end - offset)}, {"offset", offset}, {"size", text.size()}, {"done", end == text.size()}};
     }
 
     json session_set(Client& c, const json& p) {
@@ -1758,6 +1992,9 @@ const std::map<std::string, Engine::Impl::Handler>& Engine::Impl::handlers() {
         {"getConversation", &Impl::get_conversation},
         {"maic.session.resume", &Impl::session_resume},
         {"maic.session.attach", &Impl::session_attach},
+        {"listConversationItems", &Impl::list_items},
+        {"getConversationItem", &Impl::get_item},
+        {"maic.item.expand", &Impl::item_expand},
         {"maic.session.subscribe", &Impl::session_subscribe},
         {"maic.session.unsubscribe", &Impl::session_unsubscribe},
         {"maic.session.set", &Impl::session_set},

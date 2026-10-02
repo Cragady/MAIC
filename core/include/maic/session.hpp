@@ -201,6 +201,41 @@ StreamStart stream_start(const std::filesystem::path& path);
 // read. load_session and the summaries below are built on it.
 size_t walk_records(const std::filesystem::path& path, size_t limit, const std::function<void(const nlohmann::json&)>& fn);
 
+// The displayable records of a session in order (docs/design/engine-protocol.md section 5): `user`, `assistant`,
+// `tool`, `context`, `compact`, `title`, `undo`, `workspace` and `steer`, the parents a `resumed_from` pointer names
+// first. Each is addressed `<file id>#<line>`, its line counted as --fork-at counts it (skeleton lines are not
+// records), so an id names one line of one file and never moves; a fork's inherited records keep the parent's id.
+// One scan builds it and refresh() reads only what was appended since, so a page is a seek and a short read.
+// `reset` and `clear` cut what the model sees, never what history shows: they are not entries and change nothing.
+class TranscriptIndex {
+public:
+    struct Entry {
+        std::string id, type;
+        size_t file = 0;            // into the files read so far
+        std::streamoff offset = 0;  // where its line starts
+    };
+    // Reads the records appended to `path` since the last call; starts over when the session moved (:init, rehome).
+    void refresh(const std::filesystem::path& path);
+    const std::vector<Entry>& entries() const { return entries_; }
+    // Where each exchange starts: the entries of `user` records. Entries before the first are the session's preamble.
+    const std::vector<size_t>& exchanges() const { return exchanges_; }
+    std::optional<size_t> find(const std::string& id) const;
+    nlohmann::json record(size_t i) const;
+    // The first entry of the `n` exchanges that end before entry `end` (a partial exchange counts as one), or 0 when
+    // that reaches the first exchange, so a page never leaves the preamble alone before it.
+    size_t exchanges_before(size_t end, size_t n) const;
+
+private:
+    void scan(const std::filesystem::path& path, size_t limit, int depth);
+    std::vector<std::filesystem::path> files_;
+    std::filesystem::path top_;
+    std::streamoff top_bytes_ = 0;  // what of the session's own file has been read
+    size_t top_lines_ = 0;
+    std::vector<Entry> entries_;
+    std::vector<size_t> exchanges_;
+    std::map<std::string, size_t> by_id_;
+};
+
 // Follows `resumed_from` pointers, so a forked session loads its parent's history first. `records` stops
 // after that many lines of the file itself (what `--fork-at N` forks from).
 LoadedSession load_session(const std::filesystem::path& path, size_t records = ~size_t(0));

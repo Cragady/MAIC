@@ -283,14 +283,75 @@
         "epoch": {"description": "The stream's epoch (maic.session.state); maic.session.subscribe takes it back.", "type": "string", "minLength": 1},
         "sequence_number": {"type": "integer", "minimum": 0},
         "more_before": {"type": "boolean"},
-        "items": {"type": "array", "items": {"$ref": "../openai/subset.json#/components/schemas/ConversationItem"}},
-        "inflight": {"anyOf": [{"type": "null"}, {"type": "object"}]},
+        "items": {"type": "array", "items": {"$ref": "#/$defs/HistoryItem"}},
+        "inflight": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/Inflight"}]},
         "pending": {"type": "array", "items": {"$ref": "event.schema.json#/$defs/maic.approval.requested"}},
         "questions": {"type": "array", "items": {"$ref": "event.schema.json#/$defs/maic.question.asked"}},
         "todo": {"type": "array", "items": {"$ref": "#/$defs/TodoItem"}},
         "usage": {"$ref": "#/$defs/UsageUpdate"}
       },
       "required": ["entry", "epoch", "sequence_number", "more_before", "items", "inflight", "pending", "todo", "usage"]
+    },
+    "HistoryItem": {
+      "description": "A transcript record as history (section 5): OpenAI's conversation items, and maic.notice for the records they have no item for.",
+      "anyOf": [{"$ref": "../openai/subset.json#/components/schemas/ConversationItem"}, {"$ref": "#/$defs/HistoryNotice"}]
+    },
+    "HistoryNotice": {
+      "description": "A record shown as a note: an attached file (`context`, collapsible like a tool result), a compaction, a title, an undo, a workspace change, a steer.",
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "type": {"const": "maic.notice"},
+        "kind": {"enum": ["context", "compact", "title", "undo", "workspace", "steer"]},
+        "text": {"type": "string"},
+        "status": {"const": "completed"},
+        "maic": {"$ref": "#/$defs/ItemMaic"}
+      },
+      "required": ["id", "type", "kind", "text", "status"]
+    },
+    "ItemList": {
+      "description": "listConversationItems: OpenAI's ConversationItemList, its items those of HistoryItem. first_id and last_id are empty for an empty page.",
+      "type": "object",
+      "properties": {
+        "object": {"const": "list"},
+        "data": {"type": "array", "items": {"$ref": "#/$defs/HistoryItem"}},
+        "has_more": {"type": "boolean"},
+        "first_id": {"type": "string"},
+        "last_id": {"type": "string"}
+      },
+      "required": ["object", "data", "has_more", "first_id", "last_id"]
+    },
+    "Inflight": {
+      "description": "attach: what the transcript does not hold yet, the open response's items in progress. `text` is what came so far; for a tool's output item the last 8 KiB of it (`size` the whole), with `call` the item that called it.",
+      "type": "object",
+      "properties": {
+        "response_id": {"type": "string", "minLength": 1},
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "item": {"type": "object"},
+              "text": {"type": "string"},
+              "size": {"type": "integer", "minimum": 0},
+              "call": {"type": "object"}
+            },
+            "required": ["item", "text"]
+          }
+        }
+      },
+      "required": ["response_id", "items"]
+    },
+    "Expanded": {
+      "description": "maic.item.expand: up to 256 KiB of an item's text from `offset` (bytes, cut on characters), with the whole `size` and whether this part reaches its end.",
+      "type": "object",
+      "properties": {
+        "text": {"type": "string"},
+        "offset": {"type": "integer", "minimum": 0},
+        "size": {"type": "integer", "minimum": 0},
+        "done": {"type": "boolean"}
+      },
+      "required": ["text", "offset", "size", "done"]
     },
     "Subscribed": {
       "description": "maic.session.subscribe: the stream's position and the session's activity when the replay was taken.",
