@@ -171,6 +171,7 @@ public:
 
     std::atomic<Mode> mode{Mode::Manual};
     std::string model;  // "<provider>/<model>", or a bare name for the first provider (llamacpp)
+    std::string protocol_tier;  // the protocol tier the engine runs this session at, kept in its start record
     bool think = false;
     std::vector<Provider> providers = default_providers();
 

@@ -29,22 +29,6 @@ namespace maic {
 namespace fs = std::filesystem;
 using nlohmann::json;
 
-namespace {
-
-std::string quote(const std::string& s) {
-    std::string out = "'";
-    for (char c : s) out += c == '\'' ? std::string("'\\''") : std::string(1, c);
-    return out + "'";
-}
-
-std::string size_text(uintmax_t bytes) {
-    char buf[32];
-    if (bytes < (1u << 20)) std::snprintf(buf, sizeof(buf), "%.1f KB", bytes / 1024.0);
-    else if (bytes < (1ull << 30)) std::snprintf(buf, sizeof(buf), "%.1f MB", bytes / 1048576.0);
-    else std::snprintf(buf, sizeof(buf), "%.2f GB", bytes / 1073741824.0);
-    return buf;
-}
-
 std::string find_on_path(const std::string& name) {
     const char* path = std::getenv("PATH");
     std::string dirs = path ? path : "";
@@ -63,17 +47,6 @@ std::string self_exe() {
     std::error_code ec;
     fs::path exe = fs::read_symlink("/proc/self/exe", ec);
     return ec ? "" : exe.string();
-}
-
-// maic-leak-audit: installed beside this binary (a release), else on PATH, else the source tree's (a dev build).
-std::string leak_audit_path() {
-    std::error_code ec;
-    if (std::string exe = self_exe(); !exe.empty() && fs::is_regular_file(fs::path(exe).parent_path() / "maic-leak-audit", ec)) {
-        return (fs::path(exe).parent_path() / "maic-leak-audit").string();
-    }
-    if (std::string found = find_on_path("maic-leak-audit"); !found.empty()) return found;
-    fs::path tree = root_dir() / "tools" / "audit" / "leak_audit.py";
-    return fs::is_regular_file(tree, ec) ? tree.string() : "";
 }
 
 // Runs argv with stdin on /dev/null and stderr inherited; stdout into `out` when given. The exit code, or -1 when
@@ -111,6 +84,34 @@ int run(const std::vector<std::string>& argv, std::string* out) {
     }
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }
+
+namespace {
+
+std::string quote(const std::string& s) {
+    std::string out = "'";
+    for (char c : s) out += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    return out + "'";
+}
+
+std::string size_text(uintmax_t bytes) {
+    char buf[32];
+    if (bytes < (1u << 20)) std::snprintf(buf, sizeof(buf), "%.1f KB", bytes / 1024.0);
+    else if (bytes < (1ull << 30)) std::snprintf(buf, sizeof(buf), "%.1f MB", bytes / 1048576.0);
+    else std::snprintf(buf, sizeof(buf), "%.2f GB", bytes / 1073741824.0);
+    return buf;
+}
+
+// maic-leak-audit: installed beside this binary (a release), else on PATH, else the source tree's (a dev build).
+std::string leak_audit_path() {
+    std::error_code ec;
+    if (std::string exe = self_exe(); !exe.empty() && fs::is_regular_file(fs::path(exe).parent_path() / "maic-leak-audit", ec)) {
+        return (fs::path(exe).parent_path() / "maic-leak-audit").string();
+    }
+    if (std::string found = find_on_path("maic-leak-audit"); !found.empty()) return found;
+    fs::path tree = root_dir() / "tools" / "audit" / "leak_audit.py";
+    return fs::is_regular_file(tree, ec) ? tree.string() : "";
+}
+
 
 std::string first_line(std::string text) {
     if (auto nl = text.find('\n'); nl != std::string::npos) text.resize(nl);

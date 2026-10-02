@@ -566,6 +566,39 @@ class TuiTest(unittest.TestCase):
         tui.send(":q<cr>", settle=False)
         self.assertEqual(tui.wait_exit(), 0)
 
+    def test_a_session_in_the_daemon_keeps_working_after_quit(self):
+        run = lambda *a: subprocess.run([MAIC, *a], capture_output=True, text=True, env=self.env, cwd=self.ws, stdin=subprocess.DEVNULL, timeout=60)
+        r = run("daemon", "start")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.addCleanup(lambda: run("daemon", "stop", "--yes"))
+        tui = Tui([MAIC], env=self.env, cwd=self.ws)  # no flag the daemon cannot take: the session opens there
+        self.addCleanup(tui.close)
+        text = tui.wait_for(STRIP)
+        self.assertIn("in the daemon (maic daemon status)", text)
+        self.assertIn("· daemon", text)
+        tui.send("islow: still going<m-cr>", settle=False)
+        tui.wait_for("working… ctrl-c interrupts")
+        tui.send("<esc>:q<cr>", settle=False)
+        self.assertEqual(tui.wait_exit(), 0, "quitting does not wait for the turn, and nothing is asked")
+        sessions = lambda: json.loads(run("daemon", "status", "--json").stdout)["sessions"]
+        end = time.time() + 30
+        while time.time() < end and not any(e["activity"] == "idle" and e["unseen"] for e in sessions()):
+            time.sleep(0.2)
+        mine = [e for e in sessions() if e["workspace"] == self.ws]
+        self.assertTrue(mine and mine[0]["state"] == "background" and mine[0]["unseen"], json.dumps(mine))
+        with open(mine[0]["transcript"]) as f:
+            self.assertIn("echo: slow: still going", f.read(), "the turn finished in the daemon after the window closed")
+        # The next maic in the same directory switches to it: the reply is there (wide: the strip counts the other one).
+        tui = Tui([MAIC], env=self.env, cwd=self.ws, cols=160)
+        self.addCleanup(tui.close)
+        tui.wait_for(STRIP)
+        tui.send(":switch<cr>", settle=False)
+        tui.wait_for("finished")
+        tui.send("j<cr>", settle=False)
+        tui.wait_for("echo: slow: still going")
+        tui.send(":q<cr>", settle=False)
+        self.assertEqual(tui.wait_exit(), 0)
+
     def test_quit_prints_the_transcript_line(self):
         tui = self.start()
         tui.send(":q<cr>", settle=False)

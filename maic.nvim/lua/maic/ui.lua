@@ -1076,7 +1076,8 @@ function U.start(args, o)
         attach(ui, (r.entry and r.entry.id) or r.id or o.session)
       end)
     else
-      request(ui, "createConversation", vim.empty_dict(), function(r, cerr)
+      -- The workspace is said, not assumed: under a daemon the engine's own directory is not this nvim's.
+      request(ui, "createConversation", { maic = { workspace = vim.fn.getcwd() } }, function(r, cerr)
         if cerr then return notice(ui, "✗ " .. err_text(cerr), "MaicError") end
         attach(ui, r.id)
       end)

@@ -45,6 +45,7 @@ maic nvim setup llama-vim          # llama.vim for lazy.nvim as one file MAIC ow
 maic setup                         # the first run as yes/no questions: settings, llama.cpp, ComfyUI, a model, the tripwire
 maic models                        # the model catalog: what each is for, installed or not, current; maic models install ID [--link] (docs/models.md)
 maic up llamacpp-fim               # code completion for llama.vim on 8084, after maic models install qwen2.5-coder-7b --link
+maic daemon start                  # sessions that outlive their window: maic and maic.nvim open theirs in it (docs/daemon.md)
 maic server token new phone        # remote access (docs/remote.md): a bearer token for one device, shown once
 maic server start                  # the API and the phone web client; --listen 0.0.0.0:7373 for the LAN, with TLS
 maic server pair                   # with server.relay set: a code and a maic://pair/... string the phone pastes on the LAN

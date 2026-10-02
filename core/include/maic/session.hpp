@@ -175,6 +175,7 @@ struct LoadedSession {
     std::vector<TranscriptEntry> transcript;
     std::string model;
     std::string mode;
+    std::string tier;    // the protocol tier its start record names, "" before tiers were kept
     size_t records = 0;  // lines in this file (what a fork of it would point at)
 };
 

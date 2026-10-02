@@ -540,6 +540,19 @@ int main() {
         expect(!reach(agent_dir / "s"), "$SSH_AUTH_SOCK's listener is not reachable");
         expect(!reach(gpg_dir / "S.gpg-agent"), "GPG_AGENT_INFO's listener is not reachable");
         expect(!reach(sws / "nvim.0"), "$NVIM's listener in the workspace's own directory is not reachable");
+        {
+            // Without a runtime directory the daemon listens in <state>/run (docs/daemon.md): masked the same way.
+            const char* old_state = std::getenv("XDG_STATE_HOME");
+            std::string saved_state = old_state ? old_state : "";
+            setenv("XDG_STATE_HOME", (rt / "state").c_str(), 1);
+            fs::create_directories(rt / "state" / "maic" / "run");
+            fds.push_back(listen_at(rt / "state" / "maic" / "run" / "engine.sock"));
+            unsetenv("XDG_RUNTIME_DIR");
+            expect(fds.back() != -1 && !reach(rt / "state" / "maic" / "run" / "engine.sock"), "without $XDG_RUNTIME_DIR, the daemon's socket in <state>/run is not reachable");
+            setenv("XDG_RUNTIME_DIR", run_dir.c_str(), 1);
+            if (old_state) setenv("XDG_STATE_HOME", saved_state.c_str(), 1);
+            else unsetenv("XDG_STATE_HOME");
+        }
 
         r = run_sandboxed("find " + run_dir.string() + " /run/user /var/run/user /run/dbus /var/run/dbus -mindepth 1 2>/dev/null | wc -l", sws, false, std::chrono::seconds(20), no);
         expect(r.output.find('0') == 0, "the runtime directory, /run/user and /run/dbus (and their /var/run names) look empty");

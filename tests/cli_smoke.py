@@ -272,9 +272,10 @@ def main():
     trust_ok = trust_smoke(maic, port)
     trail_ok = audit_trail_smoke(maic, port)
     rpc_ok = rpc_smoke(maic, port)
+    daemon_ok = daemon_smoke(maic, port)
     ui_ok = nvim_ui_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if rpc_ok and ui_ok and ok and stream_ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok and mcp_ok else 1)
+    sys.exit(0 if rpc_ok and daemon_ok and ui_ok and ok and stream_ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok and mcp_ok else 1)
 
 
 class RpcClient:
@@ -468,6 +469,147 @@ def rpc_smoke(maic, port):
         code = None
     c.close()
     report(code == 0, "ends cleanly at SIGTERM (exit %r)" % code, c.stderr.decode(errors="replace"))
+    shutil.rmtree(home, ignore_errors=True)
+    return all(results)
+
+
+def daemon_smoke(maic, port):
+    """`maic daemon`: start, status, a second start, `maic --rpc` carried to its socket, a session the closing
+    client leaves (an idle one parked, a working one finishing in the background and resumed by the next client), a
+    daemon killed outright and started again over its stale socket, stop asking before it interrupts a turn, the
+    systemd unit. The daemon's recorded connections pass `maic protocol check`. Every daemon started here is stopped."""
+    import signal
+    home, env = make_home(port)
+    rec = os.path.join(home, "daemon-streams")
+    os.makedirs(rec)
+    env = dict(env, MAIC_PROTOCOL_RECORD=rec)
+    results = []
+
+    def report(ok, what, extra=""):
+        results.append(ok)
+        print(("ok" if ok else "FAIL") + ": maic daemon " + what + ("" if ok else "\n" + extra[-3000:]))
+
+    def run(*args, timeout=60):
+        return subprocess.run([maic, *args], capture_output=True, text=True, env=env, cwd=home, stdin=subprocess.DEVNULL, timeout=timeout)
+
+    def status():
+        r = run("daemon", "status", "--json")
+        return r.returncode, json.loads(r.stdout or "{}")
+
+    def entry(sid):
+        return next((e for e in status()[1].get("sessions", []) if e["id"] == sid), {})
+
+    def until(pred, timeout=30):
+        end = time.time() + timeout
+        while time.time() < end:
+            if pred():
+                return True
+            time.sleep(0.2)
+        return False
+
+    sock = os.path.join(env["XDG_RUNTIME_DIR"], "maic", "engine.sock")
+    pid_file = os.path.join(env["XDG_RUNTIME_DIR"], "maic", "engine.pid")
+    pids = []
+    try:
+        r = run("daemon", "status")
+        report(r.returncode == 3 and "not running" in r.stdout, "status says it is not running (exit 3)", r.stdout + r.stderr)
+        r = run("daemon", "start")
+        with open(pid_file) as f:
+            pids.append(int(f.read().split()[0]))
+        mode = lambda p: oct(os.stat(p).st_mode & 0o777)
+        report(r.returncode == 0 and "running (pid %d)" % pids[-1] in r.stdout and mode(sock) == "0o600" and mode(os.path.dirname(sock)) == "0o700",
+               "starts, its socket 0600 in a 0700 directory", r.stdout + r.stderr)
+        again, twice = run("daemon", "start"), run("daemon", "run")
+        report(again.returncode == 0 and "already running" in again.stdout and twice.returncode == 1 and "already running" in twice.stderr,
+               "a second start finds it, a second run is refused", again.stdout + twice.stdout + twice.stderr)
+
+        # maic --rpc, as maic.nvim starts it, is carried to the daemon's socket.
+        c = RpcClient(maic, env, home)
+        h = (c.call("maic.hello", {"protocol": 1, "client": {"name": "daemon-smoke", "version": "0"}, "capabilities": ["tool_output"]}) or {}).get("result", {})
+        sid = (c.call("createConversation", {"maic": {"workspace": home}}) or {}).get("result", {}).get("id", "")
+        c.call("maic.session.subscribe", {"session": sid})
+        r = c.call("response.create", {"conversation": sid, "input": "ping"})
+        done = c.wait(lambda m: m.get("method") == "maic.event" and m["params"].get("type") == "response.completed", 60)
+        text = "".join(e["delta"] for e in c.events(sid) if e["type"] == "response.output_text.delta")
+        report(h.get("path") == {"via": "socket"} and sid.split("-")[2:3] == ["daemon"] and done and "echo: ping" in text,
+               "takes maic --rpc as a client over its socket and runs a turn", json.dumps([h, sid, text]))
+        code = c.close()
+        report(code == 0 and until(lambda: entry(sid).get("state") == "parked"), "parks an idle session its client left", json.dumps(entry(sid)))
+
+        # A working session outlives its client: the turn ends in the background, and the next client resumes it.
+        c = RpcClient(maic, env, home)
+        c.call("maic.hello", {"protocol": 1, "client": {"name": "daemon-smoke", "version": "0"}})
+        sid2 = (c.call("createConversation", {"maic": {"workspace": home}}) or {}).get("result", {}).get("id", "")
+        c.call("response.create", {"conversation": sid2, "input": "slow: still here"})
+        working = until(lambda: entry(sid2).get("activity") == "working", 10)
+        c.close()
+        left = entry(sid2)
+        finished = until(lambda: entry(sid2).get("activity") == "idle" and entry(sid2).get("unseen"), 30)
+        c = RpcClient(maic, env, home)
+        c.call("maic.hello", {"protocol": 1, "client": {"name": "daemon-smoke", "version": "0"}})
+        c.call("maic.session.focus", {"session": sid2})
+        snap = (c.call("maic.session.attach", {"session": sid2}) or {}).get("result", {})
+        said = json.dumps(snap.get("items", []))
+        report(working and left.get("state") == "background" and finished and "echo: slow: still here" in said,
+               "lets a working session finish after its client left, and the next client sees the reply", json.dumps([left, entry(sid2), snap])[-2500:])
+
+        # stop asks before it interrupts a turn: refused without a terminal unless --yes.
+        c.call("response.create", {"conversation": sid2, "input": "hold on"})
+        until(lambda: entry(sid2).get("activity") == "working", 10)
+        r = run("daemon", "stop")
+        report(r.returncode == 1 and "1 session is working" in r.stderr and "--yes" in r.stderr and status()[0] == 0,
+               "stop refuses to interrupt a running turn unasked", r.stdout + r.stderr)
+        c.close()
+
+        # Killed outright, it leaves its socket and PID file; status says so, and start clears them.
+        os.kill(pids[-1], signal.SIGKILL)
+        until(lambda: not os.path.exists("/proc/%d" % pids[-1]) or open("/proc/%d/stat" % pids[-1]).read().split(")")[1].split()[0] == "Z", 10)
+        r = run("daemon", "status")
+        stale = r.returncode == 3 and "a socket was left" in r.stdout
+        r = run("daemon", "start")
+        with open(pid_file) as f:
+            pids.append(int(f.read().split()[0]))
+        e1, e2 = entry(sid), entry(sid2)
+        report(stale and r.returncode == 0 and e1.get("state") == "parked" and e2.get("state") == "parked",
+               "starts again over the socket of one that was killed, its sessions listed as parked", r.stdout + r.stderr + json.dumps([e1, e2]))
+
+        # A client resumes a parked session in the new daemon; the epoch goes on.
+        c = RpcClient(maic, env, home)
+        c.call("maic.hello", {"protocol": 1, "client": {"name": "daemon-smoke", "version": "0"}})
+        res = c.call("maic.session.resume", {"session": sid})
+        c.close()
+        report(res and "result" in res and res["result"].get("id") == sid, "resumes a parked session after a restart", json.dumps(res))
+
+        r = run("daemon", "stop", "--yes")
+        report(r.returncode == 0 and "stopped" in r.stdout and status()[0] == 3 and not os.path.exists(sock) and not os.path.exists(pid_file),
+               "stops, taking its socket and PID file", r.stdout + r.stderr)
+        chk = subprocess.run([maic, "protocol", "check", rec], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+        report(chk.returncode == 0 and " 0 with a violation" in chk.stdout, "its recorded connections pass maic protocol check", chk.stdout + chk.stderr)
+
+        # The systemd unit: printed, written (systemctl a fake on PATH), taken away.
+        bin_dir = os.path.join(home, "bin")
+        os.makedirs(bin_dir)
+        calls = os.path.join(home, "systemctl.log")
+        with open(os.path.join(bin_dir, "systemctl"), "w") as f:
+            f.write("#!/bin/sh\necho \"$*\" >> '%s'\n" % calls)
+        os.chmod(os.path.join(bin_dir, "systemctl"), 0o755)
+        env = dict(env, PATH=bin_dir + ":" + env["PATH"])
+        unit = os.path.join(home, "config", "systemd", "user", "maic-daemon.service")
+        printed, installed = run("daemon", "unit"), run("daemon", "unit", "install")
+        with open(unit) as f:
+            text = f.read()
+        removed = run("daemon", "unit", "remove")
+        with open(calls) as f:
+            ctl = f.read()
+        report("daemon run" in printed.stdout and "ExecStart=" in text and "daemon run" in text and "enable --now maic-daemon.service" in installed.stdout
+               and removed.returncode == 0 and not os.path.exists(unit) and "enable" not in ctl.replace("disable", "") and "disable --now maic-daemon.service" in ctl,
+               "unit prints, writes (never enabling it) and removes the systemd unit", printed.stdout + installed.stdout + removed.stdout + ctl)
+    finally:
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
     shutil.rmtree(home, ignore_errors=True)
     return all(results)
 

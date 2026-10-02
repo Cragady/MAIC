@@ -1253,6 +1253,32 @@
       "x-maic-remote": false
     },
     {
+      "name": "maic.session.describe",
+      "summary": "What a session loaded: its instruction files, its tools and the notices about them, for an interface's welcome.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        }
+      ],
+      "result": {
+        "name": "described",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "instructions": {"type": "array", "items": {"type": "string"}},
+            "tools": {"type": "array", "items": {"type": "string"}},
+            "tool_notices": {"type": "array", "items": {"type": "string"}}
+          },
+          "required": ["instructions", "tools", "tool_notices"]
+        }
+      },
+      "x-maic-remote": false
+    },
+    {
       "name": "maic.event",
       "summary": "One session event, exactly as the Responses WebSocket would send it, with sequence_number and stream_id. Its params are the event: x-maic-params is its schema, the union over type.",
       "paramStructure": "by-name",

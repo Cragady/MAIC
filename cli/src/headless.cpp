@@ -317,6 +317,7 @@ int run_headless(const HeadlessOptions& options) {
     // The turn runs in an in-process engine, as the TUI's do (docs/design/engine-protocol.md, build step 6).
     EngineOptions eo;
     eo.settings = settings;
+    eo.tier = settings.protocol_tier;
     eo.kind = "headless";
     Engine engine(eo);
     std::string client = engine.connect(Origin::Local, "maic -p", "in-process");

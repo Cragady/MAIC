@@ -1,4 +1,5 @@
 #include "audit_trail.hpp"
+#include "daemon.hpp"
 #include "commands.hpp"
 #include "doctor.hpp"
 #include "headless.hpp"
@@ -113,6 +114,8 @@ void usage(std::ostream& out = std::cerr) {
                  "                             the current model of its server (llamacpp, whisper, or llamacpp-fim)\n"
                  "  models verify ID | remove ID [--yes] | check   hash what is there; delete it (never shared weights);\n"
                  "                             validate the catalog offline\n"
+                 "  daemon start|stop|status   one engine in the background that holds sessions: maic and maic.nvim open\n"
+                 "                             theirs in it while it runs, so a session outlives its window (maic help daemon)\n"
                  "  diction [ARGS...]          narrate out loud into a markdown document: mic, whisper-server, a local scribe\n"
                  "                             (maic help diction is its own --help; docs/diction.md)\n"
                  "  lua [FILE [args...] | -e CODE]   Lua (vendored LuaJIT) here, with the maic table; no arguments: a REPL (maic help lua)\n"
@@ -1296,6 +1299,15 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    // daemon keeps its own flags (--json, --yes) too.
+    if (argc >= 2 && std::string(argv[1]) == "daemon") {
+        try {
+            return maic::cmd_daemon(std::vector<std::string>(argv + 2, argv + argc));
+        } catch (const std::exception& e) {
+            std::cerr << "maic: " << e.what() << "\n";
+            return 1;
+        }
+    }
     std::vector<std::string> args;
     // Clustered short flags: -pi is -p -i. A flag that takes a value (-m, -C) must come last in a cluster.
     for (int i = 1; i < argc; ++i) {
@@ -1347,7 +1359,7 @@ int main(int argc, char** argv) {
             else if (a == "--rpc") rpc = true;
             else if (a == "--system" || a == "-S") tui.system = headless.system = value("--system");
             else if (a == "--no-instructions") tui.load_instructions = headless.load_instructions = false;
-            else if (a == "--trust" || a.rfind("--trust=", 0) == 0) continue;  // read before anything else, at the top of main
+            else if (a == "--trust" || a.rfind("--trust=", 0) == 0) tui.trust = true;  // applied before anything else, at the top of main
             else if (a == "--prefill" || a == "--prefix") tui.prefill = headless.prefill = value(a.c_str());
             else if (a == "--rule") {
                 std::string r = value("--rule");

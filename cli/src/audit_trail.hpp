@@ -16,4 +16,12 @@ int cmd_audit_trail(const std::vector<std::string>& args);
 // (judge-and-hold, scan-and-continue or notify). Writes to stderr only.
 void audit_gate(const Settings& settings);
 
+// An executable named `name` on PATH, or "".
+std::string find_on_path(const std::string& name);
+// This binary's path (/proc/self/exe), or "".
+std::string self_exe();
+// Runs argv with stdin on /dev/null and stderr inherited; stdout into `out` when given. The exit code, or -1 when
+// it could not start.
+int run(const std::vector<std::string>& argv, std::string* out);
+
 }  // namespace maic

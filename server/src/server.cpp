@@ -489,6 +489,7 @@ int Server::bind() {
     // (step 13), so this engine keeps none.
     EngineOptions eo;
     eo.settings = o.settings;
+    eo.tier = o.settings.protocol_tier;
     eo.workspaces = im.roots;
     eo.kind = "server";
     im.engine = std::make_unique<Engine>(std::move(eo));

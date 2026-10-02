@@ -408,6 +408,13 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
                 if (!level.is_string() || !valid_trust_level(level.get<std::string>())) throw std::runtime_error(path.string() + ": trust_levels." + dir + " must be \"strict\", \"standard\" or \"relaxed\"");
                 s.trust_levels[dir] = level.get<std::string>();
             }
+            s.protocol_tier = j.value("protocol_tier", s.protocol_tier);
+            if (!valid_protocol_tier(s.protocol_tier)) throw std::runtime_error(path.string() + ": protocol_tier must be \"open\", \"guarded\" or \"airtight\"");
+            json tiers = j.value("protocol_tiers", json::object());
+            for (const auto& [dir, tier] : tiers.items()) {
+                if (!tier.is_string() || !valid_protocol_tier(tier.get<std::string>())) throw std::runtime_error(path.string() + ": protocol_tiers." + dir + " must be \"open\", \"guarded\" or \"airtight\"");
+                s.protocol_tiers[dir] = tier.get<std::string>();
+            }
             json chain = j.value("instructions", json::object());
             if (chain.contains("project_markers") && chain["project_markers"].is_array()) s.project_markers = chain["project_markers"].get<std::vector<std::string>>();
             for (auto& m : s.project_markers) {
@@ -431,7 +438,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             o.extra_dirs = chain.value("extra_dirs", o.extra_dirs);
         } else if (j.is_object()) {
             for (const auto& [key, v] : j.items()) {
-                if (key == "global_lua" || key == "lua_memory_mb" || key.rfind("trust_", 0) == 0) s.warnings.push_back(path.string() + ": " + key + " is ignored: only your global settings file sets it");
+                if (key == "global_lua" || key == "lua_memory_mb" || key.rfind("trust_", 0) == 0 || key.rfind("protocol_tier", 0) == 0) s.warnings.push_back(path.string() + ": " + key + " is ignored: only your global settings file sets it");
             }
             json chain = j.value("instructions", json::object());
             if (chain.is_object()) {
@@ -457,6 +464,8 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.bare = j.value("bare", s.bare);
         s.ui = j.value("ui", s.ui);
         if (s.ui != "tui" && s.ui != "nvim") throw std::runtime_error(path.string() + ": ui must be \"tui\" or \"nvim\", not \"" + s.ui + "\"");
+        s.daemon = j.value("daemon", s.daemon);
+        if (s.daemon != "attach" && s.daemon != "off") throw std::runtime_error(path.string() + ": daemon must be \"attach\" or \"off\", not \"" + s.daemon + "\"");
         s.colors = j.value("colors", s.colors);
         if (s.colors != "auto" && s.colors != "truecolor" && s.colors != "256" && s.colors != "16") throw std::runtime_error(path.string() + ": colors must be \"auto\", \"truecolor\", \"256\" or \"16\", not \"" + s.colors + "\"");
         s.enter_sends = j.value("enter_sends", s.enter_sends);
@@ -553,6 +562,12 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
                     read_steering(check, pj["steering"], where + ".steering", global, true, s.warnings);
                     p.steering = pj["steering"];
                     if (!global) p.steering.erase("clients");
+                }
+                if (pj.contains("protocol_tier")) {
+                    std::string tier = pj["protocol_tier"].is_string() ? pj["protocol_tier"].get<std::string>() : "";
+                    if (!valid_protocol_tier(tier)) throw std::runtime_error(where + ".protocol_tier must be open, guarded or airtight");
+                    if (global) p.protocol_tier = tier;
+                    else s.warnings.push_back(where + ".protocol_tier is ignored: only your global settings file sets it");
                 }
                 bool replaced = false;
                 for (auto& existing : s.agents) {
@@ -803,6 +818,8 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"//follow_nvim_theme", "inside nvim with maic.nvim (a connected host): follow its colorscheme live as the session theme nvim:NAME; false keeps `theme`"},
         {"ui", d.ui},
         {"//ui", "tui: MAIC's own interface; nvim: nvim with maic.nvim as the whole interface, your config and mappings included, the engine its job (maic --ui nvim; never inside nvim, never with bare). maic help ui"},
+        {"daemon", d.daemon},
+        {"//daemon", "attach: when a daemon runs (maic daemon start), the TUI and maic --rpc (maic.nvim) open their sessions in it, so a session outlives the window it started in; off: each runs its own engine. maic help daemon"},
         {"bare", d.bare},
         {"//bare", "true: nothing from nvim (no $NVIM host, the built-in highlighter, no theme from nvim, no lazy-lock notice, no keymap check); MAIC's own settings, themes, Lua and tools still load. Also maic --bare and MAIC_BARE=1. :h bare"},
         {"colors", d.colors},
@@ -860,6 +877,9 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"reviewer_budget_tokens", d.reviewer_budget_tokens},
         {"//reviewer_budget_tokens", "the reviewer's own token cap (it also counts toward budget_tokens); past it every action it would review is asked. 0: none"},
         {"dumb_auto_ok", d.dumb_auto_ok},
+        {"protocol_tier", d.protocol_tier},
+        {"//protocol_tier", "this file only: how closely the engine checks its protocol. open: no checks (an unchecked session shows OPEN); guarded: every check runs and logs what it finds (<state>/engine/protocol.log); airtight: refuses what fails (needs a build that passed conformance). protocol_tiers = { [\"~/scratch\"] = \"open\" } sets one per directory, as does maic trust DIR --protocol TIER; agents.NAME.protocol_tier one per agent; :tier tightens a session. docs/design/protocol-security.md"},
+        {"protocol_tiers", json::object()},
         {"bans", {{"strings", nlohmann::json::array()}, {"patterns", nlohmann::json::array()}, {"tokens", nlohmann::json::array()}, {"retries", 3}, {"replacement", "[banned]"}, {"ignore_case", false}, {"window", 64}}},
         {"//steering", "the six steering actions (steer, drop, further, interrupt, keep, halt): which a session accepts (actions), from which clients (clients, this file only), drop's trim, what steer and drop do to a running tool, the halt message, and which actions a ban entry may name. :steering shows them. docs/design/engine-protocol.md section 11"},
         {"//bans", "strings and POSIX regex patterns the model must not say (cut and re-asked, then replaced); tokens (ids, or text) become logit_bias on OpenAI-compatible providers. docs/bans.md"},

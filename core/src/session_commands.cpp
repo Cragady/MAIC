@@ -376,6 +376,7 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
                              ? "harness: smart, but the reviewer is off for this session (" + r.pick.reason + spent + "): every action it would review is asked."
                              : "harness: smart. A model (" + r.pick.model + ", " + r.pick.reason + spent +
                                    ") reads the conversation and reviews every command or write the rules would allow without asking. `:harness dumb` turns that off.");
+                if (!s.tier.empty()) out.info(s.tier);
             } else if (arg == "smart") {
                 agent.review_with_model = true;
                 s.changed({{"harness", "smart"}});
@@ -466,6 +467,7 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
             text += "model: " + name + " via " + provider.name + " at " + provider.base_url + (provider.remote() ? "  [REMOTE: data leaves this machine]" : "  [local]") + "\n";
             text += "session: " + log_path(s) + "\n";
             text += "mode: " + std::string(mode_name(agent.mode.load())) + (s.running ? "  (working)" : "  (idle)");
+            if (!s.tier.empty()) text += "\n" + s.tier;
             if (size_t q = agent.queued()) text += "  " + std::to_string(q) + " queued  -> :w now";
             if (!agent.tools().empty() || !agent.script_tools().empty()) {
                 text += "\ntools:";
@@ -729,6 +731,7 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
                 out.info("attachments dropped");
             } else {
                 fs::path f = home_path(arg);
+                if (f.is_relative()) f = agent.harness().workspace() / f;  // the session's directory, not the process's (the daemon's is $HOME)
                 agent.attach_image(f);
                 out.info("image attached to the next message: " + f.filename().string() + "  (:image lists, :image clear drops)");
             }

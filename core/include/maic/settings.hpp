@@ -158,6 +158,7 @@ struct Settings {
     std::string theme_error;        // why the theme could not be loaded (the built-in default is then in effect)
     bool follow_nvim_theme = true;  // inside a connected host nvim (maic.nvim): the theme follows its colorscheme live
     std::string ui = "tui";         // "tui": MAIC's own interface; "nvim": nvim with maic.nvim as the interface (maic --ui nvim)
+    std::string daemon = "attach";  // "attach": the TUI and maic --rpc use the daemon when one runs (maic daemon start); "off": their own engine
     bool bare = false;              // nothing from nvim: no host, no nvim highlighter or theme, no lazy-lock notice or keymap check (--bare, MAIC_BARE=1)
     std::string colors = "auto";    // colour depth: auto, truecolor, 256 or 16
     bool load_instructions = true;  // false: no instruction file anywhere
@@ -203,6 +204,10 @@ struct Settings {
     std::string trust_strictness = "standard";  // the default trust tier: strict, standard, relaxed (docs/harness.md, Trust)
     std::vector<std::string> trust_identities;  // author emails that are yours; empty: git config --global user.email
     std::map<std::string, std::string> trust_levels;  // a tier per directory ("~/dev2/app" = "relaxed")
+    // The protocol tier (docs/design/protocol-security.md): open, guarded or airtight. Global file only: the default,
+    // and one per directory ("~/scratch" = "open"); `maic trust DIR --protocol TIER` records one that comes first.
+    std::string protocol_tier = "guarded";
+    std::map<std::string, std::string> protocol_tiers;
     AuditSettings audit;  // audit.lua beside the global settings file, never a project's (docs/audit-trail.md)
     // `instructions = { project_markers = {...}, bound = ... }`: project settings and instruction files are read
     // from the workspace up to the project root (the nearest directory holding a marker), or up to $HOME with

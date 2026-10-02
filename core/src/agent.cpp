@@ -343,6 +343,7 @@ void Agent::set_log(SessionLog* log) {
         char host[256] = "";
         gethostname(host, sizeof(host) - 1);
         nlohmann::json start = {{"workspace", harness_.workspace().string()}, {"model", model}, {"mode", mode_name(mode)}, {"host", host}, {"pid", getpid()}};
+        if (!protocol_tier.empty()) start["tier"] = protocol_tier;
         if (!agent_name_.empty()) {
             start["agent"] = agent_name_;
             start["parent"] = parent_id_;

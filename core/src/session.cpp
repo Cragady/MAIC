@@ -438,6 +438,7 @@ LoadedSession load_session(const fs::path& path, size_t records) {
         if (type == "start") {
             out.model = j.value("model", out.model);
             out.mode = j.value("mode", out.mode);
+            out.tier = j.value("tier", out.tier);
         } else if (type == "msg") {
             out.messages.push_back(message_from_json(j));
         } else if (type == "reset") {

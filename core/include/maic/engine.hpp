@@ -16,7 +16,7 @@
 namespace maic {
 
 // What an engine starts with. Its transport builds one: maic-server (every client remote), the TUI and `maic -p`
-// in-process, `maic --rpc` on stdio; the daemon on its socket (step 13) later.
+// in-process, `maic --rpc` on stdio, the daemon (`maic daemon run`) on its socket.
 struct EngineOptions {
     Settings settings;                              // what each session's Agent is set up from: providers, model, mode, ...
     bool mode_asked = false;                        // settings.mode is the host's --mode: auto from it starts in any workspace
@@ -25,11 +25,14 @@ struct EngineOptions {
     bool titles = false;                            // small_model titles each session it opens after its first turn
     std::filesystem::path index_file;               // the session index, <state>/engine/index.json for the daemon; "" keeps none
     std::filesystem::path protocol_log;             // where the guarded tier writes what it finds; "" is <state>/engine/protocol.log
-    std::string tier = "guarded";                   // open or guarded; airtight needs the conformance stamp (step 18)
+    std::string tier = "guarded";                   // for what names no session (protocol_tier); each session resolves its own
     size_t ring_events = 10000;                     // each session's event ring, in memory only (section 5)
     size_t ring_bytes = 8 << 20;
     // What `:cd` reads in the directory it moves to; unset, the settings files there. The TUI adds its flags.
     std::function<Settings(const std::filesystem::path&)> settings_at;
+    // The settings a session createConversation or maic.session.resume opens in a workspace starts from; unset,
+    // `settings`. The daemon serves every directory, so it reads each one's settings files.
+    std::function<Settings(const std::filesystem::path&)> settings_for;
     // What a local host adds to each session createConversation or maic.session.resume opens, after the engine's
     // own setup and before its history is restored: `maic --rpc` sets it up as the TUI sets up its own.
     std::function<void(Agent&, const Settings&)> setup;
@@ -66,6 +69,10 @@ public:
     // it must not call into the engine.
     std::string connect(Origin origin, std::string name, std::string via, std::function<void()> wake = {});
     void disconnect(const std::string& client);
+    // What a client that goes away does to the session in its focus, as the default leaving verb does: an idle
+    // one no other client has in focus is parked, a working one keeps on in the background. The daemon's
+    // connections end this way, so an interface that closes leaves nothing idle loaded.
+    void leave(const std::string& client);
 
     // In-process only: opens a session its host set up, `setup` running on the new session's Agent before any
     // client can reach it. The session opens with maic.session.state by `client` (a local connection); the host

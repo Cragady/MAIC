@@ -34,6 +34,7 @@ struct AgentDef {
     bool reviewer = true;                  // the smart harness reads its commands and writes (when the session's is on)
     std::string model;                     // "" = chosen by the session's preset (docs/settings.md)
     nlohmann::json steering;               // `agents.NAME.steering`, as written: narrows the session's when it runs as this agent
+    std::string protocol_tier;             // `agents.NAME.protocol_tier` (global file only); "" = the directory's or the default
 
     // An agent with no write tool on its list changes nothing: writes and commands that could write are denied.
     bool read_only() const;

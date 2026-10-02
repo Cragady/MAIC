@@ -1,4 +1,5 @@
 #include "maic/sandbox.hpp"
+#include "maic/paths.hpp"
 
 #include <fcntl.h>
 #include <poll.h>
@@ -101,7 +102,9 @@ void bind_workspace_hiding_sockets(std::vector<std::string>& args, const fs::pat
         dirs.push_back(p);
         return true;
     };
+    // Without a runtime directory the daemon's socket is in <state>/run (docs/daemon.md): out of sight too.
     if (const char* rt = std::getenv("XDG_RUNTIME_DIR"); rt && *rt) hide_dir(fs::weakly_canonical(rt));
+    else hide_dir(fs::weakly_canonical(state_dir() / "run", ec));
     for (const char* var : {"SSH_AUTH_SOCK", "GPG_AGENT_INFO", "NVIM"}) {
         const char* v = std::getenv(var);
         if (!v || *v != '/') continue;  // unset, or not a path (NVIM may be host:port, which the network namespace stops)

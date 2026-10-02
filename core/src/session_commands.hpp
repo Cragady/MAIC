@@ -60,6 +60,7 @@ public:
         std::function<void(const std::string&)> rename;           // the title, as updateConversation sets it
         std::function<void(const std::string&)> notice;           // a maic.notice now (what a :lua chunk prints)
         std::function<Settings(const std::filesystem::path&)> settings_at;  // what a start in that directory reads
+        std::string tier;  // "protocol tier: guarded (global default)", for :status and :harness
     };
 
     // One command line, without its ':' ("ban add foo"), by its full name or an alias the TUI accepts.

@@ -430,6 +430,9 @@ struct Session {
     // The stream: its epoch, and numbers that go on across loads while the epoch holds (stream_start).
     std::string epoch;
     long next = 0;
+    // Its protocol tier (docs/design/protocol-security.md): where it came from, and the tier it opened at, which
+    // :tier never loosens below.
+    std::string tier = "guarded", tier_from = "global default", tier_base = "guarded";
     std::deque<std::pair<json, size_t>> ring;
     size_t ring_bytes = 0;
     protocol::StreamChecker order;
@@ -583,7 +586,7 @@ struct Engine::Impl {
     void emit(Session& s, json e) {
         e["sequence_number"] = s.next;
         e["stream_id"] = s.id;
-        if (options.tier != "open") {
+        if (s.tier != "open") {
             const auto& schemas = protocol::Schemas::get();
             std::string bad = schemas.event_error(e);
             if (bad.empty()) bad = schemas.event_undeclared(e);
@@ -626,7 +629,7 @@ struct Engine::Impl {
                   {"mode", std::string(mode_name(s.agent.mode))},
                   {"think", s.agent.think},
                   {"harness", s.agent.review_with_model ? "smart" : "dumb"},
-                  {"tier", options.tier},
+                  {"tier", s.tier},
                   {"created", s.created},
                   {"last_activity", s.last_activity},
                   {"turns", s.turns},
@@ -712,10 +715,46 @@ struct Engine::Impl {
 
     // ---------- sessions ----------
 
+    // The protocol tier `s` works at: the one its start record names when it ran before (raised to its directory's
+    // floor if that is stricter now), else resolved from the settings and `maic trust --protocol`. Before its log is
+    // given to the agent, so the start record keeps it. Airtight needs a build that passed conformance (step 18).
+    void assign_tier(Session& s, const std::string& ran_at = "") {
+        ProtocolTier t = resolve_protocol_tier(s.settings.protocol_tier, s.settings.protocol_tiers, "", "", s.workspace);
+        if (valid_protocol_tier(ran_at) && protocol_tier_rank(ran_at) >= protocol_tier_rank(t.floor.empty() ? "open" : t.floor)) t = {ran_at, "its start record", t.floor};
+        if (t.tier == "airtight") {
+            throw refuse("maic_tier_unavailable", "this session's protocol tier is airtight (" + t.from + "), which needs a build that passed conformance; maic trust DIR --protocol guarded, or protocol_tier, sets another", "tier");
+        }
+        s.tier = s.tier_base = t.tier;
+        s.tier_from = t.from;
+        s.agent.protocol_tier = t.tier;
+    }
+
+    static std::string tier_line(const Session& s) {
+        return "protocol tier: " + s.tier + " (" + (s.tier == s.tier_base ? s.tier_from : "set with :tier") + ")" + (s.tier == "open" ? ": nothing is checked" : "");
+    }
+
+    // The tier a message is checked at: the session's it names when that one is loaded, else the engine's.
+    std::string tier_of(const json& params) {
+        for (const char* key : {"session", "conversation_id", "stream_id"}) {
+            if (!params.contains(key) || !params[key].is_string()) continue;
+            std::shared_ptr<Session> s;
+            {
+                std::lock_guard lock(mu);
+                if (auto it = sessions.find(params[key].get<std::string>()); it != sessions.end()) s = it->second;
+            }
+            if (!s) continue;
+            std::lock_guard lock(s->mu);
+            return s->tier;
+        }
+        return options.tier;
+    }
+
+    // The settings a session opened in `ws` starts from.
+    Settings settings_for(const fs::path& ws) const { return options.settings_for ? options.settings_for(ws) : options.settings; }
+
     // As the TUI and headless set up their agent; auto under a dumb harness starts at edit unless dumb_auto_ok says
     // otherwise (its confirmation, maic_confirm_required, joins maic.session.set with step 6).
-    void configure(Agent& a, Mode mode) {
-        const Settings& st = options.settings;
+    void configure(Agent& a, const Settings& st, Mode mode) {
         a.review_with_model = st.harness != "dumb";
         a.reviewer_model = st.reviewer_model;
         if (mode == Mode::Auto && !a.review_with_model && !st.dumb_auto_ok) mode = Mode::Edit;
@@ -831,6 +870,35 @@ struct Engine::Impl {
             if (as == "default") as = busy(*s) ? "bg" : "park";
         }
         if (as == "park" || as == "stop") unload(s, as == "park" ? "parked" : "stopped", c.by(), true);
+    }
+
+    // The client lets go of the session in its focus as the default leaving verb does (see Engine::leave).
+    void let_go(Client& c) {
+        if (stopped) return;  // shutdown parks every session itself
+        std::string id;
+        {
+            std::lock_guard lock(c.mu);
+            id = c.focus;
+            c.focus.clear();
+        }
+        std::shared_ptr<Session> s;
+        {
+            std::lock_guard lock(mu);
+            auto it = sessions.find(id);
+            if (it == sessions.end()) return;
+            s = it->second;
+        }
+        {
+            std::lock_guard lock(s->mu);
+            s->focused_by.erase(c.id);
+            restate(*s, c.by());
+            if (!s->focused_by.empty() || busy(*s) || s->unloading.load()) return;
+        }
+        try {
+            unload(s, "parked", c.by(), false);
+        } catch (const std::exception&) {
+            // it became busy, or another client is parking it: it stays as it is
+        }
     }
 
     // Ends this load of `s`: parked stays in the index and resumes where it was, the messages that waited to run
@@ -1193,18 +1261,20 @@ struct Engine::Impl {
         std::string given = m.value("workspace", "");
         if (given.empty()) given = options.workspaces.empty() ? fs::current_path().string() : options.workspaces.front().string();
         fs::path ws = workspace_for(c, given);
-        std::string mode_str = m.value("mode", options.settings.mode);
+        Settings st = settings_for(ws);
+        std::string mode_str = m.value("mode", st.mode);
         auto mode = parse_mode(mode_str);
         if (!mode) throw bad_params("unknown mode '" + mode_str + "' (manual, auto-read, edit, auto, plan)", "mode");
         if (m.contains("mode")) remote_auto_step_up(c, *mode, Mode::Manual);  // a new session asked into auto loosens from nothing
         std::string held = m.contains("mode") || options.mode_asked ? "" : auto_held_mode(*mode, ws, c);
-        auto s = std::make_shared<Session>(ws, m.value("model", options.settings.model));
-        s->settings = options.settings;
-        s->commands.dumb_auto_ok = options.settings.dumb_auto_ok;
+        auto s = std::make_shared<Session>(ws, m.value("model", st.model));
+        s->settings = std::move(st);
+        s->commands.dumb_auto_ok = s->settings.dumb_auto_ok;
         s->titles = options.titles;
-        configure(s->agent, *mode);
+        configure(s->agent, s->settings, *mode);
         if (options.setup) options.setup(s->agent, s->settings);
-        s->log = std::make_unique<SessionLog>(options.kind, options.settings.record ? resolve_sessions_home(options.settings, ws) : runtime_sessions_dir());
+        assign_tier(*s);
+        s->log = std::make_unique<SessionLog>(options.kind, s->settings.record ? resolve_sessions_home(s->settings, ws) : runtime_sessions_dir());
         s->id = s->log->path().stem().string();
         s->agent.set_log(s->log.get());
         if (p.contains("metadata") && p["metadata"].is_object()) {
@@ -1256,13 +1326,15 @@ struct Engine::Impl {
         }
         fs::path ws = workspace_for(c, info->workspace);
         LoadedSession old = load_session(info->path);
-        auto mode = parse_mode(old.mode).value_or(parse_mode(options.settings.mode).value_or(Mode::Manual));
+        Settings st = settings_for(ws);
+        auto mode = parse_mode(old.mode).value_or(parse_mode(st.mode).value_or(Mode::Manual));
         std::string held = auto_held_mode(mode, ws, c);
-        auto s = std::make_shared<Session>(ws, old.model.empty() ? options.settings.model : old.model);
-        s->settings = options.settings;
-        s->commands.dumb_auto_ok = options.settings.dumb_auto_ok;
-        configure(s->agent, mode);
+        auto s = std::make_shared<Session>(ws, old.model.empty() ? st.model : old.model);
+        s->settings = std::move(st);
+        s->commands.dumb_auto_ok = s->settings.dumb_auto_ok;
+        configure(s->agent, s->settings, mode);
         if (options.setup) options.setup(s->agent, s->settings);
+        assign_tier(*s, old.tier);
         s->log = std::make_unique<SessionLog>(SessionLog::Reopen{}, info->path);
         s->id = info->id;
         s->title = info->title;
@@ -1295,11 +1367,12 @@ struct Engine::Impl {
         bool focus = p.value("focus", true);
         auto parent = session(p.at("session"));
         fs::path from, ws;
-        std::string model;
+        std::string model, parent_tier;
         Mode mode;
         Settings st;
         {
             std::lock_guard lock(parent->mu);
+            parent_tier = parent->tier;
             from = parent->log->path();
             ws = parent->workspace;
             model = parent->agent.model;
@@ -1315,10 +1388,11 @@ struct Engine::Impl {
         s->settings = std::move(st);
         s->commands.dumb_auto_ok = s->settings.dumb_auto_ok;
         s->titles = options.titles;
-        configure(s->agent, mode);
+        configure(s->agent, s->settings, mode);
         if (options.setup) options.setup(s->agent, s->settings);
+        assign_tier(*s, parent_tier);
         s->log = std::make_unique<SessionLog>(SessionLog::Fork{}, from, at, options.kind,
-                                              options.settings.record ? resolve_sessions_home(options.settings, ws) : runtime_sessions_dir());
+                                              s->settings.record ? resolve_sessions_home(s->settings, ws) : runtime_sessions_dir());
         s->id = s->log->path().stem().string();
         LoadedSession old = load_session(s->log->path());
         s->turns = s->turns_reserved = static_cast<int>(std::count_if(old.transcript.begin(), old.transcript.end(), [](const TranscriptEntry& t) { return t.type == "user"; }));
@@ -2120,6 +2194,31 @@ struct Engine::Impl {
     }
 
     // A `:` command the engine owns (session_commands.cpp), or the answer to a question one asked.
+    // `:tier [TIER]`: tightens this session from any client; loosens, down to the tier it opened at, from this machine
+    // only. The caller holds s.mu.
+    CommandOutput set_tier(Session& s, const Client& c, const std::string& to) {
+        CommandOutput out;
+        if (to.empty()) {
+            out.info(tier_line(s) + ". :tier open|guarded tightens or loosens it for this session (loosening from this machine only, and not below " + s.tier_base + ")");
+        } else if (!valid_protocol_tier(to)) {
+            out.error(":tier open|guarded|airtight");
+        } else if (to == "airtight") {
+            out.error("airtight needs a build that passed conformance; this one runs open and guarded");
+        } else if (protocol_tier_rank(to) < protocol_tier_rank(s.tier) && c.origin == Origin::Remote) {
+            out.error("a remote client can only tighten the protocol tier");
+        } else if (protocol_tier_rank(to) < protocol_tier_rank(s.tier_base)) {
+            out.error("this session opened at " + s.tier_base + " (" + s.tier_from + "); :tier loosens no further than that");
+        } else if (to != s.tier) {
+            s.tier = to;
+            emit(s, {{"type", "maic.session.settings"}, {"tier", to}, {"by", c.by()}});
+            index_changed(s);
+            out.info(tier_line(s));
+        } else {
+            out.info(tier_line(s));
+        }
+        return out;
+    }
+
     json session_command(Client& c, const json& p) {
         auto s = session(p.at("session"));
         std::lock_guard lock(s->mu);
@@ -2129,6 +2228,7 @@ struct Engine::Impl {
             std::string cmd, action, note;
             in >> cmd >> action;
             std::getline(in >> std::ws, note, '\0');
+            if (cmd == "tier") return set_tier(*s, c, action).json();
             if (cmd == "steer") {
                 CommandOutput out;
                 if (action.empty()) {
@@ -2164,7 +2264,7 @@ struct Engine::Impl {
                                       },
                                       [&](const std::string& title) { retitle(*s, title, "rename", c.by()); },
                                       [&](const std::string& text) { emit(*s, {{"type", "maic.notice"}, {"text", text}, {"level", "info"}}); },
-                                      settings_at};
+                                      settings_at, tier_line(*s)};
         CommandOutput out = p.contains("ask") ? s->commands.answer(lent, p.at("ask"), p.value("key", "")) : s->commands.run(lent, p.at("line"));
         index_changed(*s);
         return out.json();
@@ -2230,6 +2330,18 @@ struct Engine::Impl {
         return {{"path", a.event.value("path", "")}, {"text", a.proposed ? json(*a.proposed) : json()}};
     }
 
+    // What an interface's welcome lists about a session: the instruction files it loaded, its tools and the notices
+    // about them (local only).
+    json session_describe(Client&, const json& p) {
+        auto s = session(p.at("session"));
+        std::lock_guard lock(s->mu);
+        json files = json::array(), tools = json::array();
+        for (const auto& f : s->agent.instructions()) files.push_back(f.path.string());
+        for (const auto& t : s->agent.tools()) tools.push_back(t.name);
+        for (const auto& t : s->agent.script_tools()) tools.push_back(t.name);
+        return {{"instructions", files}, {"tools", tools}, {"tool_notices", s->agent.tool_notices()}};
+    }
+
     // ---------- the dispatcher ----------
 
     json dispatch(Client& c, const json& msg) {
@@ -2254,12 +2366,13 @@ struct Engine::Impl {
                 if (params.contains(name)) return answer(error_reply(id, -32000, "maic_forbidden_remote", "`" + name + "` is not available to a remote client", name));
             }
         }
-        if (options.tier != "open") {
+        std::string tier = tier_of(params);
+        if (tier != "open") {
             if (std::string e = schemas.params_error(method, params); !e.empty()) fault("incoming", "schema.message", method + " params " + e);
         }
         try {
             json result = (this->*(h->second))(c, params);
-            if (options.tier != "open") {
+            if (tier != "open") {
                 if (std::string e = schemas.result_error(method, result); !e.empty()) fault("result", "schema.message", method + " result " + e);
             }
             return answer({{"jsonrpc", "2.0"}, {"id", id}, {"result", result}});
@@ -2307,6 +2420,7 @@ const std::map<std::string, Engine::Impl::Handler>& Engine::Impl::handlers() {
         {"maic.session.command", &Impl::session_command},
         {"maic.session.shell", &Impl::session_shell},
         {"maic.approval.proposed", &Impl::approval_proposed},
+        {"maic.session.describe", &Impl::session_describe},
     };
     return table;
 }
@@ -2808,11 +2922,23 @@ std::string Engine::open_local(const std::string& client, LocalSession ls) {
     s->settings = std::move(ls.settings);
     s->commands.dumb_auto_ok = s->settings.dumb_auto_ok;
     s->titles = ls.titles;
+    impl_->assign_tier(*s);
     s->log = std::move(ls.log);
     s->id = s->log->path().stem().string();
     if (ls.setup) ls.setup(s->agent, *s->log);
     impl_->open_focused(s, *c, true, json{{"as", "bg"}});
     return s->id;
+}
+
+void Engine::leave(const std::string& id) {
+    std::shared_ptr<Client> c;
+    {
+        std::lock_guard lock(impl_->mu);
+        auto it = impl_->clients.find(id);
+        if (it == impl_->clients.end()) return;
+        c = it->second;
+    }
+    impl_->let_go(*c);
 }
 
 void Engine::disconnect(const std::string& id) {

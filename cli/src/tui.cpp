@@ -2,6 +2,7 @@
 
 #include "audit_trail.hpp"
 #include "commands.hpp"
+#include "daemon.hpp"
 #include "editor.hpp"
 #include "highlight.hpp"
 #include "nvim_host.hpp"
@@ -157,15 +158,15 @@ struct Startup {
 
 enum class Focus { Input, Conversation };
 
-// The TUI is a client of an in-process engine (docs/design/engine-protocol.md, build step 6): its session's turns,
-// approvals, questions, `!cmd` and the `:` commands that act on the session go through Engine::call, and what it
+// The TUI is a client of an engine (docs/design/engine-protocol.md, build steps 6 and 13): the daemon's when one
+// answers and nothing on the command line needs this process's own, else one in this process. Its session's turns,
+// approvals, questions, `!cmd` and the `:` commands that act on the session go through the engine, and what it
 // shows comes from the engine's events. The view, the editor, themes, the nvim host and the machine's services
 // stay here.
 class App {
 public:
-    App(ScreenInteractive& screen, Settings settings, const std::optional<std::filesystem::path>& resume, bool append, std::optional<size_t> fork_at,
-        std::shared_ptr<HostNvim> host, std::string host_refused, std::function<Settings(const std::filesystem::path&)> settings_at,
-        const std::vector<std::filesystem::path>& context)
+    App(ScreenInteractive& screen, Settings settings, const TuiOptions& options, bool attach, std::shared_ptr<HostNvim> host, std::string host_refused,
+        std::function<Settings(const std::filesystem::path&)> settings_at)
         : settings_at_(std::move(settings_at)), host_(std::move(host)), host_refused_(std::move(host_refused)), screen_(screen), settings_(std::move(settings)),
           editor_(&register_), view_(&register_) {
         view_.set_markdown(settings_.markdown);
@@ -186,6 +187,12 @@ public:
         view_.set_timestamps(settings_.timestamps);
         confined_ = settings_.tripwire == "isolated";
         open_recording();
+        for (const auto& n : recover_relocations()) view_.append(Kind::Notice, n);
+        if (attach && open_in_daemon(options)) return;
+        const auto& resume = options.resume;
+        bool append = options.append;
+        const auto& fork_at = options.fork_at;
+        const auto& context = options.context;
 
         auto log = !resume ? std::make_unique<SessionLog>("tui", settings_.record ? session_home_dir(settings_) : runtime_sessions_dir())
                    : append && settings_.record ? std::make_unique<SessionLog>(SessionLog::Reopen{}, *resume)
@@ -193,7 +200,6 @@ public:
                                                                                settings_.record ? session_home_dir(settings_) : runtime_sessions_dir());
         set_tripwire_scope(settings_.tripwire, log->path().string() + ".tripped");
         for (const auto& n : log->recovered()) view_.append(Kind::Notice, n);
-        for (const auto& n : recover_relocations()) view_.append(Kind::Notice, n);
         LoadedSession old;
         if (resume) {
             old = load_session(append && settings_.record ? log->path() : *resume, fork_at.value_or(~size_t(0)));
@@ -209,6 +215,7 @@ public:
 
         EngineOptions eo;
         eo.settings = settings_;
+        eo.tier = settings_.protocol_tier;
         eo.kind = "tui";
         eo.titles = true;
         // :cd reads the new directory's settings as a start there would, flags included; the TUI keeps that copy.
@@ -226,7 +233,7 @@ public:
         };
         engine_ = std::make_unique<Engine>(std::move(eo));
         client_ = engine_->connect(Origin::Local, "maic", "in-process", [this] { wake_pump(); });
-        call("maic.hello", {{"protocol", 1}, {"client", {{"name", "maic"}, {"version", MAIC_VERSION}}}, {"capabilities", {"tool_output"}}});
+        hello();
 
         bool want_auto = false;
         LocalSession ls;
@@ -261,14 +268,7 @@ public:
             }
         };
         session_ = engine_->open_local(client_, std::move(ls));
-        nlohmann::json snap = result(call("maic.session.attach", {{"session", session_}}));
-        call("maic.index.subscribe");
-        for (const auto& e : result(call("maic.index.get")).value("entries", nlohmann::json::array())) index_[e.value("id", "")] = e;
-        take_events();
-        follow_entry(snap.value("entry", nlohmann::json::object()));
-        usage_ = snap.value("usage", nlohmann::json::object());
-        for (const auto& t : snap.value("todo", nlohmann::json::array())) todo_.push_back({t.value("text", ""), t.value("done", false)});
-        pump_ = std::thread([this] { pump(); });
+        follow_first();
         if (resume) {
             view_.append(Kind::Notice, "resumed session " + resume->stem().string() + " (" + std::to_string(entries) + " entries" +
                                            (fork_at ? ", forked at record " + std::to_string(*fork_at) : "") + ")" +
@@ -279,6 +279,50 @@ public:
     }
 
     ~App() { shutdown(); }
+
+    // The session in the daemon: created in this directory or resumed, over the protocol as maic.nvim does it.
+    // False, with the reason shown, when the daemon is not there or refuses; the session then opens in this process.
+    bool open_in_daemon(const TuiOptions& options) {
+        daemon_ = DaemonClient::connect([this] { wake_pump(); });
+        if (!daemon_) return false;
+        hello();
+        nlohmann::json reply;
+        if (options.resume) {
+            reply = call("maic.session.resume", {{"session", options.resume->string()}});
+        } else {
+            nlohmann::json m = {{"workspace", std::filesystem::current_path().string()}};
+            if (options.mode) m["mode"] = *options.mode;
+            reply = call("createConversation", {{"maic", m}});
+        }
+        if (reply.contains("error")) {
+            view_.append(Kind::Error, "the daemon refused this session (" + reply["error"].value("message", "") + "); it runs in this process instead");
+            daemon_->close();
+            daemon_.reset();
+            return false;
+        }
+        session_ = result(reply).value("id", "");
+        follow_first();
+        nlohmann::json about = result(call("maic.session.describe", {{"session", session_}}));
+        for (const auto& f : about.value("instructions", nlohmann::json::array())) startup_.instructions.push_back(f);
+        for (const auto& t : about.value("tools", nlohmann::json::array())) startup_.tools.push_back(t);
+        for (const auto& n : about.value("tool_notices", nlohmann::json::array())) startup_.tool_notices.push_back(n);
+        const nlohmann::json& e = index_[session_];
+        startup_.model = e.value("model", "");
+        startup_.remote = e.value("remote_model", false);
+        try {
+            startup_.provider = resolve_model(settings_.providers, startup_.model).first;
+        } catch (const std::exception&) {
+            // a model this directory's settings do not know: no service hint
+        }
+        view_.append(Kind::Notice, std::string(options.resume ? "resumed session " + session_ + " " : "") +
+                                       "in the daemon (maic daemon status): the session outlives this window, and :q leaves it there");
+        if (options.model) command("model " + *options.model);
+        // Auto under a dumb harness is confirmed first; the daemon opened it one step safer, as this process would.
+        bool asked_auto = (options.mode ? *options.mode : settings_.mode) == "auto";
+        if (asked_auto && e.value("mode", "") == "edit" && e.value("harness", "") == "dumb") command("mode auto");
+        if (!asking()) command("trust imports --pending");
+        return true;
+    }
 
     void welcome();
     void startup_notice(const std::string& t) { view_.append(Kind::Notice, t); }
@@ -294,6 +338,18 @@ public:
 
 private:
     // ---------- the engine connection ----------
+    void hello() { call("maic.hello", {{"protocol", 1}, {"client", {{"name", "maic"}, {"version", MAIC_VERSION}}}, {"capabilities", {"tool_output"}}}); }
+    // The session just opened: its snapshot, the index, then the events from here on.
+    void follow_first() {
+        nlohmann::json snap = result(call("maic.session.attach", {{"session", session_}}));
+        call("maic.index.subscribe");
+        for (const auto& e : result(call("maic.index.get")).value("entries", nlohmann::json::array())) index_[e.value("id", "")] = e;
+        take_events();
+        follow_entry(snap.value("entry", nlohmann::json::object()));
+        usage_ = snap.value("usage", nlohmann::json::object());
+        for (const auto& t : snap.value("todo", nlohmann::json::array())) todo_.push_back({t.value("text", ""), t.value("done", false)});
+        pump_ = std::thread([this] { pump(); });
+    }
     nlohmann::json call(const std::string& method, nlohmann::json params = nlohmann::json::object(), bool from_ui = true);
     static nlohmann::json result(const nlohmann::json& reply) { return reply.value("result", nlohmann::json::object()); }
     void command(const std::string& line);              // a `:` command the engine owns, its answer shown
@@ -326,7 +382,9 @@ private:
     void record(const char* dir, const nlohmann::json& msg);
     std::function<Settings(const std::filesystem::path&)> settings_at_;
     std::optional<Settings> cd_settings_;  // what :cd read in the new directory, until its maic.session.settings arrives
-    std::unique_ptr<Engine> engine_;
+    std::unique_ptr<Engine> engine_;            // this process's own, when the daemon does not hold the sessions
+    std::unique_ptr<DaemonClient> daemon_;      // the daemon's, when it does
+    bool daemon_gone_said_ = false;
     std::string client_, session_;
     std::atomic<long> next_id_{1};
     std::mutex inbox_mu_;  // the inbox, and the order calls and events are recorded in
@@ -342,6 +400,7 @@ private:
     // The session as the engine reports it.
     std::string ws_, transcript_, model_, mode_ = "manual";
     bool remote_ = false, think_ = false, dumb_ = false, confined_ = false;
+    std::string tier_ = "guarded";  // the session's protocol tier: open shows in the status strip, guarded only in :status
     size_t queued_ = 0;
     nlohmann::json usage_ = nlohmann::json::object();
     std::string response_;   // the running response (a paused turn's last)
@@ -513,7 +572,7 @@ nlohmann::json App::call(const std::string& method, nlohmann::json params, bool 
     nlohmann::json msg = {{"jsonrpc", "2.0"}, {"id", next_id_++}, {"method", method}, {"params", std::move(params)}};
     std::unique_lock lock(inbox_mu_, std::defer_lock);
     if (from_ui) lock.lock();
-    nlohmann::json reply = engine_->call(client_, msg);
+    nlohmann::json reply = daemon_ ? daemon_->call(msg) : engine_->call(client_, msg);
     if (!from_ui) lock.lock();
     record("in", msg);
     record("out", reply);
@@ -570,7 +629,7 @@ void App::pump() {
 
 void App::take_events() {
     std::lock_guard lock(inbox_mu_);
-    for (auto& m : engine_->take(client_, std::chrono::milliseconds(0))) {
+    for (auto& m : daemon_ ? daemon_->take() : engine_->take(client_, std::chrono::milliseconds(0))) {
         record("out", m);
         inbox_.push_back(std::move(m));
     }
@@ -579,6 +638,10 @@ void App::take_events() {
 void App::drain() {
     drain_posted_ = false;
     take_events();
+    if (daemon_ && daemon_->gone() && !daemon_gone_said_) {
+        daemon_gone_said_ = true;
+        post(Kind::Error, "the daemon has stopped: its sessions are parked. Quit, and maic -c (or maic -r) resumes this one");
+    }
     std::vector<nlohmann::json> batch;
     {
         std::lock_guard lock(inbox_mu_);
@@ -612,6 +675,7 @@ void App::follow_entry(const nlohmann::json& e) {
     remote_ = e.value("remote_model", remote_);
     think_ = e.value("think", think_);
     if (e.contains("harness")) dumb_ = e["harness"] == "dumb";
+    tier_ = e.value("tier", tier_);
     queued_ = e.value("queued", queued_);
     screen_.PostEvent(Event::Custom);
 }
@@ -805,6 +869,7 @@ void App::on_event(const nlohmann::json& e) {
         if (e.contains("remote_model")) remote_ = e["remote_model"];
         if (e.contains("think")) think_ = e["think"];
         if (e.contains("harness")) dumb_ = e["harness"] == "dumb";
+        if (e.contains("tier")) tier_ = e["tier"];
         if (e.contains("workspace")) follow_workspace(e["workspace"].get<std::string>());
     } else if (type == "maic.session.title") {
         std::string text = e.value("text", "");
@@ -1288,6 +1353,9 @@ Element App::render_top_status() {
     if (lua_mode_) right.push_back(text(" · LUA MODE (:chat returns)") | decorate(settings_.style("shell")));
     if (dumb_) right.push_back(text(" · DUMB HARNESS") | decorate(settings_.style("error")));
     if (confined_) right.push_back(text(" · ISOLATED") | decorate(settings_.style("notice")));
+    if (tier_ == "open") right.push_back(text(" · PROTOCOL OPEN (unchecked)") | decorate(settings_.style("error")));
+    else if (tier_ == "airtight") right.push_back(text(" · AIRTIGHT") | decorate(settings_.style("notice")));
+    if (daemon_) right.push_back(text(" · daemon") | decorate(settings_.style("status_dim")));
     if (!previous_ws_.empty()) {
         std::string ws = ws_, home = std::getenv("HOME");
         if (ws.rfind(home + "/", 0) == 0) ws = "~" + ws.substr(home.size());
@@ -1995,7 +2063,7 @@ void App::run_command(const std::string& line) {
     static const std::set<std::string> engine_owned = {"mode", "harness", "model", "models", "think", "undo", "export", "rename", "title", "budget", "compact",
                                                        "clear", "trip", "status", "todo", "tools", "init", "cd", "ban", "sampling", "sampler", "image", "img",
                                                        "forbid", "allow", "rule", "rules", "ctx", "context-size", "ctx2", "prefill", "prefix", "system",
-                                                       "instructions", "session", "steer", "steering"};
+                                                       "instructions", "session", "steer", "steering", "tier"};
     try {
         if (cmd == "wq") {
             // Send, then leave once the reply is in. With nothing to send it is just :q.
@@ -2462,9 +2530,10 @@ bool App::handle_switcher(const Event& e) {
 }
 
 void App::quit() {
-    // Background sessions live in this process until the daemon (step 13): quitting parks them, mid-turn too.
+    // Background sessions in this process's own engine end with it: quitting parks them, mid-turn too. The daemon's
+    // keep working.
     size_t working = 0;
-    for (const auto& [id, e] : index_) working += id != session_ && e.value("state", "") != "parked" && e.value("activity", "idle") != "idle";
+    for (const auto& [id, e] : index_) working += !daemon_ && id != session_ && e.value("state", "") != "parked" && e.value("activity", "idle") != "idle";
     if (working > 0 && !quit_warned_) {
         quit_warned_ = true;
         post(Kind::Notice, std::to_string(working) + (working == 1 ? " other session is" : " other sessions are") +
@@ -2486,8 +2555,10 @@ void App::shutdown() {
     stopped_ = true;
     if (host_) host_->set_handlers({});
     nvim_hl_.reset();
-    // The engine interrupts the turn, answers what waits with no, ends a `!cmd` and parks the session.
-    engine_->shutdown();
+    // Leaving the daemon lets go of the session (an idle one is parked, a working one keeps on); this process's own
+    // engine interrupts the turn, answers what waits with no, ends a `!cmd` and parks the session.
+    if (daemon_) daemon_->close();
+    else engine_->shutdown();
     if (shell_thread_.joinable()) shell_thread_.join();
     {
         std::lock_guard lock(pump_mu_);
@@ -2607,8 +2678,15 @@ int run_tui(const TuiOptions& options) {
     screen.TrackMouse(settings.mouse);
     std::string first = options.initial_prompt;
     if (first == "-") first.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
-    App app(screen, settings, options.resume, options.append, options.fork_at, host, host_refused,
-            [&options](const std::filesystem::path& ws) { return tui_settings(options, ws); }, options.context);
+    // The daemon holds the session when one runs and nothing on the command line needs this process's own engine.
+    bool attach = false;
+    if (int fd = settings.daemon == "attach" ? daemon_connect() : -1; fd >= 0) {
+        close(fd);
+        std::string why = not_for_daemon(options, true);
+        attach = why.empty();
+        if (!attach) trust_lines.push_back("the daemon runs, but " + why + " does not travel to it: this session runs in this process");
+    }
+    App app(screen, settings, options, attach, host, host_refused, [&options](const std::filesystem::path& ws) { return tui_settings(options, ws); });
     if (options.ctx) {
         // --ctx: the local server is restarted to match before the first message.
         std::string r = restart_llamacpp_if_changed();

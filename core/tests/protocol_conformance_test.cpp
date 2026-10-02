@@ -1185,6 +1185,68 @@ int main() {
         asked_rec.finish();
     }
 
+    section("protocol tiers per session: the default, a directory's, :tier, a resumed session's own; and leaving a session");
+    {
+        fs::path open_dir = root / "ws-open", air_dir = root / "ws-air";
+        fs::create_directories(open_dir);
+        fs::create_directories(air_dir);
+        open_dir = fs::weakly_canonical(open_dir);
+        air_dir = fs::weakly_canonical(air_dir);
+        EngineOptions ot = o;
+        ot.settings.protocol_tiers = {{open_dir.string(), "open"}, {air_dir.string(), "airtight"}};
+        ot.workspaces = {ws, open_dir, air_dir};
+        ot.index_file = root / "state" / "engine-tier" / "index.json";
+        ot.protocol_log = root / "state" / "engine-tier" / "protocol.log";
+        std::string oid;
+        {
+            Engine e(ot);
+            Recording tiers("tiers");
+            TestClient a(e, tiers, Origin::Local, "tui");
+            a.hello();
+            json plain = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}});
+            expect(plain["maic"]["entry"]["tier"] == "guarded", "a session where nothing is enrolled works at the default tier");
+            json open = a.ok("createConversation", {{"maic", {{"workspace", open_dir.string()}}}});
+            oid = open.value("id", "");
+            expect(open["maic"]["entry"]["tier"] == "open", "a session in a directory protocol_tiers enrolls works at that tier");
+            expect(a.error("createConversation", {{"maic", {{"workspace", air_dir.string()}}}}) == "maic_tier_unavailable",
+                   "airtight is refused by a build without the conformance stamp");
+            a.ok("maic.session.subscribe", {{"session", oid}});
+            json up = a.ok("maic.session.command", {{"session", oid}, {"line", "tier guarded"}});
+            long changed = a.until([](const json& ev) { return ev["type"] == "maic.session.settings" && ev.value("tier", "") == "guarded"; });
+            expect(up.value("ok", false) && changed >= 0, ":tier guarded tightens it, announced in maic.session.settings");
+            TestClient r(e, tiers, Origin::Remote, "phone");
+            r.hello();
+            expect(!r.ok("maic.session.command", {{"session", oid}, {"line", "tier open"}}).value("ok", true), "a remote client cannot loosen it");
+            expect(a.ok("maic.session.command", {{"session", oid}, {"line", "tier open"}}).value("ok", false), "a local client loosens it back to the tier it opened at");
+            expect(!a.ok("maic.session.command", {{"session", plain["id"]}, {"line", "tier open"}}).value("ok", true), "but never below the tier a session opened at");
+            json status = a.ok("maic.session.command", {{"session", oid}, {"line", "status"}});
+            expect(status.dump().find("protocol tier: open (directory " + open_dir.string() + " (protocol_tiers))") != std::string::npos, ":status says the tier and where it came from");
+
+            // A client that goes (Engine::leave, as the daemon's connections end): the idle session in its focus is parked.
+            TestClient b(e, tiers, Origin::Local, "socket");
+            b.hello();
+            std::string idle = b.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}}).value("id", "");
+            e.leave(b.id);
+            e.disconnect(b.id);
+            json listed = a.ok("maic.index.get");
+            bool parked = false;
+            for (const auto& en : listed["entries"]) parked |= en["id"] == idle && en["state"] == "parked";
+            expect(parked, "leaving parks the idle session a client had in focus");
+            a.ok("maic.session.park", {{"session", oid}});
+            tiers.finish();
+        }
+        // Resumed, a session keeps the tier its start record names, though the directory is no longer enrolled.
+        EngineOptions oc = ot;
+        oc.settings.protocol_tiers.clear();
+        Engine e(oc);
+        Recording again("tiers-resumed");
+        TestClient a(e, again, Origin::Local, "tui");
+        a.hello();
+        json resumed = a.ok("maic.session.resume", {{"session", oid}});
+        expect(resumed.value("tier", "") == "open", "a resumed session keeps the tier it started at");
+        again.finish();
+    }
+
     section("history: attach's exchanges, listConversationItems paging back lazily, collapsing, maic.item.expand, a fork");
     Recording hist("history");
     {

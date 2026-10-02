@@ -509,6 +509,37 @@ bool valid_trust_level(const std::string& level) {
     return level == "strict" || level == "standard" || level == "relaxed";
 }
 
+bool valid_protocol_tier(const std::string& tier) {
+    return tier == "open" || tier == "guarded" || tier == "airtight";
+}
+
+int protocol_tier_rank(const std::string& tier) {
+    return tier == "open" ? 0 : tier == "airtight" ? 2 : 1;
+}
+
+ProtocolTier resolve_protocol_tier(const std::string& global_default, const std::map<std::string, std::string>& per_directory, const std::string& agent,
+                                   const std::string& agent_tier, const fs::path& workspace) {
+    json recorded = read_store().value("protocol", json::object());
+    ProtocolTier out{global_default, "global default", ""};
+    for (fs::path d = absolute_dir(workspace.string());; d = d.parent_path()) {
+        std::string tier = recorded.value(d.string(), "");
+        std::string how = "maic trust --protocol";
+        for (const auto& [path, t] : per_directory) {
+            if (tier.empty() && absolute_dir(expand_home(path)) == d) tier = t, how = "protocol_tiers";
+        }
+        if (valid_protocol_tier(tier)) {
+            out = {tier, "directory " + d.string() + " (" + how + ")", tier};
+            break;
+        }
+        if (d == d.parent_path()) break;
+    }
+    if (valid_protocol_tier(agent_tier) && (out.floor.empty() || protocol_tier_rank(agent_tier) >= protocol_tier_rank(out.floor))) {
+        out.tier = agent_tier;
+        out.from = "agent " + agent;
+    }
+    return out;
+}
+
 fs::path trust_path() {
     return state_dir() / "trust.json";
 }
@@ -853,9 +884,12 @@ std::string revoke_trust(const fs::path& workspace, const std::string& path) {
 }
 
 std::string trust_listing() {
-    json dirs = read_store().value("dirs", json::object());
-    if (dirs.empty()) return "no directory is trusted (" + trust_path().string() + ")";
+    json store = read_store();
+    json dirs = store.value("dirs", json::object());
     std::string out;
+    json tiers = store.value("protocol", json::object());
+    for (const auto& [dir, tier] : tiers.items()) out += (out.empty() ? "" : "\n") + std::string("protocol ") + dir + "  (" + tier.get<std::string>() + ")";
+    if (dirs.empty()) return out + (out.empty() ? "" : "\n") + "no directory is trusted (" + trust_path().string() + ")";
     for (const auto& [dir, e] : dirs.items()) {
         if (e.value("state", "") == "never") {
             out += (out.empty() ? "" : "\n") + std::string("never    ") + dir + "  (" + e.value("at", "") + ")";
@@ -999,23 +1033,41 @@ std::string trust_imports_command(const std::vector<std::string>& args) {
 
 std::string trust_command(const std::string& command, const std::vector<std::string>& args, const fs::path& workspace) {
     if (command == "trust" && !args.empty() && args[0] == "imports") return trust_imports_command({args.begin() + 1, args.end()});
-    std::string path, level, lua;
+    std::string path, level, lua, protocol;
     bool list = false;
     for (size_t i = 0; i < args.size(); ++i) {
-        bool takes = command == "trust" && (args[i] == "--level" || args[i] == "--lua");
+        bool takes = command == "trust" && (args[i] == "--level" || args[i] == "--lua" || args[i] == "--protocol");
         if (args[i] == "--list" || args[i] == "-l") list = true;
         else if (takes) {
-            if (i + 1 >= args.size()) throw std::runtime_error(args[i] == "--level" ? "--level takes strict, standard or relaxed" : "--lua takes full, sandbox or restricted");
-            (args[i] == "--level" ? level : lua) = args[i + 1];
+            if (i + 1 >= args.size()) {
+                throw std::runtime_error(args[i] == "--level" ? "--level takes strict, standard or relaxed" : args[i] == "--lua" ? "--lua takes full, sandbox or restricted"
+                                                                                                                          : "--protocol takes open, guarded, airtight or none");
+            }
+            (args[i] == "--level" ? level : args[i] == "--lua" ? lua : protocol) = args[i + 1];
             ++i;
         } else if (args[i].rfind("--level=", 0) == 0 && command == "trust") level = args[i].substr(8);
         else if (args[i].rfind("--lua=", 0) == 0 && command == "trust") lua = args[i].substr(6);
+        else if (args[i].rfind("--protocol=", 0) == 0 && command == "trust") protocol = args[i].substr(11);
         else if (path.empty() && (args[i].empty() || args[i][0] != '-')) path = args[i];
-        else throw std::runtime_error("usage: " + command + (command == "trust" ? " [PATH] [--lua full|sandbox|restricted] [--level strict|standard|relaxed] | trust --list" : " [PATH]"));
+        else {
+            throw std::runtime_error("usage: " + command +
+                                     (command == "trust" ? " [PATH] [--lua full|sandbox|restricted] [--level strict|standard|relaxed] [--protocol open|guarded|airtight|none] | trust --list"
+                                                         : " [PATH]"));
+        }
     }
     if (list) return trust_listing();
     if (command == "untrust") return revoke_trust(workspace, path);
-    return grant_trust(workspace, path, Origin::Local, level, lua);
+    if (protocol.empty()) return grant_trust(workspace, path, Origin::Local, level, lua);
+    if (!valid_protocol_tier(protocol) && protocol != "none") throw std::runtime_error("--protocol takes open, guarded, airtight or none");
+    std::string done = level.empty() && lua.empty() ? "" : grant_trust(workspace, path, Origin::Local, level, lua) + "\n";
+    fs::path dir = absolute_dir(path.empty() ? workspace.string() : expand_home(path));
+    json store = read_store();
+    if (!store.contains("protocol") || !store["protocol"].is_object()) store["protocol"] = json::object();
+    if (protocol == "none") store["protocol"].erase(dir.string());
+    else store["protocol"][dir.string()] = protocol;
+    write_store(store);
+    return done + (protocol == "none" ? dir.string() + " has no protocol tier of its own now: protocol_tiers in settings, or the default, applies"
+                                      : dir.string() + " is enrolled at protocol tier " + protocol + ": sessions working there start at it, and no agent goes below it");
 }
 
 std::vector<std::string> trust_prompt(const ProjectDir& p) {

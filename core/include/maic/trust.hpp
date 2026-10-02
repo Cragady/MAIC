@@ -71,6 +71,23 @@ struct TrustConfig {
 void set_trust_config(TrustConfig config);
 bool valid_trust_level(const std::string& level);
 
+// The protocol tiers (docs/design/protocol-security.md): open, guarded or airtight; a separate axis from the trust
+// tier and the Lua level, recorded beside a directory's trust entry, never in it, so trusting or untrusting it
+// leaves the protocol tier alone.
+bool valid_protocol_tier(const std::string& tier);
+// Stricter is greater: open < guarded < airtight.
+int protocol_tier_rank(const std::string& tier);
+// The tier a session works at and where it came from ("global default", "directory DIR", "agent NAME"): the agent's
+// when set, else the nearest enrolled directory at or above `workspace` (recorded with `maic trust DIR --protocol`
+// first, then `per_directory`, ~ expanded), else `global_default`. An enrolled directory is a floor an agent's tier
+// cannot go below.
+struct ProtocolTier {
+    std::string tier, from;
+    std::string floor;  // the enrolled directory's tier, "" when none: what `:tier` cannot loosen below
+};
+ProtocolTier resolve_protocol_tier(const std::string& global_default, const std::map<std::string, std::string>& per_directory, const std::string& agent,
+                                   const std::string& agent_tier, const std::filesystem::path& workspace);
+
 std::filesystem::path trust_path();
 std::filesystem::path trust_audit_path();  // remote trust changes, one line each
 
@@ -125,6 +142,7 @@ std::string tier_hint(const std::filesystem::path& dir, const std::string& level
 // "Lua full: its settings.lua runs as you; `maic trust DIR --lua sandbox` ..."
 std::string lua_hint(const std::filesystem::path& dir);
 
+// `--protocol TIER` alone records only PATH's directory's protocol tier (`none` forgets it).
 // `:trust [PATH] [--level L]`, `maic trust [PATH] [--level L]`: trusts PATH's directory, or every untrusted
 // project directory of the workspace; returns what was done. `:untrust [PATH]`, `maic untrust PATH`.
 // `maic trust --list`.
