@@ -107,7 +107,7 @@ The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"
 | `:e FILE` | open a file: in the host nvim's editing window when connected (`:drop`), else in `$VISUAL` / `$EDITOR` / `nvim` in MAIC's place |
 | `:nvim [theme]` | whether MAIC is connected to the nvim it runs inside and what that gives; `theme` follows its colorscheme again. See below and `:h nvim` |
 | `:mode manual\|auto-read\|edit\|auto\|plan` | set the agent mode |
-| `:model NAME` | switch model (when idle): `llamacpp/current`, `llamacpp/Qwen3.5-9B-Q4_K_M` (any GGUF under the models directory), `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, ... `:model` alone lists providers |
+| `:model NAME` | switch model (when idle): `llamacpp/current`, `llamacpp/Qwen3.5-9B-Q4_K_M` (any GGUF under the models directory), `anthropic/claude-opus-5-5`, `deepseek-flash` (a preset; `deepseek/deepseek-v4-pro` plainly), ... `:model` alone lists providers |
 | `:models` | models the current provider serves (llama.cpp: every GGUF under the models directory, by file name); `maic models` in the shell is the catalog of models MAIC can install (`:h models`, docs/models.md) |
 | `:think on\|off` | let the model reason before answering |
 | `:set markdown\|mouse\|enter_sends on\|off`, `:set highlight nvim\|builtin` | rendering, scroll-wheel, Enter and input-highlighter toggles |

@@ -168,5 +168,40 @@
       "presets": [],
       "notes": "Served by services/llamacpp-fim.json when linked (maic models install qwen2.5-coder-1.5b --link)."
     }
+  ],
+  "//api_models": "Models behind a metered API: what each costs and its limits, nothing to install. `provider` and `model` are what a preset names (provider/model). pricing.periods: the prices per pricing.per tokens in pricing.currency; the period without days and utc is the default, one with them applies on those UTC weekdays and hours. `checked` is the day the figures were read from `source`. maic models check validates them; docs/models.md",
+  "api_models": [
+    {
+      "id": "deepseek-flash",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "name": "DeepSeek-V4.1-Flash",
+      "brief": "DeepSeek's fast model over its API: reads pictures, calls tools, thinks by default. The cheaper of the two, for subagents, reviews and most agent work.",
+      "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "checked": "2026-10-02",
+      "limits": {"context": 1000000, "output": 384000},
+      "capabilities": {"vision": true, "tools": true, "json_output": true, "thinking": "on by default"},
+      "pricing": {"currency": "USD", "per": 1000000, "periods": [
+        {"name": "off-peak", "input_cache_hit": 0.003, "input_cache_miss": 0.15, "output": 0.6},
+        {"name": "peak", "days": ["mon", "tue", "wed", "thu", "fri"], "utc": ["01:00-04:00", "06:00-10:00"], "input_cache_hit": 0.006, "input_cache_miss": 0.3, "output": 1.2}
+      ]},
+      "presets": ["deepseek-flash", "deepseek-flash-nothink"]
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "name": "DeepSeek-V4-Pro",
+      "brief": "DeepSeek's strong model over its API: calls tools, thinks by default, no pictures. Three to seven times Flash's price per token, for the hard parts.",
+      "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "checked": "2026-10-02",
+      "limits": {"context": 1000000, "output": 384000},
+      "capabilities": {"vision": false, "tools": true, "json_output": true, "thinking": "on by default"},
+      "pricing": {"currency": "USD", "per": 1000000, "periods": [
+        {"name": "off-peak", "input_cache_hit": 0.022, "input_cache_miss": 0.66, "output": 1.98},
+        {"name": "peak", "days": ["mon", "tue", "wed", "thu", "fri"], "utc": ["01:00-04:00", "06:00-10:00"], "input_cache_hit": 0.044, "input_cache_miss": 1.32, "output": 3.96}
+      ]},
+      "presets": ["deepseek-pro", "deepseek-pro-nothink"]
+    }
   ]
 }

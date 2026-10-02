@@ -1156,7 +1156,7 @@ int cmd_model(const std::vector<std::string>& args) {
     int served = provider.name == "llamacpp" ? s.context : provider.name == "llamacpp-2" ? s.context_2 : provider.options.value("context_window", 0);
     if (!context || (served && maic::is_llama_server(provider.name) && served < context)) context = served;
     nlohmann::json out = {{"provider", provider.name}, {"kind", provider.kind}, {"base_url", provider.base_url}, {"model", name}, {"context", context},
-                          {"remote", provider.remote()}, {"api_key_env", provider.api_key_env}, {"api_key_command", provider.api_key_command}};
+                          {"remote", provider.remote()}, {"metered", provider.metered()}, {"api_key_env", provider.api_key_env}, {"api_key_command", provider.api_key_command}};
     std::cout << out.dump() << "\n";
     return 0;
 }

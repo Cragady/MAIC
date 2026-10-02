@@ -55,7 +55,9 @@ struct ServerSettings {
 // changed field by field and new ones added under `models` in settings.
 // The rest is about the models it works with: `subagents` lists the presets a subagent of this model may run
 // on (higher or lower tiers; the model itself is always allowed), and `limited` marks a model the user's plan
-// caps, which the picks below step aside from. docs/settings.md has the rules.
+// caps, which the picks below step aside from. `metered` marks one billed per token to an API account (by default
+// every preset on a metered provider, Provider::metered): no automatic pick moves onto one from another provider.
+// docs/settings.md has the rules.
 struct ModelPreset {
     std::string name;      // "opus-5.5"
     std::string model;     // "anthropic/claude-opus-5-5"
@@ -67,6 +69,7 @@ struct ModelPreset {
     std::vector<std::string> subagents;  // presets a subagent may run on
     std::string subagent;  // the preferred pick: "same", a preset, or "" for the rule (subagent_pick)
     std::string on_limit;  // where a subagent continues when this model hits its usage limit; "" for the rule
+    bool metered = false;  // billed per token: picked only by name, never by a rule from another provider's model
 };
 std::vector<ModelPreset> default_presets();
 // Finds a preset by name, ignoring case and treating spaces, dots and underscores like hyphens ("Opus 5.5").

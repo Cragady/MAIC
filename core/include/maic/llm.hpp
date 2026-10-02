@@ -25,6 +25,7 @@ struct Usage {
     int input = 0;   // prompt tokens this call (the conversation so far, cache reads included)
     int output = 0;
     int context = 0;
+    int cached = 0;  // of `input`, what the provider read from its prompt cache (DeepSeek's prompt_cache_hit_tokens), when it says
 };
 
 struct Message {
@@ -69,7 +70,13 @@ struct Provider {
     std::string upstream_name() const { return upstream.empty() ? name : upstream; }
     // Anything not on this machine. Prompts, files the agent reads and tool output leave the machine.
     bool remote() const;
-    std::string api_key() const;  // throws with a clear message when it can't be found
+    // Billed per token to the account the key belongs to: `options.metered`, by default true for a remote
+    // OpenAI-compatible provider with a key (deepseek, openrouter, one you add). The automatic model picks never
+    // move onto a metered model of another provider, and chat() never retries a request that may have run.
+    bool metered() const;
+    // Throws with a clear message when it can't be found, and refuses to hand a key to a plain http URL that
+    // leaves the machine: a key goes only over https, or to loopback.
+    std::string api_key() const;
 };
 
 // llamacpp (local), anthropic, deepseek, openrouter, claude-cli. Settings can add or override providers by name.
@@ -87,7 +94,8 @@ struct ChatOptions {
     std::string model;  // without the provider prefix
     bool think = false;
     // Retry on 429 (not a usage limit), 5xx and connection failures, only while nothing has been streamed yet: 2 s, doubling,
-    // 25% jitter, 30 s cap, Retry-After honoured. `notice` hears about each wait.
+    // 25% jitter, 30 s cap, Retry-After honoured. `notice` hears about each wait. A metered provider is not retried when
+    // its answer was lost while being read (TransportError::retry_safe), since the request may have run and been billed.
     int retries = 3;
     int retry_base_ms = 2000;
     std::function<void(const std::string&)> notice;
@@ -120,9 +128,11 @@ struct ApiError : std::runtime_error {
 // retry one: waiting does not bring a used-up limit back.
 bool is_usage_limit(const ApiError& e);
 
-// The host could not be reached or the connection dropped before any response arrived.
+// The host could not be reached or the connection dropped before any response arrived. `retry_safe` is false when
+// the request went out whole and the answer was lost while being read: the provider may have run it to the end.
 struct TransportError : std::runtime_error {
-    using std::runtime_error::runtime_error;
+    bool retry_safe;
+    explicit TransportError(const std::string& what, bool retry_safe = true) : std::runtime_error(what), retry_safe(retry_safe) {}
 };
 
 // Receives streamed text as it arrives; `thinking` marks reasoning rather than the answer.

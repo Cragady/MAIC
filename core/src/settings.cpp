@@ -25,6 +25,8 @@ std::vector<ModelPreset> default_presets() {
     // so a local session's data stays on the machine unless the user adds a cloud preset to its list.
     const std::vector<std::string> cloud = {"fable-5.1", "opus-5.5", "sonnet-5", "haiku-4.5"};
     const std::vector<std::string> local = {"qwen-9b", "qwen-9b-vision", "qwen-4b"};
+    // DeepSeek's API, metered: thinking on and off of each model, the off variant of Flash reviewing.
+    const std::vector<std::string> deepseek = {"deepseek-pro", "deepseek-flash", "deepseek-pro-nothink", "deepseek-flash-nothink"};
     return {
         {"opus-5.5", "anthropic/claude-opus-5-5", 1000000, "", 1, 40, false, cloud},
         {"fable-5.1", "anthropic/claude-fable-5-1", 1000000, "", 1, 50, true, cloud},
@@ -38,6 +40,10 @@ std::vector<ModelPreset> default_presets() {
         // Claude Code on the user's own login and plan: the helpers' model, or the agent on MAIC's tools over MCP.
         {"claude-haiku-cli", "claude-cli/haiku", 200000, "", -1, 20, false, {}},
         {"claude-sonnet-cli", "claude-cli/sonnet", 1000000, "", -1, 30, false, {}},
+        {"deepseek-pro", "deepseek/deepseek-v4-pro", 1000000, "deepseek-flash-nothink", 1, 35, false, deepseek, "", "", true},
+        {"deepseek-pro-nothink", "deepseek/deepseek-v4-pro", 1000000, "deepseek-flash-nothink", 0, 35, false, deepseek, "", "", true},
+        {"deepseek-flash", "deepseek/deepseek-flash", 1000000, "deepseek-flash-nothink", 1, 25, false, deepseek, "", "", true},
+        {"deepseek-flash-nothink", "deepseek/deepseek-flash", 1000000, "deepseek-flash-nothink", 0, 25, false, deepseek, "", "", true},
     };
 }
 
@@ -48,11 +54,18 @@ std::string preset_key(std::string q) {
     return q;
 }
 
+// Whether a rule may pick `q` for work under `p`: not when it is metered on another provider's account, which
+// only a name (a pin, a setting, a model the user approves) reaches.
+bool rule_may_pick(const ModelPreset& p, const ModelPreset& q) {
+    auto account = [](const std::string& model) { return model.substr(0, model.find('/')); };
+    return !q.metered || account(q.model) == account(p.model);
+}
+
 // The strongest non-limited preset other than `p` on its list, below its tier if one is; nullopt when none.
 std::optional<ModelPreset> step_aside(const std::vector<ModelPreset>& presets, const ModelPreset& p) {
     std::optional<ModelPreset> below, any;
     for (const auto& q : subagent_presets(presets, p)) {
-        if (q.limited || q.name == p.name) continue;
+        if (q.limited || q.name == p.name || !rule_may_pick(p, q)) continue;
         if (!any) any = q;
         if (!below && q.tier < p.tier) below = q;
     }
@@ -127,7 +140,7 @@ ModelPick default_small_model(const std::vector<ModelPreset>& presets, const std
     if (!resolve_model(providers, p.model).first.remote()) return pick_of(p, "a local model reviews itself");
     auto list = subagent_presets(presets, p);
     for (auto it = list.rbegin(); it != list.rend(); ++it) {
-        if (!it->limited) return pick_of(*it, "the small model (the lowest non-limited tier on " + p.name + "'s list)");
+        if (!it->limited && rule_may_pick(p, *it)) return pick_of(*it, "the small model (the lowest non-limited tier on " + p.name + "'s list)");
     }
     return pick_of(p, "the model itself (nothing on its list is unlimited)");
 }
@@ -156,7 +169,7 @@ ModelPick reviewer_pick(const std::vector<ModelPreset>& presets, const std::vect
     for (const auto& m : failed) {
         if (auto q = preset_for_model(presets, m)) cap = std::min(cap, q->tier);
     }
-    auto usable = [&](const ModelPreset& q) { return !q.limited && !failed.count(q.model) && q.tier <= cap; };
+    auto usable = [&](const ModelPreset& q) { return !q.limited && !failed.count(q.model) && q.tier <= cap && rule_may_pick(self ? *self : *failed_preset, q); };
     std::string reason = who + " hit its usage limit";
     if (!failed_preset->on_limit.empty()) {
         if (auto q = find_preset(presets, failed_preset->on_limit); q && usable(*q)) return pick_of(*q, reason + " (its on_limit)");
@@ -660,6 +673,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             }
             mp->subagent = pj.value("subagent", mp->subagent);
             mp->on_limit = pj.value("on_limit", mp->on_limit);
+            mp->metered = pj.value("metered", mp->metered);
         }
         json providers = j.value("providers", json::object());
         for (const auto& [name, pj] : providers.items()) {
@@ -715,6 +729,12 @@ Settings load_settings(const fs::path& workspace) {
     }
     if (auto preset = find_preset(s.presets, s.small_model)) s.small_model = preset->model;
     if (auto preset = find_preset(s.presets, s.compact_model)) s.compact_model = preset->model;
+    // A preset on a metered provider is metered unless a layer says otherwise in its own `metered`.
+    const json layered_models = s.layered.value("models", json::object());
+    for (auto& p : s.presets) {
+        bool given = layered_models.is_object() && layered_models.contains(p.name) && layered_models[p.name].is_object() && layered_models[p.name].contains("metered");
+        if (!given && resolve_model(s.providers, p.model).first.metered()) p.metered = true;
+    }
     for (const auto& p : s.presets) {
         auto known = [&](const std::string& n, const char* field) {
             if (!find_preset(s.presets, n)) throw std::runtime_error("models." + p.name + "." + field + ": no preset named " + n);
@@ -912,7 +932,7 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"server", {{"listen", d.server.listen}, {"workspaces", json::array()}, {"cert", ""}, {"key", ""}, {"relay", ""}, {"relay_cert", ""}}},
         {"providers", providers},
         {"models", json::object()},
-        {"//models", "presets by short name, adding to the built-in ones (opus-5.5, sonnet-5, haiku-4.5, fable-5.1, qwen-4b, qwen-9b, qwen-9b-vision) or changing them field by field: models = { [\"opus-5.5\"] = { limited = true } }. Fields: model (needed for a new name), context, reviewer (\"same\" = itself, empty = small_model), think, tier (higher is stronger), limited (your plan caps it: subagents and the reviewer step aside), subagents (presets a subagent may run on), subagent (\"same\" or a preset; empty = the rule), on_limit (where a subagent continues after a usage limit). A model on the side server: [\"qwen-4b-side\"] = { model = \"llamacpp-2/Qwen3.5-4B-Q4_K_M\", context = 8192 }. docs/settings.md"},
+        {"//models", "presets by short name, adding to the built-in ones (opus-5.5, sonnet-5, haiku-4.5, fable-5.1, qwen-4b, qwen-9b, qwen-9b-vision, deepseek-pro, deepseek-flash and their -nothink twins) or changing them field by field: models = { [\"opus-5.5\"] = { limited = true } }. Fields: model (needed for a new name), context, reviewer (\"same\" = itself, empty = small_model), think, tier (higher is stronger), limited (your plan caps it: subagents and the reviewer step aside), metered (billed per token; default: its provider's. No rule picks one on another provider, and a parent model asking for one asks you), subagents (presets a subagent may run on), subagent (\"same\" or a preset; empty = the rule), on_limit (where a subagent continues after a usage limit). A model on the side server: [\"qwen-4b-side\"] = { model = \"llamacpp-2/Qwen3.5-4B-Q4_K_M\", context = 8192 }. docs/settings.md"},
         {"style", json::object()},
         {"//style", "single roles over the theme, merged into it: style = { user = { fg = \"#ff8800\" } } keeps the theme's bold. Every role and its default: themes/default.lua"},
     };

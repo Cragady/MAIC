@@ -100,7 +100,16 @@ bool Provider::remote() const {
     return !local_url(base_url);
 }
 
+bool Provider::metered() const {
+    return options.value("metered", kind == "openai" && remote() && (!api_key_env.empty() || !api_key_command.empty()));
+}
+
 std::string Provider::api_key() const {
+    std::string scheme = base_url.substr(0, base_url.find("://"));
+    for (auto& c : scheme) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (scheme != "https" && !local_url(base_url)) {
+        throw std::runtime_error(name + ": base_url " + base_url + " is not https, and a key goes to a host off this machine only over https");
+    }
     if (!api_key_env.empty()) {
         if (const char* v = std::getenv(api_key_env.c_str()); v && *v) return v;
     }
@@ -131,7 +140,21 @@ std::vector<Provider> default_providers() {
         {"llamacpp-2", "openai", "http://127.0.0.1:8082/v1", "", "", {{"thinking_controls", true}, {"context_window", 8192}}, "llamacpp"},
         {"anthropic", "anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "",
          {{"max_tokens", 64000}, {"effort", "high"}, {"think_effort", "xhigh"}, {"fallbacks", "default"}}},
-        {"deepseek", "openai", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "", nlohmann::json::object()},
+        // DeepSeek's API (api-docs.deepseek.com, checked 2026-10-02; docs/references/deepseek.md): thinking is on unless
+        // the request turns it off; while it is on, temperature and the penalties do nothing and top_p is raised to
+        // 0.95, without it top_p is fixed at 1.0, so none of those is sent where it would mislead. Its thinking turns'
+        // reasoning_content goes back with every later request that carries tools. Pictures only to deepseek-flash. An
+        // empty `stop` reply is sent again. Metered: billed per token to the key's account.
+        {"deepseek", "openai", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "",
+         {{"context_window", 1000000},
+          {"max_tokens", 65536},
+          {"think_on", {{"thinking", {{"type", "enabled"}}}}},
+          {"think_off", {{"thinking", {{"type", "disabled"}}}}},
+          {"think_sampling", {{"temperature", false}, {"presence_penalty", false}, {"frequency_penalty", false}, {"top_p", {0.95, 1.0}}}},
+          {"nothink_sampling", {{"top_p", false}, {"presence_penalty", false}, {"frequency_penalty", false}}},
+          {"retry_empty", true},
+          {"replay_reasoning", true},
+          {"vision", {"deepseek-flash"}}}},
         {"openrouter", "openai", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "", nlohmann::json::object()},
         // Claude Code run headless on the user's own login and plan: text only, or the agent on MAIC's tools (docs/settings.md).
         {"claude-cli", "cli", "", "", "", {{"command", "claude"}, {"args", nlohmann::json::array()}}},
@@ -230,7 +253,8 @@ Message chat(const Provider& provider, const ChatOptions& options, const std::ve
             wait_ms = e.retry_after_ms;
             why = "HTTP " + std::to_string(e.status);
         } catch (const TransportError& e) {
-            if (streamed || attempt >= options.retries) throw;
+            // An answer lost while being read may mean the request ran to the end; on a metered provider that is billed again.
+            if (streamed || attempt >= options.retries || (provider.metered() && !e.retry_safe)) throw;
             why = e.what();
         }
         if (wait_ms <= 0) {
@@ -296,7 +320,7 @@ std::string api_error(const std::string& provider, const HttpResult& r) {
     return provider + " returned HTTP " + std::to_string(r.status) + (msg.empty() ? "" : ": " + msg);
 }
 
-void throw_api_error(const std::string& provider, const HttpResult& r) {
+void throw_api_error(const std::string& provider, const HttpResult& r, const std::string& hint) {
     // Anthropic: {"error": {"type": "rate_limit_error", ...}}; OpenAI: {"error": {"type"/"code": "insufficient_quota", ...}}.
     std::string type;
     auto j = nlohmann::json::parse(r.error_body, nullptr, false);
@@ -305,7 +329,7 @@ void throw_api_error(const std::string& provider, const HttpResult& r) {
         if (e.contains("type") && e["type"].is_string()) type = e["type"];
         if ((type.empty() || type == "error") && e.contains("code") && e["code"].is_string()) type = e["code"];
     }
-    throw ApiError(r.status, api_error(provider, r), r.retry_after_ms, type);
+    throw ApiError(r.status, api_error(provider, r) + hint, r.retry_after_ms, type);
 }
 
 HttpResult stream_post(const std::string& base_url, const std::string& path,
@@ -372,7 +396,7 @@ HttpResult stream_post(const std::string& base_url, const std::string& path,
     watcher.join();
     if (cancel.load()) throw Cancelled();
     if (!ok) {
-        throw TransportError("can't reach " + base_url + " (" + httplib::to_string(err) + ")");
+        throw TransportError("can't reach " + base_url + " (" + httplib::to_string(err) + ")", err != httplib::Error::Read);
     }
     result.status = res.status;
     if (result.status != 200 && result.error_body.empty()) result.error_body = res.body.substr(0, 4096);
