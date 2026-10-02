@@ -434,7 +434,7 @@ std::string Agent::summarise(size_t from, size_t to, const std::atomic<bool>& ca
     };
     auto [provider, model_name] = resolve_model(providers, model);
     ChatOptions options{model_name, false};
-    options.normalized = count_normalized(provider.name);
+    options.normalized = count_normalized(provider);
     Message reply = chat(provider, options, req, nlohmann::json::array(), [](std::string_view, bool) {}, cancel);
     return reply.content;
 }
@@ -523,13 +523,13 @@ Agent::UsageReport Agent::usage() const {
     return usage_;
 }
 
-std::function<void(const std::string&, int)> Agent::count_normalized(const std::string& provider) {
-    return [this, provider](const std::string& rule, int count) {
+std::function<void(const std::string&, int)> Agent::count_normalized(const Provider& provider) {
+    return [this, name = provider.name, upstream = provider.upstream_name()](const std::string& rule, int count) {
         {
             std::lock_guard lock(usage_mu_);
             usage_.normalized[rule] += count;
         }
-        if (log_) log_->write("normalized", {{"rule", rule}, {"provider", provider}, {"count", count}});
+        if (log_) log_->write("normalized", {{"rule", rule}, {"provider", name}, {"upstream", upstream}, {"count", count}});
     };
 }
 
@@ -610,7 +610,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
 
     ChatOptions options{model_name, think};
     options.notice = [&](const std::string& t) { events.on_notice(t); };
-    options.normalized = count_normalized(provider.name);
+    options.normalized = count_normalized(provider);
     options.sampling = sampling;
     // Token bans: logit_bias where the provider takes it; elsewhere text tokens become string bans (the filter
     // does that) and numeric ids are reported once.
@@ -1541,7 +1541,7 @@ Decision Agent::review(const Action& action, const std::string& summary, const s
         auto [provider, name] = resolve_model(providers, reviewer);
         ChatOptions opt{name, false};
         opt.retries = 1;
-        opt.normalized = count_normalized(provider.name);
+        opt.normalized = count_normalized(provider);
         std::atomic<bool> no{false};
         Message reply = chat(provider, opt, req, nlohmann::json::array(), [](std::string_view, bool) {}, no);
         {

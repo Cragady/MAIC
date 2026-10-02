@@ -16,7 +16,7 @@ Every line has `type` and `time`. The rest depends on the type.
 | `assistant` | the agent | `text` | The reply, for the transcript. |
 | `tool` | the agent | `tool`, `arguments`, `result` (capped at 64 KB), `ok`; `full_output` when the whole output was kept (below, Full output); for `task` also `agent`, `child` (the subagent's transcript), `model`, `model_reason`, `steps` and `tokens` (older records: tool `delegate` with `profile`); a reviewed action has `review` with `verdict`, `reason`, `model` and `model_reason` | One tool call with the harness's outcome, for the transcript. The full result is in the `msg` record. |
 | `usage` | the agent | `input`, `output`, `context` | Token counts the provider reported for one reply. |
-| `normalized` | the agent | `rule`, `provider`, `count` | An adapter rule rewrote what an OpenAI-compatible server sent into OpenAI's shape, `count` times in one call ([standards.md](standards.md#adapter-normalizations)); `maic sessions stats` sums them. |
+| `normalized` | the agent | `rule`, `provider`, `upstream`, `count` | An adapter rule rewrote what an OpenAI-compatible server sent into OpenAI's shape, `count` times in one call ([standards.md](standards.md#adapter-normalizations)); `maic sessions stats` sums them. |
 | `model` | a subagent | `from`, `to` (preset names), `model`, `reason` (`usage limit`) | The subagent's model hit its usage limit and the rest of its job runs on `to`. |
 | `context` | `--context` and `-C` | `text` | A file attached to the conversation, shown as a notice. |
 | `title` | `:rename`, an auto-title, or an import | `text` | The name `maic sessions` shows. The last one wins. |

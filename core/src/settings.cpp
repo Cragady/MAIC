@@ -556,6 +556,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             p->base_url = pj.value("base_url", p->base_url);
             p->api_key_env = pj.value("api_key_env", p->api_key_env);
             p->api_key_command = pj.value("api_key_command", p->api_key_command);
+            p->upstream = pj.value("upstream", p->upstream);
             if (pj.contains("api_key")) throw std::runtime_error("providers." + name + ": keys don't go in settings; use api_key_env or api_key_command");
             json opts = pj.value("options", json::object());
             for (const auto& [k, v] : opts.items()) p->options[k] = v;
@@ -681,6 +682,7 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
     for (const auto& pr : d.providers) {
         json pj = {{"kind", pr.kind}, {"base_url", pr.base_url}};
         if (!pr.api_key_env.empty()) pj["api_key_env"] = pr.api_key_env;
+        if (!pr.upstream.empty()) pj["upstream"] = pr.upstream;
         if (!pr.options.empty()) pj["options"] = pr.options;
         providers[pr.name] = pj;
     }

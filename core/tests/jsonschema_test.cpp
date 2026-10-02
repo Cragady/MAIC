@@ -223,7 +223,7 @@ int main() {
                "logprobs_refusal_null adds refusal: null and leaves the tokens as they were");
 
         json err = normalized_case(odd[2], {"error_code_string", "error_param_null"}, "/error/code: must be string, not integer", "llama.cpp's error");
-        json want = {{"error", {{"code", "llamacpp_500"}, {"message", "the model crashed"}, {"type", "server_error"}, {"param", nullptr},
+        json want = {{"error", {{"code", "maic_llamacpp_500"}, {"message", "the model crashed"}, {"type", "server_error"}, {"param", nullptr},
                                 {"maic", {{"upstream", {{"provider", "llamacpp"}, {"code", 500}, {"rules", {"error_code_string", "error_param_null"}}}}}}}}};
         expect(err == want, "the error keeps its original code and the rules' names under maic.upstream: " + err.dump());
 

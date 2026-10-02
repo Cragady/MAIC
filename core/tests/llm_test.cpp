@@ -289,6 +289,23 @@ int main() {
         expect(heard == std::map<std::string, int>{{"error_code_string", 1}, {"error_param_null", 1}}, "the error body of a failed request goes through the rules too");
     }
     {
+        // The code names the software behind the provider, not what it is called here: both shipped llama servers
+        // say maic_llamacpp_500; a provider without `upstream` falls back to its own name.
+        auto code_for = [](const Provider& p) {
+            json body = {{"error", {{"code", 500}, {"message", "the model crashed"}, {"type", "server_error"}}}};
+            normalize_openai(body, p.upstream_name());
+            return body["error"]["code"].get<std::string>() + " " + body["error"]["maic"]["upstream"]["provider"].get<std::string>();
+        };
+        std::map<std::string, std::string> shipped;
+        for (const auto& p : default_providers()) shipped[p.name] = code_for(p);
+        expect(shipped["llamacpp"] == "maic_llamacpp_500 llamacpp" && shipped["llamacpp-2"] == "maic_llamacpp_500 llamacpp",
+               "llamacpp and llamacpp-2 both give maic_llamacpp_500, upstream llamacpp: " + shipped["llamacpp-2"]);
+        Provider lab{"lab", "openai", "http://127.0.0.1:9/v1", "", "", json::object()};
+        expect(code_for(lab) == "maic_lab_500 lab", "a provider without upstream falls back to its name");
+        lab.upstream = "vllm";
+        expect(code_for(lab) == "maic_vllm_500 vllm", "a provider with upstream names that instead");
+    }
+    {
         Fake f;
         f.serve("/v1/chat/completions", {"data: {\"choices\":[{\"delta\":{\"content\":\"Hel", "lo\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" there\"}}]}\n\n",
                                          "not an event at all\n", "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}},"
