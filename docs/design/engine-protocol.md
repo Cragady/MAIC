@@ -769,3 +769,16 @@ Micaiah's two streaming paths, specified in [harness-authority.md](../harness-au
 * `review.started` {session, item, action, reviewer_model} when MAIC sends a proposed action to its reviewer; `review.delta` {text} only if the reviewer streams its reasoning and the client subscribed to it; `review.verdict` {verdict: allow|ask|deny, reason, model, tokens}. These belong to the local round trip and appear between the reply's tool-call event and the action's output events.
 * Every `tool.started` and `tool.finished` carries `judged_by`: `"maic"` (MAIC's harness reviewed it), `"rules"` (only the fixed rules applied, as in a dumb harness), or the external agent's name (`"claude-code"`) when that agent's own harness approved it on the remote path, where no `review.*` events occur.
 
+## Decisions (Micaiah, 2026-10-02)
+
+The open questions above are settled as recommended, with these refinements in her words or close to them:
+* **1, encoding**: JSON lines for now. Keep room to add a raw-bytes fast path later, offered only on the `open` tier for a node she controls, where speed matters more than checking.
+* **2, remote `always`**: no, as built in v0.3.1. The session index is what lets a remote client pick up a session that is not active, which covers the use case.
+* **6, daemon auto-start**: not at first. When it comes, MAIC says so when the setup is a client only (no local daemon to start), and the repository ships baseline systemd user unit files that MAIC hands over or installs when asked; Windows gets its own equivalent.
+* **7, full command output**: no spool; expanding serves the recorded result (24 KiB head and 8 KiB tail), and the middle of a huge log is gone once it scrolls past, as in a terminal.
+* **9, remote mode changes**: tighten freely; loosen up to `edit` freely; loosen beyond `edit` (to `auto`) only after the step-up check.
+* **13, keys**: Ctrl-C ends the turn (`cancelResponse`); the `interrupt` steer action, which pauses the turn and keeps it open with its partial reply, has its own key.
+* **20, harness values**: `dumb`, `smart`, `external`, `auto`, chosen by a setting (global default, per agent, per session). The smart harness costs real performance on a local card, so with a node she controls doing the work, the local client runs `external`: the node's harness judges, and the client itself operates as dumb.
+* **22, OpenAI's description**: keep the full pinned file in the repository for reference, and extract the subset the conformance checks use from it by script.
+* All others (3 to 5, 8, 10 to 12, 14 to 19, 21, 23 to 25): as recommended.
+

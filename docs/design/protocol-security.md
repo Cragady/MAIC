@@ -120,3 +120,8 @@ Each remote client's connection has a path, `{via, role, tier, node}`: `via` is 
 6. **Peer to peer under `airtight`.** Recommendation: off; the relay path costs a little latency and keeps each end's address private.
 7. **Step-up lifetime.** Recommendation: 5 minutes per client, so a burst of steering from the phone costs one code.
 8. **The notice after a promotion.** Recommendation: shown in every client until it re-pairs, and the client keeps talking through the machine as a plain relay until then, so a promotion never interrupts work and never reads anything unannounced.
+
+## Decisions (Micaiah, 2026-10-02)
+
+All eight open questions are settled as recommended. On question 2: the `open` tier switches validation, ordering enforcement, steering restrictions and most logging off, which suits a private machine or an experiment; an `open` session therefore refuses remote clients unless `protocol_open_remote = true` is set in the global file, so an experiment never becomes reachable from off the machine by accident. A fast, loose link to a node she controls is the intended case for turning it on.
+
