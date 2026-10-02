@@ -47,6 +47,7 @@
         "model": {"type": "string"},
         "remote_model": {"type": "boolean"},
         "mode": {"$ref": "#/$defs/Mode"},
+        "think": {"type": "boolean"},
         "agent": {"type": "string"},
         "harness": {"enum": ["auto", "smart", "dumb", "external"]},
         "judge": {"type": "string"},
@@ -109,6 +110,11 @@
           "type": "object",
           "properties": {"input": {"type": "integer"}, "output": {"type": "integer"}},
           "required": ["input", "output"]
+        },
+        "normalized": {
+          "description": "How often each adapter rule normalized what a provider sent, this session (standards.md, adapter normalizations).",
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
         }
       },
       "required": ["usage", "calls", "context", "last_input"]
@@ -236,6 +242,33 @@
           "required": ["maic"]
         }
       ]
+    },
+    "CommandResult": {
+      "description": "maic.session.command: what the command says to the person who typed it, a question to put to them before it goes on (answered with `ask` and `key`), or text to send as their next message.",
+      "type": "object",
+      "properties": {
+        "ok": {"type": "boolean"},
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}, "level": {"enum": ["info", "warn", "error"]}},
+            "required": ["text", "level"]
+          }
+        },
+        "ask": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "title": {"type": "string"},
+            "lines": {"type": "array", "items": {"type": "string"}},
+            "keys": {"description": "The answers it takes, one character each; Esc answers n.", "type": "string", "minLength": 1}
+          },
+          "required": ["id", "title", "lines", "keys"]
+        },
+        "send": {"type": "string"}
+      },
+      "required": ["ok", "lines"]
     },
     "Snapshot": {
       "description": "maic.session.attach: the session as it stands, and events from `sequence_number` on.",

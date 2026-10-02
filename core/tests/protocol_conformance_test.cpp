@@ -527,6 +527,138 @@ int main() {
     }
     recordings.push_back(&slow);
 
+    section("an in-process host's session: open_local, the `:` commands, `!cmd`, titles, delivering now");
+    Recording host("local-host");
+    {
+        EngineOptions lo = o;  // an engine of its own: the index scenarios below count this one's sessions
+        lo.index_file.clear();
+        Engine local(lo);
+        TestClient a(local, host, Origin::Local, "tui");
+        a.hello();
+        Settings st = o.settings;
+        st.small_model = "test";  // the fake titles it: the echo of the first message, one line
+        st.dumb_auto_ok = false;
+        LocalSession ls;
+        ls.workspace = ws;
+        ls.settings = st;
+        ls.log = std::make_unique<SessionLog>("tui", root / "state" / "local");
+        bool set_up = false;
+        ls.setup = [&](Agent& agent, SessionLog& log) {
+            configure_agent(agent, st);
+            agent.mode = Mode::Manual;
+            agent.set_log(&log);
+            set_up = true;
+        };
+        std::string lid = local.open_local(a.id, std::move(ls));
+        json snap = a.ok("maic.session.attach", {{"session", lid}});
+        expect(set_up && snap["entry"]["id"] == lid && snap["entry"]["harness"] == "dumb" && snap["entry"]["think"] == false && snap["sequence_number"] == 0,
+               "open_local sets the session up before anyone sees it; attach shows it from its first event");
+        auto run = [&](const std::string& line) {
+            json r = a.ok("maic.session.command", {{"session", lid}, {"line", line}});
+            a.pump(0ms);
+            std::string text;
+            for (const auto& l : r.value("lines", json::array())) text += l["text"].get<std::string>() + "\n";
+            return std::make_pair(r, text);
+        };
+
+        size_t mark = a.events.size();
+        a.ok("response.create", {{"conversation", lid}, {"input", "name the ears"}});
+        long idle = a.until_idle(mark);
+        long done = a.until_type("response.completed", mark);
+        long titled = a.until_type("maic.session.title", mark);
+        expect(idle > 0 && titled > done && titled < idle && a.events[titled]["text"] == "echo: name the ears" && a.events[titled]["source"] == "auto",
+               "after the first turn small_model titles the session, between the response's end and idle");
+        expect(slurp(fs::path(snap["entry"]["transcript"].get<std::string>())).find("\"type\":\"title\"") != std::string::npos, "and the transcript keeps the title");
+
+        mark = a.events.size();
+        auto [mode, mode_text] = run("mode plan");
+        const json* changed = a.find("maic.session.settings", mark);
+        expect(mode["ok"] == true && mode["lines"].empty() && changed && (*changed)["mode"] == "plan" && (*changed)["by"]["client"] == a.id,
+               ":mode changes the mode for everyone, announced in maic.session.settings");
+        auto [status, status_text] = run("status");
+        expect(status_text.find("mode: plan  (idle)") != std::string::npos && status_text.find("session: ") != std::string::npos, ":status answers in lines");
+        auto [ban, ban_text] = run("ban add fennec");
+        expect(ban_text == "banned \"fennec\" (from the next model call)\n", ":ban add answers as the TUI always has");
+        auto [unknown, unknown_text] = run("frobnicate");
+        expect(unknown["ok"] == false && unknown["lines"][0]["level"] == "error", "an unknown command is an error line");
+        mark = a.events.size();
+        run("rename the tail");
+        const json* renamed = a.find("maic.session.title", mark);
+        expect(renamed && (*renamed)["text"] == "the tail" && (*renamed)["source"] == "rename" && (*renamed)["by"]["client"] == a.id, ":rename is a maic.session.title by its client");
+        json conv = a.ok("updateConversation", {{"conversation_id", lid}, {"metadata", {{"title", "fluffy tail"}}}});
+        expect(conv["metadata"]["title"] == "fluffy tail" && conv["maic"]["entry"]["title"] == "fluffy tail", "updateConversation renames it too");
+
+        // Auto under the dumb harness asks first: a command asks its question in the result, maic.session.set refuses.
+        expect(a.error("maic.session.set", {{"session", lid}, {"mode", "auto"}}) == "maic_confirm_required", "maic.session.set auto under a dumb harness needs confirm");
+        auto [asked, asked_text] = run("mode auto");
+        expect(asked.contains("ask") && asked["ask"]["keys"] == "yn" && asked["ask"]["title"] == " dumb harness + auto mode ", ":mode auto asks, with the keys it takes");
+        json no = a.ok("maic.session.command", {{"session", lid}, {"ask", asked["ask"]["id"]}, {"key", "n"}});
+        expect(no["lines"][0]["text"] == "staying in plan", "answered n, the mode stays");
+        expect(a.ok("maic.session.command", {{"session", lid}, {"ask", asked["ask"]["id"]}, {"key", "y"}})["ok"] == false, "a question is answered once");
+        auto [again, again_text] = run("mode auto");
+        mark = a.events.size();
+        json yes = a.ok("maic.session.command", {{"session", lid}, {"ask", again["ask"]["id"]}, {"key", "y"}});
+        a.pump(0ms);
+        expect(yes["ok"] == true && a.find("maic.session.settings", mark) && (*a.find("maic.session.settings", mark))["mode"] == "auto",
+               "answered y, auto is on and announced");
+        run("mode manual");
+
+        // `!cmd`: output as maic.tool.output.delta with no output_index, then context for the model.
+        mark = a.events.size();
+        json sh = a.ok("maic.session.shell", {{"session", lid}, {"command", "printf 'paw\\n'; printf 'tail\\n'; exit 3"}});
+        a.pump(0ms);
+        std::string printed;
+        bool bare = true;
+        for (size_t i = mark; i < a.events.size(); ++i) {
+            if (a.events[i]["type"] != "maic.tool.output.delta") continue;
+            printed += a.events[i]["data"].get<std::string>();
+            bare = bare && !a.events[i].contains("output_index") && a.events[i]["item_id"] == sh["item_id"];
+        }
+        expect(sh["exit_code"] == 3 && printed == "paw\ntail\n" && bare, "!cmd streams its output with no output_index and answers its exit code");
+        mark = a.events.size();
+        a.ok("response.create", {{"conversation", lid}, {"input", "what did I run"}});
+        a.until_idle(mark);
+        bool told = false;
+        {
+            std::lock_guard lock(fake.mu);
+            for (const auto& m : fake.requests.back()["messages"]) told = told || FakeServer::text_of(m["content"]).find("[The user ran this in their shell: `printf") != std::string::npos;
+        }
+        expect(told, "what it printed reaches the model with the next message");
+
+        // A write's content for a diff beside its approval.
+        mark = a.events.size();
+        plan({{{"name", "write_file"}, {"arguments", {{"path", "whiskers.txt"}, {"content", "long and white"}}}}});
+        a.ok("response.create", {{"conversation", lid}, {"input", "write the whiskers"}});
+        long ask = a.until_type("maic.approval.requested", mark);
+        json proposed = ask > 0 ? a.ok("maic.approval.proposed", {{"session", lid}, {"approval", a.events[ask]["id"]}}) : json::object();
+        expect(proposed.value("text", json()) == "long and white" && a.events[ask]["proposed_size"] == 14, "maic.approval.proposed answers what the write would leave");
+        if (ask > 0) a.ok("maic.approval.answer", {{"session", lid}, {"approval", a.events[ask]["id"]}, {"choice", "no"}});
+        a.until_idle(ask);
+
+        // maic.now: a message mid-turn that does not wait for the model call to end.
+        mark = a.events.size();
+        fake.hold_left = 1;
+        a.ok("response.create", {{"conversation", lid}, {"input", "hold on"}});
+        a.until_type("response.output_text.delta", mark);
+        json now = a.ok("response.create", {{"conversation", lid}, {"input", "and the paws"}, {"maic", {{"now", true}}}});
+        long end = a.until_idle(mark);
+        expect(now["maic"]["queued"] == true && end > 0 && a.text(mark).find("echo: and the paws") != std::string::npos,
+               "maic.now delivers into the running response at once: the held call is dropped and the next one has it");
+
+        // The remote allow-list of section 7.
+        TestClient b(local, host, Origin::Remote, "phone");
+        b.hello();
+        expect(b.error("maic.session.command", {{"session", lid}, {"line", "allow rm *"}}) == "maic_forbidden_remote", "a remote client cannot :allow");
+        expect(b.error("maic.session.command", {{"session", lid}, {"line", "mode auto"}}) == "maic_forbidden_remote", "nor loosen to auto");
+        expect(b.error("maic.session.command", {{"session", lid}, {"line", "forbid remove 1"}}) == "maic_forbidden_remote", "nor remove a forbidden term");
+        expect(b.ok("maic.session.command", {{"session", lid}, {"line", "forbid fennec-free"}})["ok"] == true, "but may add one");
+        expect(b.error("maic.session.command", {{"session", lid}, {"ask", "k1"}, {"key", "t"}}) == "maic_forbidden_remote", "and never answers a command's question");
+        expect(b.error("maic.session.shell", {{"session", lid}, {"command", "id"}}) == "maic_forbidden_remote", "!cmd is local only");
+        local.disconnect(b.id);
+        host.finish();
+    }
+    recordings.push_back(&host);
+
     section("the session index");
     {
         Recording idx("index");

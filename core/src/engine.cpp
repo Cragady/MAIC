@@ -1,6 +1,8 @@
 // The engine: sessions, their event streams and the protocol dispatcher (docs/design/engine-protocol.md).
 #include "maic/engine.hpp"
 
+#include "session_commands.hpp"
+
 #include "maic/full_output.hpp"
 #include "maic/llm.hpp"
 #include "maic/paths.hpp"
@@ -12,11 +14,16 @@
 #include "maic/vendor.hpp"
 
 #include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
+#include <cstdlib>
 #include <condition_variable>
 #include <cstdio>
 #include <ctime>
@@ -52,7 +59,7 @@ const std::vector<std::string> kEventTypes = {
     "response.shell_call_output_content.delta", "response.shell_call_output_content.done",
     "maic.response.cancelled", "maic.input.added", "maic.approval.requested", "maic.approval.answered", "maic.question.asked",
     "maic.question.answered", "maic.tool.output.delta", "maic.file.written", "maic.notice", "maic.todo.updated",
-    "maic.session.state", "maic.session.settings", "maic.usage.updated"};
+    "maic.session.state", "maic.session.settings", "maic.session.title", "maic.usage.updated"};
 
 // A request the engine refuses: a JSON-RPC error whose data is OpenAI's error object.
 struct RpcError : std::exception {
@@ -138,6 +145,50 @@ json shell_output(const std::string& text) {
     else if (text.rfind("terminated: the command exceeded its timeout", 0) == 0) outcome = {{"type", "timeout"}};
     else outcome = {{"type", "exit"}, {"exit_code", -1}};
     return json::array({{{"stdout", text}, {"stderr", ""}, {"outcome", outcome}}});
+}
+
+// A command the user runs themselves (`!cmd`, maic.session.shell): their shell, their environment, no sandbox.
+// Output streams to `on_output`; cancel kills the whole process group.
+int run_user_shell(const std::string& command, const fs::path& cwd, const std::atomic<bool>& cancel, const std::function<void(std::string_view)>& on_output) {
+    int fds[2];
+    if (pipe2(fds, O_CLOEXEC) != 0) return -1;
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        setpgid(0, 0);
+        int null_fd = open("/dev/null", O_RDONLY);
+        dup2(null_fd, STDIN_FILENO);
+        dup2(fds[1], STDOUT_FILENO);
+        dup2(fds[1], STDERR_FILENO);
+        if (chdir(cwd.c_str()) != 0) _exit(127);
+        const char* shell = std::getenv("SHELL");
+        if (!shell || !*shell) shell = "/bin/bash";
+        execl(shell, shell, "-c", command.c_str(), nullptr);
+        _exit(127);
+    }
+    close(fds[1]);
+    char buf[8192];
+    bool killed = false;
+    for (;;) {
+        if (cancel.load() && !killed) {
+            kill(-pid, SIGTERM);
+            killed = true;
+        }
+        pollfd pfd{fds[0], POLLIN, 0};
+        int ready = poll(&pfd, 1, 200);
+        if (ready > 0) {
+            ssize_t n = read(fds[0], buf, sizeof(buf));
+            if (n <= 0) break;
+            on_output(std::string_view(buf, static_cast<size_t>(n)));
+        } else if (ready < 0 && errno != EINTR) {
+            break;
+        }
+    }
+    close(fds[0]);
+    if (killed) kill(-pid, SIGKILL);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }
 
 bool inside(const fs::path& dir, const std::vector<fs::path>& roots) {
@@ -243,6 +294,7 @@ struct Client {
 // A person's answer, waited for by the agent's worker.
 struct PendingApproval {
     json event;  // maic.approval.requested
+    std::optional<std::string> proposed;  // a write's content after it, for maic.approval.proposed
     std::optional<ApprovalAnswer> answer;
     json by;
 };
@@ -293,6 +345,16 @@ struct Session {
     std::set<std::string> answered;  // approvals and questions already answered, for maic_already_answered
     std::map<std::string, PendingQuestion> questions;
     json todo = json::array();
+
+    Settings settings;          // the session's own: its `:` commands read and change them
+    SessionCommands commands;   // and keep their state here
+    bool titles = false;        // small_model titles it after its first turn (sessions an in-process host opened)
+    bool titled = false;
+    bool shell_running = false;  // a `!cmd` (maic.session.shell)
+    std::atomic<bool> shell_cancel{false};
+    long shells = 0;
+    int reported_calls = 0;      // the model calls the last maic.usage.updated covered
+    size_t reported_queued = 0;  // the queued messages the index last showed
 
     Session(fs::path ws, std::string model) : workspace(std::move(ws)), agent(workspace, std::move(model)) {}
 };
@@ -425,6 +487,8 @@ struct Engine::Impl {
                   {"model", s.agent.model},
                   {"remote_model", s.agent.remote()},
                   {"mode", std::string(mode_name(s.agent.mode))},
+                  {"think", s.agent.think},
+                  {"harness", s.agent.review_with_model ? "smart" : "dumb"},
                   {"tier", options.tier},
                   {"created", s.created},
                   {"last_activity", s.last_activity},
@@ -443,6 +507,7 @@ struct Engine::Impl {
     }
 
     void index_changed(Session& s) {
+        s.reported_queued = s.agent.queued();
         json e = entry(s);
         std::vector<std::shared_ptr<Client>> to;
         {
@@ -592,7 +657,19 @@ struct Engine::Impl {
         json out = {{"usage", usage_json(u.last.input, u.last.output)}, {"calls", u.calls}, {"context", u.last.context}, {"last_input", u.last.input},
                     {"total", {{"input", u.total_input}, {"output", u.total_output}}}};
         if (s.agent.budget_tokens > 0) out["budget"] = s.agent.budget_tokens;
+        if (!u.normalized.empty()) out["normalized"] = u.normalized;
         return out;
+    }
+
+    // Mid-response: a model call finished since the last report, or a queued message was delivered.
+    void refresh(Session& s) {
+        if (int calls = s.agent.usage().calls; calls != s.reported_calls) {
+            s.reported_calls = calls;
+            json u = usage_update(s);
+            u["type"] = "maic.usage.updated";
+            emit(s, u);
+        }
+        if (s.agent.queued() != s.reported_queued) index_changed(s);
     }
 
     // ---------- turns ----------
@@ -759,6 +836,8 @@ struct Engine::Impl {
         auto mode = parse_mode(mode_str);
         if (!mode) throw bad_params("unknown mode '" + mode_str + "' (manual, auto-read, edit, auto, plan)", "mode");
         auto s = std::make_shared<Session>(ws, m.value("model", options.settings.model));
+        s->settings = options.settings;
+        s->commands.dumb_auto_ok = options.settings.dumb_auto_ok;
         configure(s->agent, *mode);
         s->log = std::make_unique<SessionLog>(options.kind, resolve_sessions_home(options.settings, ws));
         s->id = s->log->path().stem().string();
@@ -796,6 +875,8 @@ struct Engine::Impl {
         LoadedSession old = load_session(info->path);
         auto mode = parse_mode(old.mode).value_or(parse_mode(options.settings.mode).value_or(Mode::Manual));
         auto s = std::make_shared<Session>(ws, old.model.empty() ? options.settings.model : old.model);
+        s->settings = options.settings;
+        s->commands.dumb_auto_ok = options.settings.dumb_auto_ok;
         configure(s->agent, mode);
         s->log = std::make_unique<SessionLog>(SessionLog::Reopen{}, info->path);
         s->id = info->id;
@@ -879,7 +960,7 @@ struct Engine::Impl {
     json session_set(Client& c, const json& p) {
         auto s = session(p.at("session"));
         for (const auto& [k, v] : p.items()) {
-            if (k != "session" && k != "mode") throw bad_params("maic.session.set takes mode in this build; " + k + " is not settable yet", k);
+            if (k != "session" && k != "mode" && k != "confirm") throw bad_params("maic.session.set takes mode in this build; " + k + " is not settable yet", k);
         }
         std::lock_guard lock(s->mu);
         if (p.contains("mode")) {
@@ -891,6 +972,13 @@ struct Engine::Impl {
             // until accounts register a verifier.
             if (c.origin == Origin::Remote && *mode == Mode::Auto && now != Mode::Auto) {
                 throw refuse("maic_step_up_required", "a remote client loosens a session to auto only after a step-up check, which needs accounts", "mode");
+            }
+            if (*mode == Mode::Auto && now != Mode::Auto && !s->agent.review_with_model && !s->commands.dumb_auto_ok) {
+                if (!p.value("confirm", false)) {
+                    throw refuse("maic_confirm_required", "auto mode under a dumb harness: no model reads the conversation before the agent acts, so only the rule list "
+                                                          "stands between the agent and your shell. Send confirm: true to go ahead.", "confirm");
+                }
+                s->commands.dumb_auto_ok = true;
             }
             s->agent.mode = *mode;
             emit(*s, {{"type", "maic.session.settings"}, {"mode", name}, {"by", c.by()}});
@@ -936,16 +1024,28 @@ struct Engine::Impl {
             sid = p["stream_id"];
         }
         if (sid.empty()) throw bad_params("conversation or stream_id names the session", "conversation");
-        std::string text = input_text(p.at("input"));
-        if (text.empty()) throw bad_params("the input is empty", "input");
+        // maic.now: delivered into the running response at once, its model call abandoned (`:w now`); with no
+        // input, what is already queued goes in now.
+        bool now = p.contains("maic") && p["maic"].is_object() && p["maic"].value("now", false);
+        std::string text = p.contains("input") || !now ? input_text(p.at("input")) : "";
+        if (text.empty() && !now) throw bad_params("the input is empty", "input");
         auto s = session(sid);
         std::lock_guard lock(s->mu);
         long before = s->next - 1;
+        if (text.empty()) {
+            if (!s->running) throw refuse("response_not_active", "nothing is running to deliver into", "input");
+            s->agent.deliver_now();
+            json r = response_object(*s, s->run ? *s->run : next_run(*s, c.origin), "in_progress");
+            r["maic"]["queued"] = true;
+            r["maic"]["sequence_number"] = before;
+            return r;
+        }
         json item = {{"id", "~" + std::to_string(s->next)}, {"type", "message"}, {"role", "user"}, {"content", {{{"type", "input_text"}, {"text", text}}}}};
         if (s->running) {
             // Into the running response at its next boundary, as typing mid-turn does; a remote message raises the
             // turn's origin. Step 7 splits this into response.steer and a FIFO queue on the lane.
             s->agent.post_message(text, c.origin);
+            if (now) s->agent.deliver_now();
             emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", true}, {"by", c.by()}});
             index_changed(*s);
             // Between two turns (queued messages starting the next) it goes into the next one.
@@ -954,6 +1054,8 @@ struct Engine::Impl {
             r["maic"]["sequence_number"] = before;
             return r;
         }
+        // The pictures attached since the last message go with this one.
+        if (auto pics = s->agent.pending_images(); !pics.empty()) item["maic"] = {{"images", pics}};
         emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", false}, {"by", c.by()}});
         json r = response_object(*s, next_run(*s, c.origin), "in_progress");
         start_turn(s, text, c.origin);
@@ -967,9 +1069,10 @@ struct Engine::Impl {
         if (dot == std::string::npos) throw refuse("maic_not_found", "no response " + rid, "response_id");
         auto s = session(rid.substr(0, dot));
         std::lock_guard lock(s->mu);
-        if (!s->run || s->run->id != rid) throw refuse("maic_not_found", "response " + rid + " is not running", "response_id");
+        // The running response, or (between two responses of a turn, or before the first opens) the turn itself.
+        if (!s->running || (s->run && s->run->id != rid)) throw refuse("maic_not_found", "response " + rid + " is not running", "response_id");
         interrupt(*s, c.by(), ApprovalAnswer{Approval::No, "interrupted by the user"});
-        return response_object(*s, *s->run, "cancelled");
+        return response_object(*s, s->run ? *s->run : next_run(*s, c.origin), "cancelled");
     }
 
     json approval_answer(Client& c, const json& p) {
@@ -1005,6 +1108,110 @@ struct Engine::Impl {
         it->second.by = c.by();
         s->cv.notify_all();
         return json::object();
+    }
+
+    // The title, said on the stream: `source` is auto (small_model after the first turn) or rename.
+    void retitle(Session& s, const std::string& text, const std::string& source, const json& by) {
+        s.title = text;
+        s.titled = true;
+        s.log->write("title", {{"text", text}});
+        json ev = {{"type", "maic.session.title"}, {"text", text}, {"source", source}};
+        if (!by.is_null()) ev["by"] = by;
+        emit(s, ev);
+        index_changed(s);
+    }
+
+    json update_conversation(Client& c, const json& p) {
+        auto s = session(p.at("conversation_id"));
+        std::string title = p.at("metadata").at("title");
+        if (title.empty()) throw bad_params("metadata.title is empty", "metadata");
+        std::lock_guard lock(s->mu);
+        retitle(*s, title, "rename", c.by());
+        return conversation(*s, c);
+    }
+
+    // A `:` command the engine owns (session_commands.cpp), or the answer to a question one asked.
+    json session_command(Client& c, const json& p) {
+        auto s = session(p.at("session"));
+        std::lock_guard lock(s->mu);
+        // A question a command asked is the local person's: one answers a :cd's trust prompt, for one.
+        if (c.origin == Origin::Remote && p.contains("ask")) throw refuse("maic_forbidden_remote", "a remote client cannot answer a command's question", "ask");
+        if (c.origin == Origin::Remote) {
+            std::string why;
+            if (!SessionCommands::remote_allowed(p.at("line"), s->agent.mode.load(), why)) throw refuse("maic_forbidden_remote", why, "line");
+        }
+        std::function<Settings(const fs::path&)> settings_at = options.settings_at;
+        if (!settings_at) settings_at = [](const fs::path& dir) { return load_settings(dir); };
+        SessionCommands::Session lent{s->agent, *s->log, s->settings, s->running,
+                                      [&](json fields) {
+                                          fields["type"] = "maic.session.settings";
+                                          fields["by"] = c.by();
+                                          emit(*s, std::move(fields));
+                                      },
+                                      [&](const std::string& title) { retitle(*s, title, "rename", c.by()); },
+                                      [&](const std::string& text) { emit(*s, {{"type", "maic.notice"}, {"text", text}, {"level", "info"}}); },
+                                      settings_at};
+        CommandOutput out = p.contains("ask") ? s->commands.answer(lent, p.at("ask"), p.value("key", "")) : s->commands.run(lent, p.at("line"));
+        index_changed(*s);
+        return out.json();
+    }
+
+    // `!cmd`: the user's own shell, unsandboxed, its output as maic.tool.output.delta with no output_index (it is
+    // no response's item); then what it printed reaches the model as context, as a message typed mid-turn does.
+    json session_shell(Client& c, const json& p) {
+        (void)c;
+        auto s = session(p.at("session"));
+        if (p.value("interrupt", false)) {
+            std::lock_guard lock(s->mu);
+            s->shell_cancel = true;
+            return {{"interrupted", s->shell_running}};
+        }
+        std::string command = p.at("command");
+        std::string id;
+        fs::path ws;
+        {
+            std::lock_guard lock(s->mu);
+            if (s->shell_running) throw refuse("maic_busy", "a shell command is still running; Ctrl-C stops it", "command");
+            s->shell_running = true;
+            s->shell_cancel = false;
+            id = "sh" + std::to_string(++s->shells);
+            ws = s->agent.harness().workspace();
+        }
+        std::string output, held;
+        size_t offset = 0;
+        auto send = [&](std::string_view data) {
+            std::lock_guard lock(s->mu);
+            emit(*s, {{"type", "maic.tool.output.delta"}, {"item_id", id}, {"offset", offset}, {"data", std::string(data)}});
+            offset += data.size();
+        };
+        int rc = run_user_shell(command, ws, s->shell_cancel, [&](std::string_view chunk) {
+            output.append(chunk);
+            held.append(chunk);
+            size_t n = whole_chars(held, held.size());
+            if (n == 0) return;
+            send(std::string_view(held).substr(0, n));
+            held.erase(0, n);
+        });
+        if (!held.empty()) send(held);
+        std::string tail = rc == 0 ? "" : "\n[exit code " + std::to_string(rc) + "]";
+        if (output.size() > 32 * 1024) output = output.substr(0, 32 * 1024) + "\n[truncated]";
+        std::string context = "[The user ran this in their shell: `" + command + "`]\n" + output + tail;
+        std::lock_guard lock(s->mu);
+        if (s->running) s->agent.post_message(context);
+        else s->agent.add_context(context);
+        s->shell_running = false;
+        return {{"exit_code", rc}, {"item_id", id}};
+    }
+
+    // A write's content after it, for a diff beside the approval (maic.approval.requested says only its size).
+    json approval_proposed(Client&, const json& p) {
+        auto s = session(p.at("session"));
+        std::string id = p.at("approval");
+        std::lock_guard lock(s->mu);
+        auto it = s->approvals.find(id);
+        if (it == s->approvals.end() || it->second.answer) throw refuse("maic_not_found", "no approval " + id + " is waiting", "approval");
+        const auto& a = it->second;
+        return {{"path", a.event.value("path", "")}, {"text", a.proposed ? json(*a.proposed) : json()}};
     }
 
     // ---------- the dispatcher ----------
@@ -1070,6 +1277,10 @@ const std::map<std::string, Engine::Impl::Handler>& Engine::Impl::handlers() {
         {"cancelResponse", &Impl::cancel_response},
         {"maic.approval.answer", &Impl::approval_answer},
         {"maic.question.reply", &Impl::question_reply},
+        {"updateConversation", &Impl::update_conversation},
+        {"maic.session.command", &Impl::session_command},
+        {"maic.session.shell", &Impl::session_shell},
+        {"maic.approval.proposed", &Impl::approval_proposed},
     };
     return table;
 }
@@ -1099,15 +1310,19 @@ public:
 
     void on_tool_call(const std::string& summary) override {
         std::lock_guard lock(s_.mu);
+        e_.refresh(s_);
         if (!proposed_) {
-            notice_locked(summary);  // a line about the call, not a call ("↳ explore on ...")
+            // A line about the call, not a call ("↳ explore on ...").
+            e_.emit(s_, {{"type", "maic.notice"}, {"text", summary}, {"level", "info"}, {"kind", "tool_call"}});
             return;
         }
         ToolCall call = std::move(*proposed_);
         proposed_.reset();
         Frame f{call.id, call.name, call.name == "run_shell", !calls_.empty()};
         if (f.child) {
-            notice_locked(summary);  // a subagent's call: its items belong to its own session (step 14)
+            // A subagent's call: its items belong to its own session (step 14); a notice says it once
+            // on_tool_started has named the tool and its path.
+            f.pending = summary;
             calls_.push_back(f);
             return;
         }
@@ -1132,6 +1347,11 @@ public:
         e_.emit(s_, {{"type", "response.output_item.done"}, {"output_index", f.index}, {"item", item}});
         output().push_back(item);
         calls_.push_back(f);
+    }
+
+    void on_tool_started(const std::string& tool, const std::string& path, const std::string&) override {
+        std::lock_guard lock(s_.mu);
+        if (!calls_.empty() && calls_.back().child) say_child_call(calls_.back(), tool, path);
     }
 
     void on_tool_output(const std::string& call_id, OutputStream stream, std::string_view chunk, size_t offset) override {
@@ -1164,7 +1384,13 @@ public:
         if (calls_.empty()) return;
         Frame f = calls_.back();
         calls_.pop_back();
-        if (f.child) return;
+        if (f.child) {
+            say_child_call(f, "", "");
+            json ev = {{"type", "maic.notice"}, {"text", text}, {"level", "info"}, {"kind", "tool_result"}, {"ok", ok}};
+            if (!f.full_output.is_null()) ev["full_output"] = f.full_output;
+            e_.emit(s_, ev);
+            return;
+        }
         open_output(f);
         json item;
         if (f.shell) {
@@ -1183,6 +1409,7 @@ public:
     void on_notice(const std::string& text) override {
         std::lock_guard lock(s_.mu);
         notice_locked(text);
+        e_.refresh(s_);
     }
 
     void on_todo(const std::vector<TodoItem>& items) override {
@@ -1216,7 +1443,7 @@ public:
         e_.emit(s_, ev);
         ev["sequence_number"] = s_.next - 1;
         ev["stream_id"] = s_.id;
-        s_.approvals[id] = PendingApproval{ev, std::nullopt, nullptr};
+        s_.approvals[id] = PendingApproval{ev, r.proposed, std::nullopt, nullptr};
         e_.set_activity(s_, "waiting", {{"kind", "approval"}, {"id", id}, {"tool", r.tool}, {"summary", r.summary}});
         s_.cv.wait(lock, [&] { return s_.approvals[id].answer.has_value() || s_.cancel.load(); });
         PendingApproval p = s_.approvals[id];
@@ -1280,7 +1507,17 @@ private:
         long out_index = -1;
         std::string out_id;
         json full_output;
+        std::string pending;  // a subagent's call not yet said
     };
+
+    void say_child_call(Frame& f, const std::string& tool, const std::string& path) {
+        if (f.pending.empty()) return;
+        json ev = {{"type", "maic.notice"}, {"text", f.pending}, {"level", "info"}, {"kind", "tool_call"}};
+        if (!tool.empty()) ev["tool"] = tool;
+        if (!path.empty()) ev["path"] = path;
+        e_.emit(s_, ev);
+        f.pending.clear();
+    }
 
     json& output() { return s_.run->output; }
 
@@ -1344,10 +1581,17 @@ private:
 };
 
 void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origin origin) {
-    for (;;) {
+    for (bool first = true;; first = false) {
         TurnEvents events(*this, *s);
         {
             std::lock_guard lock(s->mu);
+            if (!first && s->cancel.load()) {
+                // Cancelled between two turns: what was queued waits for the next message.
+                s->agent.post_message(text, origin);
+                s->running = false;
+                set_activity(*s, "idle");
+                return;
+            }
             Run r = next_run(*s, origin);
             ++s->turns;
             r.usage_before = s->agent.usage();
@@ -1360,7 +1604,7 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
         try {
             s->agent.submit(text, origin, events, s->cancel);
         } catch (const std::exception& e) {
-            failure = e.what();
+            failure = failure_text(s->agent, e);
         }
         std::unique_lock lock(s->mu);
         bool cancelled = s->cancel.load();
@@ -1369,6 +1613,7 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
         r.origin = s->agent.turn_origin();
         json usage = usage_update(*s);
         usage["type"] = "maic.usage.updated";
+        s->reported_calls = usage["calls"];
         emit(*s, usage);
         json resp;
         std::string type;
@@ -1388,11 +1633,32 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
         Agent::UsageReport u = s->agent.usage();
         resp["usage"] = usage_json(u.total_input - r.usage_before.total_input, u.total_output - r.usage_before.total_output);
         resp["completed_at"] = static_cast<long>(std::time(nullptr));
-        // Messages queued after the turn's last model call start the next turn on their own, as the TUI does.
-        bool again = !cancelled && failure.empty() && s->agent.queued() > 0 && !stopped.load();
         resp["maic"]["final"] = true;
         emit(*s, {{"type", type}, {"response", resp}});
         s->run.reset();
+        if (s->titles && !s->titled && !cancelled && !stopped.load() && !s->settings.small_model.empty()) {
+            // After the first turn, a title from small_model. A remote one never titles a local session, so
+            // nothing leaves the machine that would not have anyway.
+            s->titled = true;
+            std::optional<std::pair<Provider, std::string>> pick;
+            try {
+                auto picked = resolve_model(s->agent.providers, s->settings.small_model);
+                if (!picked.first.remote() || s->agent.remote()) pick = picked;
+            } catch (const std::exception&) {
+            }
+            if (pick) {
+                lock.unlock();
+                std::string title;
+                try {
+                    title = generate_title(pick->first, pick->second, text);
+                } catch (const std::exception&) {
+                }
+                lock.lock();
+                if (!title.empty()) retitle(*s, title, "auto", nullptr);
+            }
+        }
+        // Messages queued after the turn's last model call start the next turn on their own, as typing mid-turn does.
+        bool again = !cancelled && failure.empty() && s->agent.queued() > 0 && !stopped.load();
         if (!again) {
             s->running = false;
             set_activity(*s, "idle");
@@ -1424,6 +1690,20 @@ std::string Engine::connect(Origin origin, std::string name, std::string via, st
     std::lock_guard lock(impl_->mu);
     impl_->clients[c->id] = c;
     return c->id;
+}
+
+std::string Engine::open_local(const std::string& client, LocalSession ls) {
+    auto c = impl_->client(client);
+    if (c->origin != Origin::Local) throw std::runtime_error("open_local: " + client + " is not a local connection");
+    auto s = std::make_shared<Session>(ls.workspace, ls.settings.model);
+    s->settings = std::move(ls.settings);
+    s->commands.dumb_auto_ok = s->settings.dumb_auto_ok;
+    s->titles = ls.titles;
+    s->log = std::move(ls.log);
+    s->id = s->log->path().stem().string();
+    if (ls.setup) ls.setup(s->agent, *s->log);
+    impl_->open_session(s, *c);
+    return s->id;
 }
 
 void Engine::disconnect(const std::string& id) {
@@ -1501,6 +1781,7 @@ void Engine::shutdown() {
     for (const auto& s : all) {
         std::lock_guard lock(s->mu);
         impl_->interrupt(*s, engine, ApprovalAnswer{Approval::No, "the engine is shutting down"});
+        s->shell_cancel = true;
     }
     for (const auto& s : all) {
         if (s->worker.joinable()) s->worker.join();
@@ -1532,6 +1813,47 @@ std::vector<std::string> Engine::methods() {
 
 std::vector<std::string> Engine::event_types() {
     return kEventTypes;
+}
+
+void configure_agent(Agent& a, const Settings& st) {
+    a.providers = st.providers;
+    set_context(a.providers, st.context);
+    set_context(a.providers, st.context_2, "llamacpp-2");
+    a.think = st.think;
+    a.review_with_model = st.harness != "dumb";
+    a.audit = st.audit;
+    a.reviewer_model = st.reviewer_model;
+    a.small_model = st.small_model;
+    a.reviewer_budget_tokens = st.reviewer_budget_tokens;
+    a.presets = st.presets;
+    a.compaction.at = st.compact_at;
+    a.compaction.keep_results = st.compact_keep_results;
+    a.budget_tokens = st.budget_tokens;
+    a.full_output = st.full_output;
+    a.full_output_max_mb = static_cast<size_t>(st.full_output_max_mb);
+    a.set_instruction_options(st.instructions);
+    a.load_instruction_files = st.load_instructions;
+    a.system_prefix = resolve_system_prompt(st.system_prompt);
+    a.prefill = resolve_system_prompt(st.prefill);
+    a.rules = st.rules;
+    a.set_permission(st.permission);
+    a.agents = st.agents;
+    a.set_forbid(st.forbid);
+    a.bans = st.bans;
+    apply_sampling(a, st);
+}
+
+void apply_sampling(Agent& a, const Settings& st, const json& live) {
+    auto [provider, name] = resolve_model(a.providers, a.model);
+    json s = st.sampling.is_object() ? st.sampling : json::object();
+    json per_provider = provider.options.value("sampling", json::object());
+    for (const auto& [k, v] : per_provider.items()) s[k] = v;
+    for (const auto& [k, v] : live.items()) {
+        if (v.is_null()) s.erase(k);
+        else s[k] = v;
+    }
+    a.sampling = s;
+    a.operator_note_in_turn = provider.options.value("operator_note", provider.kind != "anthropic");
 }
 
 std::string failure_text(const Agent& agent, const std::exception& e) {

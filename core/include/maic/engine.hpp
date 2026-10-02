@@ -15,8 +15,8 @@
 
 namespace maic {
 
-// What an engine starts with. Its transport builds one: maic-server now (every client remote); the TUI in-process
-// (step 6), `maic --rpc` on stdio (step 8) and the daemon on its socket (step 13) later.
+// What an engine starts with. Its transport builds one: maic-server (every client remote), the TUI and `maic -p`
+// in-process; `maic --rpc` on stdio (step 8) and the daemon on its socket (step 13) later.
 struct EngineOptions {
     Settings settings;                              // what each session's Agent is set up from: providers, model, mode, ...
     std::vector<std::filesystem::path> workspaces;  // where a remote client may open or resume a session (server.workspaces)
@@ -26,6 +26,18 @@ struct EngineOptions {
     std::string tier = "guarded";                   // open or guarded; airtight needs the conformance stamp (step 18)
     size_t ring_events = 10000;                     // each session's event ring, in memory only (section 5)
     size_t ring_bytes = 8 << 20;
+    // What `:cd` reads in the directory it moves to; unset, the settings files there. The TUI adds its flags.
+    std::function<Settings(const std::filesystem::path&)> settings_at;
+};
+
+// A session an in-process host set up itself (Engine::open_local): what `maic`, `maic -r`, `--fork-at` and the
+// command line's flags make of it, which no protocol method can say before step 12's create, fork and resume.
+struct LocalSession {
+    std::filesystem::path workspace;
+    Settings settings;                                // the session's own: its `:` commands read and change them
+    std::unique_ptr<SessionLog> log;                  // new, a fork, or reopened to append
+    std::function<void(Agent&, SessionLog&)> setup;   // configures the agent, gives it the log, restores a history
+    bool titles = true;                               // small_model titles it after its first turn
 };
 
 // The engine of docs/design/engine-protocol.md: the session table, each session's Agent, SessionLog and ordered event
@@ -50,6 +62,11 @@ public:
     std::string connect(Origin origin, std::string name, std::string via, std::function<void()> wake = {});
     void disconnect(const std::string& client);
 
+    // In-process only: opens a session its host set up, `setup` running on the new session's Agent before any
+    // client can reach it. The session opens with maic.session.state by `client` (a local connection); the host
+    // then attaches as any client does. Returns the session id; throws what `setup` throws.
+    std::string open_local(const std::string& client, LocalSession session);
+
     // One JSON-RPC 2.0 message from the client: the answer, or null for a notification.
     nlohmann::json call(const std::string& client, const nlohmann::json& message);
 
@@ -69,6 +86,16 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+// An agent set up from settings as every front end sets up its session's: providers and context windows, the
+// harness and reviewer, models and presets, compaction, the budget, kept outputs, instruction files, the operator
+// text and prefill, rules, permission, agents, forbidden terms, bans and sampling. The mode, the transcript and
+// anything that is one front end's (an nvim host, a restored history) are the caller's. Throws when a system
+// prompt or prefill file cannot be read.
+void configure_agent(Agent& agent, const Settings& settings);
+// The sampling the agent's current provider gets: settings.sampling, the provider's own, then `live` over them
+// (:sampling and the command line; a null value unsets a key). Also whether the operator note rides in each turn.
+void apply_sampling(Agent& agent, const Settings& settings, const nlohmann::json& live = nlohmann::json::object());
 
 // The error a failed turn shows. A transport failure to a local provider adds what to do about the service
 // behind it (start it, link a model), from the service state on that port.

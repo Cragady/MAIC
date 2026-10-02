@@ -91,6 +91,9 @@
       "$ref": "#/$defs/maic.session.settings"
     },
     {
+      "$ref": "#/$defs/maic.session.title"
+    },
+    {
       "$ref": "#/$defs/maic.usage.updated"
     }
   ],
@@ -578,6 +581,18 @@
                     },
                     "role": {
                       "const": "user"
+                    },
+                    "maic": {
+                      "type": "object",
+                      "properties": {
+                        "images": {
+                          "description": "The pictures attached to this message, by name.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
                     }
                   },
                   "required": [
@@ -780,7 +795,7 @@
       ]
     },
     "maic.tool.output.delta": {
-      "description": "A script tool's stderr, or a Lua tool's maic.shell output, while it runs: `data`, or `skipped` bytes not sent to this connection.",
+      "description": "A script tool's stderr, or a Lua tool's maic.shell output, while it runs: `data`, or `skipped` bytes not sent to this connection. A `!cmd` (maic.session.shell) streams the same way with its own item_id and no output_index: it is no response's item.",
       "allOf": [
         {
           "$ref": "#/$defs/Envelope"
@@ -796,7 +811,8 @@
             },
             "output_index": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "description": "The output item it streams under; absent for a `!cmd`."
             },
             "call": {
               "description": "A subagent's call (<agent>:<call id>) streaming under the task's output item; offset is then within that call.",
@@ -817,7 +833,6 @@
           "required": [
             "type",
             "item_id",
-            "output_index",
             "offset"
           ]
         }
@@ -851,7 +866,7 @@
       ]
     },
     "maic.notice": {
-      "description": "A line for the person.",
+      "description": "A line for the person. A subagent's call and its result come as notices too, `kind` saying which, until its own stream (step 14).",
       "allOf": [
         {
           "$ref": "#/$defs/Envelope"
@@ -871,6 +886,25 @@
                 "warn",
                 "error"
               ]
+            },
+            "kind": {
+              "description": "A subagent's tool call (`tool` and `path` as the call names them) or its result (`ok`, and `full_output` when its whole output was kept).",
+              "enum": [
+                "tool_call",
+                "tool_result"
+              ]
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "tool": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "full_output": {
+              "$ref": "maic.schema.json#/$defs/FullOutput"
             }
           },
           "required": [
@@ -984,6 +1018,10 @@
             "tier": {
               "$ref": "maic.schema.json#/$defs/Tier"
             },
+            "workspace": {
+              "description": "The workspace `:cd` moved the session to.",
+              "type": "string"
+            },
             "by": {
               "$ref": "maic.schema.json#/$defs/By"
             }
@@ -991,6 +1029,40 @@
           "required": [
             "type",
             "by"
+          ]
+        }
+      ]
+    },
+    "maic.session.title": {
+      "description": "The session's title: `auto` when small_model titled it after its first turn, `rename` when a person did (:rename, updateConversation).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.session.title"
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source": {
+              "enum": [
+                "auto",
+                "rename"
+              ]
+            },
+            "by": {
+              "$ref": "maic.schema.json#/$defs/By"
+            }
+          },
+          "required": [
+            "type",
+            "text",
+            "source"
           ]
         }
       ]
@@ -1040,6 +1112,14 @@
                 "input",
                 "output"
               ]
+            },
+            "normalized": {
+              "description": "How often each adapter rule normalized what a provider sent, this session (standards.md, adapter normalizations).",
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 0
+              }
             }
           },
           "required": [

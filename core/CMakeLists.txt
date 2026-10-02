@@ -34,6 +34,7 @@ add_library(maic_core
     src/script_tools.cpp
     src/service.cpp
     src/session.cpp
+    src/session_commands.cpp
     src/settings.cpp
     src/status.cpp
     src/theme.cpp

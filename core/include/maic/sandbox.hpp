@@ -10,6 +10,10 @@
 
 namespace maic {
 
+// How much of `s`'s first `n` bytes to send so no UTF-8 character is cut in two: `n`, or less by the 1 to 3
+// bytes of a character that continues past it. Anything else (binary output) is sent as it is.
+size_t whole_chars(const std::string& s, size_t n);
+
 enum class OutputStream { Stdout, Stderr };
 
 // A program's output while it runs, for display only: `bytes` start at byte `offset` of that stream's whole

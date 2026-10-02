@@ -24,6 +24,15 @@ namespace maic {
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
 
+size_t whole_chars(const std::string& s, size_t n) {
+    size_t i = n;
+    while (i > 0 && n - i < 3 && (static_cast<unsigned char>(s[i - 1]) & 0xC0) == 0x80) --i;
+    if (i == 0) return n;
+    unsigned char lead = static_cast<unsigned char>(s[i - 1]);
+    size_t len = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+    return n - (i - 1) < len ? i - 1 : n;
+}
+
 namespace {
 
 constexpr size_t kHeadBytes = kOutputHeadBytes;
@@ -189,17 +198,6 @@ void absorb(std::string& out, size_t& total, const char* buf, size_t n) {
     if (out.size() > 4 * (kHeadBytes + kTailBytes)) {
         out.erase(kHeadBytes, out.size() - kHeadBytes - 2 * kTailBytes);
     }
-}
-
-// How much of `s`'s first `n` bytes to send so no UTF-8 character is cut in two: `n`, or less by the 1 to 3
-// bytes of a character that continues past it. Anything else (binary output) is sent as it is.
-size_t whole_chars(const std::string& s, size_t n) {
-    size_t i = n;
-    while (i > 0 && n - i < 3 && (static_cast<unsigned char>(s[i - 1]) & 0xC0) == 0x80) --i;
-    if (i == 0) return n;
-    unsigned char lead = static_cast<unsigned char>(s[i - 1]);
-    size_t len = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
-    return n - (i - 1) < len ? i - 1 : n;
 }
 
 // The tee in front of the result: spawn's loop hands it what it read and never waits on `on_output`, which a

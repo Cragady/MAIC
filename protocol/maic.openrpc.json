@@ -420,6 +420,14 @@
           "schema": {
             "$ref": "schemas/maic.schema.json#/$defs/Mode"
           }
+        },
+        {
+          "name": "confirm",
+          "description": "Auto under a dumb harness answers maic_confirm_required until a local client confirms it.",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
         }
       ],
       "result": {
@@ -429,7 +437,10 @@
         }
       },
       "x-maic-remote": true,
-      "x-maic-remote-partly": "mode: tighten freely, loosen up to edit; auto only after a step-up (refused until accounts register a verifier)"
+      "x-maic-remote-partly": "mode: tighten freely, loosen up to edit; auto only after a step-up (refused until accounts register a verifier)",
+      "x-maic-local-only-params": [
+        "confirm"
+      ]
     },
     {
       "name": "response.create",
@@ -463,10 +474,11 @@
         },
         {
           "name": "input",
-          "required": true,
+          "required": false,
           "schema": {
             "$ref": "openai/subset.json#/components/schemas/InputParam"
-          }
+          },
+          "description": "Required unless maic.now asks to deliver what is already queued."
         },
         {
           "name": "previous_response_id",
@@ -532,6 +544,19 @@
                 "type": "null"
               }
             ]
+          }
+        },
+        {
+          "name": "maic",
+          "description": "MAIC's own: `now` delivers the input into the running response at once, its model call abandoned (`:w now`); with no input, what is already queued goes in now.",
+          "required": false,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "now": {
+                "type": "boolean"
+              }
+            }
           }
         }
       ],
@@ -659,6 +684,193 @@
         }
       },
       "x-maic-remote": true
+    },
+    {
+      "name": "updateConversation",
+      "summary": "Renames a session (`:rename`): its title, announced in maic.session.title.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "conversation_id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "metadata",
+          "required": true,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "title"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "conversation",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/Conversation"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.session.command",
+      "summary": "A `:` command the engine owns, typed into any client (`line`, without its colon), or the answer to a question one asked (`ask` and `key`). Its events come as it causes them.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "line",
+          "description": "The command line without its colon: \"ban add foo\".",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "ask",
+          "description": "The id of a question a command asked.",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "key",
+          "description": "The answer: one of the question's keys.",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/CommandResult"
+        }
+      },
+      "x-maic-remote": true,
+      "x-maic-remote-partly": ":mode (tightening freely, loosening up to edit), :model, :think, :compact, :rename, :todo, :tools, :status, adding a :forbid term, lowering :budget and :trip; every other command, and a command's question, are local only",
+      "x-maic-local-only-params": [
+        "ask",
+        "key"
+      ]
+    },
+    {
+      "name": "maic.session.shell",
+      "summary": "`!cmd`: runs `command` in the user's own shell, unsandboxed, in the session's workspace; its output streams as maic.tool.output.delta with no output_index, and what it printed reaches the model as context. Answered when it ends. `interrupt` stops the one running.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "command",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "interrupt",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "item_id": {
+              "type": "string"
+            },
+            "interrupted": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "x-maic-remote": false
+    },
+    {
+      "name": "maic.approval.proposed",
+      "summary": "A waiting write's content after it, for a diff beside the approval (maic.approval.requested carries only proposed_size).",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "approval",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "name": "proposed",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "text"
+          ]
+        }
+      },
+      "x-maic-remote": false
     },
     {
       "name": "maic.event",
