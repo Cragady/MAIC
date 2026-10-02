@@ -24,6 +24,8 @@ python3 -c "import sys; p=open('page.html').read(); d=open('review.json').read()
 * Every box collapses to a one-line preview, per box, per card or for the whole page.
 * Saves go through a queue: each waits for the one before it.
 * Side Prompt floats: a fixed panel beside the page on wide screens, a chat button that opens a sheet on narrow ones. Its own Submit sends only it into `side_prompts`; one left unsent goes out with the overall Submit. The ↪ beside a box adds a `[[field id]]` reference.
+* Feedback where the user is: the Side Prompt panel reports every action (references, sends, saves, failures), mirrors the save status, and shows a banner for any page error. A side prompt clears only once the store confirms it; otherwise its text returns to the box. Saves time out after 10 seconds so one stuck write cannot block the queue. `events` keeps the last 30 actions for diagnosis, and the page shows its version.
+* References toggle (↪ reference / ↪ referenced), refuse an empty box, and show as chips with go and remove. History shows, per side prompt, the reply it followed, the prompt, and its reply, by id.
 * Most Recent Reply: the agent sorts its answer to a side prompt into the page first, then writes it to `review-replies/<id>` (a document only the agent writes); the side panel shows it with a link to where it was sorted. The overall Submit shows no reply: it stages the document for resolution (`doc_status: "staged"`) and says so there instead.
 * Mark for resolution: a checkbox before the final Submit; ticking it opens a confirm dialog (keyboard: Space, Confirm, then Enter or Space on Submit). It sets `resolve_requested`.
 * The user's prompts and the agent's messages are told apart by card color and label.
