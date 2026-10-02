@@ -195,6 +195,11 @@
         "client": {"type": "string", "minLength": 1},
         "origin": {"$ref": "#/$defs/Origin"},
         "capabilities": {"$ref": "#/$defs/Capabilities"},
+        "exclude": {
+          "description": "Every event type this connection is not sent: the hello's `exclude`, and the types of a capability it did not announce. The first event after filtered ones carries maic.filtered_from.",
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
         "limits": {
           "type": "object",
           "properties": {"always": {"type": "boolean"}, "max_message": {"type": "integer", "minimum": 1}},
@@ -203,7 +208,7 @@
         "tier": {"$ref": "#/$defs/Tier"},
         "path": {"$ref": "#/$defs/Path"}
       },
-      "required": ["protocol", "engine", "client", "origin", "capabilities", "limits", "tier", "path"]
+      "required": ["protocol", "engine", "client", "origin", "capabilities", "exclude", "limits", "tier", "path"]
     },
     "EngineStatus": {
       "description": "What maic-server's GET /api/status answered, the engine's part of it.",

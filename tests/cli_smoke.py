@@ -411,6 +411,24 @@ def rpc_smoke(maic, port):
     chk = subprocess.run([maic, "protocol", "check", rec], capture_output=True, text=True, env=env, cwd=home, timeout=60)
     report(chk.returncode == 0 and "2 streams, 0 with a violation" in chk.stdout, "client's and engine's recordings pass maic protocol check", chk.stdout + chk.stderr)
 
+    # A client that wants no text deltas: the done events carry the text, and maic.filtered_from accounts for the gaps.
+    rec2 = os.path.join(home, "rpc-filtered")
+    os.makedirs(rec2)
+    c = RpcClient(maic, dict(env, MAIC_PROTOCOL_RECORD=rec2), home, os.path.join(rec2, "client.jsonl"))
+    h = (c.call("maic.hello", {"protocol": 1, "client": {"name": "rpc-filter", "version": "0"}, "exclude": ["response.output_text.delta"]}) or {}).get("result", {})
+    sid = (c.call("createConversation") or {}).get("result", {}).get("id", "")
+    c.call("maic.session.subscribe", {"session": sid})
+    rid, done = turn("ping")
+    evs = c.events(sid)
+    text = "".join(e["text"] for e in evs if e["type"] == "response.output_text.done")
+    marked = [e for e in evs if "filtered_from" in e.get("maic", {})]
+    report(set(h.get("exclude", [])) == {"response.output_text.delta", "response.shell_call_output_content.delta", "maic.tool.output.delta"} and done
+           and not any(e["type"] == "response.output_text.delta" for e in evs) and "echo: ping" in text and marked,
+           "spares a filtered client its text deltas and marks the gap with maic.filtered_from", json.dumps([h, evs])[-3000:])
+    code = c.close()
+    chk = subprocess.run([maic, "protocol", "check", rec2], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    report(code == 0 and chk.returncode == 0 and "2 streams, 0 with a violation" in chk.stdout, "the filtered connection's recordings pass maic protocol check", chk.stdout + chk.stderr)
+
     # Faults, unrecorded: a line that is not JSON, then one over 1 MiB, which ends the connection.
     c = RpcClient(maic, env, home)
     c.send(None, raw=b"this is not json\n")

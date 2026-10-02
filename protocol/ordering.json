@@ -1,5 +1,5 @@
 {
-  "$comment": "The state machines of docs/design/engine-protocol.md section 10 as data: the engine's runtime ordering checks and the conformance checker (maic protocol check, ctest protocol_conformance) both load this file. A machine has states, an initial and terminal states, and transitions {from, on (event types), when (JSON pointer into the event: allowed values), key (JSON pointers naming the instance; the machine's key by default), to}. An event concerns a machine when one of its transitions lists the event's type and its `when` holds and its key is present; it must then be legal from the instance's state. `openai: true` machines also run over the OpenAI-only view (rule openai.view); `scope: response` instances live inside the open response; `one_open` and `closes` are the response machine's rules response.one_open and response.items_done. The rules that are not a single machine (sequence numbers, turns, schemas) are listed with their ids and implemented in core/src/protocol.cpp. The machine for reviews joins with step 10.",
+  "$comment": "The state machines of docs/design/engine-protocol.md section 10 as data: the engine's runtime ordering checks and the conformance checker (maic protocol check, ctest protocol_conformance) both load this file. A machine has states, an initial and terminal states, and transitions {from, on (event types), when (JSON pointer into the event: allowed values), key (JSON pointers naming the instance; the machine's key by default), to}. An event concerns a machine when one of its transitions lists the event's type and its `when` holds and its key is present; it must then be legal from the instance's state. `openai: true` machines also run over the OpenAI-only view (rule openai.view); `scope: response` instances live inside the open response; `one_open` and `closes` are the response machine's rules response.one_open and response.items_done. The rules that are not a single machine (sequence numbers, turns, schemas) are listed with their ids and implemented in core/src/protocol.cpp. `filter` lists the event types a connection may be spared (`filterable`, named in maic.hello's `exclude`) and the types a capability covers (sent only to a connection that announces it); rule seq.filtered. The machine for reviews joins with step 10.",
   "version": 1,
   "rules": [
     {
@@ -8,11 +8,15 @@
     },
     {
       "id": "seq.next",
-      "text": "Each event's sequence_number, or its maic.merged_from when it carries one, is one more than the last event's: a larger number is a gap."
+      "text": "Each event's sequence_number, or else its maic.filtered_from or maic.merged_from (in that order) when it carries one, is one more than the last event's: a larger number is a gap."
     },
     {
       "id": "seq.repeat",
       "text": "A sequence_number smaller than or equal to the last one within a load is a protocol violation."
+    },
+    {
+      "id": "seq.filtered",
+      "text": "A connection is sent no event of a type its maic.hello answer lists in `exclude`. The first event sent after filtered ones carries maic.filtered_from, the first number filtered out; a connection that excludes nothing never gets it."
     },
     {
       "id": "stream.id",
@@ -75,6 +79,10 @@
       "text": "With every maic.* event and every maic object removed, each event still fits OpenAI's ResponseStreamEvent and the response, item and content part machines still hold."
     }
   ],
+  "filter": {
+    "filterable": ["response.output_text.delta", "response.reasoning_text.delta", "response.shell_call_output_content.delta", "maic.tool.output.delta"],
+    "capabilities": {"tool_output": ["response.shell_call_output_content.delta", "maic.tool.output.delta"]}
+  },
   "machines": [
     {
       "name": "session",

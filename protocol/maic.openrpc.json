@@ -46,6 +46,12 @@
           }
         },
         {
+          "name": "exclude",
+          "description": "Event types the client does not want, from ordering.json's filter.filterable (the deltas: their item's done event carries what they did). A type the engine does not know is ignored; any other is refused with maic_not_filterable.",
+          "required": false,
+          "schema": {"type": "array", "items": {"type": "string", "minLength": 1}}
+        },
+        {
           "name": "view",
           "required": false,
           "schema": {

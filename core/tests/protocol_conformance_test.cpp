@@ -13,6 +13,8 @@
 #include <unistd.h>
 
 #include <filesystem>
+#include <map>
+#include <set>
 #include <fstream>
 #include <random>
 
@@ -421,7 +423,7 @@ int main() {
         TestClient a(*engine, two, Origin::Local, "tui");
         TestClient b(*engine, two, Origin::Remote, "phone");
         a.hello();
-        json hb = b.ok("maic.hello", {{"protocol", 1}, {"client", {{"name", "phone"}}}});
+        json hb = b.ok("maic.hello", {{"protocol", 1}, {"client", {{"name", "phone"}}}, {"capabilities", {"tool_output"}}});
         expect(hb["origin"] == "remote" && hb["limits"]["always"] == false, "a remote client is told it cannot answer always");
         a.ok("maic.session.subscribe", {{"session", sid}});
         b.ok("maic.session.subscribe", {{"session", sid}});
@@ -704,6 +706,61 @@ int main() {
         slow.finish();
     }
     recordings.push_back(&slow);
+
+    section("a filtered connection: what it excludes is accounted for by maic.filtered_from");
+    Recording filtered("filtered");
+    {
+        TestClient a(*engine, filtered, Origin::Local, "tui");
+        a.hello();
+        TestClient f(*engine, filtered, Origin::Local, "nvim");
+        expect(f.error("maic.hello", {{"protocol", 1}, {"client", {{"name", "nvim"}}}, {"exclude", {"response.completed"}}}) == "maic_not_filterable",
+               "a lifecycle event cannot be excluded");
+        json h = f.ok("maic.hello", {{"protocol", 1}, {"client", {{"name", "nvim"}}}, {"exclude", {"response.output_text.delta", "response.someday.delta"}}});
+        std::set<std::string> want = {"response.output_text.delta", "response.shell_call_output_content.delta", "maic.tool.output.delta"};
+        expect(h["exclude"].get<std::set<std::string>>() == want,
+               "the hello answers what the connection is spared: the deltas it excluded and the tool output it has no capability for, not a type the engine does not know");
+        a.ok("maic.session.subscribe", {{"session", sid}});
+        f.ok("maic.session.subscribe", {{"session", sid}});
+        a.pump(0ms);
+        f.pump(0ms);
+        size_t mark = a.events.size(), fmark = f.events.size();
+        a.ok("maic.session.set", {{"session", sid}, {"mode", "auto"}});
+        plan({shell("echo paw; echo tail")});
+        a.ok("response.create", {{"conversation", sid}, {"input", "wag"}});
+        expect(a.until_idle(mark) > 0 && f.until_idle(fmark) > 0, "both connections see the turn end");
+        a.ok("maic.session.set", {{"session", sid}, {"mode", "manual"}});
+        a.pump(100ms);
+        f.pump(100ms);
+        std::map<long, std::string> all;
+        for (size_t i = mark; i < a.events.size(); ++i) all[a.events[i]["sequence_number"]] = a.events[i]["type"];
+        bool spared = true, accounted = true;
+        size_t marked = 0;
+        long last = f.events[fmark - 1]["sequence_number"];
+        for (size_t i = fmark; i < f.events.size(); ++i) {
+            const json& e = f.events[i];
+            long n = e["sequence_number"];
+            spared = spared && !want.count(e["type"].get<std::string>());
+            long from = e.contains("/maic/filtered_from"_json_pointer) ? e["maic"]["filtered_from"].get<long>() : n;
+            marked += from != n;
+            accounted = accounted && from == last + 1;
+            for (long k = from; k < n; ++k) accounted = accounted && all.count(k) && want.count(all[k]);
+            last = n;
+        }
+        expect(spared && accounted && marked >= 2,
+               "the filtered connection gets none of those types, and every run of them is named by the next event's maic.filtered_from (" + std::to_string(marked) + " runs)");
+        expect(f.text(fmark).empty() && a.text(mark) == "echo: wag", "the full connection still streams the text");
+        // Handing off: a connection with no filter resumes from a number the filtered one holds.
+        long held = f.events[fmark + (f.events.size() - fmark) / 2]["sequence_number"];
+        TestClient g(*engine, filtered, Origin::Local, "phone");
+        g.hello();
+        json sub = g.ok("maic.session.subscribe", {{"session", sid}, {"starting_after", held}});
+        g.pump(100ms);
+        bool resumed = !g.events.empty() && g.events.front()["sequence_number"] == held + 1;
+        for (size_t i = 0; i < g.events.size(); ++i) resumed = resumed && g.events[i] == a.events[mark + (static_cast<size_t>(held + 1) - a.events[mark]["sequence_number"].get<size_t>()) + i];
+        expect(sub["replay_from"] == held + 1 && resumed, "the numbers are the session's: another connection resumes after one the filtered connection holds and gets the rest unfiltered");
+        filtered.finish();
+    }
+    recordings.push_back(&filtered);
 
     section("an in-process host's session: open_local, the `:` commands, `!cmd`, titles, delivering now");
     Recording host("local-host");
@@ -1017,6 +1074,41 @@ int main() {
         }, "turn.paused");
         mutate("a delta's text changed", [&](std::vector<json>& r) { r[deltas[0]]["msg"]["params"]["delta"] = "fennec"; }, "");
         mutate("a field added inside maic", [&](std::vector<json>& r) { r[deltas[0]]["msg"]["params"]["maic"] = {{"note", "fine"}}; }, "");
+        {
+            // The filtered recording: a marker removed leaves a gap; an excluded type sent, or a marker on a connection that filters nothing, breaks seq.filtered.
+            auto marked = [](const std::vector<json>& r, const std::string& conn) {
+                for (size_t i = 0; i < r.size(); ++i) {
+                    if (r[i]["conn"] == conn && r[i]["msg"].contains("/params/maic/filtered_from"_json_pointer)) return i;
+                }
+                return r.size();
+            };
+            std::string nvim, tui;
+            for (const auto& rec : filtered.records) {
+                if (rec["dir"] != "in" || rec["msg"]["method"] != "maic.hello") continue;
+                if (rec["msg"]["params"]["client"]["name"] == "nvim") nvim = rec["conn"];
+                else if (tui.empty()) tui = rec["conn"];  // the full connection said hello first
+            }
+            std::vector<json> r = filtered.records;
+            size_t at = marked(r, nvim);
+            r[at]["msg"]["params"]["maic"].erase("filtered_from");
+            std::string got = verdict(r);
+            expect(got == "seq.next", "a filtered_from removed is a gap (" + got + ")");
+            r = filtered.records;
+            json sneak = r[at]["msg"];
+            sneak["params"] = {{"type", "response.output_text.delta"}, {"sequence_number", r[at]["msg"]["params"]["sequence_number"]}, {"stream_id", sid},
+                               {"item_id", "x"}, {"output_index", 0}, {"content_index", 0}, {"delta", "fennec"}, {"logprobs", json::array()}};
+            r[at]["msg"] = sneak;
+            got = verdict(r);
+            expect(got == "seq.filtered", "an excluded type sent to the connection is caught (" + got + ")");
+            r = filtered.records;
+            for (size_t i = 0; i < r.size(); ++i) {
+                if (r[i]["conn"] == tui && r[i]["dir"] == "out" && r[i]["msg"].value("method", "") == "maic.event" && r[i]["msg"]["params"]["sequence_number"] == r[at]["msg"]["params"]["sequence_number"]) {
+                    r[i]["msg"]["params"]["maic"]["filtered_from"] = r[at]["msg"]["params"]["maic"]["filtered_from"];
+                }
+            }
+            got = verdict(r);
+            expect(got == "seq.filtered", "a filtered_from on a connection that excludes nothing is caught (" + got + ")");
+        }
         std::vector<json> r = tool.records;
         size_t req = events_of(r, "maic.approval.requested")[0];
         r.erase(r.begin() + static_cast<long>(req));

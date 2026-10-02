@@ -217,6 +217,8 @@ struct Client {
     std::string closed;
     std::set<std::string> sessions;  // subscribed to
     bool index = false;              // subscribed to maic.index
+    std::set<std::string> exclude;          // event types its hello filters out
+    std::map<std::string, long> skip_from;  // per session: the first number filtered out since the last event sent
     struct Bucket {
         double budget = kRemoteOutputRate;
         Clock::time_point at = Clock::now();
@@ -253,6 +255,10 @@ struct Client {
         {
             std::lock_guard lock(mu);
             if (!closed.empty()) return;
+            if (exclude.count(type)) {
+                skip_from.try_emplace(e.value("stream_id", ""), e["sequence_number"].get<long>());
+                return;
+            }
             if ((shell || script) && !e.contains("/maic/skipped"_json_pointer) && !e.contains("skipped")) {
                 size_t data = shell ? e["delta"].value("stdout", "").size() + e["delta"].value("stderr", "").size() : e.value("data", "").size();
                 bool skip = bytes > kSlowQueue;
@@ -286,8 +292,14 @@ struct Client {
                     last["maic"]["merged_from"] = from;
                     queue.back().second += more.size();
                     bytes += more.size();
+                    skip_from.erase(e.value("stream_id", ""));  // the merged delta's range covers them
                     return;
                 }
+            }
+            if (auto f = skip_from.find(e.value("stream_id", "")); f != skip_from.end()) {
+                if (!changed) changed = e;
+                (*changed)["maic"]["filtered_from"] = f->second;
+                skip_from.erase(f);
             }
         }
         const json& out = changed ? *changed : e;
@@ -761,6 +773,26 @@ struct Engine::Impl {
         if (p.value("protocol", 0) < kProtocol) {
             throw refuse("maic_unsupported_protocol", "this engine speaks protocol " + std::to_string(kProtocol) + " to " + std::to_string(kProtocol), "protocol");
         }
+        // The event types the connection is not sent: those of a capability it lacks, and the deltas it excludes.
+        const json& filter = protocol::Schemas::get().ordering().at("filter");
+        std::set<std::string> exclude;
+        json caps = p.value("capabilities", json::array());
+        for (const auto& [cap, types] : filter.at("capabilities").items()) {
+            if (std::find(caps.begin(), caps.end(), cap) == caps.end()) exclude.insert(types.begin(), types.end());
+        }
+        const json& filterable = filter.at("filterable");
+        auto known = protocol::Schemas::get().event_types();
+        for (const auto& t : p.value("exclude", json::array())) {
+            if (std::find(filterable.begin(), filterable.end(), t) != filterable.end()) {
+                exclude.insert(t.get<std::string>());
+            } else if (std::find(known.begin(), known.end(), t.get<std::string>()) != known.end()) {
+                throw refuse("maic_not_filterable", t.get<std::string>() + " cannot be filtered out: only deltas can, since their item's done event carries what they did", "exclude");
+            }
+        }
+        {
+            std::lock_guard lock(c.mu);
+            c.exclude = exclude;
+        }
         c.hello = true;
         // A local client names itself; a remote one is named by its token or pairing (section 2).
         if (c.origin == Origin::Local && p.contains("client") && p["client"].is_object()) {
@@ -771,6 +803,7 @@ struct Engine::Impl {
                 {"client", c.id},
                 {"origin", origin_name(c.origin)},
                 {"capabilities", {"tool_output", "index"}},
+                {"exclude", exclude},
                 {"limits", {{"always", c.origin == Origin::Local}, {"max_message", kMaxMessage}}},
                 {"tier", options.tier},
                 {"path", {{"via", c.via}}}};
@@ -960,6 +993,7 @@ struct Engine::Impl {
         {
             std::lock_guard lock(c.mu);
             c.sessions.insert(s.id);
+            c.skip_from.erase(s.id);
         }
         if (replay) {
             for (const auto& [e, size] : s.ring) {
@@ -988,6 +1022,7 @@ struct Engine::Impl {
         s->subscribers.erase(std::remove(s->subscribers.begin(), s->subscribers.end(), self), s->subscribers.end());
         std::lock_guard cl(c.mu);
         c.sessions.erase(s->id);
+        c.skip_from.erase(s->id);
         return json::object();
     }
 

@@ -71,7 +71,7 @@ struct Conn {
     int next = 1;
 
     Conn(Engine& e, const std::string& name) : engine(e), id(e.connect(Origin::Remote, name, "http")) {
-        call("maic.hello", {{"protocol", 1}, {"client", {{"name", name}}}});
+        call("maic.hello", {{"protocol", 1}, {"client", {{"name", name}}}, {"capabilities", {"tool_output"}}});
     }
     ~Conn() { engine.disconnect(id); }
     Conn(const Conn&) = delete;
