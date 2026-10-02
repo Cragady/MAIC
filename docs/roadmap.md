@@ -117,6 +117,14 @@ Micaiah's design (2026-10-02): MAIC makes artifacts (pages, forms, reports) from
 * **One adapter between views, for every artifact** (Micaiah, 2026-10-02): a general translator that maps an artifact between the places it can be used (the web page, MAIC's TUI, the `--bare` TUI, nvim) and states, per view, which functions are available and how each is reached (buttons, keychords, commands), normalizing what a view lacks instead of failing. It belongs to artifact creation, not to any one template, and sits beside the layout translation of item 5 (one layout file rendered in the maic, bare and nvim views).
 * **First template, adopted at once**: `templates/comfymaid-review/` (a reply box per paragraph and list item, decisions first, 500 ms debounced saves, Submit that flushes and marks the review, combine and back-to-default that never drop text). Future improvement: adding more textareas than the blocks give.
 
+### 13. Terminal hyperlinks, and agent-proposed global changes
+
+From a double-opening link in Konsole ([terminal-links.md](references/terminal-links.md)), Micaiah, 2026-10-02:
+
+* **A `hyperlinks` setting** for whether MAIC's TUI prints links as OSC 8 hyperlinks: a global setting with a per-session override, and no command-line flag, since the problem only shows in an interactive terminal and only calls for a change once someone sees it.
+* **When the agent notices the problem** (a user reports links opening twice), it offers to change the global setting and asks for a clear, unambiguous confirmation, in the same spirit as `--rewrite-session`'s exact phrase. Any other answer leaves the setting unchanged, and the agent says so plainly. If the user then asks for the change directly, the agent makes it. The failure is always in the safe direction: no accidental global change.
+* **The same flow for any global change an agent proposes**: the agent may offer, only an exact confirmation or a direct request applies it, and anything less is reported as "unchanged".
+
 ## Real-model checks (optional, highly recommended)
 
 Everything below is covered by tests against fake servers; these runs confirm it against real models on the card, in a window Micaiah offers. Each takes minutes. Tick them off here as they are run.
