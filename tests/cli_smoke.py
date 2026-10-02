@@ -264,7 +264,7 @@ def output_smoke(maic, env, sess_dir):
     sel = selectors.DefaultSelector()
     sel.register(p.stdout, selectors.EVENT_READ, "o")
     sel.register(p.stderr, selectors.EVENT_READ, "e")
-    seen, start, label = [], None, b""
+    seen, start, label, label_done = [], None, b"", False
     while sel.get_map():
         for key, _ in sel.select(timeout=10):
             got = os.read(key.fileobj.fileno(), 65536)
@@ -272,8 +272,13 @@ def output_smoke(maic, env, sess_dir):
                 sel.unregister(key.fileobj)
                 continue
             start = start or time.monotonic()  # the clock starts with the first thing out, the label or the first chunk
-            if key.data == "e" and not label:
-                label, _, got = got.partition(b"\n")  # the label is stderr's first line
+            if key.data == "e" and not label_done:
+                # The label is stderr's first line; it may arrive over several reads, so gather it to its newline.
+                label += got
+                if b"\n" not in label:
+                    continue
+                label, _, got = label.partition(b"\n")
+                label_done = True
                 if not got:
                     continue
             seen.append((key.data, got.decode(), (time.monotonic() - start) * 1000))
