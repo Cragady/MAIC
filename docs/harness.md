@@ -1,5 +1,7 @@
 # Harness
 
+When another tool with its own harness is in the loop, which harness judges each action is set out in [harness-authority.md](harness-authority.md).
+
 The harness is what stops a MAIC agent from damaging the machine it runs on. It lives in the C++ core, and every action an agent takes goes through it. Nothing a model or tool says can switch it off.
 
 ## Directory trust and restricted settings Lua (built)

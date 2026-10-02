@@ -374,3 +374,10 @@ Steps 1 and 2 are small and stand alone; 3 helps the TUI the day it lands; 4 to 
 10. **The ring's size.** Recommendation: 10,000 events or 8 MiB per loaded session, in memory only; a reconnect after longer than that resyncs from the file, which is cheap with lazy history.
 11. **Typing presence ("the phone is typing").** Recommendation: no; every input names its client, which is enough.
 12. **The `maic-server` name.** Recommendation: keep `maic server start` working as `maic daemon start` with the listener on until the adapter is removed, then retire the separate binary; `maic-relay` stays its own binary.
+
+## Addendum: review streams and the judge of each action (2026-10-01)
+
+Micaiah's two streaming paths, specified in [harness-authority.md](../harness-authority.md), are part of this protocol:
+* `review.started` {session, item, action, reviewer_model} when MAIC sends a proposed action to its reviewer; `review.delta` {text} only if the reviewer streams its reasoning and the client subscribed to it; `review.verdict` {verdict: allow|ask|deny, reason, model, tokens}. These belong to the local round trip and appear between the reply's tool-call event and the action's output events.
+* Every `tool.started` and `tool.finished` carries `judged_by`: `"maic"` (MAIC's harness reviewed it), `"rules"` (only the fixed rules applied, as in a dumb harness), or the external agent's name (`"claude-code"`) when that agent's own harness approved it on the remote path, where no `review.*` events occur.
+
