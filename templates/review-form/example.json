@@ -2,6 +2,9 @@
  "id": "example-review",
  "title": "Example review",
  "since": "Your message \"Start here\"",
+ "misc": [
+  {"id": "x01", "who": "claude", "label": "Something that fits nowhere else", "at": "2026-10-02T12:00:00Z", "addressed": false, "text": "A note."}
+ ],
  "issues": [
   {"id": "pick-name", "title": "Pick a name", "context": "Two candidates.", "addressed": false,
    "fields": [{"id": "pick-name-answer", "label": "Your call"}]}

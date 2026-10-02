@@ -43,7 +43,7 @@ def blocks(mid, text):
     return out
 
 src = json.load(open(sys.argv[1]))
-for m in src["messages"]:
+for m in src["messages"] + src.get("misc", []):
     m["blocks"] = blocks(m["id"], m.pop("text"))
 json.dump(src, open(sys.argv[2], "w"), indent=1, ensure_ascii=False)
 print(sum(len(m["blocks"]) for m in src["messages"]), "blocks in", len(src["messages"]), "messages,", len(src["issues"]), "issues")

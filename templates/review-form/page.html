@@ -86,6 +86,10 @@ button:disabled { opacity: .5; cursor: default; }
   </div>
   <section aria-labelledby="h-issues"><h2 id="h-issues">Decisions waiting on you</h2><div id="issues" class="row-list"></div></section>
   <section aria-labelledby="h-msgs"><h2 id="h-msgs">The conversation since you stopped reading</h2><div id="messages"></div></section>
+  <section aria-labelledby="h-misc" id="misc-sec"><h2 id="h-misc">Misc / Uncovered / Ungrouped</h2><p class="note">Things that don't slot in above, oldest first.</p><div id="misc"></div></section>
+  <section aria-labelledby="h-after"><h2 id="h-after">After Prompt</h2><p class="note">Anything you'd otherwise send as a separate message, so threads don't drift apart.</p><div id="after"></div>
+    <div class="row"><button class="primary" id="submit-end" type="button">Submit</button><span class="note">Tab here from the last box; Enter or Space submits.</span></div>
+  </section>
 </div>
 
 <script type="application/json" id="review-data">__REVIEW_DATA__</script>
@@ -98,6 +102,25 @@ button:disabled { opacity: .5; cursor: default; }
   // state: answers by field id; addressed overrides; merges by id; kept text from damaged combines.
   var state = { answers: {}, addressed: {}, merges: {}, kept: {}, submitted: false, submittedAt: null, savedAt: null };
   var db = null, comments = null, saving = false, dirty = false, timer = null;
+  var KEY = {
+    version: 1,
+    note: "One-off definition: this key describes how this submission's data is laid out. It holds until the next submit from this page; that submit carries its own key, the same one if nothing is applied differently, a changed one if it is.",
+    answers: "Reply text by field id.",
+    ids: {
+      "<message>-b<n>": "box under paragraph or code block n of a message (m01, m02, ...)",
+      "<message>-b<n>-h": "box under the header of list block n",
+      "<message>-b<n>-i<k>": "box under item k of list block n",
+      "<issue field id>": "a decision box; each issue lists its field ids",
+      "<issue id>-more": "the More box of an issue (a bulleted list, one bullet per line)",
+      "<misc id>-b<n>...": "boxes under Misc / Uncovered / Ungrouped items, same pattern as messages",
+      "after-prompt": "the After Prompt box"
+    },
+    addressed: "Card id to true or false, only where the viewer changed it from the page's default.",
+    merges: "Combined boxes by merge id: card, members (field ids in order), text (each part starts with a line '\u2500\u2500 <field id> \u2500\u2500'), originals (each member's text when combined). A member's own answers entry is stale while it is merged; read the merge text.",
+    kept: "Field id to combined text kept beside that box after a back-to-default whose marker lines were damaged.",
+    submitted: "true after Submit; editing afterwards sets it back to false.",
+    times: "submittedAt and savedAt are ISO 8601 UTC."
+  };
 
   function $(id) { return document.getElementById(id); }
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
@@ -123,6 +146,7 @@ button:disabled { opacity: .5; cursor: default; }
     if (saving) { dirty = true; return inflight; }
     dirty = false; saving = true;
     state.savedAt = new Date().toISOString();
+    state.key = KEY;
     var snap = JSON.parse(JSON.stringify(state));
     try { localStorage.setItem(LOCAL, JSON.stringify(snap)); } catch (e) {}
     var p = db ? db.doc(DOC).set(snap) : Promise.resolve("local");
@@ -259,6 +283,17 @@ button:disabled { opacity: .5; cursor: default; }
       m.blocks.forEach(function (b) { renderBlock(b, c.body); });
       c.body.appendChild(c.tools); ms.appendChild(c.card);
     });
+    var mc = $("misc"); mc.textContent = "";
+    var misc = (DATA.misc || []).slice().sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0; });
+    $("misc-sec").hidden = !misc.length;
+    misc.forEach(function (m) {
+      var c = card(m, m.who, m.label);
+      if (m.at) c.body.appendChild(el("p", "note", new Date(m.at).toLocaleString()));
+      m.blocks.forEach(function (b) { renderBlock(b, c.body); });
+      c.body.appendChild(c.tools); mc.appendChild(c.card);
+    });
+    var af = $("after"); af.textContent = "";
+    var ap = field("after-prompt", "After Prompt"); ap.querySelector("textarea").rows = 6; af.appendChild(ap);
     document.querySelectorAll("details.card").forEach(function (d) { if (d.id in openNow) d.open = openNow[d.id]; });
     counts();
   }
@@ -275,15 +310,23 @@ button:disabled { opacity: .5; cursor: default; }
   }
 
   // ---- submit ----
-  $("submit").addEventListener("click", function () {
+  var pressed = null;
+  function onSubmit(e) {
+    pressed = e.currentTarget;
     var left = openFields().filter(function (id) { return !answered(id); }).length;
-    if (left) { $("confirm-text").textContent = left + " decision box" + (left === 1 ? " is" : "es are") + " still empty."; $("confirm").hidden = false; return; }
+    if (left) {
+      $("confirm-text").textContent = left + " decision box" + (left === 1 ? " is" : "es are") + " still empty.";
+      pressed.parentNode.insertAdjacentElement("afterend", $("confirm"));
+      $("confirm").hidden = false; $("confirm-yes").focus(); return;
+    }
     submit();
-  });
+  }
+  $("submit").addEventListener("click", onSubmit);
+  $("submit-end").addEventListener("click", onSubmit);
   $("confirm-no").addEventListener("click", function () { $("confirm").hidden = true; });
   $("confirm-yes").addEventListener("click", function () { $("confirm").hidden = true; submit(); });
   function submit() {
-    var btn = $("submit");
+    var btn = pressed || $("submit");
     state.submitted = true; state.submittedAt = new Date().toISOString();
     flush().then(function () {
       counts();

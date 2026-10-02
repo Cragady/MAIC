@@ -13,6 +13,8 @@ python3 -c "import sys; p=open('page.html').read(); d=open('review.json').read()
 
 ## Behaviour
 
+* `misc` (optional, same shape as a message plus `at`, an ISO time) fills the Misc / Uncovered / Ungrouped section, sorted oldest first. An After Prompt box and a second Submit close the page, so the keyboard reaches Submit by tabbing from the last box.
+* Every save carries `key`: a one-off definition of the data's layout (field id patterns, merges and their marker lines, `kept`, `addressed`, `submitted`). It holds until the next submit, which carries its own key, the same one unless the data is applied differently.
 * Every box saves 500 ms after the last keystroke, one write at a time. Submit waits for any save in flight, then writes everything at once and marks the review submitted; editing afterwards clears the mark.
 * State is one document, `review/<id>`: `answers` by field id, `addressed` overrides, `merges`, `kept`, `submitted`, `submittedAt`, `savedAt`. It is plain JSON for an agent to read.
 * Combine boxes: pick boxes within one card and combine them. The combined text marks each part with a `── <field id> ──` line. Back to default splits it along those lines, edits included; if the lines were damaged, the boxes return to what they held before combining and the whole combined text is kept in a box beside the first one. Nothing typed is ever dropped.
