@@ -37,6 +37,7 @@ struct ApprovalRequest {
     std::string preview;        // for writes: the lines that would change
     std::filesystem::path path;  // the file or directory the action is about; empty for a command
     std::optional<std::string> proposed;  // for a write_file, edit_file, multi_edit or apply_patch: the file's content after it
+    std::string agent;                    // a subagent's request: the agent asking ("" for the session's own)
 };
 
 // The user's answer; `feedback` is a sentence for the model when the answer is No ("use the test config").
@@ -58,6 +59,9 @@ public:
     virtual ~AgentEvents() = default;
     virtual void on_text(std::string_view delta, bool thinking) = 0;
     virtual void on_tool_call(const std::string& summary) = 0;
+    // Right before on_tool_call: the call as the model gave it (its id, name and arguments). A subagent's arrive
+    // while the parent's task call runs, with the id as "<agent>:<call id>".
+    virtual void on_tool_proposed(const ToolCall& call) { (void)call; }
     virtual void on_tool_result(const std::string& text, bool ok) = 0;
     virtual void on_notice(const std::string& text) = 0;
     // Blocks until the user answers.
@@ -118,11 +122,19 @@ public:
     std::string add_context_file(const std::filesystem::path& path);
 
     // Messages typed while a turn is running. They reach the model at its next call in the current turn;
-    // deliver_now() also aborts the model call in progress so the next one starts at once. Thread-safe.
-    void post_message(const std::string& text);
+    // deliver_now() also aborts the model call in progress so the next one starts at once. Thread-safe. A message
+    // from a remote client raises the turn's origin to Remote once it is delivered (docs/design/engine-protocol.md,
+    // section 6): what the model does next is shaped by remote input, so the rest of the turn is asked as remote.
+    void post_message(const std::string& text, Origin origin = Origin::Local);
     void deliver_now();
     size_t queued() const;
-    std::vector<std::string> take_queued();
+    struct Queued {
+        std::string text;
+        Origin origin;
+    };
+    std::vector<Queued> take_queued();
+    // The running turn's origin: submit's, raised to Remote when a remote message was delivered into it.
+    Origin turn_origin() const { return turn_origin_.load(); }
 
     // Every turn is also written here when set.
     void set_log(SessionLog* log);
@@ -333,7 +345,8 @@ private:
     mutable std::mutex usage_mu_;
     UsageReport usage_;
     mutable std::mutex mailbox_mu_;
-    std::deque<std::string> mailbox_;
+    std::deque<Queued> mailbox_;
+    std::atomic<Origin> turn_origin_{Origin::Local};
     std::vector<ImageData> pending_images_;
     std::atomic<bool> deliver_now_{false};
     bool drain_mailbox();  // appends queued messages as user turns; true if any

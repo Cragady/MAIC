@@ -55,6 +55,11 @@ struct ChildEvents : AgentEvents {
     ChildEvents(AgentEvents& parent, std::string agent) : parent(parent), agent(std::move(agent)) {}
     void on_text(std::string_view, bool) override {}
     void on_tool_call(const std::string& summary) override { parent.on_tool_call("↳ " + agent + ": " + summary); }
+    void on_tool_proposed(const ToolCall& call) override {
+        ToolCall named = call;
+        named.id = agent + ":" + call.id;
+        parent.on_tool_proposed(named);
+    }
     void on_tool_result(const std::string& text, bool ok) override { parent.on_tool_result(text, ok); }
     void on_notice(const std::string& text) override { parent.on_notice(agent + ": " + text); }
     void on_tool_started(const std::string& tool, const std::string& path, const std::string& summary) override {
@@ -68,6 +73,7 @@ struct ChildEvents : AgentEvents {
     ApprovalAnswer ask(const ApprovalRequest& request) override {
         ApprovalRequest r = request;
         r.summary = agent + ": " + request.summary;
+        if (r.agent.empty()) r.agent = agent;
         return parent.ask(r);
     }
 };
@@ -549,9 +555,9 @@ std::string Agent::add_context_file(const std::filesystem::path& path) {
     return "attached " + label + " (" + std::to_string(text.size()) + " bytes) as context";
 }
 
-void Agent::post_message(const std::string& text) {
+void Agent::post_message(const std::string& text, Origin origin) {
     std::lock_guard lock(mailbox_mu_);
-    mailbox_.push_back(text);
+    mailbox_.push_back({text, origin});
 }
 
 void Agent::deliver_now() {
@@ -563,27 +569,33 @@ size_t Agent::queued() const {
     return mailbox_.size();
 }
 
-std::vector<std::string> Agent::take_queued() {
+std::vector<Agent::Queued> Agent::take_queued() {
     std::lock_guard lock(mailbox_mu_);
-    std::vector<std::string> out(mailbox_.begin(), mailbox_.end());
+    std::vector<Queued> out(mailbox_.begin(), mailbox_.end());
     mailbox_.clear();
     return out;
 }
 
 bool Agent::drain_mailbox() {
-    std::deque<std::string> pending;
+    std::deque<Queued> pending;
     {
         std::lock_guard lock(mailbox_mu_);
         pending.swap(mailbox_);
     }
-    for (const auto& text : pending) {
-        if (log_) log_->write("user", {{"text", text}, {"queued", true}});
-        push({"user", with_operator_note(text)});
+    for (const auto& q : pending) {
+        nlohmann::json record = {{"text", q.text}, {"queued", true}};
+        if (q.origin == Origin::Remote) {
+            record["origin"] = "remote";
+            turn_origin_ = Origin::Remote;
+        }
+        if (log_) log_->write("user", record);
+        push({"user", with_operator_note(q.text)});
     }
     return !pending.empty();
 }
 
 void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel) {
+    turn_origin_ = origin;
     start_or_update_conversation();
     if (agent_name_.empty()) {
         // The agents and the model can change between turns, and with them what task may use.
@@ -632,6 +644,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
     denials_ = 0;
     for (int step = 0; step < max_steps; ++step) {
         if (drain_mailbox()) events.on_notice("delivered your queued message");
+        origin = turn_origin_;  // a remote message delivered into the turn makes the rest of it remote
         if (budget_tokens > 0) {
             UsageReport u = usage();
             if (u.total_input + u.total_output >= budget_tokens) {
@@ -877,6 +890,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
     };
 
     std::string summary = tool_summary(call.name, call.arguments);
+    events.on_tool_proposed(call);
     events.on_tool_call(summary);
     {
         std::string named;

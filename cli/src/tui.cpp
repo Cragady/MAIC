@@ -1758,7 +1758,7 @@ void App::start_turn(const std::string& text_in) {
             // Messages queued after the turn's last model call start a new turn on their own.
             if (cancel_.load() || agent_.queued() == 0) break;
             next.clear();
-            for (const auto& p : agent_.take_queued()) next += (next.empty() ? "" : "\n\n") + p;
+            for (const auto& p : agent_.take_queued()) next += (next.empty() ? "" : "\n\n") + p.text;
         }
         if (lazy_lock_) screen_.Post([this, lock = lazy_lock_->check()] { maybe_check_keymaps(lock); });
         busy_ = false;

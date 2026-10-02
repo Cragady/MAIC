@@ -4,6 +4,7 @@
 // the OpenRPC document and the union, and every JSON example in the design validates.
 #include "check.hpp"
 
+#include "maic/engine.hpp"
 #include "maic/jsonschema.hpp"
 #include "maic/protocol.hpp"
 
@@ -151,6 +152,25 @@ int main() {
         for (const char* n : {"maic.event", "maic.index", "maic.engine"}) {
             expect(schemas.method(n) && schemas.method(n)->notification, std::string(n) + " is a notification: a method with no result");
         }
+    }
+
+    section("the engine and the documents match");
+    {
+        std::vector<std::string> dispatched = Engine::methods(), described = schemas.methods();
+        std::sort(dispatched.begin(), dispatched.end());
+        std::sort(described.begin(), described.end());
+        std::string missing, extra;
+        for (const auto& m : dispatched) {
+            if (!has(described, m)) missing += " " + m;
+        }
+        for (const auto& m : described) {
+            if (!has(dispatched, m)) extra += " " + m;
+        }
+        expect(missing.empty() && extra.empty(), "every method in the dispatcher is in maic.openrpc.json and the reverse" + missing + extra);
+        std::vector<std::string> emitted = Engine::event_types(), union_ = schemas.event_types();
+        std::sort(emitted.begin(), emitted.end());
+        std::sort(union_.begin(), union_.end());
+        expect(emitted == union_, "every event type the engine emits is in event.schema.json's union and the reverse (" + std::to_string(union_.size()) + ")");
     }
 
     section("ordering.json names real events and reachable states");
