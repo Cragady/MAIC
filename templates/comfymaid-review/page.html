@@ -109,6 +109,13 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
 .hist .lbl { font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; font-weight: 700; color: var(--muted); }
 .hist p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .hist .reply { border-left: 3px solid var(--addr); padding-left: 8px; }
+.comp { background: var(--surface); border: 1px dashed var(--accent); border-radius: 8px; padding: 12px 14px; display: grid; gap: 10px; }
+.comp-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.comp-head h2 { font-size: 1.05rem; }
+.ctr { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px; font-variant-numeric: tabular-nums; }
+.ctr div { background: var(--accent-soft); border-radius: 6px; padding: 6px 8px; }
+.ctr b { display: block; font-size: 1.3rem; }
+.target { font-size: 1.05rem; padding: 14px 18px; }
 .splitbox { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
 .rel { border: 0; padding: 0; margin: 0; display: grid; gap: 4px; }
 .moved { font-size: .78rem; color: var(--accent); }
@@ -157,6 +164,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     <span id="confirm-text"></span>
     <div class="row"><button class="primary" id="confirm-yes" type="button">Submit anyway</button><button id="confirm-no" type="button">Keep answering</button></div>
   </div>
+  <div id="components" class="list"></div>
   <div class="docstate" id="docstate"></div>
   <section aria-labelledby="h-split" class="splitbox"><h2 id="h-split">Split and lineage</h2>
     <div id="lineage" class="list"></div>
@@ -212,7 +220,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   var LOCAL = "review-draft:" + DATA.id;
   var STATES = ["open", "addressed", "resolved"];
   var state = { answers: {}, status: {}, doc_status: "open", folded: {}, merges: {}, kept: {}, side_prompts: [], splits: [], picked: {}, flags: { ctrl_g_bridge: false }, resolve_requested: false, submitted: false, submittedAt: null, savedAt: null };
-  var VERSION = 14;
+  var VERSION = 15;
   var VIEW = "v" + Math.random().toString(36).slice(2, 10);
   var role = "editor"; // one view edits at a time; the others watch live and write nothing
   var leaseTimer = null, wantTimer = null, unsubMain = null, unsubWant = null;
@@ -779,6 +787,60 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     }, function (e) { $("take").disabled = false; setStatus("Couldn't ask for editing (" + (e && e.code || "error") + ").", true); });
   });
   document.addEventListener("visibilitychange", function () { if (!document.hidden && db) holdLease(); });
+  // ---- template components: self-contained pieces that pop in and out of any page ----
+  var COMPONENTS = {
+    "click-test": function (box, def) {
+      // In memory only: counts mouse events so a double-firing mouse shows up. Nothing here is saved.
+      var c = { mousedown: 0, mouseup: 0, click: 0, dblclick: 0, ctrlclick: 0, auxclick: 0 }, last = 0, gaps = [];
+      box.appendChild(el("p", "note", "Click the button, or Ctrl+click the test link, once. Two clicks closer than 80 ms apart are flagged as a double fire."));
+      var row = el("div", "row");
+      var b = btn("Click me once", "target"); var a = el("a", null, "Ctrl+click this test link"); a.href = "#click-test";
+      row.appendChild(b); row.appendChild(a); box.appendChild(row);
+      var ctr = el("div", "ctr"); box.appendChild(ctr);
+      var flag = el("p", "fb"); box.appendChild(flag);
+      function show() {
+        ctr.textContent = "";
+        [["mousedown", "presses"], ["mouseup", "releases"], ["click", "clicks"], ["dblclick", "double-clicks"], ["ctrlclick", "Ctrl+clicks"], ["auxclick", "middle/other"]].forEach(function (k) { var d = el("div"); d.appendChild(el("b", null, String(c[k[0]]))); d.appendChild(document.createTextNode(k[1])); ctr.appendChild(d); });
+        var g = el("div"); g.appendChild(el("b", null, gaps.length ? gaps[gaps.length - 1] + " ms" : "–")); g.appendChild(document.createTextNode("since previous click")); ctr.appendChild(g);
+      }
+      function hit(e) {
+        var now = performance.now();
+        if (e.type === "click") {
+          c.click++; if (e.ctrlKey || e.metaKey) c.ctrlclick++;
+          if (last) { var gap = Math.round(now - last); gaps.push(gap); if (gap < 80) { flag.textContent = "Double fire: two clicks " + gap + " ms apart from one press."; flag.className = "fb err"; } }
+          last = now;
+        } else c[e.type]++;
+        show();
+      }
+      [b, a].forEach(function (t) { ["mousedown", "mouseup", "click", "dblclick", "auxclick"].forEach(function (ev) { t.addEventListener(ev, function (e) { if (t === a) e.preventDefault(); hit(e); }); }); });
+      var reset = btn("Reset counts", "small"); reset.addEventListener("click", function () { Object.keys(c).forEach(function (k) { c[k] = 0; }); last = 0; gaps = []; flag.textContent = ""; show(); });
+      box.appendChild(reset);
+      var lab = el("label", "fl", "Message with the count (optional)"); lab.htmlFor = "ct-msg"; var ta = el("textarea"); ta.id = "ct-msg"; ta.rows = 2;
+      box.appendChild(lab); box.appendChild(ta);
+      var send = btn("Submit click", "primary"), msg = el("p", "fb");
+      send.addEventListener("click", function () {
+        var text = "Click test: " + c.mousedown + " presses, " + c.click + " clicks, " + c.ctrlclick + " Ctrl+clicks, " + c.dblclick + " double-clicks" + (gaps.length ? ", gaps " + gaps.slice(-5).join("/") + " ms" : "") + (ta.value.trim() ? ". " + ta.value.trim() : "");
+        if (!comments || notifyState !== "available") { msg.textContent = "Can't reach Claude from this view: " + why(notifyState) + "."; msg.className = "fb err"; return; }
+        send.disabled = true; msg.textContent = "Sending…"; msg.className = "fb ok";
+        comments.anchorFor(send).then(function (an) { return comments.sendToClaude({ anchor: an, text: text }); }).then(function () {
+          ta.value = ""; msg.textContent = "Sent; Claude received it. Claude's answer appears in this comment thread."; msg.className = "fb ok"; send.disabled = false;
+        }, function (e) { msg.textContent = "Not sent (" + (e && e.code || "error") + ")."; msg.className = "fb err"; send.disabled = false; });
+      });
+      var r2 = el("div", "row"); r2.appendChild(send); box.appendChild(r2); box.appendChild(msg);
+      show();
+    }
+  };
+  var removed = {};
+  function mountComponents() {
+    var host = $("components"); host.textContent = "";
+    (DATA.components || []).forEach(function (def) {
+      if (removed[def.id] || !COMPONENTS[def.id]) return;
+      var box = el("section", "comp"); box.setAttribute("aria-label", def.title);
+      var head = el("div", "comp-head"); head.appendChild(el("h2", null, def.title));
+      if (def.removable !== false) { var x = btn("×", "small"); x.setAttribute("aria-label", "Remove " + def.title + " from this page"); x.title = "Remove from this page (until it reloads)"; x.addEventListener("click", function () { removed[def.id] = true; mountComponents(); }); head.appendChild(x); }
+      box.appendChild(head); COMPONENTS[def.id](box, def); host.appendChild(box);
+    });
+  }
   function pull() {
     if (!db) { setStatus("No shared store in this view: reloading the whole page…", true); setTimeout(function () { location.reload(); }, 300); return; }
     setStatus("Saving, then pulling in the latest data…");
@@ -823,6 +885,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     if (got) { logEvent("rescued text from boxes", true, String(got)); touch(); say("Recovered " + got + " box" + (got === 1 ? "" : "es") + " of text the page had not saved. It is saving now.", true); }
   }
   try { var d0 = JSON.parse(localStorage.getItem(LOCAL) || "null"); if (d0) adopt(d0); } catch (e) {}
+  mountComponents();
   render(); mark.checked = !!state.resolve_requested; showFlag();
   setTimeout(rescue, 2000);
   var use = window.claude && window.claude.use ? window.claude.use.bind(window.claude) : function () { return Promise.resolve(null); };
