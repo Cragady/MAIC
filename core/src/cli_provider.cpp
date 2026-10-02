@@ -346,12 +346,11 @@ void spawn(CliProcess& p, const Provider& provider, const std::string& model, co
     for (auto& a : args) argv.push_back(a.data());
     argv.push_back(nullptr);
     // The user's own login and plan: an API key in the environment would make the CLI bill the API instead. No other
-    // provider's key (DEEPSEEK_API_KEY, any NAME_API_KEY) is its business either.
+    // provider's key (DEEPSEEK_API_KEY, any configured api_key_env) is its business either.
     std::vector<char*> envp;
     for (char** e = environ; *e; ++e) {
         std::string_view name(*e, std::strcspn(*e, "="));
-        bool api_key = name.size() > 8 && name.substr(name.size() - 8) == "_API_KEY";
-        if (!api_key && name != "ANTHROPIC_AUTH_TOKEN" && name != "MCP_TOOL_TIMEOUT") envp.push_back(*e);
+        if (!is_key_env(name) && name != "ANTHROPIC_AUTH_TOKEN" && name != "MCP_TOOL_TIMEOUT") envp.push_back(*e);
     }
     // A call waits on MAIC's harness, a person's approval among it: the CLI must not give up on it first.
     std::string tool_timeout = "MCP_TOOL_TIMEOUT=" + std::to_string(provider.options.value("tool_timeout", 86400) * 1000LL);

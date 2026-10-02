@@ -2,6 +2,7 @@
 
 #include "maic/harness.hpp"
 #include "maic/instructions.hpp"
+#include "maic/llm.hpp"
 #include "maic/lua.hpp"
 #include "maic/paths.hpp"
 #include "maic/session.hpp"
@@ -151,7 +152,7 @@ std::optional<std::string> git(const fs::path& dir, const std::vector<std::strin
     av.push_back(nullptr);
     std::vector<std::string> envs = {"GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0"};
     for (char** e = environ; *e; ++e) {
-        if (std::strncmp(*e, "GIT_", 4) != 0) envs.push_back(*e);
+        if (std::strncmp(*e, "GIT_", 4) != 0 && !is_key_env(std::string_view(*e, std::strcspn(*e, "=")))) envs.push_back(*e);
     }
     std::vector<char*> ev;
     for (auto& e : envs) ev.push_back(e.data());

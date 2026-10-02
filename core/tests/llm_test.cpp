@@ -879,6 +879,9 @@ int main() {
         setenv("XDG_STATE_HOME", (dir / "state").c_str(), 1);  // the CLI's directory and log, never ~/.local/state/maic
         setenv("ANTHROPIC_API_KEY", "sk-not-for-the-cli", 1);
         setenv("DEEPSEEK_API_KEY", "sk-deepseek-not-for-the-cli", 1);
+        setenv("MAIC_TEST_WORK_TOKEN", "work-key-not-for-the-cli", 1);  // a key in a variable named anyhow
+        Provider work{"work", "openai", "https://llm.example.com/v1", "MAIC_TEST_WORK_TOKEN", "", json::object()};
+        add_key_envs({work});
         fake_claude::install(dir);
         Provider cli = by_name("claude-cli");
         expect(cli.kind == "cli" && cli.options.value("command", "") == "claude" && cli.remote(), "claude-cli is shipped: kind cli, command claude, remote");
@@ -913,7 +916,8 @@ int main() {
                "headless, stream-json both ways, no session persistence, the system prompt and --model from the model name");
         expect(!starts.empty() && !starts[0].value("api_key", true) && starts[0].value("cwd", "") == fs::weakly_canonical(dir / "state" / "maic" / "cli" / "claude-cli").string(),
                "the user's plan, not the API: ANTHROPIC_API_KEY is kept from it, and it runs in a directory of its own");
-        expect(!starts.empty() && !starts[0].value("other_key", true), "no other provider's key reaches it either (DEEPSEEK_API_KEY)");
+        expect(!starts.empty() && !starts[0].value("other_key", true) && !starts[0].value("work_key", true),
+               "no other provider's key reaches it either: DEEPSEEK_API_KEY, nor a configured api_key_env without _API_KEY in its name");
 
         Message b = ask(cli, "haiku", "be brief", "again");
         expect(pid_of(b) == pid && b.content.find("call 2: again") != std::string::npos && fake_claude::spawns(dir).size() == 1, "the next request reuses the process: " + b.content);
@@ -1106,6 +1110,7 @@ int main() {
         setenv("PATH", saved_path.c_str(), 1);
         unsetenv("ANTHROPIC_API_KEY");
         unsetenv("DEEPSEEK_API_KEY");
+        unsetenv("MAIC_TEST_WORK_TOKEN");
     }
 
     return finish();

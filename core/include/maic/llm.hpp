@@ -79,6 +79,12 @@ struct Provider {
     std::string api_key() const;
 };
 
+// The environment variables that hold model keys: every `api_key_env` of the providers passed to add_key_envs (load_settings
+// passes each set it loads; names are only ever added) and any NAME_API_KEY. A child MAIC starts that is not meant to
+// hold a key (claude-cli, a service, nvim, git) starts without them; the command sandbox starts from an empty environment.
+void add_key_envs(const std::vector<Provider>& providers);
+bool is_key_env(std::string_view name);
+
 // llamacpp (local), anthropic, deepseek, openrouter, claude-cli. Settings can add or override providers by name.
 std::vector<Provider> default_providers();
 

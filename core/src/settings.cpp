@@ -681,6 +681,16 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             for (auto& existing : s.providers) {
                 if (existing.name == name) p = &existing;
             }
+            // Where a key goes is the global file's: a project may not repoint, reshape or add to a provider there is,
+            // nor bring one of its own that carries a key. It may still pick among them (model, presets).
+            if (!global && p) {
+                for (const auto& [key, v] : pj.items()) s.warnings.push_back(path.string() + ": providers." + name + "." + key + " is ignored: only your global settings file sets a provider");
+                continue;
+            }
+            if (!global && (pj.contains("api_key_env") || pj.contains("api_key_command"))) {
+                s.warnings.push_back(path.string() + ": providers." + name + " is ignored: a provider with a key is defined only in your global settings file");
+                continue;
+            }
             if (!p) {
                 s.providers.push_back({name, "openai", "", "", "", json::object()});
                 p = &s.providers.back();
@@ -753,6 +763,7 @@ Settings load_settings(const fs::path& workspace) {
             }
         }
     }
+    add_key_envs(s.providers);
     if (const char* bare = std::getenv("MAIC_BARE"); bare && std::string(bare) == "1") s.bare = true;
     // The theme is read once every layer has had its say; a broken one leaves the built-in default and the reason.
     try {

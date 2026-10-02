@@ -8,6 +8,8 @@
 #include <random>
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
+#include <set>
 #include <thread>
 
 namespace maic {
@@ -127,6 +129,24 @@ std::string Provider::api_key() const {
     }
     throw std::runtime_error(name + ": no API key. Set " + (api_key_env.empty() ? std::string("api_key_env") : api_key_env) +
                              " in your environment, or api_key_command in settings.");
+}
+
+namespace {
+std::mutex key_envs_mu;
+std::set<std::string, std::less<>> key_envs;
+}  // namespace
+
+void add_key_envs(const std::vector<Provider>& providers) {
+    std::lock_guard lock(key_envs_mu);
+    for (const auto& p : providers) {
+        if (!p.api_key_env.empty()) key_envs.insert(p.api_key_env);
+    }
+}
+
+bool is_key_env(std::string_view name) {
+    if (name.size() > 8 && name.substr(name.size() - 8) == "_API_KEY") return true;
+    std::lock_guard lock(key_envs_mu);
+    return key_envs.count(name) > 0;
 }
 
 std::vector<Provider> default_providers() {

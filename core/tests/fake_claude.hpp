@@ -48,7 +48,7 @@ def ev(e):
 
 home = os.environ["FAKE_CLAUDE_DIR"]
 with open(os.path.join(home, "spawns.jsonl"), "a") as f:
-    f.write(json.dumps({"pid": os.getpid(), "argv": args, "api_key": "ANTHROPIC_API_KEY" in os.environ, "other_key": "DEEPSEEK_API_KEY" in os.environ, "cwd": os.getcwd(),
+    f.write(json.dumps({"pid": os.getpid(), "argv": args, "api_key": "ANTHROPIC_API_KEY" in os.environ, "other_key": "DEEPSEEK_API_KEY" in os.environ, "work_key": "MAIC_TEST_WORK_TOKEN" in os.environ, "cwd": os.getcwd(),
                         "tool_timeout": os.environ.get("MCP_TOOL_TIMEOUT")}) + "\n")
 sources = opt("--setting-sources")
 try:
@@ -212,7 +212,7 @@ inline void install(const std::filesystem::path& dir) {
     setenv("PATH", ((dir / "bin").string() + ":/usr/bin:/bin").c_str(), 1);
 }
 
-// Every start so far: {"pid", "argv", "api_key", "other_key" (DEEPSEEK_API_KEY was there), "cwd", "tool_timeout"}.
+// Every start so far: {"pid", "argv", "api_key", "other_key" (DEEPSEEK_API_KEY was there), "work_key" (MAIC_TEST_WORK_TOKEN was), "cwd", "tool_timeout"}.
 inline std::vector<nlohmann::json> spawns(const std::filesystem::path& dir, const char* file = "spawns.jsonl") {
     std::vector<nlohmann::json> out;
     std::ifstream in(dir / file);

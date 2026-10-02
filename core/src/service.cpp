@@ -1,5 +1,6 @@
 #include "maic/service.hpp"
 
+#include "maic/llm.hpp"
 #include "maic/paths.hpp"
 
 #include <arpa/inet.h>
@@ -212,13 +213,13 @@ bool port_open(int port) {
     return open;
 }
 
-// The service's environment: ours, with the definition's variables on top.
+// The service's environment: ours without model keys, with the definition's variables on top.
 std::vector<std::string> build_env(const ServiceDef& def) {
     std::map<std::string, std::string> merged;
     for (char** e = environ; *e; ++e) {
         std::string_view kv(*e);
         size_t eq = kv.find('=');
-        if (eq != std::string_view::npos) {
+        if (eq != std::string_view::npos && !is_key_env(kv.substr(0, eq))) {
             merged[std::string(kv.substr(0, eq))] = std::string(kv.substr(eq + 1));
         }
     }
