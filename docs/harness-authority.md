@@ -26,4 +26,6 @@ Both are supported, and a session uses whichever its harness authority calls for
 
 **All remote (the other side's harness judges).** The external agent decides and runs its actions itself; MAIC receives one stream, remote to local: what the agent says, which actions it took, their results, and whose harness approved them. There is no second stream and no local review; MAIC records and displays, confines the agent to its sandbox, and its fixed rules still stop anything they match.
 
+A panel of judges (`checkers`, [harness.md](harness.md#checkers-a-panel-of-judges-built)) is not a second harness: it is MAIC's reviewer made of several models, inside MAIC's harness, under its fixed rules. Its transcript entry says which judge decided (`review.judged_by`: a judge's name, or `user`).
+
 Each action in a transcript and on the event stream names its judge (`judged_by: "maic"`, `"claude-code"`, or `"rules"` for the fixed rules alone), so it is always visible which path an action took.

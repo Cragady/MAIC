@@ -1467,6 +1467,35 @@ int main() {
                "small_model and compact_model take the CLI presets by name, and the reviewer follows small_model");
         expect(prov("claude-cli").options.value("command", "") == "claude" && prov("claude-cli").options["args"].size() == 2 && prov("other").kind == "cli" && prov("other").remote(),
                "a cli provider needs no base_url, and options merge into the shipped one");
+
+        // checkers: your global file only, as a shipped setup's name or a table; a project's is ignored with a warning.
+        fs::path xdg = ws / "xdg-checkers";
+        setenv("XDG_CONFIG_HOME", xdg.c_str(), 1);
+        write_file(xdg / "maic" / "settings.lua", "return { checkers = 'dual-9b' }");
+        write_file(ws / "proj" / ".maic" / "settings.lua", "return { checkers = { judges = { 'qwen-4b' }, combine = 'primary' } }");
+        Settings ck = load_settings(ws / "proj");
+        bool warned = false;
+        for (const auto& w : ck.warnings) warned = warned || w.find("checkers is ignored: only your global settings file sets it") != std::string::npos;
+        expect(ck.checkers.setup == "dual-9b" && ck.checkers.combine == "escalate" && ck.checkers.judges.size() == 2 && ck.checkers.judges[0].model == "qwen-9b" && warned && ck.harness == "dumb",
+               "checkers = 'dual-9b' loads the shipped setup, the harness stays dumb until chosen, and a project's checkers is ignored with a warning");
+        fs::create_directories(ws / "ck");  // no project files: only the global one is read
+        write_file(xdg / "maic" / "settings.lua", "return { checkers = { judges = { 'qwen-4b', { model = 'claude-haiku-cli', think = true, timeout = 45 } }, combine = 'both' } }");
+        ck = load_settings(ws / "ck");
+        expect(ck.checkers.setup.empty() && ck.checkers.combine == "both" && ck.checkers.judges.size() == 2 && ck.checkers.judges[0].think == -1 && ck.checkers.judges[0].timeout == 30 &&
+                   ck.checkers.judges[1].model == "claude-haiku-cli" && ck.checkers.judges[1].think == 1 && ck.checkers.judges[1].timeout == 45,
+               "a written-out panel: judges as presets or tables with think and timeout, and the combine policy");
+        for (const char* bad : {"return { checkers = 'dual-13b' }", "return { checkers = { judges = { 'qwen-4b' }, combine = 'majority' } }", "return { checkers = { judges = { 'nonesuch' } } }",
+                                "return { checkers = { judges = { { model = 'qwen-4b', timeout = 0 } } } }"}) {
+            write_file(xdg / "maic" / "settings.lua", bad);
+            bool threw = false;
+            try {
+                load_settings(ws / "ck");
+            } catch (const std::exception&) {
+                threw = true;
+            }
+            expect(threw, std::string("refused: ") + bad);
+        }
+        unsetenv("XDG_CONFIG_HOME");
         fs::remove(ws / "proj" / ".maic" / "settings.lua");
     }
 

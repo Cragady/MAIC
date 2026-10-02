@@ -245,6 +245,7 @@ void SessionCommands::cd_to(Session& s, CommandOutput& out, const fs::path& ws, 
     if (has("models")) agent.presets = st.presets;
     if (has("think")) agent.think = st.think;
     if (has("reviewer_model")) agent.reviewer_model = st.reviewer_model;
+    if (has("checkers")) agent.checkers = st.checkers;
     if (has("small_model") || has("title_model")) agent.small_model = st.small_model;
     if (has("reviewer_budget_tokens")) agent.reviewer_budget_tokens = st.reviewer_budget_tokens;
     if (has("budget_tokens")) agent.budget_tokens = st.budget_tokens;
@@ -371,7 +372,14 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
             if (arg.empty()) {
                 Agent::ReviewerInfo r = agent.reviewer();
                 std::string spent = ", " + std::to_string(r.tokens) + " tokens so far" + (s.settings.reviewer_budget_tokens > 0 ? " of " + std::to_string(s.settings.reviewer_budget_tokens) : "");
+                std::string panel;
+                for (const auto& k : agent.checkers.judges) {
+                    panel += (panel.empty() ? "" : ", ") + k.model + (k.think == 1 ? " thinking" : k.think == 0 ? " not thinking" : "") + ", " + std::to_string(k.timeout) + " s";
+                }
                 out.info(!agent.review_with_model ? "harness: dumb. The rule list alone decides; nothing reads the conversation. `:harness smart` brings the reviewer back."
+                         : !panel.empty()
+                             ? "harness: smart, judged by the checkers" + (agent.checkers.setup.empty() ? "" : " " + agent.checkers.setup) + " in order (" + panel + "), combine " +
+                                   agent.checkers.combine + spent + ". Each verdict and who decided is noted on every reviewed call."
                          : r.pick.model.empty()
                              ? "harness: smart, but the reviewer is off for this session (" + r.pick.reason + spent + "): every action it would review is asked."
                              : "harness: smart. A model (" + r.pick.model + ", " + r.pick.reason + spent +

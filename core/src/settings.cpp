@@ -368,6 +368,16 @@ SteeringSettings agent_steering(const SteeringSettings& session, const json& age
     return out;
 }
 
+std::optional<Checkers> checker_setup(const std::string& name) {
+    // Micaiah's dual setups (docs/harness.md, Checkers): the local Qwen judges every call without thinking (on the
+    // 9B the audit judge gave the same verdicts in 7 s as in 40 s with thinking), and Claude Haiku 4.5 on her
+    // Claude plan is asked only when Qwen does not allow the call or cannot answer.
+    const Checker haiku{"claude-cli/claude-haiku-4-5-20251001", 0, 60};
+    if (name == "dual-9b") return Checkers{name, {{"qwen-9b", 0, 20}, haiku}, "escalate"};
+    if (name == "dual-4b") return Checkers{name, {{"qwen-4b", 0, 20}, haiku}, "escalate"};
+    return std::nullopt;
+}
+
 namespace {
 
 // `leave`: a verb for each case it names, over what earlier files said. An unknown case or verb is an error naming it.
@@ -398,6 +408,36 @@ void read_leave(LeaveSettings& into, const json& t, const std::string& where) {
             else throw std::runtime_error(where + ": leave." + name + " is not a case (idle, working, after)");
         }
     }
+}
+
+// `checkers`: a shipped setup's name, or { judges = { "qwen-9b", { model = ..., think = false, timeout = 20 } },
+// combine = "escalate" }. "" or an empty table: no panel.
+Checkers read_checkers(const json& v, const std::string& where) {
+    if (v.is_string()) {
+        std::string name = v.get<std::string>();
+        if (name.empty()) return {};
+        if (auto c = checker_setup(name)) return *c;
+        throw std::runtime_error(where + ": checkers: no setup named \"" + name + "\" (the shipped ones are dual-9b and dual-4b)");
+    }
+    Checkers c;
+    if (v.is_array() && v.empty()) return c;
+    if (!v.is_object()) throw std::runtime_error(where + ": checkers must be a setup's name or a table");
+    c.combine = v.value("combine", c.combine);
+    if (c.combine != "primary" && c.combine != "escalate" && c.combine != "both") throw std::runtime_error(where + ": checkers.combine must be \"primary\", \"escalate\" or \"both\", not \"" + c.combine + "\"");
+    for (const auto& j : v.value("judges", json::array())) {
+        Checker k;
+        if (j.is_string()) {
+            k.model = j.get<std::string>();
+        } else if (j.is_object()) {
+            k.model = j.value("model", "");
+            if (j.contains("think")) k.think = j["think"].get<bool>() ? 1 : 0;
+            k.timeout = j.value("timeout", k.timeout);
+        }
+        if (k.model.empty()) throw std::runtime_error(where + ": checkers.judges: each judge needs a model (a preset or provider/model)");
+        if (k.timeout < 1) throw std::runtime_error(where + ": checkers.judges: " + k.model + "'s timeout must be at least 1 second");
+        c.judges.push_back(k);
+    }
+    return c;
 }
 
 // Applies one settings location over `s`: `<stem>.lua` when it exists (a chunk returning a table), else
@@ -460,6 +500,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
                 if (!tier.is_string() || !valid_protocol_tier(tier.get<std::string>())) throw std::runtime_error(path.string() + ": protocol_tiers." + dir + " must be \"open\", \"guarded\" or \"airtight\"");
                 s.protocol_tiers[dir] = tier.get<std::string>();
             }
+            if (j.contains("checkers")) s.checkers = read_checkers(j["checkers"], path.string());
             json chain = j.value("instructions", json::object());
             if (chain.contains("project_markers") && chain["project_markers"].is_array()) s.project_markers = chain["project_markers"].get<std::vector<std::string>>();
             for (auto& m : s.project_markers) {
@@ -483,7 +524,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             o.extra_dirs = chain.value("extra_dirs", o.extra_dirs);
         } else if (j.is_object()) {
             for (const auto& [key, v] : j.items()) {
-                if (key == "global_lua" || key == "lua_memory_mb" || key.rfind("trust_", 0) == 0 || key.rfind("protocol_tier", 0) == 0) s.warnings.push_back(path.string() + ": " + key + " is ignored: only your global settings file sets it");
+                if (key == "global_lua" || key == "lua_memory_mb" || key == "checkers" || key.rfind("trust_", 0) == 0 || key.rfind("protocol_tier", 0) == 0) s.warnings.push_back(path.string() + ": " + key + " is ignored: only your global settings file sets it");
             }
             json chain = j.value("instructions", json::object());
             if (chain.is_object()) {
@@ -745,6 +786,9 @@ Settings load_settings(const fs::path& workspace) {
     }
     if (auto preset = find_preset(s.presets, s.small_model)) s.small_model = preset->model;
     if (auto preset = find_preset(s.presets, s.compact_model)) s.compact_model = preset->model;
+    for (const auto& k : s.checkers.judges) {
+        if (!find_preset(s.presets, k.model) && k.model.find('/') == std::string::npos) throw std::runtime_error("checkers: no preset named " + k.model + " (a judge is a preset or provider/model)");
+    }
     for (const auto& p : s.presets) {
         auto known = [&](const std::string& n, const char* field) {
             if (!find_preset(s.presets, n)) throw std::runtime_error("models." + p.name + "." + field + ": no preset named " + n);
@@ -930,6 +974,8 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"//reviewer_model", "pins the reviewer; empty: the preset's reviewer, else small_model (docs/settings.md)"},
         {"reviewer_budget_tokens", d.reviewer_budget_tokens},
         {"//reviewer_budget_tokens", "the reviewer's own token cap (it also counts toward budget_tokens); past it every action it would review is asked. 0: none"},
+        {"checkers", ""},
+        {"//checkers", "global file only: the judges of the smart harness in place of the single reviewer. A shipped setup, \"dual-9b\" (Qwen3.5 9B, no thinking, then Claude Haiku 4.5 on your Claude plan only when Qwen does not allow or cannot answer) or \"dual-4b\" (the same with the 4B), or { judges = { \"qwen-9b\", { model = \"claude-haiku-cli\", timeout = 60 } }, combine = \"escalate\" }; combine: primary, escalate or both. Empty: the reviewer alone. docs/harness.md"},
         {"dumb_auto_ok", d.dumb_auto_ok},
         {"protocol_tier", d.protocol_tier},
         {"//protocol_tier", "this file only: how closely the engine checks its protocol. open: no checks (an unchecked session shows OPEN); guarded: every check runs and logs what it finds (<state>/engine/protocol.log); airtight: refuses what fails (needs a build that passed conformance). protocol_tiers = { [\"~/scratch\"] = \"open\" } sets one per directory, as does maic trust DIR --protocol TIER; agents.NAME.protocol_tier one per agent; :tier tightens a session. docs/design/protocol-security.md"},

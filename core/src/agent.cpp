@@ -12,6 +12,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <fstream>
 #include <regex>
@@ -69,6 +71,33 @@ const char* approval_name(Approval a) {
     return "?";
 }
 
+// A local review goes to the side llama server when it answers, so the main server keeps the session's model
+// resident; otherwise it goes where `m` names.
+std::string on_side_server(const std::vector<Provider>& providers, const std::string& m) {
+    auto [provider, name] = resolve_model(providers, m);
+    if (provider.name != "llamacpp") return m;
+    for (const auto& p : providers) {
+        if (p.name == "llamacpp-2" && server_answers(p)) return "llamacpp-2/" + name;
+    }
+    return m;
+}
+
+std::string seconds(long ms) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.1f s", ms / 1000.0);
+    return buf;
+}
+
+// "qwen-9b deny, deletes the tests in 1.2 s; claude-haiku allow in 3.0 s"
+std::string checks_text(const std::vector<Judgement>& said, bool reasons) {
+    std::string out;
+    for (const auto& j : said) {
+        out += (out.empty() ? "" : "; ") + j.judge + " " + (j.outcome == "verdict" ? verdict_name(j.verdict) : j.outcome.c_str()) +
+               (reasons && !j.reason.empty() ? ", " + j.reason : "") + " in " + seconds(j.ms);
+    }
+    return out;
+}
+
 // A subagent's events, as the parent's front end sees them: its tool calls and notices carry the agent's
 // name, its approvals are asked of the user with the agent named, and its prose is not streamed (the final
 // answer comes back as the task result).
@@ -102,6 +131,54 @@ struct ChildEvents : AgentEvents {
 };
 
 }  // namespace
+
+std::optional<PanelVerdict> settle_checks(const std::string& combine, const std::vector<Judgement>& so_far, size_t total) {
+    auto said = [](const Judgement& j) { return j.judge + (j.reason.empty() ? "" : ": " + j.reason); };
+    auto to_user = [&](const std::string& why) { return PanelVerdict{Verdict::Ask, why + " (" + checks_text(so_far, true) + ")", "user"}; };
+    if (so_far.empty()) return std::nullopt;
+    if (combine == "primary") {
+        const Judgement& j = so_far[0];
+        if (j.outcome != "verdict") return to_user("no checker could answer");
+        return PanelVerdict{j.verdict, said(j), j.judge};
+    }
+    if (combine == "both") {
+        if (so_far.size() < total) return std::nullopt;
+        std::vector<const Judgement*> answered;
+        for (const auto& j : so_far) {
+            if (j.outcome == "verdict") answered.push_back(&j);
+        }
+        if (answered.empty()) return to_user("no checker could answer");
+        for (const auto* j : answered) {
+            if (j->verdict != answered[0]->verdict) return to_user("the checkers disagree");
+        }
+        // Every checker must allow: one that could not answer did not, though the others' denial still stands.
+        if (answered.size() < so_far.size() && answered[0]->verdict != Verdict::Deny) return to_user("not every checker answered");
+        PanelVerdict v{answered[0]->verdict, "", ""};
+        for (const auto* j : answered) {
+            v.reason += (v.reason.empty() ? "" : "; ") + said(*j);
+            v.judged_by += (v.judged_by.empty() ? "" : "+") + j->judge;
+        }
+        return v;
+    }
+    // escalate: the first ALLOW settles it, unless an earlier checker denied: a later one cannot overrule a denial
+    // into a silent run, only confirm it or hand the call to the user. An ASK or a failure asks the next checker.
+    const Judgement* denied = nullptr;
+    const Judgement* unsure = nullptr;
+    for (const auto& j : so_far) {
+        if (j.outcome != "verdict") continue;
+        if (denied) {
+            if (j.verdict == Verdict::Deny) return PanelVerdict{Verdict::Deny, said(*denied) + "; " + said(j), denied->judge + "+" + j.judge};
+            return to_user("the checkers disagree");
+        }
+        if (j.verdict == Verdict::Allow) return PanelVerdict{Verdict::Allow, said(j), j.judge};
+        if (j.verdict == Verdict::Deny) denied = &j;
+        else unsure = &j;
+    }
+    if (so_far.size() < total) return std::nullopt;
+    if (denied) return PanelVerdict{Verdict::Deny, said(*denied), denied->judge};
+    if (unsure) return PanelVerdict{Verdict::Ask, said(*unsure), unsure->judge};
+    return to_user("no checker could answer");
+}
 
 Agent::Agent(std::filesystem::path workspace, std::string model) : model(std::move(model)), harness_(std::move(workspace)) {
     reload_instructions();
@@ -960,6 +1037,7 @@ void Agent::audit_tool_call(const nlohmann::json& record, bool ran, bool ok, con
         out["judged_by"] = "harness";
         if (from.contains("review") && from["review"].is_object()) {
             out["review"] = {{"verdict", from["review"].value("verdict", "")}, {"model", from["review"].value("model", "")}};
+            if (from["review"].contains("judged_by")) out["review"]["judged_by"] = from["review"]["judged_by"];
             out["judged_by"] = "reviewer";
         }
         if (from.contains("approval")) out["judged_by"] = "user";
@@ -1320,8 +1398,9 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
         rr["reason"] = r.reason;
         record["review"] = rr;
         if (r.verdict != Verdict::Allow) {
-            if (r.verdict == Verdict::Deny) events.on_notice("reviewer refused: " + summary + " (" + r.reason + ")");
-            d = {r.verdict, "reviewer: " + r.reason, d.read_only_sandbox};
+            std::string who = checkers.judges.empty() ? "reviewer" : "checkers";
+            if (r.verdict == Verdict::Deny) events.on_notice(who + " refused: " + summary + " (" + r.reason + ")");
+            d = {r.verdict, who + ": " + r.reason, d.read_only_sandbox};
         }
     }
     if (d.verdict == Verdict::Ask) {
@@ -1514,6 +1593,7 @@ void Agent::make_subagent(Agent& child, const AgentDef& def, const ModelPick& pi
     child.review_with_model = review_with_model;
     child.audit = audit;
     child.reviewer_model = reviewer_model;
+    child.checkers = checkers;
     child.small_model = small_model;
     if (review_with_model) review_budget_check(events);
     {
@@ -1678,10 +1758,19 @@ void Agent::review_budget_check(AgentEvents& events) {
 
 Decision Agent::review(const Action& action, const std::string& summary, const std::string& preview, AgentEvents& events, nlohmann::json& record) {
     review_budget_check(events);
-    ModelPick pick = reviewer().pick;
-    if (pick.model.empty()) return {Verdict::Ask, "no reviewer: " + pick.reason};
-    record["model"] = pick.model;
-    record["model_reason"] = pick.reason;
+    bool panel = !checkers.judges.empty();
+    std::string off;
+    {
+        std::lock_guard lock(usage_mu_);
+        off = reviewer_off_;
+    }
+    if (panel && !off.empty()) return {Verdict::Ask, "no checker: " + off};
+    ModelPick pick = panel ? ModelPick{} : reviewer().pick;
+    if (!panel && pick.model.empty()) return {Verdict::Ask, "no reviewer: " + pick.reason};
+    if (!panel) {
+        record["model"] = pick.model;
+        record["model_reason"] = pick.reason;
+    }
     // The recent conversation, from the model's side: the last few things the user said and the agent's
     // last words, so the reviewer judges the action against what was actually asked.
     std::string recent;
@@ -1711,65 +1800,151 @@ Decision Agent::review(const Action& action, const std::string& summary, const s
         {"user", "Workspace: " + harness_.workspace().string() + "\nMode: " + std::string(mode_name(mode)) + "\n\nRecent conversation:\n" + recent +
                      (last_words.empty() ? "" : "Agent's last words: " + last_words + "\n") + "\nThe action: " + summary + "\n" + what + "\n\nYour one line:"},
     };
+    if (panel) return review_panel(req, events, record);
+    // The side llama server, when it is up, reviews with the same model so the main server keeps its model
+    // resident; otherwise the session's model reviews itself.
+    Judgement j = judge(reviewer_model.empty() && pick.model == model ? on_side_server(providers, model) : pick.model, false, 0, req);
+    if (j.outcome != "limit") return {j.verdict, j.reason};
+    // Never again this session: the next review goes to a cheaper model, or none is left and every action
+    // it would review is asked.
+    ModelPick next;
+    {
+        std::lock_guard lock(usage_mu_);
+        reviewer_failed_.insert(pick.model);
+        next = reviewer_pick(presets, providers, model, reviewer_model, small_model, reviewer_failed_);
+    }
+    std::string who = pick.preset.empty() ? pick.model : pick.preset;
+    events.on_notice(next.model.empty() ? "reviewer: " + next.reason + "; every action it would review is asked for the rest of the session"
+                                        : "reviewer: " + who + " hit its usage limit; reviewing on " + (next.preset.empty() ? next.model : next.preset));
+    return {Verdict::Ask, "the reviewer hit its usage limit"};
+}
+
+Judgement Agent::judge(const std::string& m, bool think, int timeout_s, const std::vector<Message>& req) {
+    Judgement j;
+    j.judge = j.model = m;
+    j.think = think;
+    auto started = std::chrono::steady_clock::now();
+    // Past the timeout the request is cancelled, as Ctrl-C cancels a turn's.
+    std::atomic<bool> stop{false};
+    std::mutex mu;
+    std::condition_variable cv;
+    bool done = false;
+    std::thread timer;
+    if (timeout_s > 0) {
+        timer = std::thread([&] {
+            std::unique_lock lock(mu);
+            if (!cv.wait_for(lock, std::chrono::seconds(timeout_s), [&] { return done; })) stop = true;
+        });
+    }
+    Message reply;
+    j.outcome = "error";
     try {
-        std::string reviewer = pick.model;
-        if (reviewer_model.empty() && reviewer == model) {
-            // The side llama server, when it is up, reviews with the same model so the main server keeps its
-            // model resident; otherwise the session's model reviews itself.
-            auto [main_provider, main_name] = resolve_model(providers, model);
-            if (main_provider.name == "llamacpp") {
-                for (const auto& p : providers) {
-                    if (p.name == "llamacpp-2" && server_answers(p)) reviewer = "llamacpp-2/" + main_name;
-                }
-            }
-        }
-        auto [provider, name] = resolve_model(providers, reviewer);
-        ChatOptions opt{name, false};
+        auto [provider, name] = resolve_model(providers, m);
+        ChatOptions opt{name, think};
         opt.retries = 1;
         opt.normalized = count_normalized(provider);
-        std::atomic<bool> no{false};
-        Message reply = chat(provider, opt, req, nlohmann::json::array(), [](std::string_view, bool) {}, no);
-        {
-            std::lock_guard lock(usage_mu_);
-            usage_.total_input += reply.usage.input;
-            usage_.total_output += reply.usage.output;
-            reviewer_tokens_ += reply.usage.input + reply.usage.output;
-        }
-        std::string t = reply.content;
-        if (auto p = t.find("</think>"); p != std::string::npos) t = t.substr(p + 8);
-        size_t start = t.find_first_not_of(" \n\t*");
-        if (start == std::string::npos) return {Verdict::Ask, "the reviewer gave no verdict"};
-        t = t.substr(start);
-        std::string word;
-        for (char c : t) {
-            if (!std::isalpha(static_cast<unsigned char>(c))) break;
-            word += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        }
-        std::string reason = t.substr(word.size());
-        while (!reason.empty() && (reason.front() == ':' || reason.front() == ' ' || reason.front() == '*')) reason.erase(0, 1);
-        if (auto nl = reason.find('\n'); nl != std::string::npos) reason = reason.substr(0, nl);
-        if (reason.size() > 200) reason = reason.substr(0, 200) + " ...";
-        if (word == "ALLOW") return {Verdict::Allow, reason};
-        if (word == "DENY") return {Verdict::Deny, reason.empty() ? "the reviewer refused it" : reason};
-        if (word == "ASK") return {Verdict::Ask, reason.empty() ? "the reviewer wants you to decide" : reason};
-        return {Verdict::Ask, "the reviewer gave no clear verdict"};
+        reply = chat(provider, opt, req, nlohmann::json::array(), [](std::string_view, bool) {}, stop);
+        j.outcome = "verdict";
+    } catch (const Cancelled&) {
+        j.outcome = "timeout";
+        j.reason = "no verdict in " + std::to_string(timeout_s) + " s";
     } catch (const ApiError& e) {
-        if (!is_usage_limit(e)) return {Verdict::Ask, std::string("the reviewer could not answer (") + e.what() + ")"};
-        // Never again this session: the next review goes to a cheaper model, or none is left and every action
-        // it would review is asked.
-        ModelPick next;
+        if (is_usage_limit(e)) j.outcome = "limit";
+        j.reason = std::string("the reviewer could not answer (") + e.what() + ")";
+    } catch (const std::exception& e) {
+        j.reason = std::string("the reviewer could not answer (") + e.what() + ")";
+    }
+    {
+        std::lock_guard lock(mu);
+        done = true;
+    }
+    cv.notify_all();
+    if (timer.joinable()) timer.join();
+    j.ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+    if (j.outcome != "verdict") return j;
+    {
+        std::lock_guard lock(usage_mu_);
+        usage_.total_input += reply.usage.input;
+        usage_.total_output += reply.usage.output;
+        reviewer_tokens_ += reply.usage.input + reply.usage.output;
+    }
+    std::string t = reply.content;
+    if (auto p = t.find("</think>"); p != std::string::npos) t = t.substr(p + 8);
+    size_t start = t.find_first_not_of(" \n\t*");
+    j.outcome = "garbage";
+    if (start == std::string::npos) {
+        j.reason = "the reviewer gave no verdict";
+        return j;
+    }
+    t = t.substr(start);
+    std::string word;
+    for (char c : t) {
+        if (!std::isalpha(static_cast<unsigned char>(c))) break;
+        word += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    std::string reason = t.substr(word.size());
+    while (!reason.empty() && (reason.front() == ':' || reason.front() == ' ' || reason.front() == '*')) reason.erase(0, 1);
+    if (auto nl = reason.find('\n'); nl != std::string::npos) reason = reason.substr(0, nl);
+    if (reason.size() > 200) reason = reason.substr(0, 200) + " ...";
+    j.reason = "the reviewer gave no clear verdict";
+    if (word == "ALLOW") j.verdict = Verdict::Allow, j.reason = reason;
+    else if (word == "DENY") j.verdict = Verdict::Deny, j.reason = reason.empty() ? "the reviewer refused it" : reason;
+    else if (word == "ASK") j.verdict = Verdict::Ask, j.reason = reason.empty() ? "the reviewer wants you to decide" : reason;
+    else return j;
+    j.outcome = "verdict";
+    return j;
+}
+
+Decision Agent::review_panel(const std::vector<Message>& req, AgentEvents& events, nlohmann::json& record) {
+    std::vector<Judgement> said;
+    std::optional<PanelVerdict> v;
+    for (size_t i = 0; i < checkers.judges.size() && !v; ++i) {
+        const Checker& k = checkers.judges[i];
+        auto preset = find_preset(presets, k.model);
+        std::string m = preset ? preset->model : k.model;
+        bool think = k.think >= 0 ? k.think == 1 : preset && preset->think == 1;
+        bool failed;
         {
             std::lock_guard lock(usage_mu_);
-            reviewer_failed_.insert(pick.model);
-            next = reviewer_pick(presets, providers, model, reviewer_model, small_model, reviewer_failed_);
+            failed = reviewer_failed_.count(m) > 0;
         }
-        std::string who = pick.preset.empty() ? pick.model : pick.preset;
-        events.on_notice(next.model.empty() ? "reviewer: " + next.reason + "; every action it would review is asked for the rest of the session"
-                                            : "reviewer: " + who + " hit its usage limit; reviewing on " + (next.preset.empty() ? next.model : next.preset));
-        return {Verdict::Ask, "the reviewer hit its usage limit"};
-    } catch (const std::exception& e) {
-        return {Verdict::Ask, std::string("the reviewer could not answer (") + e.what() + ")"};
+        Judgement j;
+        if (failed) {
+            j.model = m;
+            j.think = think;
+            j.outcome = "off";
+            j.reason = "it hit its usage limit earlier this session";
+        } else {
+            j = judge(on_side_server(providers, m), think, k.timeout, req);
+        }
+        j.judge = preset ? preset->name : k.model;
+        if (j.outcome == "limit") {
+            {
+                std::lock_guard lock(usage_mu_);
+                reviewer_failed_.insert(m);
+            }
+            events.on_notice("checker " + j.judge + " hit its usage limit; the other checkers judge without it for the rest of the session");
+        }
+        said.push_back(j);
+        v = settle_checks(checkers.combine, said, checkers.judges.size());
     }
+    nlohmann::json judges = nlohmann::json::array();
+    std::string decider;
+    for (const auto& j : said) {
+        nlohmann::json e = {{"judge", j.judge}, {"model", j.model}, {"think", j.think}, {"outcome", j.outcome}, {"reason", j.reason}, {"ms", j.ms}};
+        if (j.outcome == "verdict") e["verdict"] = verdict_name(j.verdict);
+        judges.push_back(e);
+        if (decider.empty() && (j.judge == v->judged_by || v->judged_by.rfind(j.judge + "+", 0) == 0)) decider = j.model;
+    }
+    record["model"] = decider;
+    record["model_reason"] = "checkers" + (checkers.setup.empty() ? "" : " " + checkers.setup) + ", combine " + checkers.combine;
+    record["combine"] = checkers.combine;
+    record["judges"] = judges;
+    record["judged_by"] = v->judged_by;
+    events.on_notice(v->judged_by == "user" ? "checked: yours to decide (" + checks_text(said, false) + ")"
+                     : said.size() == 1  ? std::string("checked: ") + verdict_name(v->verdict) + " by " + v->judged_by + " in " + seconds(said[0].ms)
+                                         : std::string("checked: ") + verdict_name(v->verdict) + " by " + v->judged_by + " (" + checks_text(said, false) + ")");
+    return {v->verdict, v->reason};
 }
 
 void Agent::push_undo(UndoPoint u) {

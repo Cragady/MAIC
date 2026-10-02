@@ -101,6 +101,25 @@ ModelPick default_small_model(const std::vector<ModelPreset>& presets, const std
 ModelPick reviewer_pick(const std::vector<ModelPreset>& presets, const std::vector<Provider>& providers, const std::string& model,
                         const std::string& pin, const std::string& small_model, const std::set<std::string>& failed);
 
+// One judge on the smart harness's checker panel: a preset or provider/model, whether it thinks, and how long it
+// may take before it counts as timed out.
+struct Checker {
+    std::string model;
+    int think = -1;     // -1 the preset's own, 0 off, 1 on
+    int timeout = 30;   // seconds
+};
+// `checkers` (docs/harness.md, Checkers): the judges that review in place of the single reviewer, in order, and how
+// their verdicts combine: "primary" (the first alone), "escalate" (the next is asked only while the call is not
+// settled: a DENY, an ASK, a timeout, an error or no clear verdict), "both" (every one must allow). No judges: the
+// reviewer of reviewer_pick alone.
+struct Checkers {
+    std::string setup;  // the shipped setup it came from ("" for one written out)
+    std::vector<Checker> judges;
+    std::string combine = "escalate";
+};
+// A shipped setup by name: "dual-9b" or "dual-4b"; nullopt for any other name.
+std::optional<Checkers> checker_setup(const std::string& name);
+
 // `steering` (docs/design/engine-protocol.md section 11): what the six steering actions may do in a session. Per
 // agent, `agents.NAME.steering` takes the same keys and only narrows (AgentDef::steering).
 struct SteeringSettings {
@@ -212,6 +231,7 @@ struct Settings {
     std::string harness = "dumb";   // "smart": a model reviews commands and writes the rules would allow; "dumb": rules only
     std::string reviewer_model;     // a pinned reviewer ("" = the preset's reviewer, else small_model; see reviewer_pick)
     long reviewer_budget_tokens = 0;  // the reviewer's own token cap; past it, what it would review is asked. 0 = none
+    Checkers checkers;              // global file only: the checker panel (no judges: the reviewer alone)
     bool dumb_auto_ok = true;       // false: entering auto mode under a dumb harness warns and asks first
     // Read from the global file only (a project's copy is ignored with a warning; docs/settings.md):
     std::string global_lua = "full";         // the tier of your own Lua data files: full, sandbox or restricted (written literally)
