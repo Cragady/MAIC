@@ -41,7 +41,7 @@ cmake --build "$work/build" -j --target maic maic-server maic-relay >/dev/null
 cmake --install "$work/build" >/dev/null
 # Everything the install put in bin gets its ~/bin link, so a helper added to CMakeLists.txt is never left out:
 # maic, maic-server, maic-relay, maic-workflow-edit, maic-storyboard, maic-danbooru-tags, maic-panel-check,
-# maic-diction, cai and maic-cai (a link to the `cai` wrapper, docs/cai.md).
+# maic-leak-audit, maic-diction, cai and maic-cai (a link to the `cai` wrapper, docs/cai.md).
 for exe in "$prefix"/bin/*; do
     ln -sfn "$exe" "$HOME/bin/$(basename "$exe")"
 done
