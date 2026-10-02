@@ -169,11 +169,11 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
 <aside id="side-panel" aria-labelledby="h-side">
   <div class="row side-head"><h2 id="h-side">Side Prompt</h2><button class="small" id="side-close" type="button" aria-label="Close the Side Prompt">Close</button></div>
   <div class="recent" id="recent" aria-live="polite"><strong>Most Recent Reply</strong><p class="note" id="recent-body">No reply yet. Claude's answer to a side prompt appears here once it has been sorted into the page.</p></div>
-  <p class="note">A prompt on its own, sent by its own button. One left unsent goes out with the overall Submit. The ↪ beside a box adds a reference to it here.</p>
+  <p class="note">Send to Claude saves this prompt and tells Claude in one click. Save only keeps it unanswered, by your choice; Send all unanswered tells Claude about every side prompt still without a reply. One left unsent goes out with the overall Submit. The ↪ beside a box adds a reference to it here.</p>
   <p class="errbar" id="side-err" hidden></p>
   <div id="side-refs" class="row"></div>
   <div id="side"></div>
-  <div class="row"><button class="primary" id="side-submit" type="button">Submit side prompt</button><button id="side-notify" type="button" hidden>Submit and notify Claude</button></div>
+  <div class="row"><button class="primary" id="side-notify" type="button">Send to Claude</button><button id="side-submit" type="button">Save only</button><button id="side-all" type="button">Send all unanswered</button></div>
   <p class="fb" id="side-msg" aria-live="polite"></p>
   <p class="note" id="side-save"></p>
   <h3 class="hist-h">History</h3>
@@ -191,7 +191,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   var LOCAL = "review-draft:" + DATA.id;
   var STATES = ["open", "addressed", "resolved"];
   var state = { answers: {}, status: {}, doc_status: "open", folded: {}, merges: {}, kept: {}, side_prompts: [], flags: { ctrl_g_bridge: false }, resolve_requested: false, submitted: false, submittedAt: null, savedAt: null };
-  var VERSION = 10;
+  var VERSION = 11;
   var QUIET = {}; // field ids under text that needs no reply: folded until opened or written in
   DATA.messages.concat(DATA.misc || []).forEach(function (m) { m.blocks.forEach(function (b) {
     if (b.type === "list") { if (b.header && b.header.respond === false) QUIET[b.header.id] = 1; b.items.forEach(function (it) { if (it.respond === false) QUIET[it.id] = 1; }); }
@@ -546,10 +546,17 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     if (!comments || !comments.canSendToClaude) return Promise.resolve("off");
     return comments.canSendToClaude().catch(function () { return "off"; });
   }
+  var notifyState = "off";
+  function why(v) { return v === "no_session" ? "no Claude session is watching this page right now" : v === "writers_only" ? "only people who can edit this page can notify Claude" : "notifying Claude isn't available in this view"; }
+  function unanswered() { var out = []; state.side_prompts.forEach(function (p, i) { if (!p.pending && !replies.some(function (r) { return r.side_prompt === i + 1; })) out.push(i + 1); }); return out; }
   function refreshNotify() {
     canNotify().then(function (v) {
-      var b = $("side-notify"); b.hidden = false; b.disabled = v !== "available";
-      b.title = v === "available" ? "Send it and tell Claude in one click" : v === "no_session" ? "No Claude session is watching this page right now" : v === "writers_only" ? "Only people who can edit this page can notify Claude" : "Notifying Claude isn't available in this view";
+      notifyState = v;
+      $("side-notify").title = v === "available" ? "Save it and tell Claude in one click" : "Saves only: " + why(v);
+      var n = unanswered().length, all = $("side-all");
+      all.textContent = "Send all unanswered" + (n ? " (" + n + ")" : "");
+      all.disabled = !n || v !== "available";
+      all.title = !n ? "Every side prompt has a reply" : v === "available" ? "Tell Claude about side prompts " + unanswered().map(function (x) { return "#" + x; }).join(", ") : why(v);
     });
   }
   function notify(text, anchorEl) {
@@ -559,7 +566,12 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
       logEvent("notify failed", false, e && e.code); say("Saved, but Claude couldn't be notified (" + (e && e.code || "error") + "). Tell Claude in the terminal.", false);
     });
   }
-  $("side-notify").addEventListener("click", function () { notifying = true; $("side-submit").click(); notifying = false; });
+  $("side-notify").addEventListener("click", function () { notifying = notifyState === "available"; $("side-submit").click(); notifying = false; });
+  $("side-all").addEventListener("click", function () {
+    var list = unanswered(); if (!list.length) { say("Every side prompt already has a reply.", true); return; }
+    say("Telling Claude about side prompts " + list.map(function (x) { return "#" + x; }).join(", ") + "… Notifying Claude…", true);
+    notify("Unanswered side prompts: " + list.map(function (x) { return "#" + x + " " + excerpt(state.side_prompts[x - 1].text); }).join(" | "), $("side-msg"));
+  });
   $("side-submit").addEventListener("click", function () {
     var raw = state.answers["side-prompt"] || "";
     var entry = sendSide("own");
@@ -569,8 +581,8 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     enqueue().then(function (r) {
       if (r && r.ok) {
         delete entry.pending; logEvent("side prompt sent", true, "#" + state.side_prompts.length);
-        say("Sent side prompt #" + state.side_prompts.length + " and saved it " + new Date().toLocaleTimeString() + "." + (notifyThis ? " Notifying Claude…" : " Claude reads it when you say so in the terminal, or use Submit and notify Claude next time."), true);
-        render(); enqueue();
+        say("Sent side prompt #" + state.side_prompts.length + " and saved it " + new Date().toLocaleTimeString() + "." + (notifyThis ? " Notifying Claude…" : notifyState === "available" ? " Left unanswered by your choice; Send all unanswered tells Claude later." : " Not sent to Claude: " + why(notifyState) + ". Tell Claude in the terminal."), true);
+        render(); enqueue(); refreshNotify();
         if (notifyThis) notify("Side prompt #" + state.side_prompts.length + " sent: " + excerpt(entry.text), $("side-msg"));
       } else {
         state.side_prompts.splice(state.side_prompts.indexOf(entry), 1);
@@ -682,7 +694,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
         var dd = snap.exists ? snap.data() : {};
         replies = Array.isArray(dd.items) ? JSON.parse(JSON.stringify(dd.items)) : [];
         var r = dd.latest;
-        render();
+        render(); refreshNotify();
         if (r && (!lastReply || r.at !== lastReply.at)) { lastReply = r; showRecent(r); var t = Date.parse(r.at); if (t && (!state.submittedAt || t > Date.parse(state.submittedAt))) $("side-dot").hidden = false; }
       }, function () {});
       var typed = {}; document.querySelectorAll("textarea[data-field]").forEach(function (t) { if (/\S/.test(t.value)) typed[t.dataset.field] = t.value; });
