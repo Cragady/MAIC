@@ -131,6 +131,16 @@
         "stream_id": {
           "type": "string",
           "minLength": 1
+        },
+        "maic": {
+          "type": "object",
+          "properties": {
+            "filtered_from": {
+              "description": "The first sequence_number filtered out of this connection's stream (maic.hello's `exclude`) since the last event it was sent: the numbers from it up to this event's, or its merged_from's, are accounted for.",
+              "type": "integer",
+              "minimum": 0
+            }
+          }
         }
       },
       "required": [

@@ -86,6 +86,8 @@ public:
     void join(long after);
     // A resubscribe with starting_after: events up to what was already checked are a replay and pass unchecked.
     void replay_from(long starting_after);
+    // The event types the connection's hello excluded (rule seq.filtered).
+    void filter(std::set<std::string> exclude) { exclude_ = std::move(exclude); }
     long last() const { return last_; }
 
 private:
@@ -95,6 +97,7 @@ private:
     bool joined_ = false;
     long last_ = -1;
     long replay_until_ = -1;  // events numbered up to this are a replay
+    std::set<std::string> exclude_;
     std::string stream_;
     std::map<std::string, std::map<std::string, std::string>> states_;  // machine -> instance -> state
     std::string open_response_;
@@ -130,6 +133,7 @@ private:
     std::optional<Violation> first_;
     std::map<std::string, std::map<std::string, Request>> pending_;      // conn -> request id -> request
     std::map<std::string, std::map<std::string, StreamChecker>> streams_;  // conn -> session -> its view
+    std::map<std::string, std::set<std::string>> exclude_;                 // conn -> what its hello filtered out
     size_t events_ = 0;
 };
 

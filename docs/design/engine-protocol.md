@@ -22,6 +22,7 @@ Every specification this protocol follows (JSON-RPC 2.0, OpenAI's API descriptio
 | Multiple clients | no input lock; every input names its client; the first valid answer to an approval wins |
 | Remote limits | an allow-list per method and per `:` command; remote answers to approvals are yes, no or trip; no unlock, no trust, no settings writes, no unsandboxed shell |
 | Versioning | an integer protocol version in `maic.hello`, capability strings for additions, unknown fields and event types ignored |
+| Filtering | a client names the deltas it does not want in `maic.hello`'s `exclude`; numbers stay the session's, and the first event after filtered ones carries `maic.filtered_from` (section 9) |
 | Lifecycle | OpenAI's Responses and Conversations flow: sessions as conversations, background responses resumed with `starting_after`, `previous_response_id` lineage, `cancelResponse`, stable item ids; MAIC's own beside it (section 12) |
 | Steering | OpenAI's `response.steer` for a message mid-turn, and `maic.steer` on a running response: `steer`, `drop`, `further`, `interrupt`, `keep`, `halt`; bans can trigger them; configured in `steering` (section 11) |
 | Harness path | `harness = "auto"`, `"smart"`, `"dumb"` or `"external"`, per agent and per session, the fixed rules always the floor (section 13) |
@@ -357,13 +358,14 @@ The rule is an allow-list: each engine method and each engine `:` command carrie
 
 ```json
 → {"jsonrpc":"2.0","id":1,"method":"maic.hello","params":{"protocol":1,"client":{"name":"maic.nvim","version":"0.1"},
-   "capabilities":["tool_output","collapse","side_threads","tasks","autocmds"],"view":{"collapse_over":0}}}
+   "capabilities":["tool_output","collapse","side_threads","tasks","autocmds"],"exclude":["response.output_text.delta"],"view":{"collapse_over":0}}}
 ← {"jsonrpc":"2.0","id":1,"result":{"protocol":1,"engine":{"version":"dev","epoch":"k3f9w2"},"client":"c1","origin":"local",
-   "capabilities":["tool_output","collapse","side_threads","tasks","index","images"],"limits":{"always":true,"max_message":1048576},"tier":"guarded","path":{"via":"stdio"}}}
+   "capabilities":["tool_output","collapse","side_threads","tasks","index","images"],"exclude":["response.output_text.delta"],"limits":{"always":true,"max_message":1048576},"tier":"guarded","path":{"via":"stdio"}}}
 ```
 
 * `protocol` is one integer, MAIC's own: it versions MAIC's extensions and envelope, while OpenAI's shapes follow the pinned description (section 15). The engine answers with the version it will speak, or `maic_unsupported_protocol` with the range it supports. The major version changes only when a message changes meaning or a field is removed.
-* Additions (a method, an event type, a field) do not change it. A capability string announces a feature on either side; the engine sends a client only the event types its capabilities cover (no `tool.output.delta` events to a client without the `tool_output` capability).
+* Additions (a method, an event type, a field) do not change it. A capability string announces a feature on either side; the engine sends a client only the event types its capabilities cover (no `response.shell_call_output_content.delta` or `maic.tool.output.delta` to a client without the `tool_output` capability).
+* **Filtering.** A client may also name, in `exclude`, event types it does not want, from `ordering.json`'s `filter.filterable`: the deltas, since each item's done event carries what its deltas did (a client that excludes `response.output_text.delta` reads the text from `response.output_text.done`). Any other known type is refused with `maic_not_filterable`; a type the engine does not know is ignored, so a client can name tomorrow's deltas today. The hello's answer lists everything the connection will not be sent, from both. `sequence_number` stays the session's, so `starting_after` means the same to every connection whatever it filters, and a client that changes its filter or hands off to another device resumes from a number it holds. The first event sent after filtered ones carries `maic.filtered_from`, the first number filtered out, as a merged delta carries `maic.merged_from`: the client sees "these were mine to skip" rather than a loss. A connection that excludes nothing never gets it. A second `maic.hello` replaces the filter.
 * Clients ignore unknown event types and unknown fields, as MAIC ignores unknown record types in a session file. The engine answers an unknown method with JSON-RPC's `-32601`.
 * Nothing but `maic.hello` is accepted before `maic.hello`.
 
@@ -386,6 +388,7 @@ Errors use JSON-RPC's codes for protocol faults and `-32000` for the rest; `data
 | `maic_tripped` | the harness is tripped |
 | `maic_not_owner` | accounts: another user's session |
 | `maic_unsupported_protocol` | no common version |
+| `maic_not_filterable` | `maic.hello`'s `exclude` names a known event type that is not a delta |
 | `maic_steer_disabled` | the action is not in `steering.actions` or not allowed for this client |
 | `maic_step_up_required`, `maic_step_up_failed` | the tier asks a remote client for a fresh step-up code, or the code was refused |
 | `maic_no_external_harness` | `harness = "external"` where no external agent judges |
@@ -500,7 +503,7 @@ Derived from the messages of sections 2 to 6 and 11. `-` is "not yet"; a termina
 
 **Steer.** `response.steer.accepted` and `maic.steer.applied` are legal only while a response of the turn is open or the turn is paused, and come before every event they cause.
 
-**Gaps.** A client expects the next event's number (or its `maic.merged_from`) to be one more than the last it holds. A larger number is a gap: it resubscribes with `starting_after` set to the last number it holds, and the engine replays from the ring or answers `maic_resync`. A smaller or repeated number within a load is a protocol violation.
+**Gaps.** A client expects the next event's number (or its `maic.filtered_from`, else its `maic.merged_from`) to be one more than the last it holds. A larger number is a gap: it resubscribes with `starting_after` set to the last number it holds, and the engine replays from the ring or answers `maic_resync`. A smaller or repeated number within a load is a protocol violation.
 
 ### Renames to make when the protocol is built
 
@@ -748,7 +751,7 @@ Each step is one PR with its tests and is useful on its own. The names, `sequenc
 * **A subagent's calls** show on the parent's stream as `maic.notice` lines, its output as `maic.tool.output.delta` with `call` under the task's output item, and its approvals with `thread {agent}` and no `call_id` (its own stream and session id come with step 14).
 * **Every loaded session is `live`**: focus, background and park come with step 12; activity changes are `maic.session.state` events too. The engine writes the index file when given one and lists what it held as parked after a restart; `maic.session.resume` loads one. maic-server keeps no index file (the daemon's, step 13).
 * **Additions to the shapes above**: `call_id` on `maic.approval.requested` and `.answered` (the action machine's key), `output_index` and `call` on `maic.tool.output.delta`, `{load, sequence_number, activity, replay_from}` from `maic.session.subscribe` (not `{}`), `questions` beside `pending` in a snapshot, `remote_model`, `created`, `turns`, `response` and (local only) `transcript` on an entry, `maic.sequence_number` and `maic.queued` on `response.create`'s result, and the error code `maic_hello_required`.
-* **Capabilities** are exchanged and echoed but filter nothing yet: a filtered event would read as a gap in `sequence_number` (section 10), so filtering waits for a way to say "skipped by capability".
+* **Capabilities** are exchanged and echoed but filter nothing yet: a filtered event would read as a gap in `sequence_number` (section 10), so filtering waits for a way to say "skipped by capability". (Built since: see filtering, as built, below.)
 * **Tiers**: `open` and `guarded`; `airtight` refuses to start until the conformance stamp exists (step 18).
 * **History**: `maic.session.attach` answers no items (`more_before: false`) until step 11; maic-server's `GET /api/sessions/{id}` folds `entries` from the transcript file. Its `sequence_number` (was `seq`) is the last event's number, not the next; `?after=N` (from N on) is read as `starting_after=N-1`; the transcript path is no longer shown to a remote client; a remote `always` is refused (the web client's Always button is gone) and loosening to `auto` from a remote client answers `maic_step_up_required`.
 * **The checker** runs over the test suite's own recorded, mutated and driven streams (`protocol_conformance`, `protocol_check`); the provider-side and Python `jsonschema` cross-checks of section 15 stay as step 3 left them, and the machines for reviews and steering join with steps 10 and 7.
@@ -787,8 +790,14 @@ Not yet: `step_up` is accepted and ignored (step 18); a review in flight is stop
 * **Transcripts** follow the TUI's rule: `record = false` writes them to the runtime directory. This holds for every engine's `createConversation`, maic-server's included.
 * **The kind** of an `--rpc` transcript is `rpc`. `tripwire = "isolated"` scopes the lock to `$XDG_RUNTIME_DIR/maic/sessions/rpc-<pid>.tripped`, which `maic unlock` lists.
 * **`MAIC_PROTOCOL_RECORD=DIR`** records the connection as `rpc-<pid>.jsonl`, checked as it goes.
-* **Not built here**: capability filtering stays as step 5 left it (exchanged and echoed, filtering nothing), awaiting a decision on how a filtered stream says what it skipped. Batch requests (a JSON array on one line) are answered `-32600`, as before.
+* **Not built here**: capability filtering stayed as step 5 left it, awaiting a decision on how a filtered stream says what it skipped (built next: filtering, as built, below). Batch requests (a JSON array on one line) are answered `-32600`, as before.
 * **Tests**: `cli_smoke.py` drives `maic --rpc` against the fake provider: the hello gate, a session created and replayed from 0, a turn, a `run_shell` approval answered over the pipe, `maic.engine.status` answered while `!sleep 2` runs, a resume with `starting_after`, `-32601`, the exit at EOF with the transcript kept, then `-32700`, `maic_unsupported_protocol`, `maic_too_large` and SIGTERM. The client's recording and the engine's both pass `maic protocol check`.
+
+**As built (filtering, 2026-10-02).** `maic.hello` takes `exclude`, and its answer lists every type the connection is not sent: the excluded deltas and the types of a capability it did not announce (`ordering.json`'s `filter`: `filterable`, and `capabilities` with `tool_output` covering `response.shell_call_output_content.delta` and `maic.tool.output.delta`). The engine's `Client` keeps the set and, per session, the first number it filtered since the last event it sent; the next event sent carries it as `maic.filtered_from` (declared on the event envelope), and a delta merged into a queued one (section 4) clears it, since the merge's range covers the filtered numbers. Subscribing or unsubscribing forgets it, so a replay starts clean. The TUI and maic-server's adapter announce `tool_output`; `maic -p` does not, and is spared tool output it never printed.
+
+* **The checker** learns each connection's filter from its hello answer (`Conformance`, `StreamChecker::filter`): an excluded type sent is `seq.filtered`, a `maic.filtered_from` on a connection that excludes nothing or not before the event's own first number is `seq.filtered`, and `seq.next` takes `maic.filtered_from` first, then `maic.merged_from`, then the number.
+* **Tests**: `protocol_conformance` has a filtering section (the refusal of a lifecycle type, an unknown type ignored, two connections on one turn with a shell call where every filtered run is accounted for by the full connection's numbers, and a third connection that resumes unfiltered after a number the filtered one holds) and three mutations (a marker removed is `seq.next`; an excluded type sent and a marker on an unfiltered connection are `seq.filtered`). `cli_smoke.py` runs a `maic --rpc` client that excludes text deltas and reads the reply from `response.output_text.done`; both recordings pass `maic protocol check`.
+* **Numbers do not need an extra id.** They restart at 0 on each load (an engine restart, a resume from the transcript), and `load`, in `maic.session.subscribe`'s and attach's answers, names the number space; a `starting_after` against another load is `maic_resync`. The ring is trimmed from the front, never renumbered.
 
 Steps 1 to 3 are small and stand alone; 4 helps the TUI the day it lands; 5 to 9 deliver item 1, with steering in from the start; 10 is item 2's choice of judge; 11 to 14 and 16 deliver item 4; 15 is item 3 and needs 12; 18 and 19 complete the tiers.
 
@@ -841,4 +850,5 @@ The open questions above are settled as recommended, with these refinements in h
 * **20, harness values**: `dumb`, `smart`, `external`, `auto`, chosen by a setting (global default, per agent, per session). The smart harness costs real performance on a local card, so with a node she controls doing the work, the local client runs `external`: the node's harness judges, and the client itself operates as dumb.
 * **22, OpenAI's description**: keep the full pinned file in the repository for reference, and extract the subset the conformance checks use from it by script.
 * All others (3 to 5, 8, 10 to 12, 14 to 19, 21, 23 to 25): as recommended.
+* **Filtering** (after step 8): a client declares its filter in `maic.hello`, the checker and the gap rule honour it, resume stays session-global, and the first event after filtered ones carries `maic.filtered_from`, shaped like `maic.merged_from` (section 9). The other ways were set aside: numbering each connection's stream apart (resume and hand-off between devices get messy) and allowing gaps everywhere (real loss goes unseen). Integers stay the order and gap test (OpenAI's `sequence_number`); an id per stream incarnation was considered and is already there as `load` (section 10).
 

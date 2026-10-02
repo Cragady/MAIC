@@ -348,6 +348,13 @@ std::optional<Violation> StreamChecker::check(const json& event) {
     long first = n;
     const json& merged = at(event, "/maic/merged_from");
     if (merged.is_number_integer()) first = merged.get<long>();
+    if (exclude_.count(type)) return fail("seq.filtered", "a type this connection excluded");
+    const json& filtered = at(event, "/maic/filtered_from");
+    if (filtered.is_number_integer()) {
+        if (exclude_.empty()) return fail("seq.filtered", "maic.filtered_from on a connection that excludes nothing");
+        if (filtered.get<long>() >= first) return fail("seq.filtered", "maic.filtered_from " + filtered.dump() + " is not before #" + std::to_string(first));
+        first = filtered.get<long>();
+    }
     if (!started_) {
         if (!openai_only_ && (n != 0 || type != "maic.session.state")) return fail("seq.start", "the load's first event is #" + std::to_string(n));
     } else if (n <= last_) {
@@ -561,8 +568,12 @@ std::optional<Violation> Conformance::out(const std::string& conn, const json& m
         const json& result = msg["result"];
         if (!schemas.method(req.method)) return std::nullopt;
         if (std::string e = schemas.result_error(req.method, result); !e.empty()) return fail({-1, "schema.message", req.method + " result " + e});
-        if (req.method == "maic.session.attach") {
+        if (req.method == "maic.hello") {
+            exclude_[conn] = result.value("exclude", std::set<std::string>());
+            for (auto& [session, c] : streams_[conn]) c.filter(exclude_[conn]);
+        } else if (req.method == "maic.session.attach") {
             StreamChecker c(openai_only_);
+            c.filter(exclude_[conn]);
             c.join(result.value("sequence_number", -1L));
             streams_[conn].insert_or_assign(result["entry"]["id"].get<std::string>(), c);
         } else if (req.method == "maic.session.subscribe") {
@@ -574,6 +585,7 @@ std::optional<Violation> Conformance::out(const std::string& conn, const json& m
                 s->second.replay_from(after);
             } else {
                 StreamChecker c(openai_only_);
+                c.filter(exclude_[conn]);
                 if (from > 0) c.join(from - 1);
                 streams_[conn].emplace(session, c);
             }
