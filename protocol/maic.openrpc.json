@@ -1,0 +1,765 @@
+{
+  "openrpc": "1.3.2",
+  "info": {
+    "title": "MAIC engine protocol",
+    "version": "1",
+    "description": "JSON-RPC 2.0, one message per line, between MAIC's engine and every interface (docs/design/engine-protocol.md). Names are OpenAI's where OpenAI's API description defines the concept (protocol/openai/), MAIC's own under maic. and in a maic object. Every method here is in the engine's dispatcher and the reverse (ctest protocol_schema). x-maic-remote says whether a remote client may call it; x-maic-params on a notification is the schema of its whole params object; errors carry OpenAI's error object in data (schemas/maic.schema.json#/$defs/ErrorData)."
+  },
+  "methods": [
+    {
+      "name": "maic.hello",
+      "summary": "Opens the connection: the protocol version, who the client is, what it supports. Nothing else is accepted before it.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "protocol",
+          "description": "The highest protocol version the client speaks.",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        {
+          "name": "client",
+          "required": true,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        {
+          "name": "capabilities",
+          "required": false,
+          "schema": {
+            "$ref": "schemas/maic.schema.json#/$defs/Capabilities"
+          }
+        },
+        {
+          "name": "view",
+          "required": false,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "collapse_over": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        {
+          "name": "auth",
+          "description": "Remote transports only: the token or the account's access token.",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "hello",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/HelloResult"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.engine.status",
+      "summary": "What maic-server's GET /api/status answered: the harness, the model, the sessions loaded.",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "status",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/EngineStatus"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.engine.trip",
+      "summary": "Trips the harness and cancels every response. Open to every client: stopping only adds restriction.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "reason",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "tripped",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "tripped": {
+              "const": true
+            }
+          },
+          "required": [
+            "tripped"
+          ]
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.index.get",
+      "summary": "The session index: the loaded and parked sessions.",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "index",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "schemas/maic.schema.json#/$defs/Entry"
+              }
+            }
+          },
+          "required": [
+            "entries"
+          ]
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.index.subscribe",
+      "summary": "maic.index notifications from now on.",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "ok",
+        "schema": {
+          "type": "object"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.index.unsubscribe",
+      "summary": "No more maic.index notifications.",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "ok",
+        "schema": {
+          "type": "object"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.session.list",
+      "summary": "Transcripts as `maic sessions` lists them, stopped ones included.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "all",
+          "description": "Every workspace, not only the engine's.",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "query",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      ],
+      "result": {
+        "name": "sessions",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "sessions": {
+              "type": "array",
+              "items": {
+                "$ref": "schemas/maic.schema.json#/$defs/SessionSummary"
+              }
+            }
+          },
+          "required": [
+            "sessions"
+          ]
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "createConversation",
+      "summary": "A new session (OpenAI's operationId). Remote: inside server.workspaces.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "metadata",
+          "required": false,
+          "schema": {
+            "$ref": "openai/subset.json#/components/schemas/Metadata"
+          }
+        },
+        {
+          "name": "maic",
+          "required": false,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "workspace": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "mode": {
+                "$ref": "schemas/maic.schema.json#/$defs/Mode"
+              }
+            }
+          }
+        }
+      ],
+      "result": {
+        "name": "conversation",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/Conversation"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "getConversation",
+      "summary": "A session as OpenAI's conversation object, its index entry in maic.entry.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "conversation_id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "name": "conversation",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/Conversation"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.session.resume",
+      "summary": "Loads a transcript as a live session again: by id or a unique prefix (a path only locally).",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "focus",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "entry",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/Entry"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.session.attach",
+      "summary": "A snapshot of the session, and its events from the snapshot's sequence_number on, in one step.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "exchanges",
+          "required": false,
+          "schema": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      ],
+      "result": {
+        "name": "snapshot",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/Snapshot"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.session.subscribe",
+      "summary": "The session's events after starting_after, replayed from the ring, then as they come. maic_resync when they left the ring or the load changed.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "load",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "starting_after",
+          "description": "The last sequence_number the client holds; -1 or absent for the whole ring.",
+          "required": false,
+          "schema": {
+            "type": "integer",
+            "minimum": -1
+          }
+        }
+      ],
+      "result": {
+        "name": "subscribed",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/Subscribed"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.session.unsubscribe",
+      "summary": "No more of the session's events.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "name": "ok",
+        "schema": {
+          "type": "object"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.session.set",
+      "summary": "Changes one session's settings for every client, announced in maic.session.settings with `by`.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "mode",
+          "description": "A remote client tightens freely and loosens up to edit; auto needs a step-up.",
+          "required": false,
+          "schema": {
+            "$ref": "schemas/maic.schema.json#/$defs/Mode"
+          }
+        }
+      ],
+      "result": {
+        "name": "entry",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/Entry"
+        }
+      },
+      "x-maic-remote": true,
+      "x-maic-remote-partly": "mode: tighten freely, loosen up to edit; auto only after a step-up (refused until accounts register a verifier)"
+    },
+    {
+      "name": "response.create",
+      "summary": "Input on a session's lane: starts a turn when the session is idle. On a busy lane it is delivered into the running response at its next boundary, as typing mid-turn does (until steering, step 7, splits that into response.steer and FIFO queueing).",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "stream_id",
+          "description": "The lane: the session id.",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        {
+          "name": "conversation",
+          "description": "The session, as OpenAI names a conversation.",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "openai/subset.json#/components/schemas/ConversationParam-2"
+              }
+            ]
+          }
+        },
+        {
+          "name": "input",
+          "required": true,
+          "schema": {
+            "$ref": "openai/subset.json#/components/schemas/InputParam"
+          }
+        },
+        {
+          "name": "previous_response_id",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "name": "instructions",
+          "description": "Local clients only.",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "name": "tool_choice",
+          "required": false,
+          "schema": {
+            "$ref": "openai/subset.json#/components/schemas/ToolChoiceParam"
+          }
+        },
+        {
+          "name": "max_tool_calls",
+          "required": false,
+          "schema": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        {
+          "name": "truncation",
+          "required": false,
+          "schema": {
+            "enum": [
+              "auto",
+              "disabled",
+              null
+            ]
+          }
+        },
+        {
+          "name": "include",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "openai/subset.json#/components/schemas/IncludeEnum"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "response",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/MaicResponse"
+        }
+      },
+      "x-maic-remote": true,
+      "x-maic-local-only-params": [
+        "instructions"
+      ]
+    },
+    {
+      "name": "cancelResponse",
+      "summary": "Ends the running response, its partial output kept; the turn ends with it. Open to every client.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "response_id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "name": "response",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/MaicResponse"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.approval.answer",
+      "summary": "Answers an approval. The first valid answer wins; a late one is maic_already_answered. A remote client cannot answer always.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "approval",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "choice",
+          "required": true,
+          "schema": {
+            "$ref": "schemas/maic.schema.json#/$defs/Choice"
+          }
+        },
+        {
+          "name": "feedback",
+          "description": "For no: a sentence for the model.",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "answered",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "choice": {
+              "$ref": "schemas/maic.schema.json#/$defs/Choice"
+            }
+          },
+          "required": [
+            "choice"
+          ]
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.question.reply",
+      "summary": "Answers the model's question.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "question",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "text",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "ok",
+        "schema": {
+          "type": "object"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.event",
+      "summary": "One session event, exactly as the Responses WebSocket would send it, with sequence_number and stream_id. Its params are the event: x-maic-params is its schema, the union over type.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "type",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "sequence_number",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        {
+          "name": "stream_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "x-maic-notification": true,
+      "x-maic-params": {
+        "$ref": "schemas/event.schema.json"
+      }
+    },
+    {
+      "name": "maic.index",
+      "summary": "An index entry changed or left; replaces state, carries no sequence_number.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "entry",
+          "required": false,
+          "schema": {
+            "$ref": "schemas/maic.schema.json#/$defs/Entry"
+          }
+        },
+        {
+          "name": "removed",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "x-maic-notification": true,
+      "x-maic-params": {
+        "$ref": "schemas/maic.schema.json#/$defs/IndexParams"
+      }
+    },
+    {
+      "name": "maic.engine",
+      "summary": "Engine-wide: the tripwire, or a protocol fault the guarded tier logged.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "tripped",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "reason",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "notice",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "level",
+          "required": false,
+          "schema": {
+            "enum": [
+              "info",
+              "warn",
+              "error"
+            ]
+          }
+        }
+      ],
+      "x-maic-notification": true,
+      "x-maic-params": {
+        "$ref": "schemas/maic.schema.json#/$defs/EngineParams"
+      }
+    }
+  ]
+}

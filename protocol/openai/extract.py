@@ -30,6 +30,9 @@ ROOTS = [
     "ResponseError",                        # a failed response's error
     "ErrorResponse",                        # {"error": Error}, the error body of every operation
     "CreateChatCompletionStreamResponse",   # one chat-completions chunk, what core/src/openai.cpp parses
+    "ConversationResource",                 # the conversation object: createConversation, getConversation
+    "ConversationItem",                     # a conversation's items: maic.session.attach, listConversationItems
+    "CreateResponse",                       # response.create's fields, the Responses WebSocket's client event
 ]
 
 PREFIX = "#/components/schemas/"

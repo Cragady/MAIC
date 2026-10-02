@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <set>
 #include <string>
 
 namespace maic {
@@ -25,5 +26,15 @@ std::string schema_error(const nlohmann::json& document, const nlohmann::json& s
 // as "<JSON pointer into schema>: <keyword>"; "" when there is none. A schema relying on such a keyword would pass
 // values it means to refuse, so the tests run every pinned schema through this.
 std::string schema_unsupported(const nlohmann::json& schema);
+
+// The first field of `value` that `schema` does not declare, as "<JSON pointer into value>"; "" when every field is
+// declared. A field is declared when a `properties` reached through $ref and allOf names it, or the anyOf or oneOf
+// branch the value fits does; an object whose schema declares no properties, or allows any further one
+// (additionalProperties other than false), is a free map and not looked into. Fields named in `allowed` pass
+// anywhere and are not looked into. The engine protocol's rule that MAIC's fields on an OpenAI-shaped object go in
+// one `maic` object (docs/design/engine-protocol.md, section 10) is this with allowed = {"maic"}, since OpenAI's
+// schemas leave their objects open.
+std::string schema_undeclared(const nlohmann::json& document, const nlohmann::json& schema, const nlohmann::json& value,
+                              const std::set<std::string>& allowed);
 
 }  // namespace maic

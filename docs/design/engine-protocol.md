@@ -67,9 +67,11 @@ MAIC's own msgpack codec (`cli/src/msgpack.cpp`) stays where it is, for the host
 
 ```json
 → {"jsonrpc":"2.0","id":7,"method":"response.create","params":{"stream_id":"20261001-091500-tui-4121","conversation":"20261001-091500-tui-4121","input":"run the tests"}}
-← {"jsonrpc":"2.0","id":7,"result":{"id":"20261001-091500-tui-4121.r9","object":"response","status":"in_progress","background":true,"maic":{"turn":4,"sequence_number":812}}}
-← {"jsonrpc":"2.0","method":"maic.event","params":{"type":"response.created","sequence_number":813,"stream_id":"20261001-091500-tui-4121",
-   "response":{"id":"20261001-091500-tui-4121.r9","object":"response","status":"in_progress","conversation":{"id":"20261001-091500-tui-4121"},"maic":{"turn":4,"origin":"local"}}}}
+← {"jsonrpc":"2.0","id":7,"result":{"id":"20261001-091500-tui-4121.r9","object":"response","created_at":1790000000,"status":"in_progress","background":true,"access_programs":null,"error":null,"incomplete_details":null,"instructions":null,"model":"llamacpp/qwen3.5-9b","tools":[],"output":[],"parallel_tool_calls":false,"metadata":{},"tool_choice":"auto","temperature":null,"top_p":null,"previous_response_id":null,"conversation":{"id":"20261001-091500-tui-4121"},"maic":{"turn":4,"origin":"local","sequence_number":812}}}
+← {"jsonrpc":"2.0","method":"maic.event","params":{"type":"maic.input.added","sequence_number":813,"stream_id":"20261001-091500-tui-4121",
+   "item":{"id":"~813","type":"message","role":"user","content":[{"type":"input_text","text":"run the tests"}]},"queued":false,"by":{"client":"c1","name":"maic.nvim","origin":"local"}}}
+← {"jsonrpc":"2.0","method":"maic.event","params":{"type":"response.created","sequence_number":814,"stream_id":"20261001-091500-tui-4121",
+   "response":{"id":"20261001-091500-tui-4121.r9","object":"response","created_at":1790000000,"status":"in_progress","background":true,"access_programs":null,"error":null,"incomplete_details":null,"instructions":null,"model":"llamacpp/qwen3.5-9b","tools":[],"output":[],"parallel_tool_calls":false,"metadata":{},"tool_choice":"auto","temperature":null,"top_p":null,"previous_response_id":null,"conversation":{"id":"20261001-091500-tui-4121"},"maic":{"turn":4,"origin":"local"}}}}
 ```
 
 Commands are requests with an `id`. Session events are notifications with method `maic.event`; engine-wide notifications use `maic.index` and `maic.engine` (section 2). Requests are answered in any order; a client may have up to 64 in flight.
@@ -266,13 +268,18 @@ Items being written have the provisional id `~<n>` (the `sequence_number` of the
 
 ```json
 → {"jsonrpc":"2.0","id":3,"method":"maic.session.attach","params":{"session":"20261001-091500-tui-4121","exchanges":3}}
-← {"jsonrpc":"2.0","id":3,"result":{"entry":{...},"load":"q7c2","sequence_number":812,"more_before":true,
-   "items":[{"id":"20261001-091500-tui-4121#57","type":"message","role":"user","content":[{"type":"input_text","text":"run the tests"}],
+← {"jsonrpc":"2.0","id":3,"result":{"entry":{"id":"20261001-091500-tui-4121","title":"fix the relay keepalive","workspace":"~/dev2/MAIC",
+            "kind":"main","parent":null,"state":"live","activity":"idle","model":"llamacpp/qwen3.5-9b","mode":"edit","agent":"build","harness":"auto",
+            "judge":"maic","tier":"guarded","last_activity":"2026-10-01T09:42:10+02:00","unseen":false,"queued":0,"waiting":null},
+   "load":"q7c2","sequence_number":812,"more_before":true,
+   "items":[{"id":"20261001-091500-tui-4121#57","type":"message","role":"user","status":"completed","content":[{"type":"input_text","text":"run the tests"}],
              "maic":{"time":"2026-10-01T09:41:02+02:00"}},
             {"id":"20261001-091500-tui-4121#61","type":"shell_call_output","call_id":"c3","status":"completed","output":[],"max_output_length":null,
              "maic":{"summary":"ctest --test-dir build","ok":true,"size":48213,"head":"Test project ~/dev2/MAIC/build\n    Start  1: harness","collapsed":true}},
-            {"id":"20261001-091500-tui-4121#62","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"All 42 passed.","annotations":[]}]}],
-   "inflight":null,"pending":[],"todo":[],"usage":{...}}}
+            {"id":"20261001-091500-tui-4121#62","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"All 42 passed.","annotations":[],"logprobs":[]}]}],
+   "inflight":null,"pending":[],"todo":[],
+   "usage":{"usage":{"input_tokens":9120,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0},"output_tokens":38,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":9158},
+            "calls":12,"context":32768,"last_input":9120}}}
 ```
 
 * **`maic.session.attach`** returns the entry, the last `exchanges` exchanges, `inflight` (the reply so far, or the running tool with the last 8 KiB of its output), every pending approval and question in the tree, the todo list and usage, and subscribes the client from the snapshot's `sequence_number` in the same step, so no event falls between the two.
@@ -535,6 +542,7 @@ Micaiah's six actions extend it, through `maic.steer`, for when waiting for the 
 
 **Kept** works as a ban's cut does ([bans.md](../bans.md#what-the-model-sees)): the partial reply's item closes `incomplete`, and the steered response's output is the assistant's turn so far. **Trimmed** removes the tail of the partial reply from the start of what was dropped: `trim` is `none`, `sentence`, `paragraph` (the default, `steering.drop_trim`) or `all`, and `at`, a byte offset chosen in the client, overrides it; `response.output_text.done` then carries the trimmed text and `maic.trimmed` the range removed, so a client replaces what the deltas built. **Withdrawn** means the proposed action does not run: a review in flight is cancelled (`maic.review.cancelled`), an open approval closes (`maic.approval.answered`, `choice: "withdrawn"`), and the output item says "not run: the user redirected", so the model may propose it again under the new direction. An action proposed under the old direction never runs after a redirect. **A running tool** is cancelled as `cancelResponse` cancels one (process group killed, the output so far recorded), or, for `steer` and `drop` with `tool: "wait"` (or `steering.on_running_tool = "wait"`), finishes first and the steer applies at the next boundary; `further` always waits, and `interrupt`, `keep` and `halt` always cancel.
 
+<!-- example: skip (maic.steer and the steering events arrive with step 7; protocol_schema_test checks this block from then) -->
 ```json
 → {"jsonrpc":"2.0","id":52,"method":"maic.steer","params":{"session":"20261001-091500-tui-4121","response_id":"20261001-091500-tui-4121.r9","action":"drop","note":"leave the CI config alone"}}
 ← {"jsonrpc":"2.0","id":52,"result":{"steer":{"id":"st7","previous_response_id":"20261001-091500-tui-4121.r9"}}}

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <optional>
 #include <set>
 #include <vector>
@@ -247,7 +248,91 @@ std::string unsupported_at(const json& s, const std::string& where) {
     return "";
 }
 
+// Where schema_undeclared looks: the properties declared for one object value, and the schemas of an array's items.
+class Declared {
+public:
+    Declared(const json& document, const std::set<std::string>& allowed) : doc_(document), allowed_(allowed) {}
+
+    std::string check(const json& s, const json& v, const std::string& where) const { return check(std::vector<const json*>{&s}, v, where); }
+
+    // `v` against every schema in `all` at once: a field one of them declares is declared.
+    std::string check(const std::vector<const json*>& all, const json& v, const std::string& where) const {
+        if (v.is_object()) {
+            std::map<std::string, std::vector<const json*>> props;
+            bool free = false;
+            for (const json* s : all) collect(*s, v, props, free, 0);
+            if (props.empty() || free) return "";
+            for (const auto& [k, val] : v.items()) {
+                if (allowed_.count(k)) continue;
+                auto it = props.find(k);
+                if (it == props.end()) return where + "/" + token(k);
+                if (std::string e = check(it->second, val, where + "/" + token(k)); !e.empty()) return e;
+            }
+        } else if (v.is_array()) {
+            std::vector<const json*> items;
+            for (const json* s : all) collect_items(*s, v, items, 0);
+            for (size_t i = 0; i < v.size() && !items.empty(); ++i) {
+                if (std::string e = check(items, v[i], where + "/" + std::to_string(i)); !e.empty()) return e;
+            }
+        }
+        return "";
+    }
+
+private:
+    const json* deref(const json& s, int hops) const {
+        if (!s.is_object() || !s.contains("$ref") || hops > 64) return nullptr;
+        const json& ref = s["$ref"];
+        if (!ref.is_string() || ref.get_ref<const std::string&>().rfind('#', 0) != 0) return nullptr;
+        try {
+            json::json_pointer p(ref.get<std::string>().substr(1));
+            return doc_.contains(p) ? &doc_.at(p) : nullptr;
+        } catch (const json::exception&) {
+            return nullptr;
+        }
+    }
+
+    // The branch of an anyOf or oneOf the value fits, the first one.
+    const json* fitting(const json& list, const json& v) const {
+        for (const auto& b : list) {
+            if (!Validator(doc_).check(b, v, "", 0, 0)) return &b;
+        }
+        return nullptr;
+    }
+
+    void collect(const json& s, const json& v, std::map<std::string, std::vector<const json*>>& props, bool& free, int hops) const {
+        if (!s.is_object()) return;
+        if (const json* target = deref(s, hops)) collect(*target, v, props, free, hops + 1);
+        if (s.contains("properties") && s["properties"].is_object()) {
+            for (const auto& [k, sub] : s["properties"].items()) props[k].push_back(&sub);
+        }
+        if (s.contains("additionalProperties") && s["additionalProperties"] != false) free = true;
+        for (const auto& sub : member(s, "allOf")) collect(sub, v, props, free, hops);
+        for (const char* key : {"anyOf", "oneOf"}) {
+            if (!s.contains(key)) continue;
+            if (const json* b = fitting(s[key], v)) collect(*b, v, props, free, hops);
+        }
+    }
+
+    void collect_items(const json& s, const json& v, std::vector<const json*>& items, int hops) const {
+        if (!s.is_object()) return;
+        if (const json* target = deref(s, hops)) collect_items(*target, v, items, hops + 1);
+        if (s.contains("items")) items.push_back(&s["items"]);
+        for (const auto& sub : member(s, "allOf")) collect_items(sub, v, items, hops);
+        for (const char* key : {"anyOf", "oneOf"}) {
+            if (!s.contains(key)) continue;
+            if (const json* b = fitting(s[key], v)) collect_items(*b, v, items, hops);
+        }
+    }
+
+    const json& doc_;
+    const std::set<std::string>& allowed_;
+};
+
 }  // namespace
+
+std::string schema_undeclared(const json& document, const json& schema, const json& value, const std::set<std::string>& allowed) {
+    return Declared(document, allowed).check(schema, value, "");
+}
 
 std::string schema_error(const json& document, const json& schema, const json& value) {
     auto p = Validator(document).check(schema, value, "", 0, 0);
