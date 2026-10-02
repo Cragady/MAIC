@@ -588,6 +588,56 @@ int main() {
         fs::remove_all(rt);
     }
 
+    // NixOS keeps programs under /run (the system, setuid wrappers, GPU drivers) and the Nix daemon's socket under
+    // /nix. Fake trees under ~/.cache stand in for both through MAIC_SANDBOX_ROOT, honoured only with MAIC_TESTING=1.
+    std::cout << "sandbox: NixOS program trees and the Nix daemon socket\n";
+    if (!on_path("bwrap") || !on_path("python3")) {
+        std::cout << "  skipped: needs bwrap and python3 on PATH\n";
+    } else {
+        fs::path fake = fs::path(home) / ".cache" / ("maic-nix-" + std::to_string(getpid()));
+        fs::path run = fake / "run", daemon = fake / "nix" / "var" / "nix" / "daemon-socket", sws = fake / "ws";
+        fs::remove_all(fake);
+        fs::create_directories(daemon);
+        fs::create_directories(sws);
+        fs::create_directories(fake / "store" / "system" / "sw" / "bin");
+        std::ofstream(fake / "store" / "system" / "sw" / "bin" / "hello") << "hello from the system\n";
+        fs::create_directories(run);
+        fs::create_directory_symlink(fake / "store" / "system", run / "current-system");  // a link into the store, as on NixOS
+        for (const char* d : {"wrappers/bin", "opengl-driver/lib", "secret"}) fs::create_directories(run / d);
+        std::ofstream(run / "wrappers" / "bin" / "sudo") << "wrapper\n";
+        std::ofstream(run / "opengl-driver" / "lib" / "libGL.so") << "driver\n";
+        std::ofstream(run / "secret" / "note") << "hidden\n";
+        std::vector<int> fds = {listen_at(daemon / "socket"), listen_at(run / "wrappers" / "s.sock")};
+        expect(fds[0] >= 0 && fds[1] >= 0, "the test's own listeners are up");
+        auto reach = [&](const fs::path& sock) {
+            auto r = run_sandboxed("python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).connect(sys.argv[1])' " + sock.string(), sws, false,
+                                   std::chrono::seconds(20), no);
+            return r.exit_code == 0;
+        };
+        setenv("MAIC_SANDBOX_ROOT", fake.c_str(), 1);
+        unsetenv("MAIC_TESTING");
+        expect(reach(daemon / "socket"), "control: without MAIC_TESTING=1 the override is ignored and the fake daemon socket is reachable");
+        setenv("MAIC_TESTING", "1", 1);
+        r = run_sandboxed("cat " + (run / "current-system" / "sw" / "bin" / "hello").string() + " " + (run / "wrappers" / "bin" / "sudo").string() + " " +
+                              (run / "opengl-driver" / "lib" / "libGL.so").string(),
+                          sws, false, std::chrono::seconds(20), no);
+        expect(r.exit_code == 0 && r.output.find("hello from the system") != std::string::npos && r.output.find("wrapper") != std::string::npos &&
+                   r.output.find("driver") != std::string::npos,
+               "current-system (a link), wrappers and opengl-driver are visible inside: " + r.output);
+        r = run_sandboxed("touch " + (run / "wrappers" / "bin" / "x").string(), sws, false, std::chrono::seconds(20), no);
+        expect(r.exit_code != 0 && !fs::exists(run / "wrappers" / "bin" / "x"), "read-only");
+        r = run_sandboxed("ls " + (run / "secret").string(), sws, false, std::chrono::seconds(20), no);
+        expect(r.exit_code != 0, "anything else under /run stays masked");
+        expect(!reach(run / "wrappers" / "s.sock"), "a socket inside a program tree is masked");
+        expect(!reach(daemon / "socket"), "the Nix daemon socket is unreachable");
+        unsetenv("MAIC_SANDBOX_ROOT");
+        unsetenv("MAIC_TESTING");
+        for (int fd : fds) {
+            if (fd >= 0) close(fd);
+        }
+        fs::remove_all(fake);
+    }
+
     std::cout << ":cd moves the root\n";
     {
         fs::path a = ws / "cd-a", b = ws / "cd-b";
