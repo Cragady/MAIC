@@ -41,7 +41,15 @@ Feature: [harness.md, Layers, rule 6](harness.md#layers).
 * **The `:init` ask path is not in the TUI suite.**
  *Open.* The question `:init` asks when a session worked outside the project ("move it into the project's home anyway?") is covered by the core tests (`init_move_check`) but not driven through the TUI. Would address it: a `tests/test_tui.py` case that reads and writes outside a project, runs `:init` and answers. ([sessions.md, Homes](sessions.md#homes))
 
-## Local models and services
+## The audit trail
+
+Feature: [audit-trail.md](audit-trail.md), [leak-audit.md](leak-audit.md).
+
+* **An unrecorded session left nothing to audit.** *Addressed* (2026-10-02): with the audit trail on, every tool call of every session, recorded or not, leaves one entry (the call and the harness's decisions, never text or output) that `maic-leak-audit` reads until the entry retires ([audit-trail.md](audit-trail.md)). Off by default.
+* **The trail is not tamper-evident.** *Open.* Entries are 0600 files of yours; anything running as you can edit or delete them. Would address it: chaining each entry's hash to the one before, or signing them with a key the agent cannot reach.
+* **Write calls carry their text into the trail.** *Accepted.* The entry keeps a call's arguments as given, so `write_file` and the like keep what was written until the entry retires. Why: the judge needs the call as made. Would address it for a given setup: a shorter `stale_days` with `archive = "off"`, or `maic audit-trail purge`.
+* **Off-site moves are never automatic.** *Accepted* (by design). `maic audit-trail offsite` prints the commands and runs none; the archive grows until you act. Why: copying audit data off the machine is your decision each time.
+
 
 * **Side threads and a running turn take turns on a single-slot local server.** *Expected.* A llama-server with one slot serves one request at a time, so a side thread asked while a main turn runs waits for it. Would address it: a second slot (`--parallel`) where the card has room, or the side server. ([roadmap.md](roadmap.md), [llamacpp.md](llamacpp.md))
 * **whisper-server's ready pattern is read from stderr.** *Expected.* whisper-server says it is ready only in its log, so `maic up whisper` waits for `compute buffer (decode)` in its stderr; a whisper.cpp release that changes that line makes the start wait out its timeout. Would address it: a health endpoint in whisper-server, then polling it like the llama servers. ([diction.md, Setup](diction.md#setup))

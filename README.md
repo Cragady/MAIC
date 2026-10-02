@@ -93,6 +93,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [instructions.md](docs/instructions.md): instruction files: where MAIC looks and in what order, the classes, local files, imports and on-demand loading, how trust covers them, and how this compares with Claude Code and opencode.
 * [themes.md](docs/themes.md): themes (default, gruvbox dark and light, mono), writing one, importing a neovim colorscheme, colour depth.
 * [nvim.md](docs/nvim.md): maic.nvim, MAIC inside nvim: the plugin's commands, how MAIC finds and trusts its host, what the host gives (files, diffs, User autocmds, the live theme, `maic.nvim` in your Lua) and what the model never gets.
+* [audit-trail.md](docs/audit-trail.md): the audit trail, off by default: one entry per tool call of every session, recorded or not, for the leak audit; who needs it, what it records and never records, its costs, the rolling states, the archive and the off-site commands it only recommends.
 * [sessions.md](docs/sessions.md): the session file format, every record type, homes, forks and `--fork-at`, `maic sessions import` (claude.ai exports, Claude Code transcripts), `redact`, `export`.
 * [cai.md](docs/cai.md): cai-tools, all of it, as `cai TOOL` and `maic cai TOOL`: trans-fairy, redact, read, fabricate and the rest, on MAIC sessions as on Claude Code transcripts; `trans-fairy-write`'s backups.
 * [llamacpp.md](docs/llamacpp.md): llama.cpp, the local server: every sampler (XTC, DRY, top-n-sigma), logit bias, grammars, the models directory and `maic vendor model`.

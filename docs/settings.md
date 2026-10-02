@@ -8,6 +8,8 @@ Settings are Lua files that return a table (JSON with the same keys works too). 
 
 diction's settings are a file of their own beside the global one, `~/.config/maic/diction.lua`, read only by diction and evaluated at `global_lua`, like this file (`maic settings read diction`; see [diction.md](diction.md#configuration)).
 
+The audit trail's settings are another, `~/.config/maic/audit.lua` (`maic audit-trail init` writes it, off by default), also evaluated at `global_lua`. It is yours alone: no project file can set or override any of it, and once maic-server has accounts only an administrator configures it ([audit-trail.md](audit-trail.md#every-auditlua-key) lists every key).
+
 
 At each location a `settings.lua` is used when it exists, else a `settings.json` (`maic settings init --json` writes that form). Nearer files win. Scalars replace (`theme` too), `providers` merge by name, `style` merges by role. `:settings` in a session lists the files that were read; `maic init` (or `:init`, which also has the agent draft the `MAIC.md`) scaffolds a project's.
 
