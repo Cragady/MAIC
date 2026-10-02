@@ -100,6 +100,7 @@ Everything below is covered by tests against fake servers; these runs confirm it
 
 ## Parked
 
+* A sandbox wrapper for external processes: bubblewrap around any helper or agentic tool MAIC starts (Claude Code first), letting through only what that tool names (for Claude Code, `~/.claude` and the network). Not needed for Claude Code today, which acts only through MAIC's tools; worth having for tools that act on their own.
 * Compaction through a Lua hook from a helper script: the storyboard steps are small enough that a 4B does not need it; revisit if a helper ever does.
 * A `:compact` that the model calls itself: the byte estimate and the too-long retry cover the cases seen so far.
 * Prompt completion, on purpose: a completion source for the `maic-input` filetype (for blink.cmp and nvim-cmp, and for MAIC's own interface) offering `:` commands, `@file` paths, agent, preset and model names, recent prompts, and continuations from `small_model` or the completion server. Its behaviour lives in maic.nvim's defaults table, so a consumer overrides it like any other option. Parked until nvim as MAIC's interface gives the input a real buffer.
