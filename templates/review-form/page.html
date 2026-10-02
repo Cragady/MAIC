@@ -85,6 +85,21 @@ button:disabled { opacity: .45; cursor: default; }
 .check { display: inline-flex; gap: 6px; align-items: center; font-size: .9rem; color: var(--muted); }
 .sent { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; display: grid; gap: 4px; }
 .sent p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Side Prompt: a fixed panel beside the page on wide screens, a chat bubble that opens a sheet on narrow ones. */
+#side-panel { position: fixed; z-index: 20; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 10px; align-content: start; overflow-y: auto; box-shadow: 0 6px 24px rgba(0,0,0,.12); }
+#side-panel h2 { font-size: 1.1rem; flex: 1; }
+.side-head { justify-content: space-between; }
+#side-bubble { position: fixed; z-index: 21; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); width: 56px; height: 56px; border-radius: 50%; background: var(--accent); border-color: var(--accent); color: var(--surface); font-size: 1.4rem; padding: 0; box-shadow: 0 4px 16px rgba(0,0,0,.2); }
+#side-dot { position: absolute; top: 6px; right: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--open); }
+@media (min-width: 1200px) {
+  body { padding-right: 360px; }
+  #side-panel { right: 16px; top: calc(16px + env(safe-area-inset-top, 0px)); width: 320px; max-height: calc(100vh - 32px); }
+  #side-bubble, #side-close { display: none; }
+}
+@media (max-width: 1199.98px) {
+  #side-panel { left: 12px; right: 12px; bottom: calc(84px + env(safe-area-inset-bottom, 0px)); max-height: 70vh; }
+  #side-panel:not(.open) { display: none; }
+}
 @media (prefers-reduced-motion: reduce) { details.card > summary::before { transition: none; } }
 </style>
 
@@ -109,14 +124,19 @@ button:disabled { opacity: .45; cursor: default; }
   <section aria-labelledby="h-msgs"><h2 id="h-msgs">The conversation since you stopped reading</h2><div id="messages" class="list"></div></section>
   <section aria-labelledby="h-misc" id="misc-sec"><h2 id="h-misc">Misc / Uncovered / Ungrouped</h2><p class="note">Things that don't slot in above, oldest first.</p><div id="misc" class="list"></div></section>
   <section aria-labelledby="h-own"><h2 id="h-own">This page's own improvements and to-do</h2><div id="own" class="list"></div></section>
-  <section aria-labelledby="h-side"><h2 id="h-side">Side Prompt</h2><p class="note">A prompt on its own, sent by its own button. Each one sent is kept below. One left unsent goes out with the overall Submit.</p><div id="side"></div>
-    <div class="row"><button id="side-submit" type="button">Submit side prompt</button><span class="note">The ↪ buttons beside boxes add a reference to that box here.</span></div>
-    <div id="side-sent" class="list"></div>
-  </section>
   <section aria-labelledby="h-after"><h2 id="h-after">After Prompt</h2><p class="note">Anything you'd otherwise send as a separate message, so threads don't drift apart.</p><div id="after"></div>
     <div class="row"><button class="primary" id="submit-end" type="button">Submit</button><span class="note">Tab here from the last box; Enter or Space submits.</span></div>
   </section>
 </div>
+
+<aside id="side-panel" aria-labelledby="h-side">
+  <div class="row side-head"><h2 id="h-side">Side Prompt</h2><button class="small" id="side-close" type="button" aria-label="Close the Side Prompt">Close</button></div>
+  <p class="note">A prompt on its own, sent by its own button. One left unsent goes out with the overall Submit. The ↪ beside a box adds a reference to it here.</p>
+  <div id="side"></div>
+  <div class="row"><button class="primary" id="side-submit" type="button">Submit side prompt</button></div>
+  <div id="side-sent" class="list"></div>
+</aside>
+<button id="side-bubble" type="button" aria-controls="side-panel" aria-expanded="false" aria-label="Open the Side Prompt"><svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v10H9l-5 4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span id="side-dot" hidden></span></button>
 
 <script type="application/json" id="review-data">__REVIEW_DATA__</script>
 <script>
@@ -220,7 +240,7 @@ button:disabled { opacity: .45; cursor: default; }
     var ta = el("textarea"); ta.id = "f-" + id; ta.dataset.field = id; ta.rows = rows || 2;
     if (!label) ta.setAttribute("aria-label", "Your reply to the text above");
     ta.value = state.answers[id] || "";
-    ta.addEventListener("input", function () { state.answers[id] = ta.value; touch(); counts(); });
+    ta.addEventListener("input", function () { state.answers[id] = ta.value; touch(); counts(); if (id === "side-prompt") $("side-dot").hidden = !/\S/.test(ta.value); });
     wrap.appendChild(ta);
     var pick = el("label", "pick"); var cb = el("input"); cb.type = "checkbox"; cb.dataset.field = id; cb.id = "p-" + id; pick.appendChild(cb); pick.appendChild(document.createTextNode("include in combine"));
     wrap.appendChild(pick);
@@ -236,7 +256,7 @@ button:disabled { opacity: .45; cursor: default; }
   function includeRef(id) {
     var cur = state.answers["side-prompt"] || "";
     state.answers["side-prompt"] = cur + (cur && !/\n$/.test(cur) ? "\n" : "") + "[[" + id + "]] ";
-    touch(); render();
+    touch(); render(); $("side-panel").classList.add("open"); $("side-bubble").setAttribute("aria-expanded", "true");
     var ta = $("f-side-prompt"); if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }
   }
 
@@ -385,6 +405,7 @@ button:disabled { opacity: .45; cursor: default; }
       var box = el("div", "sent"); box.appendChild(el("span", "note", "Sent " + new Date(p.at).toLocaleString() + (p.with === "document" ? " with the document" : "") + " · #" + (i + 1)));
       box.appendChild(el("p", null, p.text)); ss.appendChild(box);
     });
+    $("side-dot").hidden = !/\S/.test(state.answers["side-prompt"] || "");
     var af = $("after"); af.textContent = ""; af.appendChild(field("after-prompt", "After Prompt", 6));
     document.querySelectorAll("details.card").forEach(function (d) { if (d.id in openNow) d.open = openNow[d.id]; });
     if (focusId && $(focusId)) { $(focusId).focus(); try { if (sel != null) $(focusId).selectionStart = $(focusId).selectionEnd = sel; } catch (e) {} }
@@ -442,6 +463,9 @@ button:disabled { opacity: .45; cursor: default; }
       if (comments) comments.openComposer({ element: pressed || $("submit") }).catch(function () {});
     });
   }
+  function sidePanel(open) { $("side-panel").classList.toggle("open", open); $("side-bubble").setAttribute("aria-expanded", open ? "true" : "false"); if (open) { var t = $("f-side-prompt"); if (t) t.focus(); } }
+  $("side-bubble").addEventListener("click", function () { sidePanel(!$("side-panel").classList.contains("open")); });
+  $("side-close").addEventListener("click", function () { sidePanel(false); $("side-bubble").focus(); });
   $("fold-all").addEventListener("click", function () { foldIn(document, true); });
   $("unfold-all").addEventListener("click", function () { state.folded = {}; touch(); render(); });
 

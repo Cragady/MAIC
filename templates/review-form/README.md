@@ -23,7 +23,7 @@ python3 -c "import sys; p=open('page.html').read(); d=open('review.json').read()
 * Status: every card is open (amber), addressed (blue) or resolved (green), stored in `status`. A topic is resolved only after it is addressed and after the document is marked addressed; the document (`doc_status`) is resolved by the user or an agent once every topic is. When everything is addressed and a topic has grown new depth, it gets a new artifact.
 * Every box collapses to a one-line preview, per box, per card or for the whole page.
 * Saves go through a queue: each waits for the one before it.
-* Side Prompt: its own Submit sends only it into `side_prompts`; one left unsent goes out with the overall Submit. The ↪ beside a box adds a `[[field id]]` reference.
+* Side Prompt floats: a fixed panel beside the page on wide screens, a chat button that opens a sheet on narrow ones. Its own Submit sends only it into `side_prompts`; one left unsent goes out with the overall Submit. The ↪ beside a box adds a `[[field id]]` reference.
 * The user's prompts and the agent's messages are told apart by card color and label.
 * `improvements` and `todo` in the data render on the page itself, so each artifact carries its own improvement list.
 
