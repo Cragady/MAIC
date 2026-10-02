@@ -9,6 +9,7 @@
 #include "maic/http.hpp"
 #include "maic/lua.hpp"
 #include "maic/lua_tools.hpp"
+#include "maic/nvim_setup.hpp"
 #include "maic/theme.hpp"
 
 #include <fcntl.h>
@@ -591,7 +592,138 @@ int main() {
         rc = capture({MAIC_BINARY, "nvim", "keymaps", "--all", "-u", clean.string()}, out);
         expect(rc == 0 && out.find("ok     <leader>mm (normal): MAIC: open or focus") != std::string::npos, "--all lists every key");
         rc = capture({MAIC_BINARY, "nvim"}, out);
-        expect(rc == 2 && out.find("usage: maic nvim keymaps") != std::string::npos, "maic nvim alone is a usage error, exit 2");
+        expect(rc == 2 && out.find("usage: maic nvim keymaps") != std::string::npos && out.find("maic nvim setup llama-vim") != std::string::npos, "maic nvim alone is a usage error, exit 2");
+    }
+
+    section("maic nvim setup llama-vim");
+    {
+        // A real headless nvim with -u pointing at an init that defines a stand-in for lazy.nvim: the modules the
+        // setup asks about, filled from a spec the way lazy.nvim fills them, its imports read from <config>/lua.
+        fs::path root = tmp / "setup", cfg = tmp / "config" / "nvim", plugins = cfg / "lua" / "plugins", ours = plugins / "maic-llama-vim.lua";
+        fs::create_directories(plugins);
+        fs::create_directories(root);
+        std::ofstream(root / "fake_lazy.lua") << R"lua(return function(spec, setup)
+  local config, plugins = vim.fn.stdpath("config"), {}
+  local function add(p)
+    if type(p) ~= "table" or type(p[1]) ~= "string" then return end
+    local name = p[1]:match("[^/]+$")
+    plugins[name] = plugins[name] or { name = name, url = "https://github.com/" .. p[1] .. ".git", _ = { frags = {} } }
+    table.insert(plugins[name]._.frags, #plugins[name]._.frags + 1)
+    for k, v in pairs(p) do if type(k) == "string" then plugins[name][k] = v end end
+  end
+  local function walk(s)
+    if type(s) ~= "table" then return end
+    if s.import then
+      local dir = config .. "/lua/" .. (s.import:gsub("%.", "/"))
+      for name, kind in vim.fs.dir(dir) do
+        if kind == "file" and name:match("%.lua$") then
+          local mod = dofile(dir .. "/" .. name)
+          if type(mod[1]) == "string" then add(mod) else for _, p in ipairs(mod) do add(p) end end
+        end
+      end
+    end
+    add(s)
+    for _, x in ipairs(s) do walk(x) end
+  end
+  package.loaded["lazy"] = { setup = function() end }
+  if not setup then
+    package.loaded["lazy.core.config"] = { options = {}, plugins = {} }
+    return
+  end
+  walk(spec)
+  package.loaded["lazy.core.config"] = { options = { spec = spec }, spec = { plugins = plugins, disabled = {} }, plugins = plugins }
+end
+)lua";
+        std::string fake = "dofile('" + (root / "fake_lazy.lua").string() + "')";
+        std::ofstream(root / "import.lua") << fake << "({ { import = 'plugins' } }, true)\n";
+        std::ofstream(root / "noimport.lua") << fake << "({ { 'folke/tokyonight.nvim' } }, true)\n";
+        std::ofstream(root / "nosetup.lua") << fake << "(nil, false)\n";
+        std::ofstream(root / "none.lua") << "vim.g.no_lazy_here = 1\n";
+        std::ofstream(plugins / "other.lua") << "return { 'folke/tokyonight.nvim' }\n";
+        std::string env_data = "XDG_DATA_HOME=" + (root / "data").string();
+        auto setup = [&](const std::string& init, std::vector<std::string> extra, std::string& out) {
+            std::vector<std::string> argv = {"env", "-u", "NVIM_APPNAME", env_data, MAIC_BINARY, "nvim", "setup", "llama-vim"};
+            if (!init.empty()) argv.insert(argv.end(), {"-u", (root / init).string()});
+            argv.insert(argv.end(), extra.begin(), extra.end());
+            argv.push_back("</dev/null");
+            return capture(argv, out);
+        };
+        auto has = [](const std::string& s, const std::string& part) { return s.find(part) != std::string::npos; };
+        std::string out;
+
+        std::string docs = read_file(fs::path(MAIC_PLUGIN_DIR).parent_path() / "docs" / "models.md");
+        expect(has(docs, "```lua\n" + llama_vim_spec() + "```"), "the spec MAIC writes is the one docs/models.md shows");
+
+        int rc = setup("none.lua", {"--yes"}, out);
+        expect(rc == 0 && has(out, "lazy.nvim is not installed") && has(out, "require(\"lazy\") fails") && has(out, "Nothing was written") && has(out, "'ggml-org/llama.vim'"),
+               "no lazy.nvim: a noop, exit 0, saying why, with the spec to paste: " + out);
+        rc = setup("", {"--yes"}, out);
+        expect(rc == 0 && has(out, "lazy.nvim is not installed: there is no ") && has(out, "Nothing was written"), "without -u and no lazy.nvim directory: the same, and nvim is not started: " + out);
+        rc = capture({"env", "PATH=/nonexistent", env_data, MAIC_BINARY, "nvim", "setup", "llama-vim", "--yes", "</dev/null"}, out);
+        expect(rc == 0 && has(out, "nvim is not on PATH") && has(out, "Nothing was written"), "no nvim on PATH: a noop, exit 0: " + out);
+        rc = setup("nosetup.lua", {"--yes"}, out);
+        expect(rc == 0 && has(out, "does not call require(\"lazy\").setup(...)") && has(out, "Nothing was written"), "lazy.nvim installed but never set up: a noop: " + out);
+        rc = setup("noimport.lua", {"--yes"}, out);
+        expect(rc == 0 && has(out, "imports no directory") && has(out, "{ import = \"plugins\" }") && has(out, (plugins / "llama-vim.lua").string()) && has(out, "return {"),
+               "no import directory: where to add the import and the file, exit 0: " + out);
+        expect(!fs::exists(ours) && !fs::exists(plugins / "llama-vim.lua"), "and nothing was written");
+
+        rc = setup("import.lua", {"--dry-run"}, out);
+        expect(rc == 0 && has(out, "Write " + ours.string() + " (a new file)") && has(out, "{ import = \"plugins\" }") && has(out, "--dry-run: nothing was written"),
+               "--dry-run shows the file, its content and the import it relies on: " + out);
+        expect(!fs::exists(ours), "and writes nothing");
+        rc = setup("import.lua", {}, out);
+        expect(rc == 2 && has(out, "off a terminal it needs --yes") && !fs::exists(ours), "off a terminal without --yes: refused, exit 2, nothing written: " + out);
+
+        rc = setup("import.lua", {"--yes"}, out);
+        std::string written = read_file(ours);
+        expect(rc == 0 && has(out, "wrote " + ours.string()) && has(out, ":Lazy sync") && has(out, "maic lazy-lock record"), "--yes writes it and says what is next: " + out);
+        expect(written.rfind("-- Written by MAIC (maic nvim setup llama-vim) on ", 0) == 0 && has(written, "-- Undo with: maic nvim setup llama-vim --remove\n") &&
+                   has(written, "docs/models.md#code-completion") && has(written, "\nreturn {\n    'ggml-org/llama.vim',\n") &&
+                   has(written, "endpoint_fim = 'http://127.0.0.1:8084/infill'") && has(written, "model_fim = 'current'") && has(written, "keymap_fim_trigger = '<M-f>'") &&
+                   has(written, "keymap_fim_accept_word = '<M-]>'") && has(written, "keymap_inst_accept = ''") && has(written, "keymap_inst_cancel = ''") && !has(written, "(below)"),
+               "the file: MAIC's header, then the spec from docs/models.md: " + written);
+        fs::path load = root / "load.lua";
+        std::ofstream(load) << "local s = dofile(arg[1])\nassert(s[1] == 'ggml-org/llama.vim')\ns.init()\nassert(vim.g.llama_config.model_fim == 'current' and vim.g.llama_config.keymap_inst_cancel == '')\n";
+        expect(run({"nvim", "--headless", "-u", "NONE", "-i", "NONE", "-n", "-l", load.string(), ours.string()}) == 0, "it loads as a spec whose init sets g:llama_config");
+        expect(read_file(plugins / "other.lua") == "return { 'folke/tokyonight.nvim' }\n", "no other file is touched");
+
+        rc = setup("import.lua", {"--yes"}, out);
+        expect(rc == 0 && has(out, "already holds this spec") && read_file(ours) == written, "a second run changes nothing: " + out);
+        std::string edited = written;
+        edited.replace(edited.find("'<M-f>'"), 7, "'<M-g>'");
+        std::ofstream(ours) << edited;
+        rc = setup("import.lua", {"--yes"}, out);
+        expect(rc == 0 && has(out, "Update " + ours.string() + ", which MAIC wrote") && has(out, "- ") && has(out, "<M-g>") && has(out, "+ ") && has(out, "updated " + ours.string()) &&
+                   read_file(ours) == written,
+               "MAIC's own file changed by hand: updated in place, with a diff: " + out);
+
+        std::ofstream(plugins / "mine.lua") << "return { 'ggml-org/llama.vim', opts = {} }\n";
+        rc = setup("import.lua", {"--yes"}, out);
+        expect(rc == 1 && has(out, "is already in your lazy.nvim spec") && has(out, (plugins / "mine.lua").string()) && has(out, "merge them into that spec by hand") && read_file(ours) == written,
+               "llama.vim also specified elsewhere: refused, exit 1, naming the file: " + out);
+        fs::remove(plugins / "mine.lua");
+
+        rc = setup("", {"--remove", "--dry-run"}, out);
+        expect(rc == 0 && has(out, "Remove " + ours.string()) && has(out, "--dry-run: nothing was written") && fs::exists(ours), "--remove --dry-run removes nothing: " + out);
+        rc = setup("", {"--remove"}, out);
+        expect(rc == 2 && has(out, "--remove --yes") && fs::exists(ours), "--remove off a terminal without --yes: refused: " + out);
+        rc = setup("", {"--remove", "--yes"}, out);
+        expect(rc == 0 && has(out, "removed " + ours.string()) && !fs::exists(ours) && fs::exists(plugins / "other.lua"), "--remove --yes deletes MAIC's file and nothing else: " + out);
+        rc = setup("", {"--remove", "--yes"}, out);
+        expect(rc == 0 && has(out, "nothing of MAIC's to remove"), "--remove with nothing there: exit 0: " + out);
+
+        std::ofstream(ours) << "return {}\n";
+        rc = setup("import.lua", {"--yes"}, out);
+        expect(rc == 1 && has(out, "MAIC did not write it") && read_file(ours) == "return {}\n", "a file of that name MAIC did not write: refused, left alone: " + out);
+        rc = setup("", {"--remove", "--yes"}, out);
+        expect(rc == 1 && has(out, "will not remove it") && fs::exists(ours), "and --remove refuses it too: " + out);
+        fs::remove(ours);
+
+        std::ofstream(plugins / "mine.lua") << "return { { 'ggml-org/llama.vim' } }\n";
+        rc = setup("import.lua", {"--yes"}, out);
+        expect(rc == 1 && has(out, (plugins / "mine.lua").string()) && !fs::exists(ours), "llama.vim in the spec and no file of MAIC's: refused, nothing written: " + out);
+        fs::remove(plugins / "mine.lua");
     }
 
     section("the plugin's own Lua tests");

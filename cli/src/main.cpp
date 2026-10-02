@@ -6,6 +6,7 @@
 #include "maic/import.hpp"
 #include "maic/lazy_lock.hpp"
 #include "maic/nvim_keymaps.hpp"
+#include "maic/nvim_setup.hpp"
 #include "maic/paths.hpp"
 #include "maic/redact.hpp"
 #include "maic/service.hpp"
@@ -112,6 +113,10 @@ void usage(std::ostream& out = std::cerr) {
                  "  nvim keymaps [--all] [-u FILE]   maic.nvim's keymap check (:checkhealth maic) in a headless nvim with your\n"
                  "                             config: the keys maic.nvim, MAIC's terminal input and llama.vim need against\n"
                  "                             your mappings; exit 0 none collide, 1 collisions, 2 nvim could not run\n"
+                 "  nvim setup llama-vim [--dry-run] [--remove] [--yes]   llama.vim's spec (docs/models.md) as one file MAIC\n"
+                 "                             owns, maic-llama-vim.lua in the directory your lazy.nvim spec imports; asks\n"
+                 "                             first, writes nothing else; without lazy.nvim or an import directory it explains\n"
+                 "                             and stops (exit 0); exit 1 refused (a file or spec of yours in the way)\n"
                  "  lazy-lock [record|diff]    is nvim's lazy-lock.json as recorded? record its hash (a file to commit with your\n"
                  "                             dotfiles), or list what changed per plugin; exit 0 in sync, 1 changed, 2 no file\n"
                  "  setup                      a guided first run: prerequisites, settings, llama.cpp, ComfyUI, a model, the\n"
@@ -393,6 +398,68 @@ int cmd_models(const std::vector<std::string>& args) {
         return 0;
     }
     throw std::runtime_error("usage: maic models [list | info ID | install ID [--link] | verify ID | remove ID [--yes] | check]");
+}
+
+// `maic nvim setup llama-vim [--dry-run] [--remove] [--yes] [-u FILE]`: llama.vim's spec as one file MAIC owns in
+// the directory the user's lazy.nvim spec imports. Asked on a terminal, --yes off one. docs/nvim.md
+int cmd_nvim_setup(const std::vector<std::string>& args) {
+    bool dry = false, remove = false, yes = false;
+    std::string config;
+    bool ok = args.size() >= 2 && args[1] == "llama-vim";
+    for (size_t i = 2; ok && i < args.size(); ++i) {
+        if (args[i] == "--dry-run") dry = true;
+        else if (args[i] == "--remove") remove = true;
+        else if (args[i] == "--yes") yes = true;
+        else if (args[i] == "-u" && i + 1 < args.size()) config = args[++i];
+        else ok = false;
+    }
+    if (!ok) {
+        std::cerr << "usage: maic nvim setup llama-vim [--dry-run] [--remove] [--yes] [-u FILE]\n";
+        return 2;
+    }
+    using Kind = maic::LlamaVimPlan::Kind;
+    maic::LlamaVimPlan plan = maic::plan_llama_vim(remove, config);
+    (plan.kind == Kind::Refuse || plan.kind == Kind::Error ? std::cerr : std::cout) << plan.text << "\n";
+    if (plan.kind != Kind::Write && plan.kind != Kind::Remove) return plan.kind == Kind::Refuse ? 1 : plan.kind == Kind::Error ? 2 : 0;
+    if (dry) {
+        std::cout << "\n--dry-run: nothing was written.\n";
+        return 0;
+    }
+    if (!yes) {
+        if (!isatty(STDIN_FILENO)) {
+            std::cerr << "maic: this writes into your nvim config; off a terminal it needs --yes (maic nvim setup llama-vim" << (remove ? " --remove" : "")
+                      << " --yes). Nothing was written.\n";
+            return 2;
+        }
+        std::cout << "\n" << (remove ? "Remove it" : plan.update ? "Update it" : "Write it") << "? [y/N] " << std::flush;
+        std::string line;
+        if (!std::getline(std::cin, line) || (line != "y" && line != "Y" && line != "yes")) {
+            std::cout << "nothing written\n";
+            return 0;
+        }
+    }
+    maic::apply_llama_vim(plan);
+    if (remove) {
+        std::cout << "removed " << plan.file.string() << "\n"
+                  << "next: nvim's next start no longer loads llama.vim; :Lazy clean deletes its files, which changes lazy-lock.json\n"
+                     "(maic lazy-lock record once you have checked it)\n";
+        return 0;
+    }
+    std::cout << (plan.update ? "updated " : "wrote ") << plan.file.string() << "\nnext:\n";
+    if (plan.update) std::cout << "  * restart nvim for the new settings\n";
+    else {
+        std::cout << "  * open nvim: lazy.nvim installs llama.vim on its next start (or run :Lazy sync)\n"
+                     "  * that changes lazy-lock.json, which maic lazy-lock will report; run maic lazy-lock record once you have\n"
+                     "    checked it. MAIC re-runs its keymap check after that lock change (maic nvim keymaps any time)\n";
+    }
+    std::error_code ec;
+    if (!std::filesystem::exists(maic::fim_model_link(), ec)) std::cout << "  * maic models install qwen2.5-coder-7b --link: no coder is linked for completion yet\n";
+    auto services = maic::load_services(maic::root_dir() / "services");
+    auto fim = std::find_if(services.begin(), services.end(), [](const auto& d) { return d.name == "llamacpp-fim"; });
+    if (fim != services.end() && maic::service_status(*fim).state == maic::ServiceState::Stopped) {
+        std::cout << "  * maic up llamacpp-fim: the completion server on 127.0.0.1:8084 is not running\n";
+    }
+    return 0;
 }
 
 int cmd_down(const std::vector<maic::ServiceDef>& services) {
@@ -1507,6 +1574,7 @@ int main(int argc, char** argv) {
         if (cmd == "cd") return cmd_cd(cargs);
         if (cmd == "gpu" || cmd == "vram") return cmd_gpu(cargs);
         if (cmd == "models") return cmd_models(cargs);
+        if (cmd == "nvim" && !cargs.empty() && cargs[0] == "setup") return cmd_nvim_setup(cargs);
         if (cmd == "nvim") {
             // maic nvim keymaps [--all] [-u FILE]: maic.nvim's keymap check, headless, against the user's nvim config.
             bool all = false;
@@ -1518,7 +1586,7 @@ int main(int argc, char** argv) {
                 else ok = false;
             }
             if (!ok) {
-                std::cerr << "usage: maic nvim keymaps [--all] [-u FILE]\n";
+                std::cerr << "usage: maic nvim keymaps [--all] [-u FILE]\n       maic nvim setup llama-vim [--dry-run] [--remove] [--yes]\n";
                 return 2;
             }
             maic::KeymapReport r = maic::run_keymap_check(config);

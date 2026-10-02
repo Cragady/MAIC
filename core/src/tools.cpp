@@ -749,7 +749,8 @@ ToolResult run_shell(const Harness& harness, const nlohmann::json& args, bool re
     return {r.exit_code == 0 && !r.timed_out && !r.cancelled, status + "\n" + output};
 }
 
-// Removed and added lines between two texts, with the common head and tail left out. Capped.
+}  // namespace
+
 std::string change_lines(const std::string& before, const std::string& after, size_t cap) {
     auto a = lines_of(before), b = lines_of(after);
     size_t head = 0;
@@ -763,8 +764,6 @@ std::string change_lines(const std::string& before, const std::string& after, si
     if ((a.size() - head - tail) + (b.size() - head - tail) > cap) out += "  … more\n";
     return out;
 }
-
-}  // namespace
 
 std::error_code move_path(const fs::path& from, const fs::path& to) {
     std::error_code ec;
