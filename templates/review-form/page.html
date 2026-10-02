@@ -181,7 +181,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   var LOCAL = "review-draft:" + DATA.id;
   var STATES = ["open", "addressed", "resolved"];
   var state = { answers: {}, status: {}, doc_status: "open", folded: {}, merges: {}, kept: {}, side_prompts: [], resolve_requested: false, submitted: false, submittedAt: null, savedAt: null };
-  var VERSION = 7;
+  var VERSION = 8;
   var db = null, comments = null, timer = null, queue = Promise.resolve(), pending = 0, replies = [];
   function logEvent(what, ok, detail) {
     state.events = (state.events || []).concat([{ at: new Date().toISOString(), what: what, ok: ok, detail: detail || "" }]).slice(-30);
@@ -604,6 +604,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
 
   // ---- start: render now, then fill from the shared store ----
   function adopt(saved) {
+    saved = JSON.parse(JSON.stringify(saved)); // the store hands back frozen objects; keep our own copy
     Object.assign(state, saved);
     if (saved.addressed && !saved.status) { // version 1 kept addressed as true or false
       Object.keys(saved.addressed).forEach(function (k) { state.status[k] = saved.addressed[k] ? "addressed" : "open"; });
@@ -611,8 +612,17 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     delete state.addressed;
     state.status = state.status || {}; state.folded = state.folded || {}; state.side_prompts = state.side_prompts || []; state.doc_status = state.doc_status || "open";
   }
+  function rescue() {
+    var got = 0;
+    document.querySelectorAll("textarea[data-field]").forEach(function (t) {
+      var id = t.dataset.field;
+      if (/\S/.test(t.value) && !/\S/.test(state.answers[id] || "") && !mergedFor(id)) { state.answers[id] = t.value; got++; }
+    });
+    if (got) { logEvent("rescued text from boxes", true, String(got)); touch(); say("Recovered " + got + " box" + (got === 1 ? "" : "es") + " of text the page had not saved. It is saving now.", true); }
+  }
   try { var d0 = JSON.parse(localStorage.getItem(LOCAL) || "null"); if (d0) adopt(d0); } catch (e) {}
   render(); mark.checked = !!state.resolve_requested;
+  setTimeout(rescue, 2000);
   var use = window.claude && window.claude.use ? window.claude.use.bind(window.claude) : function () { return Promise.resolve(null); };
   use("comments").then(function (c) { comments = c; });
   use("db").then(function (x) {
@@ -622,12 +632,16 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
       if (snap.exists) { var remote = snap.data(); if (!state.savedAt || (remote.savedAt && remote.savedAt >= state.savedAt)) adopt(remote); }
       db.doc("review-replies/" + DATA.id).onSnapshot(function (snap) {
         var dd = snap.exists ? snap.data() : {};
-        replies = Array.isArray(dd.items) ? dd.items : [];
+        replies = Array.isArray(dd.items) ? JSON.parse(JSON.stringify(dd.items)) : [];
         var r = dd.latest;
         render();
         if (r && (!lastReply || r.at !== lastReply.at)) { lastReply = r; showRecent(r); var t = Date.parse(r.at); if (t && (!state.submittedAt || t > Date.parse(state.submittedAt))) $("side-dot").hidden = false; }
       }, function () {});
-      render(); mark.checked = !!state.resolve_requested; setStatus(state.savedAt ? "Loaded answers saved " + new Date(state.savedAt).toLocaleString() : "Ready. Nothing saved yet.");
+      var typed = {}; document.querySelectorAll("textarea[data-field]").forEach(function (t) { if (/\S/.test(t.value)) typed[t.dataset.field] = t.value; });
+      render();
+      Object.keys(typed).forEach(function (id) { var t = $("f-" + id); if (t && !/\S/.test(t.value)) t.value = typed[id]; });
+      rescue();
+      mark.checked = !!state.resolve_requested; setStatus(state.savedAt ? "Loaded answers saved " + new Date(state.savedAt).toLocaleString() : "Ready. Nothing saved yet.");
     });
   }).catch(function () { setStatus("Shared store unavailable: answers save in this browser only", true); });
 })();

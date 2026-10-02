@@ -18,6 +18,7 @@ python3 -c "import sys; p=open('page.html').read(); d=open('review.json').read()
 * Every box saves 500 ms after the last keystroke, one write at a time. Submit waits for any save in flight, then writes everything at once and marks the review submitted; editing afterwards clears the mark.
 * State is one document, `review/<id>`: `answers` by field id, `addressed` overrides, `merges`, `kept`, `submitted`, `submittedAt`, `savedAt`. It is plain JSON for an agent to read.
 * Combine boxes: pick boxes within one card and combine them. The combined text marks each part with a `── <field id> ──` line. Back to default splits it along those lines, edits included; if the lines were damaged, the boxes return to what they held before combining and the whole combined text is kept in a box beside the first one. Nothing typed is ever dropped.
+* The store hands back frozen objects: the page copies anything it loads before using it, and on load it recovers any text the viewer restored into boxes that its state never received.
 * Storage today is the claude.ai artifact runtime (`db`, with `comments` for the Submit notice) and falls back to the browser's own storage. MAIC's artifact creation will give it a file backend.
 
 * Status: every card is open (amber), addressed (blue) or resolved (green), stored in `status`. A topic is resolved only after it is addressed and after the document is marked addressed; the document (`doc_status`) is resolved by the user or an agent once every topic is. When everything is addressed and a topic has grown new depth, it gets a new artifact.
@@ -35,4 +36,4 @@ python3 -c "import sys; p=open('page.html').read(); d=open('review.json').read()
 
 * Adding textareas (more boxes than the blocks give).
 * More expressive references from the Side Prompt (ranges, excerpts, whole cards).
-* A Ctrl+G bridge: After and Side prompts synced to a markdown file the prompt editor can read in.
+* Optional, leaning no: a Ctrl+G bridge that writes the After and Side prompts to a markdown file Claude Code's prompt editor can read in (under an hour).
