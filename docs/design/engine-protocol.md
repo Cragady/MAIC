@@ -6,6 +6,8 @@ Micaiah's decisions frame it and are not reopened: the engine speaks JSON-RPC ov
 
 opencode's split (`opencode serve`, `opencode attach URL`, one REST API plus one event stream per instance) is the model where it fits; where MAIC differs it says why.
 
+Every specification this protocol follows (JSON-RPC 2.0, OpenAI's API description, OpenRPC, JSON Schema, OpenAPI, server-sent events, JSON Lines), with its version and MAIC's known deviations, is listed in [standards.md](../standards.md).
+
 ## Decisions at a glance
 
 | Question | Decision |
