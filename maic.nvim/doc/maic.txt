@@ -5,19 +5,22 @@ CONTENTS                                                   *maic* *maic.nvim*
 
   1. Introduction ............................... |maic-intro|
   2. Setup ...................................... |maic-setup|
-  3. Commands ................................... |maic-commands|
-  4. Options .................................... |maic-options|
-  5. Keymaps .................................... |maic-keymaps|
-  6. Events ..................................... |maic-events|
-  7. Lua ........................................ |maic-lua|
-  8. MAIC's side ................................ |maic-host|
+  3. The interface .............................. |maic-interface|
+  4. Commands ................................... |maic-commands|
+  5. Options .................................... |maic-options|
+  6. Keymaps .................................... |maic-keymaps|
+  7. Events ..................................... |maic-events|
+  8. Lua ........................................ |maic-lua|
+  9. MAIC's side ................................ |maic-host|
 
 ==============================================================================
 1. INTRODUCTION                                                 *maic-intro*
 
-maic.nvim runs MAIC, the agentic CLI, in a terminal, and sends buffers,
-selections, diagnostics and the quickfix list into its input. Nothing is sent
-to the model until you send it in MAIC.
+maic.nvim makes nvim MAIC's interface: the conversation and the input are
+nvim buffers and MAIC's engine runs as their job (|maic-interface|). It can
+also run MAIC's own TUI in a terminal (|:MaicTerminal|). Either way it sends
+buffers, selections, diagnostics and the quickfix list into MAIC's input;
+nothing is sent to the model until you send it.
 
 MAIC, running inside nvim, connects back to this nvim and uses it as its
 editor: files and diffs open here, the theme follows your colorscheme, and
@@ -47,21 +50,78 @@ require("maic").setup({opts})
     removed before the new ones are set.
 
 ==============================================================================
-3. COMMANDS                                                  *maic-commands*
+3. THE INTERFACE                                            *maic-interface*
+
+|:Maic| opens it (with `ui = "nvim"`, the default; |maic-ui|), and
+`maic --ui nvim` from the shell starts nvim with it. maic.nvim starts the
+engine, `maic --rpc` (|maic-cmd|, |maic-args| and :Maic's arguments), as
+this tab's job and speaks MAIC's engine protocol to it over its stdin and
+stdout. One interface per tab.
+
+                                                 *maic-conversation* *ft-maic*
+The conversation is a buffer of filetype `maic`, highlighted as markdown,
+that only maic.nvim writes: `❯` your messages, the replies as they stream,
+`⏺` each tool call with its output indented under it, `↯` each steering
+action, notices, and `▣ model · time · tool calls` after each turn. A tool's
+output of |maic-fold_output| lines or more and the model's reasoning are
+folded closed once done; |za| and your own fold keys open them. The winbar
+shows the title, model, mode and what MAIC is doing. A window whose cursor is
+on the last line follows the stream.
+
+                                                 *maic-input* *ft-maic-input*
+The input is a buffer of filetype `maic-input` under it, an ordinary buffer
+for your motions, mappings and plugins. <CR> in normal mode or <M-CR> in
+insert mode sends it. `/cmd` runs a MAIC command (`/mode plan`, `/model
+qwen-9b`), `//text` sends text starting with one slash, `!cmd` runs a shell
+command. While a turn runs, what you send goes to it at its next step.
+
+                                                               *maic-floats*
+An approval opens a float over the conversation: `y` yes, `n` or <Esc> no,
+`N` no with a reason, `a` always, `t` trip the harness, `e` open the file,
+`d` (a write) the proposed content against the file as a diff in a new tab,
+<C-c> no and cancel the turn. A question lists its options: a digit picks
+one, <CR> types an answer, <Esc> gives none. |:Maic| focuses a waiting one.
+
+                                                             *maic-steering*
+<C-c> cancels the turn (or stops a running `!cmd`). <C-s> pauses it and
+opens the pause menu: <C-q> resumes, `s` steer, `d` drop, `f` further,
+`k` keep, `h` halt; what is in the input goes with `s`, `d` and `f` as their
+note. <Esc> closes the menu to type a message, which resumes the turn when
+sent. <C-q> resumes from either buffer, and |:MaicSteer| does any of them.
+The keys are |maic-buffer_keymaps|.
+
+maic.nvim fires the |maic-events| itself and runs |:checktime| after MAIC
+writes a file. Closing nvim ends the engine, which parks the session.
+
+==============================================================================
+4. COMMANDS                                                  *maic-commands*
 
                                                                        *:Maic*
 :Maic [args]
-    Opens MAIC in a terminal in the configured layout (|maic-open|), or
-    focuses the one this tab already has, showing its window again if it was
-    hidden. One MAIC per tab, reused. [args] are added to the command line
-    when MAIC starts, after |maic-args|: >vim
-        :Maic -c
+    Opens MAIC in the configured layout (|maic-open|), or focuses the one
+    this tab already has, showing its windows again if they were hidden:
+    the interface (|maic-interface|), or MAIC's TUI in a terminal with
+    `ui = "terminal"` or arguments only the TUI takes (`-p`, `-i`, `-c`,
+    `-r`, `--context`, `--image`, `--fork-at`, `--bare`, a prompt). One MAIC
+    per tab, reused. [args] are added to the command line when MAIC starts,
+    after |maic-args|: >vim
         :Maic --model qwen-9b
+        :Maic -c
 <    With `open = "tab"` MAIC has a tab of its own and :Maic goes there.
+
+                                                               *:MaicTerminal*
+:MaicTerminal [args]
+    MAIC's own TUI in a terminal, as |:Maic| with `ui = "terminal"`.
+
+                                                                  *:MaicSteer*
+:MaicSteer {action} [note]
+    Steers the interface's running or paused turn: `steer`, `drop` and
+    `further` (with [note], else what is in the input), `interrupt`
+    (pauses), `keep`, `halt`. See |maic-steering|.
 
                                                                  *:MaicToggle*
 :MaicToggle
-    Hides this tab's MAIC window (MAIC keeps running) or shows it again.
+    Hides this tab's MAIC windows (MAIC keeps running) or shows them again.
     Starts MAIC when there is none.
 
                                                                    *:MaicSend*
@@ -90,8 +150,9 @@ require("maic").setup({opts})
 
                                                               *:MaicInterrupt*
 :MaicInterrupt
-    Stops MAIC's running turn as its first Ctrl-C does, from any window.
-    When MAIC is connected it goes over its channel
+    Stops MAIC's running turn as its first Ctrl-C does, from any window. In
+    the interface it cancels the turn (or a running `!cmd`). When MAIC is
+    connected it goes over its channel
     (`rpcnotify(chan, "maic_interrupt")`): a running turn, `!` command or
     pending approval is stopped, and an idle MAIC only says so (your draft
     stays). Without a connection, Ctrl-C is typed into this tab's MAIC
@@ -103,7 +164,7 @@ require("maic").setup({opts})
     location is its text alone. The list's title heads it.
 
 ==============================================================================
-4. OPTIONS                                                    *maic-options*
+5. OPTIONS                                                    *maic-options*
 
                                                                *maic-defaults*
 Every option lives in one table, `require("maic").defaults`. |maic.setup()|
@@ -115,6 +176,7 @@ The table, as shipped: >lua
     {
       cmd = "maic",
       args = {},
+      ui = "nvim",
       open = "vsplit",
       size = nil,
       prefix = "<leader>m",
@@ -129,10 +191,13 @@ The table, as shipped: >lua
         quickfix = "<leader>mq",
         interrupt = "<leader>mc",
       },
-      buffer_keymaps = { interrupt = "<C-c>" },
+      buffer_keymaps = { interrupt = "<C-c>", pause = "<C-s>", resume = "<C-q>",
+                         send = "<CR>", send_insert = "<M-CR>" },
+      input_height = 6,
+      fold_output = 4,
       terminal_escape = "<C-\\><C-n>",
       terminal_passthrough = { ["<Esc>"] = true, ["<C-c>"] = true },
-      filetypes = { terminal = "maic", input = "maic-input" },
+      filetypes = { conversation = "maic", terminal = "maic", input = "maic-input" },
     }
 <
 Read it from Lua to build on it, never to change it: >lua
@@ -144,6 +209,10 @@ cmd         The program: a name on PATH, a path, or a list of the program
 
                                                                    *maic-args*
 args        Arguments for every start, before those given to |:Maic|.
+
+                                                                     *maic-ui*
+ui          "nvim": |:Maic| opens the interface (|maic-interface|).
+            "terminal": MAIC's own TUI in a terminal.
 
                                                                    *maic-open*
 open        Where MAIC opens: "split" (below), "vsplit" (right), "float"
@@ -164,6 +233,15 @@ keymaps     A table of name = key (|maic-keymaps|); merged over the
             none. true: the defaults. >lua
                 keymaps = { send = "<leader>ss", quickfix = false }
 <
+                                                         *maic-input_height*
+input_height
+            The interface's input: rows under the conversation.
+
+                                                          *maic-fold_output*
+fold_output
+            A tool's output of at least this many lines is folded closed in
+            the conversation once it is done. false: never.
+
                                                         *maic-terminal_escape*
 terminal_escape
             The key that leaves terminal mode in MAIC's terminal. The
@@ -180,12 +258,12 @@ terminal_passthrough
 <
                                                          *maic-filetypes*
 filetypes   MAIC's buffers get these filetypes so plugins can include or
-            exclude them: `terminal` (MAIC's terminal, set before the job
-            starts, so a |TermOpen| autocmd sees it) and `input` (the input
-            buffer of nvim as MAIC's interface, to come).
+            exclude them: `conversation` and `input` (the interface's
+            buffers) and `terminal` (MAIC's terminal, set before the job
+            starts, so a |TermOpen| autocmd sees it).
 
 ==============================================================================
-5. KEYMAPS                                                    *maic-keymaps*
+6. KEYMAPS                                                    *maic-keymaps*
 
 Set by |maic.setup()|; the name is the key in the `keymaps` table.
 
@@ -203,7 +281,14 @@ Set by |maic.setup()|; the name is the key in the `keymaps` table.
                                                       *maic-buffer_keymaps*
 In MAIC's own buffers only, buffer-local (`buffer_keymaps`, same names):
 
-    interrupt               <C-c>         normal   |:MaicInterrupt|
+    name          keys      mode           where              does ~
+    interrupt     <C-c>     normal         every MAIC buffer  |:MaicInterrupt|
+    pause         <C-s>     normal, insert conversation, input  pauses the turn
+    resume        <C-q>     normal, insert conversation, input  resumes it
+    send          <CR>      normal         input              sends the input
+    send_insert   <M-CR>    insert         input              sends the input
+
+(insert mode for pause and resume in the input only)
 
 and <C-c> in terminal mode is passed through to MAIC, whose own Ctrl-C
 interrupts (|maic-terminal_passthrough|). <C-c> is never mapped globally.
@@ -244,8 +329,9 @@ global mappings. |:checkhealth| maic lists every key.
     installed (`g:llama_config` is set or its autoload/llama.vim is on
     'runtimepath'), every key llama.vim uses, against your mappings in the
     modes each is used in. Your buffer-local mappings are collected too: the
-    check opens a plain file buffer, a scratch buffer of filetype
-    `maic-input` and a terminal of filetype `maic` in a tab of its own, reads
+    check opens a plain file buffer, scratch buffers of filetypes
+    `maic-input` and `maic` and a terminal of filetype `maic` in a tab of its
+    own, reads
     what your FileType, BufEnter and TermOpen autocmds mapped there, and
     closes them again.
 
@@ -259,11 +345,12 @@ global mappings. |:checkhealth| maic lists every key.
     same check outside nvim, against your config.
 
 ==============================================================================
-6. EVENTS                                                      *maic-events*
+7. EVENTS                                                      *maic-events*
 
 A connected MAIC fires |User| autocmds in this nvim with
-|nvim_exec_autocmds()|. Every `data` has `session`, MAIC's session id; the
-rest as applies:
+|nvim_exec_autocmds()|, and the interface fires the same ones as it shows
+the engine's events. Every `data` has `session`, MAIC's session id; the rest
+as applies:
 
                                                                *MaicTurnStart*
 MaicTurnStart       A turn starts. `model`.
@@ -300,7 +387,7 @@ MAIC also runs |:checktime| after it changes a file, so an open buffer
 reloads (or asks, when it has unsaved changes).
 
 ==============================================================================
-7. LUA                                                            *maic-lua*
+8. LUA                                                            *maic-lua*
 
 require("maic") has, besides |maic.setup()|:
 
@@ -311,17 +398,24 @@ toggle()                                                    *maic.toggle()*
     |:MaicToggle|.
 
 interrupt()                                              *maic.interrupt()*
-    |:MaicInterrupt|. Returns "rpc", "key" (Ctrl-C into the terminal) or
-    nil (no MAIC here).
+    |:MaicInterrupt|. Returns "engine" (the interface), "rpc", "key"
+    (Ctrl-C into the terminal) or nil (no MAIC here).
 
 send_text({text})                                        *maic.send_text()*
-    Puts {text} into MAIC's input, never sent. Returns "rpc" (over MAIC's
-    channel), "paste" (into this tab's terminal) or nil (no MAIC here).
+    Puts {text} into MAIC's input, never sent. Returns "input" (the
+    interface's input buffer), "rpc" (over MAIC's channel), "paste" (into
+    this tab's terminal) or nil (no MAIC here).
 
 command({line})                                            *maic.command()*
-    Runs a command line in a connected MAIC as if typed: >lua
-        require("maic").command(":theme gruvbox-dark")
-<    Returns false when no MAIC is connected.
+    Runs a command line in MAIC as if typed: >lua
+        require("maic").command(":mode plan")
+<    In the interface it goes to the engine. Returns false when no MAIC is
+    connected.
+
+require("maic.ui").state()                                    *maic.ui.state()*
+    This tab's interface as plain values, for a statusline: `session`,
+    `response` (nil when idle), `paused`, `activity`, `mode`, `model`,
+    `conversation` and `input` (buffers), `float`. nil without one.
 
 channel()                                                  *maic.channel()*
     MAIC's channel: the client named "maic" whose pid is this tab's
@@ -334,7 +428,7 @@ format_quickfix({items})
     The formatters behind the commands, for your own mappings.
 
 ==============================================================================
-8. MAIC'S SIDE                                                   *maic-host*
+9. MAIC'S SIDE                                                   *maic-host*
 
 nvim sets $NVIM to its socket for every job. MAIC connects to it as a
 msgpack-rpc client named "maic" only when it is a Unix socket owned by you

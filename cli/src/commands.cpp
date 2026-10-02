@@ -9,8 +9,6 @@
 #include "maic/vendor.hpp"
 
 #include <algorithm>
-#include <fstream>
-#include <deque>
 #include <cstdlib>
 #include <cctype>
 
@@ -54,18 +52,19 @@ const std::vector<Topic>& topics() {
         {"modes", {"mode-list", "manual", "auto-read", "edit", "auto", "plan"}, "what the agent may do without asking",
          "*modes*\n"
          "Shift-Tab cycles them; `:mode NAME` sets one; `--mode` on the command line; `mode` in settings.\n\n"
-         "- **manual** (default): asks before every edit and every command.\n"
+         "- **manual**: asks before every edit and every command. A session starts here instead of auto where auto waits (below).\n"
          "- **auto-read**: reads anywhere and read-only commands (ls, cat, grep, git log, ...) run on their own, in a sandbox where even the workspace is read-only; edits and other commands ask.\n"
          "- **edit**: edits inside the workspace apply on their own; commands ask.\n"
-         "- **auto**: edits and sandboxed commands inside the workspace run on their own; writes outside it ask.\n"
+         "- **auto** (default): edits and sandboxed commands inside the workspace run on their own; writes outside it ask.\n"
          "- **plan**: read-only. Reads and read-only commands only; the model proposes a plan.\n\n"
+         "Auto at start: a session starts in auto only where every project directory from the project root down is trusted fully (trusted, with full Lua; `:h trust`), and at least one is. Anywhere else, a directory with no .maic/ or instruction file included, it starts in manual and says so once; `:mode auto` turns auto on. `--mode auto` on the command line starts in auto anywhere: you asked for it then.\n\n"
          "In every mode: secrets are never read, system paths are never written, startup files and MAIC's own harness are always asked about, dangerous commands trip the harness, and a request from another origin is always asked. See `:h harness`."},
         {"harness", {"tripwire", "sandbox", "trip", "lock", "dumb", "smart", "reviewer"}, "what protects the machine; :harness smart|dumb",
          "*harness* *:harness* *--harness*\n"
          "Every tool call is checked before it runs: tripwire, then policy for the mode, then the reviewer, then approval, then the sandbox.\n\n"
-         "- **reviewer** (the **smart** harness, the default): before any command or write that the rules would let through *without asking* (auto and edit modes), a model reads the last few things you said, the agent's last words and the action, and answers ALLOW, ASK or DENY. ASK becomes an approval prompt, DENY refuses with the reason, and a reviewer that cannot answer means ASK. Reads are never reviewed; what you approved yourself is not reviewed either. "
+         "- **reviewer** (the **smart** harness): before any command or write that the rules would let through *without asking* (auto and edit modes), a model reads the last few things you said, the agent's last words and the action, and answers ALLOW, ASK or DENY. ASK becomes an approval prompt, DENY refuses with the reason, and a reviewer that cannot answer means ASK. Reads are never reviewed; what you approved yourself is not reviewed either. "
          "Its model, first match wins: `reviewer_model` in settings (your pin), the preset's `reviewer` (the local presets review with themselves), `small_model`, then the small model of the preset's family (the lowest non-limited tier on its `subagents` list: haiku-4.5 for the Anthropic presets). A reviewer that hits its plan's usage limit is replaced for the rest of the session by a cheaper one (never a higher tier), with one notice; when none is left the reviewer is off and every action it would review is **asked** instead. Its tokens count toward `:budget`, and `reviewer_budget_tokens` caps them on their own, after which the same holds. `:harness` shows its model, why, and what it has spent.\n"
-         "- **dumb harness**: `:harness dumb`, `--harness dumb`, or `harness = \"dumb\"` in settings turns the reviewer off; the rule list alone decides and nothing reads the conversation. Entering **auto** under it shows a warning once per session and asks you to confirm; `dumb_auto_ok = true` (or `--accept-dumb-auto`) skips that. Headless runs refuse dumb + auto without one of those. The status strip shows DUMB HARNESS.\n"
+         "- **dumb harness** (the default): the reviewer is off; the rule list alone decides and nothing reads the conversation. `:harness smart`, `--harness smart` or `harness = \"smart\"` turns the reviewer on. `dumb_auto_ok = false` in settings makes entering **auto** under the dumb harness show a warning once per session and ask you to confirm (`--accept-dumb-auto` skips it for one run); headless runs then refuse dumb + auto without the flag. The status strip shows DUMB HARNESS.\n"
          "- **the harness protects itself**: writing MAIC's settings, its lock files, the server's tokens, or running the lock helper is not the agent's to do; under the smart harness that trips the machine lock (a request from another agent that tries it is what the global lock is for), the dumb harness asks.\n"
          "- **tripwire**: a root-owned lock. `:trip REASON` (or the [t] answer at an approval, or a dangerous command) sets it instantly with no password. While tripped nothing runs, but the session survives. `:unlock` resets it and asks for your sudo password. `tripwire = \"session\"` in settings scopes a trip to the session instead: the lock is a file beside the transcript, respected by that session only, and `:unlock` removes it without sudo (the machine lock is still honoured when set). `tripwire = \"isolated\"` also ignores the machine lock, which needs `allow_isolated = true` and confines the session: no reads outside its directory, no remote requests, no work through the server; the status strip shows ISOLATED. A project's `.maic/settings.lua` can pick the scope per project. `maic unlock` with no argument lists the machine lock and every session's lock with its task, directory and model, and unlocks what you pick.\n"
          "- **sandbox**: every model-run command executes in bubblewrap: only the workspace writable, secrets hidden, no network, no sudo, a timeout.\n"
@@ -87,6 +86,7 @@ const std::vector<Topic>& topics() {
          "- `maic sessions import FILE` turns a claude.ai export (JSON) or a Claude Code transcript (JSONL) into a session here and prints its id; `--as` names the format when detection guesses wrong, `--home` picks where it goes, `--conversation UUID` picks one out of a full export.\n"
          "- `maic sessions redact ID` writes `./<id>.redacted.jsonl` with credential material replaced by `[REDACTED:kind]` and reports counts per kind; `-o FILE` or `--in-place` choose where (`--in-place` first copies the original to `sessions/.backups/<id>/`, where `cai trans-fairy-write restore ID` finds it). Record types and the redaction kinds: docs/sessions.md.\n"
          "- Looking at one: `maic sessions read ID [--range A-B] [--tools]` prints the conversation as text; `state ID` is a one-screen summary (turns, tool calls per tool, files touched, tokens against the budget, compactions, forks, subagents); `time ID` shows how long each turn took and the slowest tool calls; `name ID` titles it with the title model.\n"
+         "- A command's whole output, when it was longer than what the model got, is kept beside the session (`<id>.d/<call>.out`, with a timing index; `full_output`, `full_output_max_mb`): `maic sessions output ID` lists them, `maic sessions output ID CALL` prints one and `--replay` plays it back as it ran. It is display only: the model saw the capped result.\n"
          "- Building one from others, never changing them: `maic sessions inject ID --text T [--at N] [--role user|system]` forks at N and adds one note marked as injected; `graft ID --onto TARGET [--at N]` forks TARGET at N and copies ID's conversation in after a note saying where it came from; `compose ID --from N [--root FILE]` copies ID's records from N on, after an optional root text and a note that the earlier part is missing (a cheap re-root of a long session).\n"
          "- A session that ended mid tool call resumes from the last complete step. The model is told it resumed, with the current mode and instructions."},
         {"headless", {"-p", "print", "cli", "command-line", "context", "-C", "--context", "interactive", "-i"}, "maic -p, stdin, --context files, --interactive",
@@ -98,7 +98,7 @@ const std::vector<Topic>& topics() {
          "Short flags cluster: `maic -pi -` is `-p -i -`; a flag that takes a value (`-m`, `-C`) goes last in a cluster. `maic help TOPIC` prints these pages outside a session."},
         {"queue", {"queued", "mid-turn", "interrupt"}, "sending while the agent works",
          "*queue*\n"
-         "Sending while the agent is busy queues the message; it reaches the model at its next step in the current turn. `:w now` delivers it immediately: the current output is abandoned and the model is asked again with your message included. Messages still queued when a turn ends start the next turn. Ctrl-C interrupts the turn instead."},
+         "Sending while the agent is busy steers the running response (OpenAI's `response.steer`): the message reaches the model at its next step, the response ends there and a successor carries your message, in the same turn. `:w now` delivers it immediately: the current output is abandoned and the model is asked again with your message included. A message that arrives after the last step still gets a successor. Ctrl-C interrupts the turn instead; Ctrl-S pauses it (`:h steer`)."},
         {"providers", {"provider", "remote", "llamacpp", "anthropic", "deepseek", "openrouter"}, "local and remote models",
          "*providers*\n"
          "Models are `provider/model`: `llamacpp/current` (the vendored llama.cpp serving the linked GGUF; local, the default; docs/llamacpp.md), `llamacpp/NAME` for any GGUF under the models directory, `anthropic/claude-opus-5-5`, `deepseek/deepseek-chat`, `openrouter/...`, or any OpenAI-compatible server added in settings. A bare name goes to the first provider. `:model` alone lists providers; `:models` lists what the current one serves.\n\n"
@@ -124,7 +124,7 @@ const std::vector<Topic>& topics() {
          "Nothing leaves the machine: audio goes to whisper-server and text to llama-server, both on loopback, unless `--agent-model` names a cloud preset, which diction says at start. `maic path diction/logs` is where its logs go. See docs/diction.md."},
         {"settings", {"config", "styles", "style", "settings.lua", "settings.json"}, "the settings file",
          "*settings*\n"
-         "Lua files returning a table (JSON works too). Layered: ~/.config/maic/settings.lua, then `.maic/settings.lua` and `.maic/settings.local.lua` in each trusted directory on the chain from the project root (or under $HOME) down to the workspace (nearest wins; settings.lua is for the project, settings.local.lua is personal; `:h trust`). A file is code: `os.getenv`, `maic.hostname`, `maic.home` for per-machine choices; your own files run with full Lua unless `global_lua` says `sandbox` or `restricted`, a project's at the Lua level you trusted it with. Keys: model, mode, think, markdown, mouse, record, compact_at, sessions_home (auto/general/project/name), models_dir, leader, instruction_files, providers, theme, colors, style (single roles over the theme; `:h theme`). `maic settings init` writes the global one, `:init` scaffolds a project's, `:settings` shows what is in effect. diction's own settings are diction.lua beside the global one (`maic settings read diction`, at `global_lua`). See docs/settings.md."},
+         "Lua files returning a table (JSON works too). Layered: ~/.config/maic/settings.lua, then `.maic/settings.lua` and `.maic/settings.local.lua` in each trusted directory on the chain from the project root (or under $HOME) down to the workspace (nearest wins; settings.lua is for the project, settings.local.lua is personal; `:h trust`). A file is code: `os.getenv`, `maic.hostname`, `maic.home` for per-machine choices; your own files run with full Lua unless `global_lua` says `sandbox` or `restricted`, a project's at the Lua level you trusted it with. Keys: model, mode, think, markdown, mouse, record, compact_at, sessions_home (auto/general/project/name), models_dir, leader, instructions (global file only; docs/instructions.md), providers, theme, colors, style (single roles over the theme; `:h theme`). `maic settings init` writes the global one, `:init` scaffolds a project's, `:settings` shows what is in effect. diction's own settings are diction.lua beside the global one (`maic settings read diction`, at `global_lua`); the audit trail's are audit.lua there, yours alone and off by default (`maic audit-trail init`, docs/audit-trail.md). See docs/settings.md."},
         {"tools", {"tool", "lua-tools", "script-tools", "manifest", "glob", "question", "todo-tool", "user-tools"}, "the model's tools, and writing your own in Lua or any language",
          "*tools*\n"
          "Built in: `read_file` (`grep` for only the matching lines), `list_dir` (`depth` for a tree), `glob` (files by name pattern), `search_files` (grep -E), `write_file`, `edit_file`, "
@@ -162,7 +162,7 @@ const std::vector<Topic>& topics() {
          "The block is additive: it runs after the fixed rules, so it cannot lift a trip pattern, a write to a secret or system path, a forbidden term or an isolated session's fence, and allow entries are ignored for a remote origin, which is always asked. Layers add up, so a project can add restrictions or pre-approve its test command without touching your global file."},
         {"instructions", {"maic.md", "agents.md", "claude.md"}, "standing instructions the model always sees",
          "*instructions*\n"
-         "~/.config/maic/MAIC.md, then every MAIC.md or AGENTS.md from under $HOME down to the workspace in a trusted directory (`:h trust`), re-read at the start of every turn (32 KB each); an AGENTS.md deeper in the tree is attached the first time a file under it is read, when the workspace itself is trusted. `:instructions` shows what is in effect; `:instructions off`, `--no-instructions` or `load_instructions = false` loads none, and `:system` / `--system` places operator text ahead of all of them (see `:h system`)."},
+         "/etc/maic/, then ~/.config/maic/, then the trusted directories (`:h trust`) from the project root (or just under $HOME) down to the workspace, each with its CLAUDE.md, AGENTS.md and MAIC.md (lowest priority first) and their .local.md variants; later ones take precedence. `@path` in a file imports another (four hops). Re-read at the start of every turn (32 KB each). An instruction file deeper in the tree is attached once the first time a file under it is read, when a trusted directory's hash covers it. `instructions = { files, read, local_files, imports, extra_dirs }` in your global settings changes all of this (docs/instructions.md). `:instructions` shows what is in effect; `:instructions off`, `--no-instructions` or `load_instructions = false` loads none, and `:system` / `--system` places operator text ahead of all of them (see `:h system`)."},
         {"keys", {"keybindings", "bindings", "vim"}, "the key map",
          "*keys*\n"
          "The input is a small vim and starts in normal mode.\n\n"
@@ -170,7 +170,7 @@ const std::vector<Topic>& topics() {
          "- **normal**: `h j k l w b e W B E ge gE 0 ^ $ % gg G` move (Enter = down a line); `f{c} F{c} t{c} T{c}` to a character on the line, `;` and `,` repeat; `}` `{` paragraphs, `)` `(` sentences; `x X D C S s J r R ~`; `d c y > < gq gu gU g~` + motion, doubled for the line (`dd`, `>>`, `gqq`, `gUU`); text objects `iw aw ip ap is as i\" i( i[ i{ i<`; `v V`; `p P`; `.` repeats the last change; `q{a-z}` records a macro, `@{a-z}` runs it, `@@` again; `m{a-z}` marks, `'a` / `` `a `` jump; `\"a`-`\"z` registers; `u` undo, Ctrl-R redo; counts (`3w`, `2d3w`, `5.`, `3@a`); `:` commands; `/` searches the conversation, `*` / `#` for the word under the cursor.\n"
          "- **send**: Alt+Enter or `:w` from any mode. `:e` or Ctrl-X Ctrl-E edits the input in nvim.\n"
          "- **conversation window**: Ctrl-W k enters it, Ctrl-W j (Esc, i, Enter) returns; motions including `f t ; ,`, `H M L`, `v V`, `y` yanks to the clipboard, `yy`, `/ n N`, `*` `#`, `}` `{` between messages.\n"
-         "- **anywhere**: Shift-Tab cycles modes; Ctrl-C interrupts, then clears, then quits; the scroll wheel scrolls.\n\n"
+         "- **anywhere**: Shift-Tab cycles modes; Ctrl-C interrupts, then clears, then quits; Ctrl-S pauses a running turn and Ctrl-Q resumes it (`:h steer`); the scroll wheel scrolls.\n\n"
          "`:h KEY` works for single keys too: `:h u`, `:h f`, `:h .`, `:h m`, `:h gq`, `:h J`, `:h r`, `:h Ctrl-W`, `:h Alt+Enter`; `:h motions`, `:h macros`, `:h diff`, `:h highlight`."},
         {"motions", {"motion", "word", "ge", "%", "percent", "bracket", "hml", "*", "#", "star", "hash"}, "word and WORD motions, %, H M L, * and #",
          "*motions* *w* *W* *b* *B* *e* *E* *ge* *gE* *%* *H* *M* *L* *\\** *#*\n"
@@ -204,7 +204,12 @@ const std::vector<Topic>& topics() {
          "the built-in input highlighter even with `highlight = \"nvim\"` (`:set highlight nvim` is refused), no theme following nvim's colorscheme, `:theme nvim:NAME` refused with a message saying why, no lazy-lock.json notice or `lock≠`, and no keymap check after a lazy-lock change. "
          "MAIC's own settings, themes (a saved `nvim-NAME.lua` theme is MAIC's own file and loads), Lua and script tools load as usual, and `:e FILE` still runs `$VISUAL` / `$EDITOR` when you ask. The status strip shows `bare`; `:nvim` says what is off.\n\n"
          "`--bare` and `MAIC_BARE=1` never connect. `bare = true` in a settings file is known only once the files are read, and the host connection is made before that (so their Lua can use `maic.nvim`): it is dropped right after. "
-         "A future `--ui nvim` (nvim as MAIC's interface, docs/roadmap.md) will be refused together with `--bare`, since one is all nvim and the other none."},
+         "`--ui nvim` (nvim as MAIC's interface, `:h ui`) is refused together with `--bare`, since one is all nvim and the other none."},
+        {"ui", {"--ui", "interface", "maic.nvim-ui"}, "nvim as MAIC's interface: --ui nvim, ui = \"nvim\"",
+         "*ui* *--ui*\n"
+         "`maic --ui nvim` starts nvim with your config and mappings, and maic.nvim (this MAIC's copy) as the whole interface: the conversation and the input are nvim buffers (filetypes `maic` and `maic-input`, markdown with treesitter, folds over tool output), approvals, questions and the pause menu are floats, and the engine (`maic --rpc`, this binary, with the same agent flags) is nvim's job. `-c` and `-r` resume the session through the engine. "
+         "In the input, Enter (normal mode) or Alt-Enter (insert mode) sends; `/cmd` runs an engine command, `!cmd` a shell command; a message sent while a turn runs goes to that turn at its next step. Ctrl-C cancels the turn, Ctrl-S pauses it, Ctrl-Q resumes it (`:MaicSteer ACTION [NOTE]` for the rest). Inside nvim, `:Maic` opens the same interface in a split. maic.nvim's `:h maic-interface` has the details.\n\n"
+         "`ui = \"nvim\"` in settings makes it the default; `--ui tui` runs MAIC's own interface once. It is never used inside nvim (`:Maic` is the interface there) or with bare, and a run with `--context`, `--image`, `-i` or `--fork-at` stays in MAIC's own interface (`--ui nvim` with those is an error). When nvim is installed MAIC says so once at start."},
         {"highlight", {"highlighter", "treesitter", "hl", "builtin", "nvim-highlight"}, "the input's highlighter: builtin or nvim",
          "*highlight*\n"
          "The input is highlighted as markdown while you type. `highlight = \"builtin\"` (the default) is MAIC's own renderer. `highlight = \"nvim\"` starts one `nvim --embed --headless` for the session on the first keystroke and asks it, over msgpack-rpc, for treesitter's highlight captures of the text as a markdown buffer: headings, inline and fenced code, bold, italic, links, lists, quotes, and inside fenced blocks the keywords, strings and comments of every language nvim has a parser for (lua, vim, c and query out of the box; it runs with `-u NONE`, so parsers your config installs are not seen). "
@@ -220,6 +225,7 @@ const std::vector<Topic>& topics() {
         {"ctrl-z", {"c-z", "suspend", "^z", "fg"}, "suspend to the shell; fg resumes",
          "*Ctrl-Z*\nSuspends MAIC to the shell that started it, like vim; `fg` brings it back with the screen redrawn. A running turn or command is paused with it (the model call resumes on `fg`; a very long pause can time the connection out, which is then retried like any failed call). Not in command-line mode."},
         {"ctrl-c", {}, "interrupt, clear, quit", "*Ctrl-C*\nWhile the agent works: interrupts the turn. While a `!command` runs: stops it. Otherwise: clears the input; pressed twice on an empty input: quits (or `:q`)."},
+        {"ctrl-s", {"ctrl-q", "pause"}, "pause and resume a turn", "*Ctrl-S* *Ctrl-Q*\nWhile the agent works, Ctrl-S pauses the turn (the `interrupt` steer): the reply so far is kept, a running tool is stopped, a waiting approval is withdrawn, and the turn waits for you with no timeout. The pause menu then takes Ctrl-Q (resume where it stopped), `s` steer, `d` drop, `f` further (what is in the input goes with them as the note), `k` keep (the reply so far is the answer), `h` halt (it is thrown away); Esc leaves the menu to type a message, which resumes the turn with it. Ctrl-C ends a paused turn. MAIC turns the terminal's flow control off, so these never freeze the screen. See `:h steer`."},
         {"shift-tab", {"tab"}, "cycle the mode", "*Shift-Tab*\nCycles manual → auto-read → edit → auto → plan. See `:h modes`."},
         {"ctrl-x", {"ctrl-x ctrl-e", "editor"}, "edit the input in nvim", "*Ctrl-X Ctrl-E*\nOpens the input in $VISUAL, $EDITOR or nvim as a markdown file and loads it back when you quit. Same as `:e`."},
         {"v", {"visual", "visual-mode"}, "visual selection", "*v* *V*\n`v` selects by character, `V` by line, in the input or the conversation window. Then `y` yanks, `d` deletes (input only), `c` changes, `o` swaps the ends, Esc leaves."},
@@ -265,6 +271,10 @@ const std::vector<CommandInfo>& commands() {
          "*:nvim*\n`:nvim` says whether MAIC is connected to the nvim it runs inside and what that gives; `:nvim theme` follows its colorscheme again after a `:theme`. See `:h nvim` for maic.nvim."},
         {"h", {"help", "topics"}, "[topic]", "this help, or :h TOPIC",
          "*:h* *:help* *maic help*\n`:h` alone lists every topic. `:h TOPIC` shows one: a command (`:h w`), a key (`:h u`, `:h Ctrl-W`, `:h Alt+Enter`) or a concept (`:h modes`, `:h harness`, `:h sessions`). A unique prefix is enough; several matches give a list.\n\nOutside a session `maic help` prints the command summary and `maic help TOPIC` one of these pages, both on stdout so they pipe (`maic help lua | less`, `maic help | grep vendor`). `maic help topics` prints the index."},
+        {"steer", {"steering", "further", "keep"}, "ACTION [NOTE]", "steer the running turn: steer, drop, further, interrupt, keep, halt",
+         "*:steer* *:steering* *steering*\n"
+         "`:steer ACTION [NOTE]` acts on the running (or paused) turn. **steer** stops the reply now and goes on with your note (\"The user redirected you: NOTE\"). **drop** stops it, removes the paragraph being written (`steering.drop_trim`: none, sentence, paragraph, all) and tells the model to leave that topic, with your note if any. **further** lets the model finish its step, then asks it to go deeper. **interrupt** pauses (Ctrl-S). **keep** ends the turn with the reply so far as the answer. **halt** throws the reply away and tells the model so (`steering.halt_message`). steer, drop, interrupt, keep and halt withdraw a waiting approval (the call says \"not run: the user redirected\") and stop a running tool (steer and drop wait for it with `steering.on_running_tool = \"wait\"`).\n\n"
+         "`:steering` shows the settings in force and which file set each: which actions a session accepts and from which clients, drop's trim, the halt message, what a ban entry may name. A ban entry can steer by itself: `{ \"helm chart\", steer = \"drop\", note = \"...\" }` (`:h ban`, docs/bans.md). The protocol side is OpenAI's `response.steer` and MAIC's `maic.steer` (docs/design/engine-protocol.md, section 11)."},
         {"harness", {}, "[smart|dumb]", "the reviewer on (smart) or the rule list alone (dumb)",
          "*:harness*\n`:harness` shows which is in force, and under the smart harness the reviewer's model, why it was chosen and the tokens it has spent; `:harness smart` turns the model reviewer on, `:harness dumb` off. Switching to dumb while in auto mode drops to edit until you confirm auto again. See `:h harness`."},
         {"mode", {}, "NAME", "set the agent mode",
@@ -292,7 +302,7 @@ const std::vector<CommandInfo>& commands() {
          "This session joins them: when it worked in this workspace throughout (nothing written outside it, at most `init_move_outside_reads` files read outside, 3 by default; work before a `:cd` here counts as outside), `:init` moves its transcript into `projects/<encoded workspace>/` and says so. With more outside work it asks first; a `--no-record` session or one already there stays. Records written during the move are held in a `.pending` file beside the destination and appended once it is in place. `maic sessions rehome ID project` does the same from the shell, and `maic sessions rehome ID general` moves it back. docs/sessions.md"},
         {"cd", {"cwd", "pwd"}, "[PATH|-|PLACE]", "change the session's workspace",
          "*:cd* *:cwd* *:pwd*\n`:cd PATH` moves this session's workspace: an absolute path, one relative to the workspace, `~/...`, or a place name from `:path` (`:cd workflows`; Tab completes them). `:cd -` goes back to the previous one; `:cd` alone or `:pwd` shows where it is.\n\n"
-         "In one step the harness root moves (what counts as inside, the sandbox's writable directory, relative paths), so do shell commands and `!`, the project settings layers are read again as a start there would read them (command-line flags still win; one notice lists the settings that changed), and the MAIC.md / AGENTS.md files there replace the old ones: the model gets a system note saying the workspace moved and what instructions now apply. The transcript gets a `workspace` record. The tripwire, the forbid list, the harness choice and the locks are not changed by a directory's settings.\n\n"
+         "In one step the harness root moves (what counts as inside, the sandbox's writable directory, relative paths), so do shell commands and `!`, the project settings layers are read again as a start there would read them (command-line flags still win; one notice lists the settings that changed), and the instruction files there replace the old ones: the model gets a system note saying the workspace moved and what instructions now apply. The transcript gets a `workspace` record. The tripwire, the forbid list, the harness choice and the locks are not changed by a directory's settings.\n\n"
          "Only while the agent is idle, and only by you: no tool changes it and a remote request cannot. A confined session (tripwire = \"isolated\") moves only within the directory it was started in. The status strip shows the directory after a `:cd`."},
         {"settings", {}, "", "which settings files are in effect",
          "*:settings*\nLists the settings files that were read, nearest last: the global file, then `.maic/settings.lua` and `.maic/settings.local.lua` (or their .json fallbacks) from just under $HOME down to the workspace. Shows where this session's transcript home resolved to. See `:h settings`."},
@@ -331,11 +341,11 @@ const std::vector<CommandInfo>& commands() {
         {"system", {"system-prompt", "operator"}, "[TEXT|@FILE]", "operator instructions placed first in the system prompt",
          "*:system* *--system* *system_prompt*\n"
          "Text that leads every system prompt, before MAIC's own briefing and before any instruction file, marked as operator instructions that take precedence, repeated at the very end of the prompt, and appended to each of your messages as the model sees them (the transcript keeps your words as typed). That last part is what makes a small model obey: measured with a local 4B, every system-side placement was ignored once tool schemas were attached, and the rule closing the user turn was followed every time. The way to front-load behaviour. Set it with `--system TEXT` or `--system @~/prompts/reviewer.md` on the command line, `system_prompt = \"...\"` or `\"@path\"` in settings, or `:system TEXT` / `:system @file` in a session (idle only; it applies from the next turn and is appended to a resumed conversation). `:system` alone shows it. Independent of instruction files: combine with `--no-instructions` to run on the operator text alone."},
-        {"instructions", {"no-instructions", "load_instructions"}, "[on|off]", "the MAIC.md / AGENTS.md files in effect, or switch them off",
+        {"instructions", {"no-instructions", "load_instructions"}, "[on|off]", "the instruction files in effect, or switch them off",
          "*:instructions* *--no-instructions*\nLists the instruction files the model sees, re-read every turn. `:instructions off` stops loading them (global, project and nested) for the next turns; `on` brings them back. `--no-instructions` on the command line or `load_instructions = false` in settings starts that way. Independent of `:system`. See `:h instructions`."},
         {"trust", {"trusted", "--trust", "maic-trust", "trust-level", "strictness", "global_lua", "restricted-lua", "sandbox", "lua_memory_mb"}, "[PATH] [--lua full|sandbox|restricted] [--level strict|standard|relaxed] | --list", "trust a project directory: its settings, instructions and tools",
          "*:trust* *maic trust* *--trust* *trust* *sandbox*\n"
-         "A project directory is one on the chain from the project root (or just under $HOME) down to the workspace holding `.maic/`, `MAIC.md` or `AGENTS.md`. Until you trust it, its `.maic/settings.*` are not applied, its instruction files are not given to the model and its `.maic/tools/` are not loaded; a notice at start names what was skipped. "
+         "A project directory is one on the chain from the project root (or just under $HOME) down to the workspace holding `.maic/` or an instruction file (`CLAUDE.md`, `AGENTS.md`, `MAIC.md`, their `.local.md` variants, or the names in `instructions.files`; for the workspace, also ones in its subdirectories). Its trust hash covers every instruction file it holds, nested ones and what they import inside it. Until you trust it, its `.maic/settings.*` are not applied, its instruction files are not given to the model and its `.maic/tools/` are not loaded; a notice at start names what was skipped. "
          "The first time MAIC starts in one, it asks on the terminal before the screen is drawn, listing its settings, instruction and tool files: **t** trust fully (its Lua runs as you), **s** trust sandboxed (its Lua runs in a child process that cannot reach the system), **n** not now (untrusted this session), **v** never (remembered). A directory MAIC used before this check existed is asked about like any other, and says so. `:cd` into a project directory asks the same, in a modal, before its settings are read. "
          "`$HOME` and `/` are never projects; their files are ignored with a notice. Your global config (`~/.config/maic/`) is always trusted.\n\n"
          "**Lua level** (`--lua`), how a trusted directory's settings.lua runs: **full** (the default for \"trust it\": the whole standard library, as you), **sandbox** (a child process with a memory cap, a CPU limit, no file descriptors and the restricted environment; its table comes back as data), **restricted** (the restricted environment in MAIC's own process, with early memory checks). Your own files (settings.lua, themes, diction.lua) run at `global_lua`, `full` by default.\n\n"
@@ -582,108 +592,6 @@ std::pair<std::string, std::string> open_command(const std::string& name, const 
     std::error_code ec;
     if (!std::filesystem::exists(p.path, ec)) throw std::runtime_error(p.path.string() + " does not exist yet");
     return {"xdg-open '" + p.path.string() + "' >/dev/null 2>&1 &", p.name + " (" + p.path.string() + ")"};
-}
-
-std::string apply_preset(Settings& settings, const std::string& query) {
-    auto p = find_preset(settings.presets, query);
-    if (!p) return "";
-    settings.model = p->model;
-    if (p->think >= 0) settings.think = p->think == 1;
-    set_preset_window(settings.providers, *p);
-    if (p->context > 0) {
-        std::string provider = resolve_model(settings.providers, p->model).first.name;
-        if (provider == "llamacpp") settings.context = p->context;
-        else if (provider == "llamacpp-2") settings.context_2 = p->context;
-    }
-    return p->name;
-}
-
-void set_context(std::vector<Provider>& providers, int tokens, const std::string& service) {
-    setenv(service == "llamacpp" ? "MAIC_CONTEXT" : "MAIC_CONTEXT_2", std::to_string(tokens).c_str(), 1);
-    for (auto& p : providers) {
-        if (p.name == service) p.options["context_window"] = tokens;
-    }
-}
-
-std::string restart_llamacpp_if_changed(const std::string& service) {
-    for (const auto& def : load_services(root_dir() / "services")) {
-        if (def.name != service) continue;
-        // Restart when the size differs, and also when the running server predates command recording: the
-        // user asked for this size, and an unknown one is not it.
-        if (service_status(def).state != ServiceState::Running) continue;
-        if (!recorded_command(def).empty() && !command_changed(def)) continue;
-        stop_service(def);
-        bool ready = start_service(def);
-        return service + " restarted with the new context size" + std::string(ready ? "" : " (still starting)");
-    }
-    return "";
-}
-
-std::string preset_lines(const Settings& settings) {
-    std::string out;
-    for (const auto& p : settings.presets) {
-        ModelPick sub = subagent_pick(settings.presets, p);
-        ModelPick rev = reviewer_pick(settings.presets, settings.providers, p.model, settings.reviewer_model, settings.small_model, {});
-        out += "\n  " + p.name + "  " + p.model + "  tier " + std::to_string(p.tier) + (p.limited ? ", limited" : "") + ", context " + std::to_string(p.context) +
-               ", subagents on " + (sub.preset == p.name ? "itself" : sub.preset + " (" + sub.reason + ")") +
-               ", reviewer " + (rev.model == p.model ? "itself" : rev.preset.empty() ? rev.model : rev.preset);
-    }
-    return out;
-}
-
-std::string failure_text(const Agent& agent, const std::exception& e) {
-    std::string text = e.what();
-    if (const auto* api = dynamic_cast<const ApiError*>(&e); api && is_usage_limit(*api)) {
-        // The session never switches by itself: say where the next tier is.
-        auto p = preset_for_model(agent.presets, agent.model);
-        auto next = p ? on_limit_pick(agent.presets, *p) : std::nullopt;
-        text += "\n" + (p ? p->name : agent.model) + " hit its usage limit; " +
-                (next ? "`:model " + next->name + "` continues on the next tier (its on_limit)" : "`:model` lists the other models");
-    } else if (dynamic_cast<const TransportError*>(&e)) {
-        std::string hint = unreachable_hint(resolve_model(agent.providers, agent.model).first, load_services(root_dir() / "services"));
-        if (!hint.empty()) text += "\n" + hint;
-    } else if (const auto* api = dynamic_cast<const ApiError*>(&e); api && api->status == 500 && text.find("failed to load") != std::string::npos) {
-        auto [provider, name] = resolve_model(agent.providers, agent.model);
-        if (is_llama_server(provider.name)) {
-            auto services = load_services(root_dir() / "services");
-            GpuReport g = gpu_report(services);
-            std::string why = "llama.cpp could not load " + name + ".";
-            bool oom = false;
-            for (const auto& def : services) {
-                if (def.name != provider.name) continue;
-                std::ifstream in(service_log_path(def));
-                std::deque<std::string> tail;
-                for (std::string line; std::getline(in, line);) {
-                    tail.push_back(line);
-                    if (tail.size() > 60) tail.pop_front();
-                }
-                for (const auto& l : tail) oom = oom || l.find("out of memory") != std::string::npos || l.find("failed to allocate") != std::string::npos;
-            }
-            if (oom) {
-                why += " The card ran out of memory while loading it";
-                if (g.comfyui_running && g.comfyui_vram_used > 0) {
-                    char buf[64];
-                    snprintf(buf, sizeof(buf), " (ComfyUI holds %.1f GB)", static_cast<double>(g.comfyui_vram_used) / (1 << 30));
-                    why += buf;
-                }
-                for (const auto& s : g.servers) {
-                    if (s.name != provider.name && !s.models.empty()) why += " (" + s.name + " holds " + s.models.front() + ")";
-                }
-                why += ". Free it with `maic gpu free` (or stop ComfyUI), lower the context (`" + std::string(provider.name == "llamacpp" ? ":ctx 8192" : ":ctx2 4096") +
-                       "`), or use the smaller model; a model with a vision projector needs about 1 GB more. `maic gpu` says what fits.";
-            } else {
-                why += " `maic logs " + provider.name + "` has the reason.";
-            }
-            text += "\n" + why;
-        }
-    } else if (const auto* api = dynamic_cast<const ApiError*>(&e); api && api->status == 400 && text.find("not found") != std::string::npos) {
-        auto [provider, name] = resolve_model(agent.providers, agent.model);
-        if (is_llama_server(provider.name)) {
-            text += "\nllama.cpp serves the GGUFs under " + llamacpp_models_root().string() + " by file name (:models lists them, maic vendor model fetches one)";
-            if (name.find(':') != std::string::npos) text += "; a name like " + name + " is a tag, not a file name here";
-        }
-    }
-    return text;
 }
 
 }  // namespace maic

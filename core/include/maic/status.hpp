@@ -144,4 +144,20 @@ std::string driver_cuda();
 // One sentence on whether the two agree: the driver must support at least torch's version. "" when either is unknown.
 std::string cuda_agreement(const std::string& torch_cuda, const std::string& driver_cuda);
 
+// The context window of a llama server ("llamacpp" or "llamacpp-2"): exports ${MAIC_CONTEXT} or ${MAIC_CONTEXT_2}
+// for its service file and sizes the matching provider's readout.
+void set_context(std::vector<Provider>& providers, int tokens, const std::string& service = "llamacpp");
+
+// When `query` names a preset: sets settings.model, thinking, the provider's context_window and, for a local
+// llama.cpp model, settings.context. The reviewer follows from the preset in the agent (reviewer_pick); a
+// reviewer_model in settings stays the user's pin. Returns the preset's name, "" when none matched.
+std::string apply_preset(Settings& settings, const std::string& query);
+
+// The `:model` listing of presets: one line each with tier, limited, the subagent pick and the reviewer.
+std::string preset_lines(const Settings& settings);
+
+// When the llama server `service` is running with another command than its file now gives (a new context
+// size), restarts it. Returns a notice, "" when nothing had to happen.
+std::string restart_llamacpp_if_changed(const std::string& service = "llamacpp");
+
 }  // namespace maic

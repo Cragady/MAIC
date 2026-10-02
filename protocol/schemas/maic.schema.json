@@ -1,0 +1,333 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MAIC engine protocol: MAIC's own objects",
+  "description": "What is MAIC's alone (docs/design/engine-protocol.md, sections 2, 3, 9 and 10): the session index entry, the hello, approvals and questions, and the `maic` objects MAIC puts on OpenAI's shapes. OpenAI's shapes are referenced from ../openai/subset.json and never restated here.",
+  "$defs": {
+    "Origin": {
+      "description": "Stamped by the transport, never sent by a client.",
+      "enum": ["local", "remote"]
+    },
+    "By": {
+      "description": "Who caused an event: the client's id, its name, its origin.",
+      "type": "object",
+      "properties": {
+        "client": {"type": "string", "minLength": 1},
+        "name": {"type": "string"},
+        "origin": {"$ref": "#/$defs/Origin"}
+      },
+      "required": ["client", "name", "origin"]
+    },
+    "Mode": {"enum": ["manual", "auto-read", "edit", "auto", "plan"]},
+    "Tier": {"enum": ["open", "guarded", "airtight"]},
+    "SessionState": {"enum": ["live", "background", "parked", "stopped"]},
+    "Activity": {"enum": ["idle", "working", "waiting", "slot"]},
+    "Waiting": {
+      "description": "What a waiting session waits for; on a parent entry it also covers its children.",
+      "type": "object",
+      "properties": {
+        "kind": {"enum": ["approval", "question", "steer"]},
+        "id": {"type": "string"},
+        "session": {"type": "string"},
+        "tool": {"type": "string"},
+        "summary": {"type": "string"}
+      },
+      "required": ["kind", "id"]
+    },
+    "Entry": {
+      "description": "One session in the index (section 2). A remote client's entries omit `transcript`.",
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "title": {"type": "string"},
+        "workspace": {"type": "string"},
+        "kind": {"enum": ["main", "side", "sub"]},
+        "parent": {"type": ["string", "null"]},
+        "state": {"$ref": "#/$defs/SessionState"},
+        "activity": {"$ref": "#/$defs/Activity"},
+        "model": {"type": "string"},
+        "remote_model": {"type": "boolean"},
+        "mode": {"$ref": "#/$defs/Mode"},
+        "think": {"type": "boolean"},
+        "agent": {"type": "string"},
+        "harness": {"enum": ["auto", "smart", "dumb", "external"]},
+        "judge": {"type": "string"},
+        "tier": {"$ref": "#/$defs/Tier"},
+        "created": {"type": "string"},
+        "last_activity": {"type": "string"},
+        "turns": {"type": "integer", "minimum": 0},
+        "unseen": {"type": "boolean"},
+        "queued": {"type": "integer", "minimum": 0},
+        "response": {"description": "The running response's id; null while idle.", "type": ["string", "null"]},
+        "transcript": {"type": "string"},
+        "waiting": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/Waiting"}]}
+      },
+      "required": ["id", "title", "workspace", "kind", "parent", "state", "activity", "model", "mode", "tier", "last_activity", "unseen", "queued", "waiting"]
+    },
+    "SessionSummary": {
+      "description": "One transcript as `maic sessions` lists it; stopped sessions included.",
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "title": {"type": "string"},
+        "workspace": {"type": "string"},
+        "kind": {"type": "string"},
+        "started": {"type": "string"},
+        "turns": {"type": "integer", "minimum": 0},
+        "model": {"type": "string"},
+        "first_prompt": {"type": "string"},
+        "parent": {"type": "string"},
+        "agent": {"type": "string"},
+        "loaded": {"type": "boolean"},
+        "path": {"type": "string"}
+      },
+      "required": ["id", "title", "workspace", "kind", "started", "turns", "loaded"]
+    },
+    "Thread": {
+      "description": "The session in a tree an approval or question comes from, when it is not the stream's own.",
+      "type": "object",
+      "properties": {
+        "session": {"type": "string"},
+        "agent": {"type": "string"},
+        "title": {"type": "string"}
+      },
+      "required": ["agent"]
+    },
+    "TodoItem": {
+      "type": "object",
+      "properties": {"text": {"type": "string"}, "done": {"type": "boolean"}},
+      "required": ["text", "done"]
+    },
+    "UsageUpdate": {
+      "description": "Per-call figures and the budget, beside OpenAI's usage on a finished response.",
+      "type": "object",
+      "properties": {
+        "usage": {"$ref": "../openai/subset.json#/components/schemas/ResponseUsage"},
+        "calls": {"type": "integer", "minimum": 0},
+        "context": {"type": "integer", "minimum": 0},
+        "last_input": {"type": "integer", "minimum": 0},
+        "budget": {"type": "integer", "minimum": 0},
+        "total": {
+          "type": "object",
+          "properties": {"input": {"type": "integer"}, "output": {"type": "integer"}},
+          "required": ["input", "output"]
+        },
+        "normalized": {
+          "description": "How often each adapter rule normalized what a provider sent, this session (standards.md, adapter normalizations).",
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        }
+      },
+      "required": ["usage", "calls", "context", "last_input"]
+    },
+    "ResponseMaic": {
+      "description": "MAIC's fields on a `response`: the turn it belongs to, the turn's origin (which only rises), and on a terminal event whether it closes the turn.",
+      "type": "object",
+      "properties": {
+        "turn": {"type": "integer", "minimum": 1},
+        "origin": {"$ref": "#/$defs/Origin"},
+        "final": {"type": "boolean"},
+        "ended_by": {"description": "What ended the response: cancel, error, a steering action (steer, drop, further, interrupt, keep, halt), or steer for a response.steer.", "type": "string"},
+        "sequence_number": {"type": "integer", "minimum": 0},
+        "queued": {"description": "response.create on a busy lane: the response waits behind the running one (status queued); with maic.now, the input went into the running response.", "type": "boolean"},
+        "code": {"description": "A failed response's code when OpenAI's closed ResponseErrorCode has none for it.", "type": "string", "pattern": "^maic_"}
+      },
+      "required": ["turn", "origin"]
+    },
+    "MaicResponse": {
+      "description": "OpenAI's `response`, with MAIC's `maic` object on it.",
+      "allOf": [
+        {"$ref": "../openai/subset.json#/components/schemas/Response"},
+        {"type": "object", "properties": {"maic": {"$ref": "#/$defs/ResponseMaic"}}, "required": ["maic"]}
+      ]
+    },
+    "FullOutput": {
+      "description": "A command's whole output was kept beside the session, display only.",
+      "type": "object",
+      "properties": {
+        "session": {"type": "string"},
+        "call": {"type": "string"},
+        "bytes": {"type": "integer", "minimum": 0},
+        "label": {"type": "string"}
+      },
+      "required": ["session", "call", "bytes", "label"]
+    },
+    "ItemMaic": {
+      "description": "MAIC's fields on an output item.",
+      "type": "object",
+      "properties": {
+        "summary": {"description": "The call as the harness shows it.", "type": "string"},
+        "ok": {"description": "An output item: whether the tool succeeded.", "type": "boolean"},
+        "full_output": {"$ref": "#/$defs/FullOutput"},
+        "ref": {"type": "string"},
+        "status": {"type": "string"},
+        "judged_by": {"type": "string"},
+        "time": {"type": "string"},
+        "size": {"type": "integer", "minimum": 0},
+        "head": {"type": "string"},
+        "collapsed": {"type": "boolean"}
+      }
+    },
+    "ErrorData": {
+      "description": "A JSON-RPC error's `data`: OpenAI's error object; `code` is OpenAI's where OpenAI defines the condition, `maic_` prefixed otherwise.",
+      "$ref": "../openai/subset.json#/components/schemas/Error"
+    },
+    "Capabilities": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "Path": {
+      "description": "How the client reaches the engine.",
+      "type": "object",
+      "properties": {
+        "via": {"enum": ["in-process", "stdio", "socket", "http", "lan", "relay", "p2p", "node"]},
+        "role": {"enum": ["thin", "endpoint"]},
+        "tier": {"$ref": "#/$defs/Tier"},
+        "node": {"type": "string"}
+      },
+      "required": ["via"]
+    },
+    "HelloResult": {
+      "type": "object",
+      "properties": {
+        "protocol": {"type": "integer", "minimum": 1},
+        "engine": {
+          "type": "object",
+          "properties": {"version": {"type": "string"}, "instance": {"description": "Random per engine start: a different one after a reconnect means the engine restarted.", "type": "string", "minLength": 1}},
+          "required": ["version", "instance"]
+        },
+        "client": {"type": "string", "minLength": 1},
+        "origin": {"$ref": "#/$defs/Origin"},
+        "capabilities": {"$ref": "#/$defs/Capabilities"},
+        "exclude": {
+          "description": "Every event type this connection is not sent: the hello's `exclude`, and the types of a capability it did not announce. The first event after filtered ones carries maic.filtered_from.",
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "limits": {
+          "type": "object",
+          "properties": {"always": {"type": "boolean"}, "max_message": {"type": "integer", "minimum": 1}},
+          "required": ["always", "max_message"]
+        },
+        "tier": {"$ref": "#/$defs/Tier"},
+        "path": {"$ref": "#/$defs/Path"}
+      },
+      "required": ["protocol", "engine", "client", "origin", "capabilities", "exclude", "limits", "tier", "path"]
+    },
+    "EngineStatus": {
+      "description": "What maic-server's GET /api/status answered, the engine's part of it.",
+      "type": "object",
+      "properties": {
+        "harness": {
+          "type": "object",
+          "properties": {"tripped": {"type": "boolean"}, "reason": {"type": "string"}},
+          "required": ["tripped", "reason"]
+        },
+        "services": {"type": "array"},
+        "model": {"type": "string"},
+        "provider": {"type": "string"},
+        "remote_model": {"type": "boolean"},
+        "mode": {"type": "string"},
+        "sessions": {"type": "integer", "minimum": 0},
+        "workspaces": {"type": "array", "items": {"type": "string"}},
+        "tier": {"$ref": "#/$defs/Tier"},
+        "version": {"type": "string"}
+      },
+      "required": ["harness", "model", "provider", "remote_model", "mode", "sessions", "workspaces", "tier", "version"]
+    },
+    "Conversation": {
+      "description": "OpenAI's conversation object for a session, with its index entry in `maic`.",
+      "allOf": [
+        {"$ref": "../openai/subset.json#/components/schemas/ConversationResource"},
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "type": "object",
+              "properties": {"entry": {"$ref": "#/$defs/Entry"}},
+              "required": ["entry"]
+            }
+          },
+          "required": ["maic"]
+        }
+      ]
+    },
+    "CommandResult": {
+      "description": "maic.session.command: what the command says to the person who typed it, a question to put to them before it goes on (answered with `ask` and `key`), or text to send as their next message.",
+      "type": "object",
+      "properties": {
+        "ok": {"type": "boolean"},
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}, "level": {"enum": ["info", "warn", "error"]}},
+            "required": ["text", "level"]
+          }
+        },
+        "ask": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "title": {"type": "string"},
+            "lines": {"type": "array", "items": {"type": "string"}},
+            "keys": {"description": "The answers it takes, one character each; Esc answers n.", "type": "string", "minLength": 1}
+          },
+          "required": ["id", "title", "lines", "keys"]
+        },
+        "send": {"type": "string"}
+      },
+      "required": ["ok", "lines"]
+    },
+    "Snapshot": {
+      "description": "maic.session.attach: the session as it stands, and events from `sequence_number` on.",
+      "type": "object",
+      "properties": {
+        "entry": {"$ref": "#/$defs/Entry"},
+        "epoch": {"description": "The stream's epoch (maic.session.state); maic.session.subscribe takes it back.", "type": "string", "minLength": 1},
+        "sequence_number": {"type": "integer", "minimum": 0},
+        "more_before": {"type": "boolean"},
+        "items": {"type": "array", "items": {"$ref": "../openai/subset.json#/components/schemas/ConversationItem"}},
+        "inflight": {"anyOf": [{"type": "null"}, {"type": "object"}]},
+        "pending": {"type": "array", "items": {"$ref": "event.schema.json#/$defs/maic.approval.requested"}},
+        "questions": {"type": "array", "items": {"$ref": "event.schema.json#/$defs/maic.question.asked"}},
+        "todo": {"type": "array", "items": {"$ref": "#/$defs/TodoItem"}},
+        "usage": {"$ref": "#/$defs/UsageUpdate"}
+      },
+      "required": ["entry", "epoch", "sequence_number", "more_before", "items", "inflight", "pending", "todo", "usage"]
+    },
+    "Subscribed": {
+      "description": "maic.session.subscribe: the stream's position and the session's activity when the replay was taken.",
+      "type": "object",
+      "properties": {
+        "epoch": {"type": "string"},
+        "sequence_number": {"type": "integer", "minimum": 0},
+        "activity": {"$ref": "#/$defs/Activity"}
+      }
+    },
+    "Choice": {"enum": ["yes", "no", "always", "trip"]},
+    "SteerAction": {"description": "The six steering actions of section 11.", "enum": ["steer", "drop", "further", "interrupt", "keep", "halt"]},
+    "SteerResult": {
+      "description": "response.steer and maic.steer: the steer the engine accepted, OpenAI's `steer` object.",
+      "type": "object",
+      "properties": {
+        "steer": {
+          "type": "object",
+          "properties": {"id": {"type": "string", "minLength": 1}, "previous_response_id": {"type": "string", "minLength": 1}},
+          "required": ["id", "previous_response_id"]
+        }
+      },
+      "required": ["steer"]
+    },
+    "IndexParams": {
+      "description": "maic.index: one entry changed, or one left the index. Replaces state; carries no sequence_number.",
+      "anyOf": [
+        {"type": "object", "properties": {"entry": {"$ref": "#/$defs/Entry"}}, "required": ["entry"]},
+        {"type": "object", "properties": {"removed": {"type": "string"}}, "required": ["removed"]}
+      ]
+    },
+    "EngineParams": {
+      "description": "maic.engine: the tripwire, or a protocol fault the guarded tier logged (once per kind, local clients only).",
+      "anyOf": [
+        {"type": "object", "properties": {"tripped": {"type": "boolean"}, "reason": {"type": "string"}}, "required": ["tripped", "reason"]},
+        {"type": "object", "properties": {"notice": {"type": "string"}, "level": {"enum": ["info", "warn", "error"]}}, "required": ["notice", "level"]}
+      ]
+    }
+  }
+}

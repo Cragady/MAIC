@@ -11,7 +11,8 @@ import http.server, json, os, shutil, socket, subprocess, sys, tempfile, threadi
 class Fake(http.server.BaseHTTPRequestHandler):
     """Answers every chat with "echo: " plus the first line of the last user message, streamed as SSE. A message
     starting with "hold" gets a reply that idles for 10 s instead, for the interrupt tests; one starting "slow:" is
-    answered after three seconds, for a test that needs the agent busy."""
+    answered after three seconds, for a test that needs the agent busy; "shell:CMD" is a run_shell call of CMD,
+    answered "ran it" once its result is in; "ask:QUESTION|OPTION|..." is a question call, answered "ran it" too."""
 
     def log_message(self, *a):
         pass
@@ -25,20 +26,43 @@ class Fake(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(n) or b"{}")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.end_headers()
         last = [m for m in body.get("messages", []) if m.get("role") == "user"][-1]["content"]
         if isinstance(last, list):  # text parts beside an image
             last = "".join(p.get("text", "") for p in last if p.get("type") == "text")
+        try:
+            answered = body["messages"][-1].get("role") == "tool"
+            if last.startswith("shell:"):
+                self.call("run_shell", {"command": last[6:]}, answered)
+            elif last.startswith("ask:"):
+                q = last[4:].split("|")
+                self.call("question", {"question": q[0], "options": q[1:]}, answered)
+            else:
+                self.reply(last)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # MAIC hung up mid-reply (an interrupt does): that is the end of this reply
+
+    def call(self, name, args, answered):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        if answered:
+            chunks = [{"choices": [{"delta": {"content": "ran it"}}]}, {"choices": [{"delta": {}, "finish_reason": "stop"}]}]
+        else:
+            call = {"index": 0, "id": "call_1", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+            chunks = [{"choices": [{"delta": {"tool_calls": [call]}}]}, {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}]
+        for c in chunks:
+            self.wfile.write(("data: " + json.dumps(c) + "\n\n").encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+
+    def reply(self, last):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
         if last.startswith("hold"):  # a reply that never ends: only an interrupt brings the turn back
-            try:
-                self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {"content": "holding"}}]}) + "\n\n").encode())
-                for _ in range(500):
-                    time.sleep(0.02)
-                    self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {}}]}) + "\n\n").encode())
-            except (BrokenPipeError, ConnectionResetError):
-                pass
+            self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {"content": "holding"}}]}) + "\n\n").encode())
+            for _ in range(500):
+                time.sleep(0.02)
+                self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {}}]}) + "\n\n").encode())
             return
         if last.startswith("slow:"):
             time.sleep(3)
@@ -85,6 +109,30 @@ def main():
     print(("ok" if ok else "FAIL") + ": exit %d, stdout %r" % (r.returncode, r.stdout.strip()[:80]))
     if not ok:
         print(r.stderr[-3000:])
+    # The same turn as JSON lines, through the in-process engine, its connection recorded: `maic protocol check` passes it.
+    rec = os.path.join(home, "headless-streams")
+    os.makedirs(rec)
+    j = subprocess.run([maic, "-p", "ping", "--no-instructions", "--json"], capture_output=True, text=True, env=dict(env, MAIC_PROTOCOL_RECORD=rec), cwd=home, timeout=120)
+    c = subprocess.run([maic, "protocol", "check", rec], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    lines = [json.loads(l) for l in j.stdout.splitlines() if l.strip()]
+    stream_ok = (j.returncode == 0 and "".join(l["text"] for l in lines if l["type"] == "text") == "echo: ping" and lines[-1]["type"] == "usage"
+                 and c.returncode == 0 and "1 stream, 0 with a violation" in c.stdout)
+    print(("ok" if stream_ok else "FAIL") + ": maic -p --json through the engine, its recorded stream passes maic protocol check" +
+          ("" if stream_ok else "\n" + j.stdout[-1500:] + j.stderr[-1500:] + c.stdout[-1500:]))
+    # The recording describes itself: a header names the protocol hash, each event shape has a skeleton before it, and
+    # `--blind` (no built-in schemas, only the file's own skeletons) still passes.
+    recfile = os.path.join(rec, sorted(os.listdir(rec))[0])
+    recs = [json.loads(l) for l in open(recfile) if l.strip()]
+    phash = subprocess.run([maic, "protocol", "hash"], capture_output=True, text=True, env=env, cwd=home, timeout=30).stdout.strip()
+    header = next((r for r in recs if r.get("dir") == "header"), None)
+    skels = [r for r in recs if r.get("dir") == "skeleton"]
+    blind = subprocess.run([maic, "protocol", "check", "--blind", recfile], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    self_ok = (header is not None and header.get("protocol") == phash and header.get("canonical") == "RFC 8785"
+               and phash.startswith("sha256:") and any(k.get("of") == "maic.session.state" for k in skels)
+               and all("hash" in k and "skeleton" in k for k in skels)
+               and blind.returncode == 0 and "0 with a violation" in blind.stdout)
+    print(("ok" if self_ok else "FAIL") + ": the recorded stream describes itself and passes maic protocol check --blind"
+          + ("" if self_ok else "\n" + json.dumps(header) + "\n" + blind.stdout[-1500:] + blind.stderr[-1500:]))
     # maic setup off a terminal: the plan and exit 2, nothing done (the settings file exists, so that step is not on it).
     s = subprocess.run([maic, "setup"], capture_output=True, text=True, env=env, cwd=home, timeout=120, stdin=subprocess.DEVNULL)
     setup_ok = s.returncode == 2 and "plan (each a yes/no in a terminal)" in s.stdout and "Build llama.cpp" in s.stdout and "Write the global settings" not in s.stdout and "AddressSanitizer" not in s.stderr
@@ -111,6 +159,15 @@ def main():
     r = subprocess.run([maic, "tools", "check"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
     bad_ok = r.returncode == 1 and "FAIL  " in r.stdout and "per-tool network grants are not implemented yet" in r.stdout
     print(("ok" if bad_ok else "FAIL") + ": maic tools check reports a manifest asking for the network, exit %d" % r.returncode + ("" if bad_ok else "\n" + r.stdout[-1500:]))
+    # `maic protocol check` on a recorded stream that breaks a rule: the first event of a load must be number 0.
+    stream = os.path.join(home, "bad-stream.jsonl")
+    with open(stream, "w") as f:
+        f.write('{"dir":"in","conn":"c1","msg":{"jsonrpc":"2.0","id":1,"method":"maic.session.subscribe","params":{"session":"s1"}}}\n')
+        f.write('{"dir":"out","conn":"c1","msg":{"jsonrpc":"2.0","id":1,"result":{"epoch":"q7c2","sequence_number":0,"activity":"idle","replay_from":0}}}\n')
+        f.write('{"dir":"out","conn":"c1","msg":{"jsonrpc":"2.0","method":"maic.event","params":{"type":"maic.notice","sequence_number":0,"stream_id":"s1","text":"hi","level":"info"}}}\n')
+    r = subprocess.run([maic, "protocol", "check", stream], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    proto_ok = r.returncode == 1 and "FAIL  " + stream + ": #0 seq.start:" in r.stdout and "1 stream, 1 with a violation" in r.stdout
+    print(("ok" if proto_ok else "FAIL") + ": maic protocol check names the first violation and its rule, exit %d" % r.returncode + ("" if proto_ok else "\n" + r.stdout[-1500:] + r.stderr[-1500:]))
     u = subprocess.run([maic, "tools"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
     r = subprocess.run([maic, "tools", "--trust"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
     list_ok = (r.returncode == 0 and "word_count  (python)" in r.stdout and "reads **; writes nothing; timeout 10 s" in r.stdout
@@ -185,6 +242,7 @@ def main():
                  and json.loads(restored.splitlines()[-1]).get("type") == "rewritten")
     print(("ok" if backup_ok else "FAIL") + ": maic sessions redact --in-place keeps a copy that cai trans-fairy-write list-backups and restore see" +
           ("" if backup_ok else "\n" + r.stdout + r.stderr + lb.stdout + lb.stderr + rs.stdout + rs.stderr))
+    output_ok = output_smoke(maic, env, sess_dir)
     rehome_ok = rehome_smoke(maic, env, home)
     # `maic settings read diction`: {} without the file, the table as JSON, a refused call with file:line.
     diction_lua = os.path.join(home, "config", "maic", "diction.lua")
@@ -211,8 +269,304 @@ def main():
     print(("ok" if read_ok else "FAIL") + ": maic settings read diction" + ("" if read_ok else "\n" + r.stdout[-1500:] + r.stderr[-1500:]))
     models_ok = models_smoke(maic, port)
     trust_ok = trust_smoke(maic, port)
+    trail_ok = audit_trail_smoke(maic, port)
+    rpc_ok = rpc_smoke(maic, port)
+    ui_ok = nvim_ui_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if ok and trust_ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and rehome_ok and read_ok and models_ok else 1)
+    sys.exit(0 if rpc_ok and ui_ok and ok and stream_ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok else 1)
+
+
+class RpcClient:
+    """`maic --rpc` driven as maic.nvim drives it: one JSON-RPC message per line each way. With `record`, every
+    message is written as `maic protocol check` reads a connection, a request before its answer."""
+
+    def __init__(self, maic, env, cwd, record=None):
+        self.p = subprocess.Popen([maic, "--rpc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd)
+        self.rec = open(record, "w") if record else None
+        self.lock = threading.Lock()
+        self.cv = threading.Condition(self.lock)
+        self.msgs, self.answers, self.next = [], {}, 1
+        self.stderr = b""
+        threading.Thread(target=self._read, daemon=True).start()
+        threading.Thread(target=self._read_stderr, daemon=True).start()
+
+    def _record(self, d, msg):
+        if self.rec:
+            self.rec.write(json.dumps({"dir": d, "conn": "c1", "msg": msg}) + "\n")
+            self.rec.flush()
+
+    def _read(self):
+        for line in self.p.stdout:
+            msg = json.loads(line)
+            with self.cv:
+                if "id" in msg and "method" not in msg and msg["id"] is not None:
+                    self._record("out", msg)
+                    self.answers[msg["id"]] = msg
+                elif "method" in msg:
+                    self._record("out", msg)
+                self.msgs.append(msg)
+                self.cv.notify_all()
+
+    def _read_stderr(self):
+        self.stderr = self.p.stderr.read()
+
+    def send(self, method, params=None, raw=None):
+        with self.cv:
+            if raw is not None:
+                self.p.stdin.write(raw)
+                self.p.stdin.flush()
+                return None
+            i, self.next = self.next, self.next + 1
+            msg = {"jsonrpc": "2.0", "id": i, "method": method, "params": params or {}}
+            self._record("in", msg)
+            self.p.stdin.write((json.dumps(msg) + "\n").encode())
+            self.p.stdin.flush()
+            return i
+
+    def wait(self, pred, timeout=30):
+        with self.cv:
+            ok = self.cv.wait_for(lambda: any(pred(m) for m in self.msgs), timeout)
+            return next((m for m in self.msgs if pred(m)), None) if ok else None
+
+    def answer(self, i, timeout=30):
+        return self.wait(lambda m: m.get("id") == i and "method" not in m, timeout)
+
+    def call(self, method, params=None, timeout=30):
+        return self.answer(self.send(method, params), timeout)
+
+    def events(self, session):
+        with self.cv:
+            return [m["params"] for m in self.msgs if m.get("method") == "maic.event" and m["params"].get("stream_id") == session]
+
+    def close(self, timeout=30):
+        self.p.stdin.close()
+        try:
+            code = self.p.wait(timeout)
+        except subprocess.TimeoutExpired:
+            self.p.kill()
+            code = None
+        if self.rec:
+            self.rec.close()
+        return code
+
+
+def rpc_smoke(maic, port):
+    """`maic --rpc`: the handshake, a session created and followed, a turn, an approval answered over the pipe, a
+    request answered while a long one runs, a resume with starting_after, the error codes, and the end at EOF and
+    at a signal. Both ends' recordings pass `maic protocol check`."""
+    import signal
+    home, env = make_home(port)
+    rec = os.path.join(home, "rpc-streams")
+    os.makedirs(rec)
+    results = []
+
+    def report(ok, what, extra=""):
+        results.append(ok)
+        print(("ok" if ok else "FAIL") + ": maic --rpc " + what + ("" if ok else "\n" + extra[-3000:]))
+
+    c = RpcClient(maic, dict(env, MAIC_PROTOCOL_RECORD=rec), home, os.path.join(rec, "client.jsonl"))
+    a = c.call("createConversation")
+    early = a and a.get("error", {}).get("data", {}).get("code") == "maic_hello_required"
+    h = c.call("maic.hello", {"protocol": 1, "client": {"name": "rpc-smoke", "version": "0"}, "capabilities": ["tool_output"]})
+    hr = (h or {}).get("result", {})
+    report(early and hr.get("protocol") == 1 and hr.get("path") == {"via": "stdio"} and hr.get("origin") == "local",
+           "answers only maic.hello first, then the hello over stdio", json.dumps([a, h]))
+    conv = (c.call("createConversation") or {}).get("result", {})
+    sid = conv.get("id", "")
+    sub = (c.call("maic.session.subscribe", {"session": sid}) or {}).get("result", {})
+    first = c.wait(lambda m: m.get("method") == "maic.event" and m["params"].get("sequence_number") == 0)
+    report(sid != "" and sub.get("replay_from") == 0 and first and first["params"]["by"]["name"] == "rpc-smoke",
+           "creates a session and replays it from 0, the client named by its hello", json.dumps([conv, sub, first]))
+
+    def turn(text):
+        r = c.call("response.create", {"conversation": sid, "input": text})
+        rid = (r or {}).get("result", {}).get("id")
+        done = c.wait(lambda m: m.get("method") == "maic.event" and m["params"].get("type") in ("response.completed", "response.failed")
+                      and m["params"]["response"]["id"] == rid, 60)
+        return rid, done
+
+    rid, done = turn("ping")
+    text = "".join(e["delta"] for e in c.events(sid) if e["type"] == "response.output_text.delta")
+    report(done and done["params"]["type"] == "response.completed" and "echo: ping" in text, "runs a turn and streams its reply", json.dumps(c.events(sid))[-2000:])
+    mark = max(e["sequence_number"] for e in c.events(sid))
+
+    # run_shell in manual mode asks first; the answer goes back over the pipe.
+    r = c.send("response.create", {"conversation": sid, "input": "shell:echo rpc-$((40+2))"})
+    ask = c.wait(lambda m: m.get("method") == "maic.event" and m["params"].get("type") == "maic.approval.requested", 60)
+    yes = c.call("maic.approval.answer", {"session": sid, "approval": ask["params"]["id"], "choice": "yes"}) if ask else None
+    rid2 = (c.answer(r) or {}).get("result", {}).get("id")
+    done = c.wait(lambda m: m.get("method") == "maic.event" and m["params"].get("type") == "response.completed" and m["params"]["response"]["id"] == rid2, 60)
+    out = json.dumps([e for e in c.events(sid) if e["type"].startswith("response.shell_call_output")])
+    report(ask and yes and "result" in yes and done and "rpc-42" in out, "asks an approval and takes its answer", json.dumps([ask, yes]) + out)
+
+    # A request that runs long (`!cmd` answers when the command ends) holds up nothing else.
+    t0 = time.time()
+    sh = c.send("maic.session.shell", {"session": sid, "command": "sleep 2; echo slept"})
+    st = c.call("maic.engine.status")
+    quick = time.time() - t0
+    shr = c.answer(sh)
+    report(st and "result" in st and quick < 1.5 and shr and shr.get("result", {}).get("exit_code") == 0 and time.time() - t0 >= 2,
+           "answers a request while a long one runs (%.2f s)" % quick, json.dumps([st, shr]))
+
+    # A client that lost its place resumes after the last event it saw.
+    c.call("maic.session.unsubscribe", {"session": sid})
+    with c.cv:
+        c.msgs = [m for m in c.msgs if m.get("method") != "maic.event"]
+    res = (c.call("maic.session.subscribe", {"session": sid, "starting_after": mark}) or {}).get("result", {})
+    c.wait(lambda m: m.get("method") == "maic.event" and m["params"].get("sequence_number") == res.get("sequence_number"))
+    seqs = [e["sequence_number"] for e in c.events(sid)]
+    report(res.get("replay_from") == mark + 1 and seqs and seqs[0] == mark + 1 and seqs == list(range(mark + 1, res["sequence_number"] + 1)),
+           "replays from starting_after", json.dumps([res, seqs]))
+    gone = c.call("maic.nope")
+    report(gone and gone["error"]["code"] == -32601, "answers an unknown method -32601", json.dumps(gone))
+    code = c.close()
+    transcripts = [f for d, _, fs in os.walk(os.path.join(home, "state")) for f in fs if f.startswith(sid) and f.endswith(".jsonl")]
+    report(code == 0 and transcripts and "AddressSanitizer" not in c.stderr.decode(errors="replace"), "ends at EOF, exit %r, the session kept" % code, c.stderr.decode(errors="replace"))
+    chk = subprocess.run([maic, "protocol", "check", rec], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    report(chk.returncode == 0 and "2 streams, 0 with a violation" in chk.stdout, "client's and engine's recordings pass maic protocol check", chk.stdout + chk.stderr)
+
+    # A client that wants no text deltas: the done events carry the text, and maic.filtered_from accounts for the gaps.
+    rec2 = os.path.join(home, "rpc-filtered")
+    os.makedirs(rec2)
+    c = RpcClient(maic, dict(env, MAIC_PROTOCOL_RECORD=rec2), home, os.path.join(rec2, "client.jsonl"))
+    h = (c.call("maic.hello", {"protocol": 1, "client": {"name": "rpc-filter", "version": "0"}, "exclude": ["response.output_text.delta"]}) or {}).get("result", {})
+    sid = (c.call("createConversation") or {}).get("result", {}).get("id", "")
+    c.call("maic.session.subscribe", {"session": sid})
+    rid, done = turn("ping")
+    evs = c.events(sid)
+    text = "".join(e["text"] for e in evs if e["type"] == "response.output_text.done")
+    marked = [e for e in evs if "filtered_from" in e.get("maic", {})]
+    report(set(h.get("exclude", [])) == {"response.output_text.delta", "response.shell_call_output_content.delta", "maic.tool.output.delta"} and done
+           and not any(e["type"] == "response.output_text.delta" for e in evs) and "echo: ping" in text and marked,
+           "spares a filtered client its text deltas and marks the gap with maic.filtered_from", json.dumps([h, evs])[-3000:])
+    code = c.close()
+    chk = subprocess.run([maic, "protocol", "check", rec2], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    report(code == 0 and chk.returncode == 0 and "2 streams, 0 with a violation" in chk.stdout, "the filtered connection's recordings pass maic protocol check", chk.stdout + chk.stderr)
+
+    # Faults, unrecorded: a line that is not JSON, then one over 1 MiB, which ends the connection.
+    c = RpcClient(maic, env, home)
+    c.send(None, raw=b"this is not json\n")
+    bad = c.wait(lambda m: m.get("error", {}).get("code") == -32700)
+    h = c.call("maic.hello", {"protocol": 1, "client": {"name": "x", "version": "0"}})
+    old = c.call("maic.hello", {"protocol": 0})
+    c.send(None, raw=b'{"jsonrpc":"2.0","id":99,"method":"maic.engine.status","params":{"pad":"' + b"x" * (1 << 20) + b'"}}\n')
+    big = c.wait(lambda m: m.get("error", {}).get("data", {}).get("code") == "maic_too_large")
+    try:
+        code = c.p.wait(30)
+    except subprocess.TimeoutExpired:
+        code = None
+    c.close()
+    report(bad and bad["id"] is None and h and "result" in h and old and old["error"]["data"]["code"] == "maic_unsupported_protocol" and big and code == 1,
+           "answers -32700, maic_unsupported_protocol and maic_too_large, and closes on the last (exit %r)" % code, json.dumps([bad, h, old, big]))
+    c = RpcClient(maic, env, home)
+    c.call("maic.hello", {"protocol": 1, "client": {"name": "x", "version": "0"}})
+    c.p.send_signal(signal.SIGTERM)
+    try:
+        code = c.p.wait(30)
+    except subprocess.TimeoutExpired:
+        code = None
+    c.close()
+    report(code == 0, "ends cleanly at SIGTERM (exit %r)" % code, c.stderr.decode(errors="replace"))
+    shutil.rmtree(home, ignore_errors=True)
+    return all(results)
+
+
+def nvim_ui_smoke(maic, port):
+    """nvim as MAIC's interface: maic.nvim/tests/ui_test.lua drives a headless nvim against `maic --rpc` and the fake
+    (the engine's recording passes `maic protocol check`), then `maic --ui nvim` with a stand-in nvim on PATH that
+    records how it was started, and the runs it refuses. Skipped without nvim."""
+    if not shutil.which("nvim"):
+        print("skip: nvim interface (nvim is not installed)")
+        return True
+    home, env = make_home(port)
+    rec = os.path.join(home, "ui-streams")
+    os.makedirs(rec)
+    test = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "maic.nvim", "tests", "ui_test.lua")
+    r = subprocess.run(["nvim", "--headless", "-u", "NONE", "-i", "NONE", "-n", "-l", test], capture_output=True, text=True, cwd=home, timeout=300,
+                       env=dict(env, MAIC_UI_TEST_BIN=maic, MAIC_PROTOCOL_RECORD=rec))
+    chk = subprocess.run([maic, "protocol", "check", rec], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    ok = r.returncode == 0 and chk.returncode == 0 and "2 streams, 0 with a violation" in chk.stdout
+    print(("ok" if ok else "FAIL") + ": the nvim interface (maic.nvim/tests/ui_test.lua), exit %d; its stream checked" % r.returncode
+          + ("" if ok else "\n" + r.stdout[-6000:] + r.stderr[-2000:] + chk.stdout[-1500:]))
+
+    # `maic --ui nvim` execs nvim with the plugin, this binary and the agent's flags; MAIC_UI never reaches nvim's jobs.
+    bin_dir = os.path.join(home, "bin")
+    os.makedirs(bin_dir)
+    seen = os.path.join(home, "nvim-argv.json")
+    with open(os.path.join(bin_dir, "nvim"), "w") as f:
+        f.write("#!/usr/bin/env python3\nimport json, os, sys\njson.dump({'argv': sys.argv[1:], 'ui': os.environ.get('MAIC_UI')}, open(%r, 'w'))\n" % seen)
+    os.chmod(os.path.join(bin_dir, "nvim"), 0o755)
+    fake_env = dict(env, PATH=bin_dir + os.pathsep + env["PATH"])
+    r = subprocess.run([maic, "--ui", "nvim", "--model", "fake/fake", "--no-instructions"], capture_output=True, text=True, env=fake_env, cwd=home, timeout=60)
+    got = json.load(open(seen)) if os.path.exists(seen) else {}
+    o = json.loads(got.get("ui") or "{}")
+    exec_ok = (r.returncode == 0 and got.get("argv", [""])[0] == "-c" and "require('maic.ui').main(o)" in got["argv"][1]
+               and o.get("args") == ["--model", "fake/fake", "--no-instructions"] and os.path.realpath(o.get("cmd", "")) == os.path.realpath(maic)
+               and os.path.isfile(os.path.join(o.get("plugin", ""), "lua", "maic", "ui.lua")))
+    print(("ok" if exec_ok else "FAIL") + ": maic --ui nvim starts nvim with maic.nvim and the engine's flags" + ("" if exec_ok else "\n%r %r %r" % (got, r.stdout, r.stderr)))
+    refused = [subprocess.run([maic, "--ui", "nvim"] + extra, capture_output=True, text=True, env=dict(fake_env, **more), cwd=home, timeout=60)
+               for extra, more in ((["--bare"], {}), ([], {"NVIM": "/nowhere"}), (["-p", "x"], {}))]
+    refuse_ok = ([x.returncode for x in refused] == [2, 2, 1] and "with bare" in refused[0].stderr and "inside nvim" in refused[1].stderr
+                 and "--ui chooses the interactive interface" in refused[2].stderr)
+    print(("ok" if refuse_ok else "FAIL") + ": --ui nvim is refused with --bare, inside nvim and with -p" + ("" if refuse_ok else "\n" + "\n".join(x.stderr for x in refused)))
+    shutil.rmtree(home, ignore_errors=True)
+    return ok and exec_ok and refuse_ok
+
+
+def output_smoke(maic, env, sess_dir):
+    """`maic sessions output` on a kept output written by hand: the list, the plain print with its label on stderr,
+    and --replay: stdout and stderr interleaved in the original order, each progress redraw its own write, on time."""
+    import selectors
+    sid = "20260101-130000-tui-2"
+    side = os.path.join(sess_dir, sid + ".d")
+    os.makedirs(side, mode=0o700)
+    chunks = [("o", "building\n", 0), ("e", "warning: slow\n", 300), ("o", "progress 10%\r", 600), ("o", "progress 100%\r\n", 900), ("e", "done\n", 1200)]
+    data, idx = "", ""
+    for stream, text, ms in chunks:
+        idx += "%s %d %d %d\n" % (stream, len(data), len(text), ms)
+        data += text
+    with open(os.path.join(side, "call_7.out"), "w") as f:
+        f.write(data)
+    with open(os.path.join(side, "call_7.idx"), "w") as f:
+        f.write(idx)
+    with open(os.path.join(sess_dir, sid + ".jsonl"), "w") as f:
+        for rec in ({"type": "start", "workspace": sess_dir, "model": "fake/fake", "mode": "manual", "host": "h", "pid": 1},
+                    {"type": "tool", "tool": "run_shell", "arguments": {"command": "make"}, "result": "exit code 0", "ok": True,
+                     "full_output": {"path": sid + ".d/call_7.out", "bytes": len(data), "sha256": "", "delivered_to_model": False}}):
+            f.write(json.dumps(dict(rec, time="2026-01-01T13:00:00+0000")) + "\n")
+    ls = subprocess.run([maic, "sessions", "output", sid], capture_output=True, text=True, env=env, timeout=60)
+    plain = subprocess.run([maic, "sessions", "output", sid, "call_7"], capture_output=True, env=env, timeout=60)  # bytes: text mode would turn \r into \n
+    p = subprocess.Popen([maic, "sessions", "output", sid, "call_7", "--replay"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    sel = selectors.DefaultSelector()
+    sel.register(p.stdout, selectors.EVENT_READ, "o")
+    sel.register(p.stderr, selectors.EVENT_READ, "e")
+    seen, start, label, label_done = [], None, b"", False
+    while sel.get_map():
+        for key, _ in sel.select(timeout=10):
+            got = os.read(key.fileobj.fileno(), 65536)
+            if not got:
+                sel.unregister(key.fileobj)
+                continue
+            start = start or time.monotonic()  # the clock starts with the first thing out, the label or the first chunk
+            if key.data == "e" and not label_done:
+                # The label is stderr's first line; it may arrive over several reads, so gather it to its newline.
+                label += got
+                if b"\n" not in label:
+                    continue
+                label, _, got = label.partition(b"\n")
+                label_done = True
+                if not got:
+                    continue
+            seen.append((key.data, got.decode(), (time.monotonic() - start) * 1000))
+    p.wait(timeout=30)
+    order = [(s, t) for s, t, _ in seen] == [(s, t) for s, t, _ in chunks]
+    timing = len(seen) == len(chunks) and all(abs(at - ms) < 200 for (_, _, at), (_, _, ms) in zip(seen, chunks))
+    ok = (ls.returncode == 0 and "call_7  %d bytes  run_shell: make" % len(data) in ls.stdout
+          and plain.returncode == 0 and plain.stdout == data.encode() and b"full output, display only: the model saw the capped result" in plain.stderr
+          and p.returncode == 0 and b"full output, display only" in label and order and timing)
+    print(("ok" if ok else "FAIL") + ": maic sessions output lists, prints with its label, and replays in order and on time" +
+          ("" if ok else "\n" + ls.stdout + ls.stderr + repr(plain.stdout) + repr(plain.stderr) + repr(seen) + repr(label)))
+    return ok
 
 
 def rehome_smoke(maic, env, home):
@@ -347,6 +701,242 @@ def models_smoke(maic, port):
     report(r.returncode == 0 and not os.path.exists(os.path.join(mdir, "llamacpp", "Qwen3.5-4B-Q4_K_M")), "with --yes it removes the files and the folder", r)
     r = run("help", "models")
     report(r.returncode == 0 and "*models*" in r.stdout and "llama.vim" in r.stdout, "maic help models is the catalog page", r)
+    return all(results)
+
+
+def audit_trail_smoke(maic, port):
+    """The audit trail through the binary (docs/audit-trail.md), over a synthetic trail in a throwaway HOME: init,
+    status (counts, never contents; --json kept from maic's own parser), purge after a yes, offsite printing and
+    never running anything, the systemd schedule, and the start-up check at maic -p, maic status and the TUI with a
+    fake maic-leak-audit. start_services stays off: no real service is ever started."""
+    import pty, select, signal
+    home, env = make_home(port)
+    env["HOME"] = os.path.join(home, "h")
+    os.makedirs(env["HOME"])
+    work = os.path.join(home, "work")  # no project marker: no trust prompt
+    os.makedirs(work)
+    fakebin = os.path.join(home, "fakebin")
+    os.makedirs(fakebin)
+    ran = os.path.join(home, "ran.log")  # every fake tool appends its name and arguments: nothing may be run that should not
+    env["PATH"] = fakebin + ":/usr/bin:/bin"
+    results = []
+    audit_lua = os.path.join(home, "config", "maic", "audit.lua")
+    trail = os.path.join(env["XDG_STATE_HOME"], "maic", "audit-trail")
+
+    def run(*args, stdin=subprocess.DEVNULL, path=None, extra=None):
+        e = dict(env, **(extra or {}))
+        if path is not None:
+            e["PATH"] = path
+        return subprocess.run([maic, *args], capture_output=True, text=True, env=e, cwd=work, timeout=60, stdin=stdin)
+
+    def report(ok, what, r):
+        print(("ok" if ok else "FAIL") + ": " + what + ("" if ok else "\n" + r.stdout[-2500:] + r.stderr[-2500:]))
+        results.append(ok)
+
+    def fake(name, body=""):
+        p = os.path.join(fakebin, name)
+        with open(p, "w") as f:
+            f.write("#!/bin/sh\necho \"%s $*\" >> '%s'\n%s" % (name, ran, body))
+        os.chmod(p, 0o755)
+        return p
+
+    def ran_lines():
+        if not os.path.exists(ran):
+            return []
+        with open(ran) as f:
+            return f.read().splitlines()
+
+    def audit_settings(text):
+        with open(audit_lua, "w") as f:
+            f.write("return { " + text + " }\n")
+
+    r = run("audit-trail")
+    report(r.returncode == 0 and "audit trail: off" in r.stdout and "not written yet: maic audit-trail init" in r.stdout and "0 files" in r.stdout,
+           "maic audit-trail: off by default, no trail", r)
+    r = run("audit-trail", "status", "--json")
+    j = json.loads(r.stdout) if r.returncode == 0 and r.stdout.startswith("{") else {}
+    report(j.get("on") is False and j.get("every_seconds") == 86400 and j.get("archive") == "off" and j.get("judge_thinking") is True,
+           "status --json reaches the command (not maic's own --json)", r)
+    r = run("audit-trail", "init")
+    mode = oct(os.stat(audit_lua).st_mode & 0o777) if os.path.exists(audit_lua) else ""
+    report(r.returncode == 0 and "wrote " + audit_lua in r.stdout and mode == "0o600", "init writes audit.lua, 0600", r)
+    r = run("audit-trail", "init")
+    report(r.returncode == 0 and "already there, left as it is" in r.stdout, "init never overwrites it", r)
+
+    # A synthetic trail: the containers hold markers that must never be shown.
+    os.makedirs(trail, mode=0o700)
+    for name, ids in (("20200101.jsonl", (1, 2, 3)), ("20200102.jsonl", (4, 5))):
+        with open(os.path.join(trail, name), "w") as f:
+            for i in ids:
+                f.write(json.dumps({"id": i, "time": "2020-01-01T00:00:00Z", "tool": "run_shell", "arguments": {"command": "cat trail-marker-9931"},
+                                    "session": "trail-session-4417"}) + "\n")
+    with open(os.path.join(trail, "seq"), "w") as f:
+        f.write("5\n")
+    with open(os.path.join(trail, "index.json"), "w") as f:
+        json.dump({"version": 1, "last_id": 3, "archived": [], "ranges": [
+            {"first": 1, "last": 2, "count": 2, "state": "live", "verdicts": {"2": "reached"}, "signature": "trail-signature-2290"},
+            {"first": 3, "last": 3, "count": 1, "state": "stale live", "verdicts": {}, "signature": "x"}]}, f)
+    audit_settings("enabled = true, enforce = 'notify', every = '6h'")
+    r = run("audit-trail", "status")
+    secret = any(m in r.stdout + r.stderr for m in ("trail-marker-9931", "trail-session-4417", "trail-signature-2290", "run_shell"))
+    report(r.returncode == 0 and "audit trail: on" in r.stdout and "2 files" in r.stdout and "2 live, 1 stale live, 0 archival; 2 not yet audited (last id 5)" in r.stdout
+           and "(every 6h)" in r.stdout and "schedule: none" in r.stdout and "archive: off (an entry that gets the retirement signal is deleted)" in r.stdout
+           and "the next start holds for an audit (notify)" in r.stdout and not secret,
+           "status: on, counts by state, the schedule and the archive, nothing of what the entries hold", r)
+
+    # off-site: printed, never run.
+    archive = os.path.join(home, "archive")
+    os.makedirs(archive)
+    old, new = "audit-chunk-20200301T000000Z-1.tar.gz", "audit-chunk-%s-1.tar.gz" % time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    for name, size in ((old, 2048), ("audit-chunk-20200301T000000Z-2.tar.gz", 1024), (new, 512)):
+        with open(os.path.join(archive, name), "wb") as f:
+            f.write(b"x" * size)
+        with open(os.path.join(archive, name + ".sha256"), "w") as f:
+            f.write("0" * 64 + "  " + name + "\n")
+    audit_settings("enabled = true, enforce = 'notify', archive = '%s'" % archive)
+    empty = os.path.join(home, "empty")
+    os.makedirs(empty)
+    r = run("audit-trail", "offsite", "/mnt/cold", path=empty)
+    report(r.returncode == 0 and "off-site: 2 chunks older than 90d in %s, 3.0 KB in all" % archive in r.stdout and old in r.stdout and new not in r.stdout
+           and "by hand, if none of these fits" in r.stdout and "rsync -a" not in r.stdout and "cp -a" not in r.stdout, "offsite with nothing on PATH: the chunks, their size and plain steps", r)
+    tools = os.path.join(home, "tools")
+    os.makedirs(tools)
+    for name in ("rsync", "rclone", "restic", "kopia", "syncthing", "cp", "sha256sum", "rm"):
+        p = os.path.join(tools, name)
+        with open(p, "w") as f:
+            f.write("#!/bin/sh\necho \"%s $*\" >> '%s'\n" % (name, ran))
+        os.chmod(p, 0o755)
+    r = run("audit-trail", "offsite", "/mnt/cold", path=tools)
+    q = "'%s/%s'" % (archive, old)
+    report(r.returncode == 0 and "rsync -a --checksum --remove-source-files " + q in r.stdout and "'/mnt/cold/'" in r.stdout
+           and "rclone move --checksum --include '%s'" % old in r.stdout and "restic -r '/mnt/cold' backup " + q in r.stdout
+           and "kopia snapshot create '%s'" % archive in r.stdout and "ignoreDelete" in r.stdout
+           and "cp -a " + q in r.stdout and "sha256sum -c '%s.sha256'" % old in r.stdout and "MAIC runs none of this" in r.stdout
+           and new not in r.stdout and ran_lines() == [], "offsite with rsync, rclone, restic, kopia, syncthing and coreutils: a command for each, none run", r)
+    for keep in ("rsync", "rclone", "restic", "kopia", "syncthing"):
+        os.remove(os.path.join(tools, keep))
+    r = run("audit-trail", "offsite", "/mnt/cold", path=tools)
+    report(r.returncode == 0 and "coreutils (cp, sha256sum, rm" in r.stdout and "rsync" not in r.stdout and ran_lines() == [],
+           "offsite with coreutils only: the cp, sha256sum -c, rm fallback", r)
+    r = run("audit-trail", "offsite", "/mnt/cold", "--older-than", "10000d", path=tools)
+    report(r.returncode == 0 and "nothing to move" in r.stdout, "offsite --older-than past every chunk: nothing to move", r)
+    audit_settings("enabled = true, enforce = 'notify'")
+    r = run("audit-trail", "offsite", "/mnt/cold")
+    report(r.returncode == 1 and "there are no chunks to move" in r.stderr, "offsite with archive off: refused", r)
+
+    # The schedule: units from contrib/systemd/ in $XDG_CONFIG_HOME/systemd/user, systemctl a fake on PATH.
+    units = os.path.join(home, "config", "systemd", "user")
+    leak = fake("maic-leak-audit", "exit 0\n")
+    audit_settings("enabled = true, every = '6h'")
+    r = run("audit-trail", "schedule", "install", path=fakebin)
+    report(r.returncode == 0 and "no systemctl here" in r.stdout and os.path.exists(os.path.join(units, "maic-leak-audit.timer")),
+           "schedule install with no systemctl: written, the due check stands in", r)
+    fake("systemctl")
+    r = run("audit-trail", "schedule", "install")
+    with open(os.path.join(units, "maic-leak-audit.service")) as f:
+        service = f.read()
+    with open(os.path.join(units, "maic-leak-audit.timer")) as f:
+        timer = f.read()
+    report(r.returncode == 0 and "\nExecStart=%s\n" % leak in service and "\nEnvironment=MAIC_BIN=%s\n" % os.path.realpath(maic) in service
+           and "\nOnUnitActiveSec=6h\n" in timer and "systemctl --user daemon-reload" in ran_lines()
+           and "systemctl --user enable --now maic-leak-audit.timer" in ran_lines(), "schedule install: ExecStart, OnUnitActiveSec, enabled", r)
+    r = run("audit-trail", "status")
+    report("schedule: the systemd timer" in r.stdout, "status sees the timer", r)
+    r = run("audit-trail", "schedule", "remove")
+    report(r.returncode == 0 and not os.path.exists(os.path.join(units, "maic-leak-audit.timer")) and "systemctl --user disable --now maic-leak-audit.timer" in ran_lines(),
+           "schedule remove: disabled and gone", r)
+    os.remove(os.path.join(fakebin, "systemctl"))
+    os.remove(ran)
+
+    # The start-up check. The fake audit records the transcripts that exist while it runs: the session's comes after.
+    fake("maic-leak-audit",
+         "find \"$XDG_RUNTIME_DIR\" -name '*.jsonl' | sed 's/^/during: /' >> '%s'\n" % ran +
+         "sleep 1\n"
+         "if [ \"$1\" = --scan ]; then echo 'leak audit complete (phase 1 only): report at /fake/r.md. Something was reached for: UNCLEAR'; exit 0; fi\n"
+         "if [ \"$FAKE_AUDIT\" = fail ]; then echo 'maic-leak-audit: the local model server llamacpp is not answering' >&2; "
+         "echo 'leak audit not completed: see standard error. Something was reached for: UNKNOWN'; exit 2; fi\n"
+         "echo 'leak audit complete: report at /fake/r.md. Something was reached for: NO'\n")
+
+    def transcripts():
+        return {os.path.join(d, f) for d, _, fs in os.walk(env["XDG_RUNTIME_DIR"]) for f in fs if f.endswith(".jsonl")}
+
+    audit_settings("enabled = true, start_services = false")
+    before = transcripts()
+    r = run("-p", "ping")
+    during = [line[len("during: "):] for line in ran_lines() if line.startswith("during: ")]
+    hold = r.stderr.find("auditing with the local judge (qwen-9b) before the session opens, everything else on hold")
+    done = r.stderr.find("audit trail: leak audit complete: report at /fake/r.md. Something was reached for: NO")
+    report(r.returncode == 0 and "echo: ping" in r.stdout and 0 <= hold < done and "maic-leak-audit --model qwen-9b" in ran_lines()
+           and "has never been audited" in r.stderr and set(during) <= before and transcripts() - before,
+           "maic -p, judge-and-hold: the audit runs and ends before the session opens", r)
+    os.remove(ran)
+    r = run("-p", "ping", extra={"FAKE_AUDIT": "fail"})
+    report(r.returncode == 0 and "echo: ping" in r.stdout and "the judge could not run, so the phase-1 scan stands in" in r.stderr
+           and "maic-leak-audit: the local model server llamacpp is not answering" in r.stderr and "Something was reached for: UNCLEAR" in r.stderr
+           and [l for l in ran_lines() if l.startswith("maic-leak-audit")] == ["maic-leak-audit --model qwen-9b", "maic-leak-audit --scan"],
+           "judge-and-hold when the judge cannot run: the scan stands in and says so", r)
+    os.remove(ran)
+    audit_settings("enabled = true, enforce = 'scan-and-continue', start_services = false")
+    r = run("-p", "ping")
+    report(r.returncode == 0 and "scanning (phase 1) and continuing" in r.stderr and [l for l in ran_lines() if l.startswith("maic-leak-audit")] == ["maic-leak-audit --scan"],
+           "scan-and-continue: the scan only", r)
+    os.remove(ran)
+    audit_settings("enabled = true, enforce = 'notify'")
+    r = run("-p", "ping")
+    report(r.returncode == 0 and "run maic-leak-audit (maic audit-trail schedule install runs it for you)" in r.stderr and ran_lines() == [],
+           "notify: one line, nothing run", r)
+    audit_settings("enabled = true, start_services = false")
+    r = run("status")
+    report("maic-leak-audit --model qwen-9b" in ran_lines() and "audit trail: leak audit complete" in r.stderr, "maic status checks too", r)
+    os.remove(ran)
+    # The TUI: the result line comes before the screen is drawn.
+    master, slave = pty.openpty()
+    p = subprocess.Popen([maic], stdin=slave, stdout=slave, stderr=slave, env=dict(env, TERM="xterm-256color"), cwd=work, start_new_session=True)
+    os.close(slave)
+    seen, deadline = b"", time.time() + 30
+    while b"\x1b[?1049h" not in seen and time.time() < deadline:
+        if select.select([master], [], [], 0.5)[0]:
+            try:
+                seen += os.read(master, 65536)
+            except OSError:
+                break
+    os.killpg(p.pid, signal.SIGKILL)
+    p.wait()
+    os.close(master)
+    text = seen.decode(errors="replace")
+    at = text.find("Something was reached for: NO")
+    report(0 <= at < text.find("\x1b[?1049h") and "maic-leak-audit --model qwen-9b" in ran_lines(), "the TUI holds until the audit is done, then opens",
+           subprocess.CompletedProcess([], 0, text[-1500:], ""))
+    os.remove(ran)
+    # Nothing happens when a scheduler ran it, when the trail is off, and the size cap triggers by itself.
+    with open(os.path.join(trail, "index.json"), "w") as f:
+        json.dump({"last_audit": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "next_audit_due": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600))}, f)
+    r = run("-p", "ping")
+    report(r.returncode == 0 and "audit trail:" not in r.stderr and ran_lines() == [], "a recent audit (a scheduler ran it): nothing happens", r)
+    audit_settings("enabled = false, start_services = false")
+    with open(os.path.join(trail, "20200101.jsonl"), "w") as f:
+        f.write("x" * (2 << 20))
+    r = run("-p", "ping")
+    report(r.returncode == 0 and "audit trail:" not in r.stderr and ran_lines() == [], "off: never a hold, whatever the trail", r)
+    audit_settings("enabled = true, start_services = false, live_mb = 1")
+    r = run("-p", "ping")
+    report(r.returncode == 0 and "past live_mb (1 MB)" in r.stderr and "maic-leak-audit --model qwen-9b" in ran_lines(), "past live_mb the next start holds", r)
+
+    # purge: only after a yes at a terminal; the ids go on.
+    r = run("audit-trail", "purge")
+    report(r.returncode == 2 and "asks at a terminal" in r.stderr and os.path.exists(os.path.join(trail, "20200102.jsonl")), "purge off a terminal deletes nothing", r)
+    master, slave = pty.openpty()
+    os.write(master, b"n\n")
+    r = run("audit-trail", "purge", stdin=slave)
+    report(r.returncode == 0 and "nothing was deleted" in r.stdout and os.path.exists(os.path.join(trail, "20200102.jsonl")), "purge answered no deletes nothing", r)
+    os.write(master, b"y\n")
+    r = run("audit-trail", "purge", stdin=slave)
+    os.close(master)
+    os.close(slave)
+    left = sorted(os.listdir(trail))
+    report(r.returncode == 0 and "deleted 2 files of audit trail and its index (ids go on from 5)" in r.stdout and ".jsonl" not in "".join(left) and "seq" in left
+           and "index.json" not in left and os.path.exists(os.path.join(archive, old)), "purge answered yes: the containers and the index go, seq and the archive stay", r)
+    shutil.rmtree(home, ignore_errors=True)
     return all(results)
 
 

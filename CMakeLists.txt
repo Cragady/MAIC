@@ -36,6 +36,10 @@ add_test(NAME comfy_node COMMAND python3 -m unittest -v test_node
          WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/vendor/comfyui-maic-llamacpp)
 add_test(NAME lint_includes COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/lint_includes.py)
 add_test(NAME cli_smoke COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/cli_smoke.py $<TARGET_FILE:maic>)
+# The streams protocol_conformance recorded, through `maic protocol check` and its OpenAI-only view.
+add_test(NAME protocol_check COMMAND $<TARGET_FILE:maic> protocol check ${CMAKE_BINARY_DIR}/protocol-streams)
+add_test(NAME protocol_check_openai COMMAND $<TARGET_FILE:maic> protocol check --openai ${CMAKE_BINARY_DIR}/protocol-streams)
+set_tests_properties(protocol_check protocol_check_openai PROPERTIES FIXTURES_REQUIRED protocol_streams)
 # The TUI through a pty, read back with pyte (tests/test_tui.py). Exit 77 is a skip: no pyte and no uv to fetch it.
 add_test(NAME tui COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/test_tui.py $<TARGET_FILE:maic>)
 set_tests_properties(tui PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
@@ -51,7 +55,10 @@ add_test(NAME panel_check COMMAND python3 -m unittest -q test_panel_check
 # cases that run maic itself (model resolve, the diction pass-through).
 add_test(NAME diction COMMAND python3 -m unittest -q diction.test_diction WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 set_tests_properties(diction PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;MAIC_BIN=$<TARGET_FILE:maic>")
-set_tests_properties(comfy_node workflow_edit storyboard danbooru_tags panel_check PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
+# The leak audit against made-up sessions and a fake local judge (docs/leak-audit.md); never a real transcript.
+add_test(NAME leak_audit COMMAND python3 -m unittest -q test_leak_audit
+         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/tools/audit)
+set_tests_properties(comfy_node workflow_edit storyboard danbooru_tags panel_check leak_audit PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
 # cai-tools, ported whole as tools/cai (docs/cai.md): its own suite as written, plus the MAIC tests beside it, through its runner.
 add_test(NAME cai_tools COMMAND python3 ${PROJECT_SOURCE_DIR}/tools/cai/run_tests.py)
 set_tests_properties(cai_tools PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1 TIMEOUT 900)
@@ -61,6 +68,7 @@ install(PROGRAMS tools/comfyui/workflow_edit.py DESTINATION bin RENAME maic-work
 install(PROGRAMS tools/comfyui/storyboard.py DESTINATION bin RENAME maic-storyboard)
 install(PROGRAMS tools/comfyui/danbooru_tags.py DESTINATION bin RENAME maic-danbooru-tags)
 install(PROGRAMS tools/comfyui/panel_check.py DESTINATION bin RENAME maic-panel-check)
+install(PROGRAMS tools/audit/leak_audit.py DESTINATION bin RENAME maic-leak-audit)
 # cai-tools (docs/cai.md): the `cai` wrapper, `maic-cai` a link to it, and the package under share/maic/tools/cai as in the tree.
 install(PROGRAMS tools/cai/bin/cai DESTINATION bin)
 install(CODE "file(CREATE_LINK cai \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bin/maic-cai\" SYMBOLIC)")
@@ -73,8 +81,15 @@ install(PROGRAMS diction/maic-diction DESTINATION bin)
 file(WRITE ${CMAKE_BINARY_DIR}/diction-VERSION "${MAIC_GIT_VERSION}\n")
 install(FILES ${CMAKE_BINARY_DIR}/diction-VERSION DESTINATION share/maic/diction RENAME VERSION)
 install(DIRECTORY server/web/ DESTINATION share/maic/server/web)
+# The engine protocol's description for clients that read it (maic.nvim, the web client; docs/design/engine-protocol.md
+# section 15): MAIC's files and OpenAI's subset, not the 4.6 MB description it is cut from or the script that cuts it.
+install(DIRECTORY protocol/ DESTINATION share/maic/protocol PATTERN "openapi.json" EXCLUDE PATTERN "extract.py" EXCLUDE)
 install(DIRECTORY services/ DESTINATION share/maic/services)
+# The audit schedule's systemd units, which `maic audit-trail schedule install` fills in (docs/audit-trail.md).
+install(DIRECTORY contrib/systemd/ DESTINATION share/maic/contrib/systemd)
 install(DIRECTORY themes/ DESTINATION share/maic/themes)
+# maic.nvim, for `maic --ui nvim` and `maic nvim keymaps` from an installed copy.
+install(DIRECTORY maic.nvim/ DESTINATION share/maic/maic.nvim PATTERN "tests" EXCLUDE)
 install(DIRECTORY models/ DESTINATION share/maic/models)
 # Fallback root for a copy installed without the repository: the vendor ledger and scripts, not the checkouts.
 install(FILES vendor/manifest.json vendor/comfyui.sh vendor/llamacpp.sh vendor/whispercpp.sh vendor/VENDORING DESTINATION share/maic/vendor)

@@ -16,6 +16,58 @@ bool replays_reasoning(const std::string& model) {
     return model.find("deepseek") != std::string::npos;
 }
 
+using nlohmann::json;
+
+// error.maic.upstream: the software that sent the error, what each rule replaced, and the rules' names.
+json& upstream(json& error, const std::string& provider, const char* rule) {
+    json& u = error["maic"]["upstream"];
+    u["provider"] = provider;
+    u["rules"].push_back(rule);
+    return u;
+}
+
+json* error_of(json& body) {
+    return body.contains("error") && body["error"].is_object() ? &body["error"] : nullptr;
+}
+
+bool error_code_string(json& body, const std::string& provider) {
+    json* e = error_of(body);
+    if (!e || !e->contains("code") || !(*e)["code"].is_number()) return false;
+    upstream(*e, provider, "error_code_string")["code"] = (*e)["code"];
+    (*e)["code"] = "maic_" + provider + "_" + (*e)["code"].dump();
+    return true;
+}
+
+bool error_param_null(json& body, const std::string& provider) {
+    json* e = error_of(body);
+    if (!e || e->contains("param")) return false;
+    upstream(*e, provider, "error_param_null");
+    (*e)["param"] = nullptr;
+    return true;
+}
+
+bool logprobs_refusal_null(json& body, const std::string&) {
+    bool applied = false;
+    if (!body.contains("choices") || !body["choices"].is_array()) return false;
+    for (auto& choice : body["choices"]) {
+        if (!choice.is_object() || !choice.contains("logprobs") || !choice["logprobs"].is_object() || choice["logprobs"].contains("refusal")) continue;
+        choice["logprobs"]["refusal"] = nullptr;
+        applied = true;
+    }
+    return applied;
+}
+
+// One line per rule, each named in docs/standards.md with what the server sends and why it is rewritten.
+struct Rule {
+    const char* name;
+    bool (*apply)(json& body, const std::string& provider);
+};
+constexpr Rule kRules[] = {
+    {"error_code_string", error_code_string},          // a numeric error code becomes "maic_<upstream>_<code>" (llama.cpp's 500)
+    {"error_param_null", error_param_null},            // an error without param gets param: null (llama.cpp)
+    {"logprobs_refusal_null", logprobs_refusal_null},  // choices[].logprobs without refusal gets refusal: null (llama.cpp)
+};
+
 }  // namespace
 
 Message chat_openai(const Provider& provider, const ChatOptions& options, const std::vector<Message>& messages,
@@ -86,15 +138,27 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
         std::string id, name, args;
     };
     std::map<int, PartialCall> calls;
-    std::string finish, error, reasoning;
+    std::string finish, error, reasoning, stray;
+    std::map<std::string, int> normalized;
+    auto normalize = [&](nlohmann::json& j) {
+        for (const auto& rule : normalize_openai(j, provider.upstream_name())) ++normalized[rule];
+    };
 
     LineSplitter lines;
     auto on_line = [&](const std::string& line) {
-        if (line.rfind("data:", 0) != 0) return;
+        if (line.rfind("data:", 0) != 0) {
+            // A stray line is skipped, unless the stream ends on it: llama-server's router ends a proxied stream it lost
+            // with a bare "proxy error: ..." line, with no data: and no [DONE].
+            std::string field = line.substr(0, line.find(':'));
+            if (!line.empty() && line[0] != ':' && field != "event" && field != "id" && field != "retry") stray = line;
+            return;
+        }
+        stray.clear();
         std::string data = line.substr(5);
         if (data.find("[DONE]") != std::string::npos) return;
         auto j = nlohmann::json::parse(data, nullptr, false);
         if (!j.is_object()) return;
+        normalize(j);
         try {
             if (j.contains("error")) {
                 const auto& e = j["error"];
@@ -133,7 +197,18 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
     auto r = stream_post(provider.base_url, "/chat/completions", headers, dump(body),
                          [&](std::string_view d) { lines.feed(d, on_line); }, cancel);
     lines.finish(on_line);
+    if (r.status != 200) {
+        auto body = nlohmann::json::parse(r.error_body, nullptr, false);
+        if (body.is_object()) {
+            normalize(body);
+            r.error_body = dump(body);
+        }
+    }
+    if (options.normalized) {
+        for (const auto& [rule, n] : normalized) options.normalized(rule, n);
+    }
     if (r.status != 200) throw_api_error(provider.name, r);
+    if (error.empty()) error = stray;
     if (!error.empty()) throw std::runtime_error(provider.name + ": " + error);
 
     reply.usage.context = provider.options.value("context_window", 0);
@@ -155,3 +230,15 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
 }
 
 }  // namespace maic::detail
+
+namespace maic {
+
+std::vector<std::string> normalize_openai(nlohmann::json& body, const std::string& upstream) {
+    std::vector<std::string> applied;
+    for (const auto& rule : detail::kRules) {
+        if (rule.apply(body, upstream)) applied.push_back(rule.name);
+    }
+    return applied;
+}
+
+}  // namespace maic

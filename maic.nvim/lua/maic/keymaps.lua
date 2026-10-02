@@ -114,15 +114,18 @@ local function term_start(cmd)
   return vim.fn.termopen(cmd)
 end
 
--- A tab with three buffers, for the buffer-local maps the user's config gives each kind: a plain file, a scratch
--- buffer of MAIC's input filetype and a terminal of MAIC's terminal filetype. Returns them and a cleanup.
+-- A tab with four buffers, for the buffer-local maps the user's config gives each kind: a plain file, scratch
+-- buffers of MAIC's input and conversation filetypes and a terminal of MAIC's terminal filetype. Returns them and a
+-- cleanup.
 local function scratch(filetypes)
   local back = vim.api.nvim_get_current_tabpage()
   vim.cmd("tabnew")
   local file = vim.fn.tempname() .. ".txt"
   vim.cmd("edit " .. vim.fn.fnameescape(file))
-  local b = { plain = vim.api.nvim_get_current_buf(), input = vim.api.nvim_create_buf(false, true), term = vim.api.nvim_create_buf(false, false) }
+  local b = { plain = vim.api.nvim_get_current_buf(), input = vim.api.nvim_create_buf(false, true), conv = vim.api.nvim_create_buf(false, true),
+    term = vim.api.nvim_create_buf(false, false) }
   vim.bo[b.input].filetype = filetypes.input
+  vim.bo[b.conv].filetype = filetypes.conversation or filetypes.terminal
   vim.api.nvim_win_set_buf(0, b.term)
   vim.bo[b.term].filetype = filetypes.terminal
   local job = term_start({ "sh", "-c", "sleep 60" })
@@ -194,7 +197,7 @@ end
 function K.check()
   local maic = plugin()
   local c = maic.config
-  local b, cleanup = scratch(c.filetypes or { input = "maic-input", terminal = "maic" })
+  local b, cleanup = scratch(c.filetypes or { input = "maic-input", terminal = "maic", conversation = "maic" })
   local ok, sections = pcall(function()
     local out = {}
     local function section(name)
@@ -224,11 +227,11 @@ function K.check()
           key(k) .. "|" .. K.what(h))
       end
     end
-    -- MAIC's own buffers: its terminal, and for the normal-mode keys the input buffer of nvim as MAIC's interface.
-    for _, k in ipairs(maic.buffer_planned()) do
-      local bufs = { { b.term, "MAIC's terminal" } }
-      if k.mode ~= "t" then bufs[2] = { b.input, "a " .. c.filetypes.input .. " buffer" } end
-      for _, pair in ipairs(bufs) do
+    -- MAIC's own buffers: its terminal, and the conversation and input buffers of nvim as MAIC's interface.
+    local kinds = { { "terminal", b.term, "MAIC's terminal" }, { "conversation", b.conv, "MAIC's conversation" }, { "input", b.input, "a " .. c.filetypes.input .. " buffer" } }
+    for _, kind in ipairs(kinds) do
+      for _, k in ipairs(maic.buffer_planned(kind[1])) do
+        local pair = { kind[2], kind[3] }
         local where = key(k) .. " in " .. pair[2]
         local h = K.holders(k.mode, k.lhs, pair[1], K.ours)[1]
         if h and h.buffer then

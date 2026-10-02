@@ -1,9 +1,13 @@
+#include <sys/stat.h>
 #include <unistd.h>
 #include <cstdlib>
 // The agent loop against a fake OpenAI-compatible server: mid-turn messages, deliver-now, cancellation, resume.
 #include "check.hpp"
+#include "fake_server.hpp"
 
 #include "maic/agent.hpp"
+#include "maic/audit_trail.hpp"
+#include "maic/jsonschema.hpp"
 #include "maic/settings.hpp"
 #include "maic/tripwire.hpp"
 #include "maic/trust.hpp"
@@ -18,7 +22,9 @@
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
+#include <set>
 #include <thread>
 
 using namespace maic;
@@ -26,137 +32,6 @@ using nlohmann::json;
 namespace fs = std::filesystem;
 
 namespace {
-
-// An OpenAI-compatible /v1/chat/completions that answers every chat with an SSE stream of the last user
-// message's text, echoed four characters at a time. mid_system keeps later system messages as system turns, so
-// the tests can look for them; context_window matches the shipped llamacpp provider.
-//
-// Tests that act in the middle of a reply (cancel, deliver-now) never time their move against the stream:
-// with hold_left > 0 the next reply writes its first chunk and then idles, sending empty keepalive chunks
-// until the agent hangs up (the write fails) or ten seconds pass, so a broken cancel fails instead of hanging.
-// wait_streaming(n) blocks until the n-th reply has written its first chunk.
-struct FakeServer {
-    httplib::Server srv;
-    int port = 0;
-    std::thread thread;
-    std::vector<json> requests;
-    std::mutex mu;
-    std::condition_variable cv;
-    int hold_left = 0;
-    int streaming = 0;
-    int usage_input = 0;  // reported as prompt_tokens in the final usage chunk when set
-    json tool_call;       // when set and calls_left > 0, the reply is this one tool call ({"name", "arguments"})
-    int calls_left = 0;
-    std::function<json(const json&)> tool_call_for;  // when set: the tool call for this request, or null for the echo
-    bool usage_on_calls = false;  // report usage_input on tool-call replies too (llama-server does)
-    std::function<std::string(const json&)> reply;  // when set and non-empty for a request, replaces the echo
-    int fail_left = 0;      // answer this many requests with fail_status / fail_body first
-    int fail_status = 400;
-    std::string fail_body;
-    std::function<bool(const json&)> fail_when;  // when set: also fail every request it is true for
-
-    static std::string text_of(const json& content) {
-        if (content.is_string()) return content;
-        std::string out;
-        for (const auto& part : content) {
-            if (part.value("type", "") == "text") out += part.value("text", "");
-        }
-        return out;
-    }
-    static std::string event(const json& j) { return "data: " + j.dump() + "\n\n"; }
-
-    void wait_streaming(int n) {
-        std::unique_lock lock(mu);
-        cv.wait(lock, [&] { return streaming >= n; });
-    }
-
-    FakeServer() {
-        port = srv.bind_to_any_port("127.0.0.1");
-        srv.Post("/v1/chat/completions", [this](const httplib::Request& req, httplib::Response& res) {
-            json body = json::parse(req.body);
-            bool hold = false;
-            {
-                std::lock_guard lock(mu);
-                requests.push_back(body);
-                if (hold_left > 0) {
-                    --hold_left;
-                    hold = true;
-                }
-            }
-            std::string last;
-            for (const auto& m : body["messages"]) {
-                if (m["role"] == "user") last = text_of(m["content"]);
-            }
-            if (fail_left > 0 || (fail_when && fail_when(body))) {
-                if (fail_left > 0) --fail_left;
-                res.status = fail_status;
-                res.set_content(fail_body, "application/json");
-                return;
-            }
-            std::string echo = "echo: " + last;
-            if (reply) {
-                std::string r = reply(body);
-                if (!r.empty()) echo = r;
-            }
-            int usage = usage_input;
-            bool call_usage = usage_on_calls;
-            json call;
-            if (tool_call_for) {
-                call = tool_call_for(body);
-            } else if (!tool_call.is_null() && calls_left > 0) {
-                --calls_left;
-                call = tool_call;
-            }
-            res.set_chunked_content_provider("text/event-stream", [this, echo, hold, usage, call, call_usage](size_t, httplib::DataSink& sink) {
-                auto write = [&](const std::string& s) { return sink.write(s.data(), s.size()); };
-                // The first chunk is out: tell a waiting test, and idle here while held.
-                auto started = [&] {
-                    std::unique_lock lock(mu);
-                    ++streaming;
-                    cv.notify_all();
-                    if (!hold) return true;
-                    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-                    while (std::chrono::steady_clock::now() < deadline) {
-                        cv.wait_for(lock, std::chrono::milliseconds(20));
-                        if (!write(event({{"choices", {{{"index", 0}, {"delta", json::object()}}}}}))) return false;
-                    }
-                    return true;
-                };
-                if (!call.is_null()) {
-                    json tc = {{"index", 0}, {"id", "call_1"}, {"type", "function"},
-                               {"function", {{"name", call["name"]}, {"arguments", call["arguments"].dump()}}}};
-                    write(event({{"choices", {{{"index", 0}, {"delta", {{"content", ""}, {"tool_calls", {tc}}}}}}}}));
-                    if (!started()) return false;
-                    json done = {{"choices", {{{"index", 0}, {"delta", json::object()}, {"finish_reason", "tool_calls"}}}}};
-                    if (usage && call_usage) done["usage"] = {{"prompt_tokens", usage}, {"completion_tokens", 5}};
-                    write(event(done));
-                    write("data: [DONE]\n\n");
-                    sink.done();
-                    return true;
-                }
-                for (size_t i = 0; i < echo.size(); i += 4) {
-                    if (!write(event({{"choices", {{{"index", 0}, {"delta", {{"content", echo.substr(i, 4)}}}}}}}))) return false;
-                    if (i == 0 && !started()) return false;
-                }
-                json done = {{"choices", {{{"index", 0}, {"delta", json::object()}, {"finish_reason", "stop"}}}}};
-                if (usage) done["usage"] = {{"prompt_tokens", usage}, {"completion_tokens", 5}};
-                write(event(done));
-                write("data: [DONE]\n\n");
-                sink.done();
-                return true;
-            });
-        });
-        thread = std::thread([this] { srv.listen_after_bind(); });
-        srv.wait_until_ready();
-    }
-    ~FakeServer() {
-        srv.stop();
-        thread.join();
-    }
-    Provider provider() const {
-        return {"fake", "openai", "http://127.0.0.1:" + std::to_string(port) + "/v1", "", "", {{"mid_system", true}, {"context_window", 16384}}};
-    }
-};
 
 struct Recorder : AgentEvents {
     std::string text;
@@ -181,6 +56,26 @@ struct Recorder : AgentEvents {
     }
     std::vector<std::vector<TodoItem>> todos;
     void on_todo(const std::vector<TodoItem>& items) override { todos.push_back(items); }
+    struct Output {
+        std::string call;
+        OutputStream stream;
+        std::string chunk;
+        size_t offset;
+        size_t results_before;  // tool results already in when it came
+    };
+    std::vector<Output> outputs;
+    void on_tool_output(const std::string& call, OutputStream stream, std::string_view chunk, size_t offset) override {
+        outputs.push_back({call, stream, std::string(chunk), offset, results.size()});
+    }
+    std::vector<fs::path> kept;
+    void on_tool_full_output(const fs::path& file) override { kept.push_back(file); }
+    std::string streamed(OutputStream s) const {
+        std::string all;
+        for (const auto& o : outputs) {
+            if (o.stream == s) all += o.chunk;
+        }
+        return all;
+    }
 };
 
 std::error_code& ec_ignore() {
@@ -408,6 +303,138 @@ int main() {
                "and the storyboard driver, beginning by asking the user for the files");
     }
 
+    section("audit trail");
+    {
+        // Every entry of this run in id order, read from the containers (not index.json or seq).
+        auto trail = [&] {
+            std::vector<json> lines;
+            for (const auto& e : fs::directory_iterator(audit_trail_dir(), ec_ignore())) {
+                if (e.path().extension() != ".jsonl") continue;
+                std::ifstream in(e.path());
+                for (std::string l; std::getline(in, l);) lines.push_back(json::parse(l));
+            }
+            std::sort(lines.begin(), lines.end(), [](const json& a, const json& b) { return a["id"] < b["id"]; });
+            return lines;
+        };
+        auto raw_trail = [&] {
+            std::string all;
+            for (const auto& e : fs::directory_iterator(audit_trail_dir(), ec_ignore())) {
+                std::ifstream in(e.path());
+                all += std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            }
+            return all;
+        };
+        const char* old_rt = std::getenv("XDG_RUNTIME_DIR");
+        std::string saved_rt = old_rt ? old_rt : "";
+        setenv("XDG_RUNTIME_DIR", (ws / "run").c_str(), 1);
+        std::ofstream(ws / "trail-note.txt") << "file-content-marker\n";
+        // read_file, a command, write_file; in edit mode the command (rm) is asked and the rest allowed.
+        auto session = [&](SessionLog& log, bool on, Mode mode, Recorder& r) {
+            FakeServer fake;
+            int n = 0;
+            fake.tool_call_for = [&](const json&) {
+                switch (++n) {
+                    case 1: return json{{"name", "read_file"}, {"arguments", {{"path", "trail-note.txt"}}}};
+                    case 2: return json{{"name", "run_shell"}, {"arguments", {{"command", mode == Mode::Auto ? "echo $((6*7))" : "rm -f trail-nothing.txt"}}}};
+                    case 3: return json{{"name", "write_file"}, {"arguments", {{"path", "trail-out.txt"}, {"content", "x"}}}};
+                    default: return json();
+                }
+            };
+            Agent agent(ws, "test");
+            agent.providers = {fake.provider()};
+            agent.mode = mode;
+            agent.review_with_model = false;
+            agent.audit.enabled = on;
+            agent.set_log(&log);
+            agent.submit("prompt-text-marker: look at the note", Origin::Local, r, no_cancel);
+        };
+
+        {
+            SessionLog log("agent-test");
+            Recorder r;
+            session(log, false, Mode::Auto, r);
+            expect(!fs::exists(audit_trail_dir()), "off (the default): a session's tool calls write no trail at all");
+            fs::remove(log.path());
+            fs::remove(ws / "trail-out.txt");
+        }
+
+        SessionLog recorded("agent-test");
+        Recorder r1;
+        session(recorded, true, Mode::Auto, r1);
+        std::vector<json> lines = trail();
+        expect(lines.size() == 3, "on: one entry per tool call of a recorded session (" + std::to_string(lines.size()) + ")");
+        std::string id = recorded.path().stem().string();
+        bool shaped = lines.size() == 3;
+        for (size_t k = 0; k < lines.size(); ++k) {
+            const json& l = lines[k];
+            shaped = shaped && l.value("id", 0) == static_cast<int>(k + 1) && l.value("session", "") == id && l.value("recorded", false) &&
+                     l.value("workspace", "") == ws.string() && l.value("time", "").size() == 20 && l.value("decision", "") == "allow" &&
+                     l.value("judged_by", "") == "harness" && l.value("ran", false) && l.value("ok", false) && !l.contains("result");
+        }
+        expect(shaped, "each has a monotonic id, the UTC time, session, recorded, workspace, the harness's decision, judged_by, ran and ok, and no result");
+        expect(lines.size() == 3 && lines[0]["tool"] == "read_file" && lines[0]["arguments"]["path"] == "trail-note.txt" && lines[1]["arguments"]["command"] == "echo $((6*7))" &&
+                   lines[1].value("exit", -1) == 0 && lines[2]["tool"] == "write_file",
+               "the tool and its arguments as given, and a command's exit code");
+        std::string raw = raw_trail();
+        expect(raw.find("prompt-text-marker") == std::string::npos && raw.find("file-content-marker") == std::string::npos && raw.find("echo: ") == std::string::npos,
+               "no message text and no tool output in the trail");
+        struct stat st {};
+        bool private_files = ::stat(audit_trail_dir().c_str(), &st) == 0 && (st.st_mode & 0777) == 0700;
+        size_t containers = 0;
+        for (const auto& e : fs::directory_iterator(audit_trail_dir(), ec_ignore())) {
+            private_files = private_files && ::stat(e.path().c_str(), &st) == 0 && (st.st_mode & 0777) == 0600;
+            containers += e.path().extension() == ".jsonl" && e.path().filename().string().size() == 14;
+        }
+        expect(private_files && containers == 1, "one <YYYYMMDD>.jsonl container beside seq, 0600 in a 0700 directory");
+        std::ifstream seq_in(audit_trail_dir() / "seq");
+        long long last = 0;
+        seq_in >> last;
+        expect(last == 3, "seq holds the last id given (" + std::to_string(last) + ")");
+        fs::remove(recorded.path());
+        fs::remove(ws / "trail-out.txt");
+
+        SessionLog unrecorded("agent-test", runtime_sessions_dir());
+        Recorder r2;
+        r2.reply = {Approval::No, "typed-feedback-marker"};
+        session(unrecorded, true, Mode::Edit, r2);
+        // The two sessions can share a stem (same second, same name): this one's entries are the ones after id 3.
+        std::vector<json> mine;
+        for (const auto& l : trail()) {
+            if (l.value("id", 0) > 3 && l.value("session", "") == unrecorded.path().stem().string()) mine.push_back(l);
+        }
+        expect(!unrecorded.recorded() && recorded.recorded() && mine.size() == 3 && !mine[0].value("recorded", true) && mine[0].value("id", 0) == 4,
+               "an unrecorded session (the runtime directory) writes its entries too, marked unrecorded, the ids going on (" + std::to_string(mine.size()) + ")");
+        bool denied = false;
+        for (const auto& l : mine) {
+            if (l["tool"] == "run_shell") {
+                denied = l.value("decision", "") == "ask" && l.value("approval", "") == "no" && l.value("judged_by", "") == "user" && !l.value("ran", true) && !l.value("ok", true);
+            }
+        }
+        expect(denied, "a call the user refused: the decision, the user's answer, judged_by user, not run");
+        raw = raw_trail();
+        expect(raw.find("typed-feedback-marker") == std::string::npos && raw.find("prompt-text-marker") == std::string::npos,
+               "what the user typed with the refusal stays out of it");
+
+        // A container past file_mb continues in a numbered part, the ids going on.
+        append_audit_trail({{"tool", "read_file"}, {"arguments", {{"path", std::string(700 * 1024, 'x')}}}}, 1);
+        append_audit_trail({{"tool", "read_file"}, {"arguments", {{"path", std::string(700 * 1024, 'y')}}}}, 1);
+        append_audit_trail({{"tool", "read_file"}, {"arguments", {{"path", "small"}}}}, 1);
+        std::vector<std::string> names;
+        for (const auto& e : fs::directory_iterator(audit_trail_dir(), ec_ignore())) {
+            if (e.path().extension() == ".jsonl") names.push_back(e.path().filename().string());
+        }
+        std::sort(names.begin(), names.end());
+        lines = trail();
+        expect(names.size() == 2 && names[0].substr(8) == ".2.jsonl" && names[1].substr(8) == ".jsonl" && lines.size() == 9 && lines.back().value("id", 0) == 9,
+               "file_mb: the next part is <YYYYMMDD>.2.jsonl once a line would pass the cap");
+        fs::remove(unrecorded.path());
+        fs::remove_all(audit_trail_dir());
+        fs::remove(ws / "trail-note.txt");
+        fs::remove(ws / "trail-out.txt");
+        if (old_rt) setenv("XDG_RUNTIME_DIR", saved_rt.c_str(), 1);
+        else unsetenv("XDG_RUNTIME_DIR");
+    }
+
     section("undo points and nested instructions");
     {
         FakeServer fake;
@@ -435,8 +462,8 @@ int main() {
         fake.tool_call = json{{"name", "read_file"}, {"arguments", {{"path", "svc/a.txt"}}}};
         fake.calls_left = 1;
         agent.submit("read it", Origin::Local, r, no_cancel);
-        expect(!r.results.empty() && r.results[0].find("svc rules: use tabs") != std::string::npos && r.results[0].find("Instructions from") != std::string::npos,
-               "reading a file attaches the AGENTS.md above it");
+        expect(!r.results.empty() && r.results[0].find("svc rules: use tabs") != std::string::npos && r.results[0].find("[MAIC system note: standing instructions from " + (ws / "svc" / "AGENTS.md").string()) != std::string::npos,
+               "reading a file attaches the AGENTS.md above it, as a marked system note naming the file");
         fake.calls_left = 1;
         r.results.clear();
         agent.submit("read again", Origin::Local, r, no_cancel);
@@ -1079,6 +1106,123 @@ int main() {
         unsetenv("XDG_CONFIG_HOME");
     }
 
+    section("a running command's output reaches the front end");
+    {
+        fs::path cfg = ws / "cfg";
+        fs::create_directories(cfg);
+        setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
+        fs::create_directories(ws / ".maic" / "tools" / "noisy");
+        std::ofstream(ws / ".maic" / "tools" / "noisy" / "tool.json")
+            << R"({"name": "noisy", "description": "says how it is going", "parameters": {"type": "object", "properties": {}}, "run": ["sh", "main.sh"]})";
+        std::ofstream(ws / ".maic" / "tools" / "noisy" / "main.sh") << "#!/bin/sh\necho the result\necho working on it >&2\n";
+        std::ofstream(ws / ".maic" / "tools" / "shells.lua") << "return {\n"
+                                                                 "  name = 'shells', description = 'runs two commands',\n"
+                                                                 "  parameters = { type = 'object', properties = {} },\n"
+                                                                 "  run = function() return maic.shell('echo first') .. maic.shell('echo second') end,\n"
+                                                                 "}\n";
+        FakeServer fake;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        agent.review_with_model = false;
+        agent.agents.push_back({"fast", Mode::Auto});
+        auto all_before_result = [](const Recorder& r, const std::string& call) {
+            return std::all_of(r.outputs.begin(), r.outputs.end(), [&](const Recorder::Output& o) { return o.results_before == 0 && o.call == call; });
+        };
+
+        Recorder r;
+        r.reply = {Approval::Yes, ""};
+        fake.tool_call = json{{"name", "run_shell"}, {"arguments", {{"command", "echo out; echo err >&2"}}}};
+        fake.calls_left = 1;
+        agent.submit("run it", Origin::Local, r, no_cancel);
+        expect(!r.outputs.empty() && all_before_result(r, "call_1") && r.streamed(OutputStream::Stdout) == "out\nerr\n" && r.outputs[0].offset == 0,
+               "run_shell's output, stderr interleaved as stdout, arrives under its call id before the result");
+        expect(r.results.size() == 1 && r.results[0] == "exit code 0\nout\nerr", "the result is what it always was: " + (r.results.empty() ? "" : r.results[0]));
+
+        Recorder s;
+        fake.tool_call = json{{"name", "noisy"}, {"arguments", json::object()}};
+        fake.calls_left = 1;
+        agent.submit("noisy", Origin::Local, s, no_cancel);
+        expect(all_before_result(s, "call_1") && s.streamed(OutputStream::Stderr) == "working on it\n" && s.streamed(OutputStream::Stdout).empty(),
+               "a script tool streams its stderr only");
+        expect(s.results.size() == 1 && s.results[0] == "the result", "its stdout is still the result");
+
+        Recorder l;
+        l.reply = {Approval::Yes, ""};
+        fake.tool_call = json{{"name", "shells"}, {"arguments", json::object()}};
+        fake.calls_left = 1;
+        agent.submit("shells", Origin::Local, l, no_cancel);
+        expect(all_before_result(l, "call_1") && l.streamed(OutputStream::Stdout) == "first\nsecond\n" && l.outputs.size() == 2 && l.outputs[1].offset == 6,
+               "a Lua tool's maic.shell commands stream as one stream, the second continuing the first's offsets");
+
+        Recorder c;
+        c.reply = {Approval::Yes, ""};
+        int parent_calls = 0, child_calls = 0;
+        fake.tool_call_for = [&](const json& b) -> json {
+            if (!from_child(b)) return ++parent_calls == 1 ? json{{"name", "task"}, {"arguments", {{"agent", "fast"}, {"prompt", "say hi"}}}} : json();
+            return ++child_calls == 1 ? json{{"name", "run_shell"}, {"arguments", {{"command", "echo from the child"}}}} : json();
+        };
+        agent.submit("delegate", Origin::Local, c, no_cancel);
+        fake.tool_call_for = nullptr;
+        expect(!c.outputs.empty() && all_before_result(c, "fast:call_1") && c.streamed(OutputStream::Stdout) == "from the child\n",
+               "a subagent's command streams to the parent's front end, labelled with the agent: " + (c.outputs.empty() ? "" : c.outputs[0].call));
+        for (const auto& sub : list_sessions(ws)) {
+            if (sub.kind == "sub") fs::remove(sub.path);
+        }
+        fs::remove_all(ws / ".maic");
+        unsetenv("XDG_CONFIG_HOME");
+    }
+
+    section("a command's whole output is kept beside the session, the model's result unchanged");
+    {
+        FakeServer fake;
+        SessionLog log("agent-test");
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        agent.review_with_model = false;
+        agent.set_log(&log);
+        std::string full;
+        for (int i = 1; full.size() < 2 * 1024 * 1024; ++i) full += std::to_string(i) + "\n";
+        full.resize(2 * 1024 * 1024);
+        Recorder r;
+        r.reply = {Approval::Yes, ""};
+        fake.tool_call = json{{"name", "run_shell"}, {"arguments", {{"command", "seq 1 400000 | head -c 2097152"}}}};
+        fake.calls_left = 1;
+        agent.submit("run it", Origin::Local, r, no_cancel);
+        std::string model = full.substr(0, 24 * 1024) + "\n... [" + std::to_string(full.size() - 32 * 1024) + " bytes omitted] ...\n" + full.substr(full.size() - 8 * 1024);
+        while (!model.empty() && model.back() == '\n') model.pop_back();
+        expect(r.results.size() == 1 && r.results[0] == "exit code 0\n" + model, "the model's result is the capped one it always was: " + (r.results.empty() ? "" : r.results[0].substr(0, 60) + " ... " + std::to_string(r.results[0].size()) + " bytes"));
+        json rec;
+        std::ifstream in(log.path());
+        for (std::string line; std::getline(in, line);) {
+            json j = json::parse(line, nullptr, false);
+            if (j.is_object() && j.value("type", "") == "tool") rec = j;
+        }
+        fs::path file = log.path().parent_path() / rec["full_output"].value("path", "");
+        std::ifstream kept_in(file, std::ios::binary);
+        std::string kept((std::istreambuf_iterator<char>(kept_in)), std::istreambuf_iterator<char>());
+        expect(rec["full_output"]["path"] == log.path().stem().string() + ".d/call_1.out" && rec["full_output"]["bytes"] == full.size() &&
+                   rec["full_output"]["delivered_to_model"] == false && kept == full,
+               "the tool record names the kept file, beside the session, and it holds all 2 MiB: " + rec.dump().substr(0, 300));
+        expect(r.kept.size() == 1 && r.kept[0] == file, "the front end is told where, before the result");
+        std::string read = render_text(load_session(log.path()), 0, 0, true);
+        expect(read.find("[full output, display only: the model saw the capped result] 2097152 bytes: maic sessions output " + log.path().stem().string() + " call_1") != std::string::npos,
+               "maic sessions read labels it display only");
+        bool in_history = false;
+        for (const auto& m : agent.messages()) in_history = in_history || m.content.find("full output") != std::string::npos;
+        expect(!in_history, "and nothing of it reaches the model");
+
+        agent.full_output = false;
+        Recorder off;
+        off.reply = {Approval::Yes, ""};
+        fake.calls_left = 1;
+        agent.submit("again", Origin::Local, off, no_cancel);
+        expect(off.kept.empty() && !fs::exists(file.parent_path() / "call_1-2.out"), "full_output = false keeps nothing");
+        fs::remove_all(file.parent_path());
+        fs::remove(log.path());
+    }
+
     section("operator instructions set mid-conversation");
     {
         FakeServer fake;
@@ -1298,6 +1442,87 @@ int main() {
         fs::remove(ws / "MAIC.md");
     }
 
+    section("instruction files in the prompt: most general first, the workspace last");
+    {
+        FakeServer fake;
+        fs::path cfg = ws / "prec-cfg", sys = ws / "prec-sys";
+        fs::create_directories(cfg / "maic");
+        fs::create_directories(sys);
+        fs::create_directories(ws / "prec" / "sub");
+        std::ofstream(cfg / "maic" / "MAIC.md") << "user rule: herons";
+        std::ofstream(sys / "MAIC.md") << "system rule: egrets";
+        std::ofstream(ws / "CLAUDE.md") << "claude rule: storks";
+        std::ofstream(ws / "MAIC.md") << "maic rule: cranes";
+        std::ofstream(ws / "prec" / "sub" / "AGENTS.md") << "sub rule: ibises";
+        std::ofstream(ws / "prec" / "sub" / "f.txt") << "x";
+        setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
+        setenv("MAIC_TESTING", "1", 1);
+        setenv("MAIC_SYSTEM_CONFIG_DIR", sys.c_str(), 1);
+        trust_for_session(ws);
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        agent.review_with_model = false;
+        Recorder r;
+        agent.submit("hi", Origin::Local, r, no_cancel);
+        std::string sys_prompt = fake.requests[0]["messages"][0]["content"];
+        size_t egrets = sys_prompt.find("egrets"), herons = sys_prompt.find("herons"), storks = sys_prompt.find("storks"), cranes = sys_prompt.find("cranes");
+        expect(egrets != std::string::npos && egrets < herons && herons < storks && storks < cranes && cranes != std::string::npos,
+               "system-wide, then yours, then the workspace's CLAUDE.md, then its MAIC.md");
+        expect(sys_prompt.find("where two conflict, the later one takes precedence") != std::string::npos, "a header says the later ones take precedence");
+        fake.tool_call = json{{"name", "read_file"}, {"arguments", {{"path", "prec/sub/f.txt"}}}};
+        fake.calls_left = 1;
+        agent.submit("read", Origin::Local, r, no_cancel);
+        expect(!r.results.empty() && r.results.back().find("[MAIC system note: standing instructions from " + (ws / "prec" / "sub" / "AGENTS.md").string()) != std::string::npos &&
+                   r.results.back().find("ibises") != std::string::npos,
+               "a read in a subdirectory attaches its instruction file as a marked system note");
+        fake.calls_left = 1;
+        agent.submit("read again", Origin::Local, r, no_cancel);
+        expect(r.results.back().find("ibises") == std::string::npos, "once per session");
+        agent.clear();
+        fake.tool_call = json{{"name", "read_file"}, {"arguments", {{"path", "./prec/sub/f.txt"}}}};  // not the same call a third time
+        fake.calls_left = 1;
+        agent.submit("read after clear", Origin::Local, r, no_cancel);
+        expect(r.results.back().find("ibises") != std::string::npos, "and again in a cleared conversation, which no longer has it");
+        unsetenv("XDG_CONFIG_HOME");
+        unsetenv("MAIC_TESTING");
+        unsetenv("MAIC_SYSTEM_CONFIG_DIR");
+        fs::remove_all(cfg);
+        fs::remove_all(sys);
+        fs::remove_all(ws / "prec");
+        fs::remove(ws / "CLAUDE.md");
+        fs::remove(ws / "MAIC.md");
+    }
+
+    section("a file your own instructions import is self-protected");
+    {
+        FakeServer fake;
+        fs::path target = ws / "approved-style.md";
+        std::ofstream(target) << "style\n";
+        approve_import(ws / "cfg-MAIC.md", target, Origin::Local);
+        fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", "approved-style.md"}, {"content", "changed"}}}};
+        Agent dumb(ws, "test");
+        dumb.providers = {fake.provider()};
+        dumb.mode = Mode::Auto;
+        dumb.review_with_model = false;
+        Recorder rd;
+        fake.calls_left = 1;
+        dumb.submit("change it", Origin::Local, rd, no_cancel);
+        expect(rd.asked.empty() && !rd.results.empty() && rd.results[0].find("an approved import") != std::string::npos, "the dumb harness refuses the agent's write to it");
+        Agent smart(ws, "test");
+        smart.providers = {fake.provider()};
+        smart.mode = Mode::Auto;
+        Recorder rs;
+        fake.calls_left = 1;
+        smart.submit("change it", Origin::Local, rs, no_cancel);
+        expect(rs.asked.size() == 1, "the smart harness asks you, even in auto mode");
+        std::ifstream in(target);
+        std::string kept((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        expect(kept == "style\n", "and nothing was written");
+        trust_imports_command({"--remove", target.string()});
+        fs::remove(target);
+    }
+
     section("a request over the context window");
     {
         FakeServer fake;
@@ -1327,6 +1552,8 @@ int main() {
         b.providers = {p};
         b.restore(hist);
         b.compaction.at = 0;  // no proactive compaction, so the 400 path is what saves it
+        SessionLog blog("agent-test");
+        b.set_log(&blog);
         fake.fail_left = 1;
         fake.fail_body = R"({"error":{"code":400,"message":"request (27847 tokens) exceeds the available context size (16384 tokens), try increasing it","type":"invalid_request_error"}})";
         Recorder rb;
@@ -1339,6 +1566,20 @@ int main() {
         bool threw = false;
         try { b.submit("again", Origin::Local, rc, no_cancel); } catch (const std::exception& e) { threw = std::string(e.what()).find("exceeds") != std::string::npos; }
         expect(threw, "after two compact-and-retry rounds the error is reported");
+        // llama.cpp's error has an integer code and no param: the adapter rules rewrote it, and said so.
+        auto counted = b.usage().normalized;
+        expect(counted["error_code_string"] >= 1 && counted["error_code_string"] == counted["error_param_null"],
+               "the usage report counts the adapter rules applied to llama.cpp's error bodies");
+        SessionStats st = session_stats(blog.path());
+        expect(st.normalized["fake error_code_string"] == static_cast<size_t>(counted["error_code_string"]) && st.normalized["fake error_param_null"] == static_cast<size_t>(counted["error_param_null"]),
+               "each application is a `normalized` record naming the rule and the provider, summed by session_stats");
+        json record;
+        std::ifstream recs(blog.path());
+        for (std::string l; std::getline(recs, l) && record.is_null();) {
+            auto j = json::parse(l, nullptr, false);
+            if (j.is_object() && j.value("type", "") == "normalized") record = j;
+        }
+        expect(record.value("provider", "") == "fake" && record.value("upstream", "") == "fake", "the record names the upstream too (the provider's name when it sets none)");
     }
 
     section("string and token bans");
@@ -1391,6 +1632,75 @@ int main() {
             Recorder r = run(cmd, {Approval::No, ""});
             expect(r.asked.size() == 1 && !fs::exists(ws / "chained.txt"), std::string("but a chained one is asked, whatever came before: ") + cmd);
         }
+    }
+
+    section("a session's always never answers for a remote request");
+    {
+        FakeServer fake;
+        auto agent_in = [&](Agent& agent) {
+            agent.providers = {fake.provider()};
+            agent.mode = Mode::Manual;
+        };
+        auto run = [&](Agent& agent, const json& call, Origin origin, ApprovalAnswer reply) {
+            fake.tool_call = call;
+            fake.calls_left = 1;
+            Recorder r;
+            r.reply = reply;
+            agent.submit("run it", origin, r, no_cancel);
+            return r;
+        };
+        // A different echo each time (the session's "always" covers the program), so the repeat guard stays out of it.
+        int n = 0;
+        auto echo_call = [&] { return json{{"name", "run_shell"}, {"arguments", {{"command", "echo remote-always " + std::to_string(++n)}}}}; };
+        json write = {{"name", "write_file"}, {"arguments", {{"path", "remote-always.txt"}, {"content", "x"}}}};
+        {
+            Agent agent(ws, "test");
+            agent_in(agent);
+            expect(run(agent, echo_call(), Origin::Local, {Approval::Always, ""}).asked.size() == 1, "local: echo is asked and answered always");
+            expect(run(agent, echo_call(), Origin::Local, {Approval::No, ""}).asked.empty(), "local: the next echo runs unasked, as before");
+            Recorder r = run(agent, echo_call(), Origin::Remote, {Approval::No, ""});
+            expect(r.asked.size() == 1 && r.asked[0].origin == Origin::Remote, "but the same echo from a remote origin is still asked");
+            expect(run(agent, write, Origin::Local, {Approval::Always, ""}).asked.size() == 1, "local: a write is asked and answered always");
+            expect(run(agent, write, Origin::Remote, {Approval::No, ""}).asked.size() == 1, "the same write from a remote origin is still asked");
+        }
+        {
+            Agent agent(ws, "test");
+            agent_in(agent);
+            Recorder r = run(agent, echo_call(), Origin::Remote, {Approval::Always, ""});
+            expect(r.asked.size() == 1 && r.asked[0].always_covers.find("this call only") != std::string::npos, "remote: the prompt says always covers this call only");
+            expect(has_notice(r, "counts for this call only") && has_result(r, "remote-always"), "remote: always runs it once and says so");
+            expect(run(agent, echo_call(), Origin::Remote, {Approval::No, ""}).asked.size() == 1, "remote: a remote always did not persist, the next remote echo is asked");
+            expect(run(agent, echo_call(), Origin::Local, {Approval::No, ""}).asked.size() == 1, "and a local echo is asked too: nothing was remembered");
+        }
+        fs::remove(ws / "remote-always.txt");
+    }
+
+    section("a remote message delivered into a local turn makes the rest of it remote");
+    {
+        FakeServer fake;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        agent.review_with_model = false;  // the rules alone, so only the origin decides what is asked
+        int requests = 0;
+        fake.tool_call_for = [&](const json&) -> json {
+            ++requests;
+            // The phone's message arrives while the first call is out; it is delivered at the next step.
+            if (requests == 1) {
+                agent.post_message("also check the tests", Origin::Remote);
+                return {{"name", "run_shell"}, {"arguments", {{"command", "echo before"}}}};
+            }
+            if (requests == 2) return {{"name", "run_shell"}, {"arguments", {{"command", "echo after"}}}};
+            return nullptr;
+        };
+        Recorder r;
+        r.reply = {Approval::Yes, ""};
+        agent.submit("run the checks", Origin::Local, r, no_cancel);
+        expect(r.asked.size() == 1 && r.asked[0].origin == Origin::Remote && r.asked[0].summary.find("echo after") != std::string::npos,
+               "auto mode runs the local echo unasked, then asks for the one after the remote message, as remote");
+        expect(agent.turn_origin() == Origin::Remote, "the turn's origin rose to remote and stays there");
+        agent.submit("next", Origin::Local, r, no_cancel);
+        expect(agent.turn_origin() == Origin::Local, "the next turn starts at its own origin");
     }
 
     section("the reviewer (smart harness) and the dumb harness");
@@ -1878,6 +2188,29 @@ int main() {
             if (j.is_object() && j.value("type", "") == "workspace") rec = j;
         }
         expect(rec.value("from", "") == fs::weakly_canonical(a).string() && rec.value("to", "") == fs::weakly_canonical(b).string(), "the transcript gets a workspace record {from, to}");
+    }
+
+    section("FakeServer's chunks against OpenAI's pinned CreateChatCompletionStreamResponse");
+    {
+        std::ifstream in(std::string(MAIC_PROTOCOL) + "/openai/subset.json");
+        json subset = json::parse(in);
+        const json chunk = {{"$ref", "#/components/schemas/CreateChatCompletionStreamResponse"}};
+        std::string first;
+        int bad = 0;
+        std::set<std::string> kinds;
+        std::lock_guard lock(FakeServer::sent_mu);
+        for (const auto& line : FakeServer::sent) {
+            json c = json::parse(line);
+            if (std::string e = schema_error(subset, chunk, c); !e.empty() && bad++ == 0) first = e + " in " + line;
+            const json& choice = c["choices"][0];
+            if (c.contains("usage")) kinds.insert("usage");
+            if (choice["finish_reason"].is_string()) kinds.insert("finish " + choice["finish_reason"].get<std::string>());
+            for (const auto& [k, v] : choice["delta"].items()) kinds.insert(k);
+            if (choice["delta"].empty()) kinds.insert("empty");
+        }
+        expect(kinds == std::set<std::string>{"content", "empty", "finish stop", "finish tool_calls", "tool_calls", "usage"},
+               "the suite sent every kind of chunk: text, a tool call, an empty keepalive, both finishes, usage (" + std::to_string(FakeServer::sent.size()) + " distinct)");
+        expect(bad == 0, "every chunk FakeServer sent fits the schema" + (first.empty() ? "" : ": " + std::to_string(bad) + " do not, first " + first));
     }
 
     fs::remove_all(ws);

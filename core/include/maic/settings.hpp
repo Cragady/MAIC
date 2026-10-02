@@ -1,8 +1,10 @@
 #pragma once
 
+#include "maic/audit_trail.hpp"
 #include "maic/bans.hpp"
 #include "maic/llm.hpp"
 #include "maic/agent_def.hpp"
+#include "maic/instructions.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -99,9 +101,27 @@ ModelPick default_small_model(const std::vector<ModelPreset>& presets, const std
 ModelPick reviewer_pick(const std::vector<ModelPreset>& presets, const std::vector<Provider>& providers, const std::string& model,
                         const std::string& pin, const std::string& small_model, const std::set<std::string>& failed);
 
+// `steering` (docs/design/engine-protocol.md section 11): what the six steering actions may do in a session. Per
+// agent, `agents.NAME.steering` takes the same keys and only narrows (AgentDef::steering).
+struct SteeringSettings {
+    std::vector<std::string> actions = steer_actions();  // what a session accepts; anything else is maic_steer_disabled
+    std::string halt_message = "The user halted this turn. What was in progress was discarded; do not continue it. Wait for the next message.";
+    std::string drop_trim = "paragraph";   // none, sentence, paragraph, all
+    std::string on_running_tool = "cancel";  // what steer and drop do to a running tool unless they say: cancel or wait
+    std::vector<std::string> clients_local = steer_actions(), clients_remote = steer_actions();  // global file only
+    std::vector<std::string> ban_actions = {"steer", "drop", "interrupt", "keep", "halt"};  // what a ban entry may name
+    std::map<std::string, std::string> from;  // key -> the file that set it, for :steering
+
+    static std::vector<std::string> steer_actions() { return {"steer", "drop", "further", "interrupt", "keep", "halt"}; }
+    bool allows(const std::string& action, bool remote) const;  // in actions and in the client side's list
+};
+// Reads one `steering` table over `into`: `narrow_only` for a project layer or an agent (actions and ban_actions
+// only lose entries), `global` for the file that may set `clients`. `where` names it in errors and warnings.
+void read_steering(SteeringSettings& into, const nlohmann::json& table, const std::string& where, bool global, bool narrow_only, std::vector<std::string>& warnings);
+
 struct Settings {
     std::string model = "llamacpp/current";  // the vendored llama-server serves the linked GGUF as `current`
-    std::string mode = "manual";
+    std::string mode = "auto";  // held at manual at start where auto_held says so (an untrusted workspace)
     bool think = false;
     bool markdown = true;   // render markdown in the conversation window
     bool mouse = true;      // scroll wheel (terminal text selection then needs Shift+drag)
@@ -110,6 +130,8 @@ struct Settings {
     // "project", or a name under sessions/.
     std::string sessions_home = "auto";
     int init_move_outside_reads = 3;  // :init moves a session into the project home without asking when it read at most this many files outside
+    bool full_output = true;          // keep a command's whole output beside the session when the model gets it capped (Agent::full_output)
+    int full_output_max_mb = 64;      // at most this much of it per call; past that its head and tail
     std::string leader = " ";
     std::string highlight = "builtin";  // the input's highlighter: "builtin", or "nvim" (an embedded nvim --embed, when it is installed)
     bool enter_sends = false;           // Enter sends a one-line input in insert mode (Shift+Enter / Alt+Enter then insert a newline)
@@ -134,10 +156,10 @@ struct Settings {
     std::string theme = "default";  // a theme by name (docs/themes.md); `:theme NAME` switches live
     std::string theme_error;        // why the theme could not be loaded (the built-in default is then in effect)
     bool follow_nvim_theme = true;  // inside a connected host nvim (maic.nvim): the theme follows its colorscheme live
+    std::string ui = "tui";         // "tui": MAIC's own interface; "nvim": nvim with maic.nvim as the interface (maic --ui nvim)
     bool bare = false;              // nothing from nvim: no host, no nvim highlighter or theme, no lazy-lock notice or keymap check (--bare, MAIC_BARE=1)
     std::string colors = "auto";    // colour depth: auto, truecolor, 256 or 16
-    std::vector<std::string> instruction_files = {"MAIC.md", "AGENTS.md"};
-    bool load_instructions = true;  // false: no MAIC.md / AGENTS.md anywhere
+    bool load_instructions = true;  // false: no instruction file anywhere
     std::string system_prompt;      // text placed first in the system prompt; "@path" reads a file (~ expands)
     std::string prefill;            // text every reply starts with (the model continues it); "@path" reads a file
     std::vector<std::string> rules; // standing one-line instructions, carried with system_prompt; layers add up
@@ -162,6 +184,7 @@ struct Settings {
                          {"run_shell:cai read* --o*", "run_shell:maic-cai read* --o*"}, {}};
     std::vector<AgentDef> agents = default_agent_defs();  // `agents` in settings (older: `profiles`) adds or narrows, by name
     Bans bans;                      // strings, patterns and tokens the model must not produce (docs/bans.md)
+    SteeringSettings steering;
     nlohmann::json sampling = nlohmann::json::object();  // sampler keys for every provider; a provider's options.sampling overrides
     std::string tripwire = "machine";  // "machine": the root-owned lock (default); "session": a lock beside this transcript, no sudo; "isolated": session lock and the machine lock ignored (needs allow_isolated)
     bool allow_isolated = false;       // may a session opt out of the machine lock (tripwire = "isolated")? Confined when it does
@@ -169,21 +192,24 @@ struct Settings {
     std::string remote;                // a maic-server you subscribe to (https://host:7373); `maic open` prefers its services when it is up
     std::string lazy_lock;             // nvim's lazy-lock.json; "" = $XDG_CONFIG_HOME/$NVIM_APPNAME/lazy-lock.json (docs/lazy-lock.md)
     bool lazy_lock_notice = true;      // the start notice and the status strip's lock≠ when it is out of sync
-    std::string harness = "smart";  // "smart": a model reviews commands and writes the rules would allow; "dumb": rules only
+    std::string harness = "dumb";   // "smart": a model reviews commands and writes the rules would allow; "dumb": rules only
     std::string reviewer_model;     // a pinned reviewer ("" = the preset's reviewer, else small_model; see reviewer_pick)
     long reviewer_budget_tokens = 0;  // the reviewer's own token cap; past it, what it would review is asked. 0 = none
-    bool dumb_auto_ok = false;      // true: no warning when entering auto mode under a dumb harness
+    bool dumb_auto_ok = true;       // false: entering auto mode under a dumb harness warns and asks first
     // Read from the global file only (a project's copy is ignored with a warning; docs/settings.md):
     std::string global_lua = "full";         // the tier of your own Lua data files: full, sandbox or restricted (written literally)
     int lua_memory_mb = 256;                 // the memory cap of settings Lua below full trust
     std::string trust_strictness = "standard";  // the default trust tier: strict, standard, relaxed (docs/harness.md, Trust)
     std::vector<std::string> trust_identities;  // author emails that are yours; empty: git config --global user.email
     std::map<std::string, std::string> trust_levels;  // a tier per directory ("~/dev2/app" = "relaxed")
+    AuditSettings audit;  // audit.lua beside the global settings file, never a project's (docs/audit-trail.md)
     // `instructions = { project_markers = {...}, bound = ... }`: project settings and instruction files are read
     // from the workspace up to the project root (the nearest directory holding a marker), or up to $HOME with
     // bound "home" or outside any project (maic/trust.hpp, config_chain).
     std::vector<std::string> project_markers = {".git", ".maic", "MAIC.md"};
     std::string instructions_bound = "project";
+    // The rest of `instructions`: files, read, local_files, imports.depth, extra_dirs (docs/instructions.md).
+    InstructionOptions instructions;
     std::vector<std::string> warnings;        // keys a project file set that only the global file may
     ServerSettings server;
 

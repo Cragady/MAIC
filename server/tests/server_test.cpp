@@ -3,6 +3,7 @@
 
 #include "auth.hpp"
 #include "maic/paths.hpp"
+#include "maic/session.hpp"
 #include "maic/trust.hpp"
 #include "server.hpp"
 #include "tls.hpp"
@@ -146,9 +147,17 @@ struct Api {
 std::string text_of(const std::vector<json>& events) {
     std::string out;
     for (const auto& e : events) {
-        if (e["type"] == "text") out += e["text"].get<std::string>();
+        if (e["type"] == "response.output_text.delta") out += e["delta"].get<std::string>();
     }
     return out;
+}
+
+// The tool's output item, done: function_call_output or shell_call_output.
+const json* tool_result(const std::vector<json>& events) {
+    for (const auto& e : events) {
+        if (e["type"] == "response.output_item.done" && (e["item"]["type"] == "function_call_output" || e["item"]["type"] == "shell_call_output")) return &e;
+    }
+    return nullptr;
 }
 
 const json* find_event(const std::vector<json>& events, const std::string& type) {
@@ -262,7 +271,7 @@ int main() {
         json s = api.post("/api/sessions", json::object(), &status);
         expect(status == 201 && s["mode"] == "manual" && s["workspace"] == fs::weakly_canonical(root / "ws").string(), "a session opens in the default workspace");
         id = s["id"];
-        expect(id.find("-server-") != std::string::npos && fs::exists(s["transcript"].get<std::string>()), "it is recorded as kind server: " + id);
+        expect(id.find("-server-") != std::string::npos && find_session(id) && !s.contains("transcript"), "it is recorded as kind server, its path not shown remotely: " + id);
         api.post("/api/sessions", {{"workspace", (root / "outside").string()}}, &status);
         expect(status == 403, "a workspace outside the allowed roots is refused with 403");
         api.post("/api/sessions", {{"workspace", (root / "ws" / "missing").string()}}, &status);
@@ -275,51 +284,66 @@ int main() {
         expect(list["sessions"].size() == 1 && list["sessions"][0]["id"] == id, "the list has the one session");
 
         auto events = api.stream("POST", "/api/sessions/" + id + "/messages", {{"text", "hello there"}});
-        expect(!events.empty() && events.front()["type"] == "user" && events.front()["text"] == "hello there", "the stream starts with the user message");
-        expect(text_of(events) == "echo: hello there", "text deltas stream in order");
-        const json* done = find_event(events, "done");
-        expect(done && (*done)["usage"]["calls"] == 1 && (*done)["interrupted"] == false, "the stream ends with done and usage");
+        expect(!events.empty() && events.front()["type"] == "maic.input.added" && events.front()["item"]["content"][0]["text"] == "hello there" &&
+                   events.front()["by"]["origin"] == "remote",
+               "the stream starts with the input, from a remote client");
+        expect(text_of(events) == "echo: hello there", "text deltas stream in order, as response.output_text.delta");
+        const json* done = find_event(events, "response.completed");
+        const json* usage = find_event(events, "maic.usage.updated");
+        expect(done && (*done)["response"]["maic"]["final"] == true && usage && (*usage)["calls"] == 1, "response.completed ends the turn, with usage");
+        expect(events.back()["type"] == "maic.session.state" && events.back()["activity"] == "idle", "the stream ends when the session is idle");
+        long first = events.front()["sequence_number"], last = events.back()["sequence_number"];
+        expect(last - first + 1 == static_cast<long>(events.size()), "every event has its sequence_number, one more each time");
         json s2 = api.get("/api/sessions/" + id);
-        expect(s2["running"] == false && s2["turns"] == 1 && s2["entries"].size() == 2 && s2["entries"][1]["text"] == "echo: hello there",
-               "the transcript folds the deltas into one entry");
-        auto replay = api.stream("GET", "/api/sessions/" + id + "/events?after=0");
-        expect(replay.size() == events.size() && replay.back()["type"] == "done", "the event log replays from any point");
-        auto tail = api.stream("GET", "/api/sessions/" + id + "/events?after=" + std::to_string(events.size() - 1));
-        expect(tail.size() == 1 && tail[0]["type"] == "done", "after=N skips what was seen");
+        expect(s2["running"] == false && s2["turns"] == 1 && s2["entries"].size() == 2 && s2["entries"][1]["text"] == "echo: hello there" && s2["sequence_number"] == last,
+               "the transcript folds the reply into one entry, and the session says where its stream is");
+        auto replay = api.stream("GET", "/api/sessions/" + id + "/events?starting_after=" + std::to_string(first - 1));
+        expect(replay.size() == events.size() && replay.back() == events.back(), "the stream replays from any point (starting_after)");
+        auto older = api.stream("GET", "/api/sessions/" + id + "/events?after=" + std::to_string(first));
+        expect(older.size() == events.size(), "after=N, the older spelling, still means from N on");
+        auto tail = api.stream("GET", "/api/sessions/" + id + "/events?starting_after=" + std::to_string(last - 1));
+        expect(tail.size() == 1 && tail[0] == events.back(), "starting_after=N skips what was seen");
+        auto none = api.stream("GET", "/api/sessions/" + id + "/events?starting_after=" + std::to_string(last));
+        expect(none.empty(), "and an idle session with nothing new answers at once");
         api.post("/api/sessions/" + id + "/messages", {{"text", ""}}, &status);
         expect(status == 400, "an empty message is a 400");
         json origin_check = fake.last_request();
         expect(origin_check["messages"][0]["content"].get<std::string>().find("inside MAIC") != std::string::npos, "the model gets the normal briefing");
     }
 
-    section("approval round trip: a remote request is asked even in auto mode");
+    section("approval round trip: a remote request is asked even in edit mode");
     {
         {
             std::lock_guard lock(fake.mu);
             fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", "note.txt"}, {"content", "hello"}}}};
             fake.calls_left = 1;
         }
-        json s = api.post("/api/sessions", {{"mode", "auto"}});
+        int refused = 0;
+        api.post("/api/sessions", {{"mode", "auto"}}, &refused);
+        expect(refused == 403, "a remote client cannot create a session in auto without a step-up");
+        json s = api.post("/api/sessions", {{"mode", "edit"}});  // edit already applies a local write unasked
         std::string sid = s["id"];
         std::vector<json> events;
         std::thread streaming([&] { events = api.stream("POST", "/api/sessions/" + sid + "/messages", {{"text", "make a note"}}); });
         json approval = wait_for_approval(api, sid);
-        expect(approval.is_object() && approval["tool"] == "write_file" && approval["origin"] == "remote", "auto mode still asks, because the origin is remote");
+        expect(approval.is_object() && approval["tool"] == "write_file" && approval["origin"] == "remote", "edit mode still asks, because the origin is remote");
         expect(approval["preview"].get<std::string>().find("new file") != std::string::npos, "the request carries the write preview");
         int status = 0;
         api.post("/api/sessions/" + sid + "/approvals/wrong", {{"choice", "yes"}}, &status);
         expect(status == 404, "an unknown approval id is a 404");
         api.post("/api/sessions/" + sid + "/approvals/" + approval["id"].get<std::string>(), {{"choice", "maybe"}}, &status);
         expect(status == 400, "a choice must be yes, no, always or trip");
+        api.post("/api/sessions/" + sid + "/approvals/" + approval["id"].get<std::string>(), {{"choice", "always"}}, &status);
+        expect(status == 403, "a remote client cannot answer always");
         api.post("/api/sessions/" + sid + "/approvals/" + approval["id"].get<std::string>(), {{"choice", "yes"}}, &status);
         expect(status == 200, "yes is accepted");
         streaming.join();
-        const json* answered = find_event(events, "approval_answered");
-        const json* result = find_event(events, "tool_result");
-        expect(find_event(events, "approval") && answered && (*answered)["choice"] == "yes", "the stream shows the request and the answer");
-        expect(result && (*result)["ok"] == true && slurp(root / "ws" / "note.txt") == "hello", "the approved write happened");
+        const json* answered = find_event(events, "maic.approval.answered");
+        const json* result = tool_result(events);
+        expect(find_event(events, "maic.approval.requested") && answered && (*answered)["choice"] == "yes", "the stream shows the request and the answer");
+        expect(result && (*result)["item"]["maic"]["ok"] == true && slurp(root / "ws" / "note.txt") == "hello", "the approved write happened");
         expect(api.get("/api/sessions/" + sid)["pending_approval"].is_null(), "nothing is pending afterwards");
-        std::string transcript = slurp(s["transcript"].get<std::string>());
+        std::string transcript = slurp(find_session(sid)->path);
         expect(transcript.find("\"origin\":\"remote\"") != std::string::npos && transcript.find("\"approval\":\"yes\"") != std::string::npos,
                "the session file records the remote origin and the approval");
     }
@@ -338,8 +362,8 @@ int main() {
         expect(approval.is_object(), "manual mode asks");
         api.post("/api/sessions/" + sid + "/approvals/" + approval["id"].get<std::string>(), {{"choice", "no"}, {"feedback", "use the docs folder"}});
         streaming.join();
-        const json* result = find_event(events, "tool_result");
-        expect(result && (*result)["ok"] == false && (*result)["text"].get<std::string>().find("use the docs folder") != std::string::npos,
+        const json* result = tool_result(events);
+        expect(result && (*result)["item"]["maic"]["ok"] == false && (*result)["item"]["output"].get<std::string>().find("use the docs folder") != std::string::npos,
                "the reason reaches the model as the tool result");
         bool fed_back = false;
         json last = fake.last_request();
@@ -347,6 +371,69 @@ int main() {
             if (m["role"] == "tool" && m["content"].get<std::string>().find("use the docs folder") != std::string::npos) fed_back = true;
         }
         expect(fed_back, "the next model call carries it");
+    }
+
+    section("tool output reaches the client while it runs, at most 64 KiB/s");
+    {
+        {
+            std::lock_guard lock(fake.mu);
+            fake.tool_call = json{{"name", "run_shell"}, {"arguments", {{"command", "for i in 1 2 3; do echo tick$i; sleep 0.2; done; head -c 1048576 /dev/zero | tr '\\0' x"}}}};
+            fake.calls_left = 1;
+        }
+        json s = api.post("/api/sessions", json::object());
+        std::string sid = s["id"];
+        std::vector<json> events;
+        std::thread streaming([&] { events = api.stream("POST", "/api/sessions/" + sid + "/messages", {{"text", "run it"}}); });
+        json approval = wait_for_approval(api, sid);
+        auto t0 = std::chrono::steady_clock::now();
+        api.post("/api/sessions/" + sid + "/approvals/" + approval["id"].get<std::string>(), {{"choice", "yes"}});
+        streaming.join();
+        double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        std::string data;
+        size_t skipped = 0, next = 0, result_at = 0, last_delta = 0;
+        bool shaped = true, ordered = true;
+        for (size_t i = 0; i < events.size(); ++i) {
+            const json& e = events[i];
+            if (e["type"] == "response.output_item.done" && e["item"]["type"] == "shell_call_output") result_at = i;
+            if (e["type"] != "response.shell_call_output_content.delta") continue;
+            last_delta = i;
+            shaped = shaped && e["item_id"].get<std::string>().rfind("~", 0) == 0 && e["output_index"].is_number() && e["delta"]["stdout"].is_string() && e["delta"]["stderr"] == "" && e["maic"]["offset"].is_number();
+            size_t offset = e["maic"]["offset"];
+            ordered = ordered && offset >= next;
+            if (e["maic"].contains("skipped")) {
+                skipped += e["maic"]["skipped"].get<size_t>();
+                next = offset + e["maic"]["skipped"].get<size_t>();
+                shaped = shaped && e["delta"]["stdout"] == "";
+            } else {
+                data += e["delta"]["stdout"].get<std::string>();
+                next = offset + e["delta"]["stdout"].get<std::string>().size();
+            }
+        }
+        expect(shaped && ordered, "each chunk is a response.shell_call_output_content.delta with item_id, output_index, delta {stdout, stderr} and maic.offset, in order");
+        expect(data.rfind("tick1\ntick2\ntick3\n", 0) == 0, "the ticks arrive as the command prints them");
+        expect(data.size() + skipped == 18 + 1048576, "sent and skipped bytes add up to the whole output: " + std::to_string(data.size()) + " + " + std::to_string(skipped));
+        expect(skipped > 0 && data.size() <= 64 * 1024 * (1 + seconds) + 16 * 1024,
+               "the session's budget held: " + std::to_string(data.size()) + " bytes sent in " + std::to_string(seconds) + " s, the rest as skips");
+        expect(result_at > last_delta && events[result_at]["item"]["output"][0]["stdout"].get<std::string>().rfind("exit code 0\ntick1", 0) == 0 &&
+                   events[result_at]["item"]["output"][0]["outcome"]["exit_code"] == 0,
+               "the output item follows the output, with the exit code");
+        json entries = api.get("/api/sessions/" + sid)["entries"];
+        bool folded = true;
+        for (const auto& e : entries) folded = folded && e["type"] != "response.shell_call_output_content.delta";
+        expect(folded, "the folded transcript leaves the deltas out");
+        const json& kept = events[result_at]["item"]["maic"];
+        expect(kept.contains("full_output") && kept["full_output"]["session"] == sid && kept["full_output"]["call"] == "call_1" &&
+                   kept["full_output"]["bytes"] == 18 + 1048576 && kept["full_output"]["label"] == "full output, display only: the model saw the capped result",
+               "the output item says the whole output was kept, labelled display only");
+        int status = 0;
+        json page = api.get("/api/sessions/" + sid + "/output/call_1?session=" + sid, &status);
+        expect(status == 200 && page["label"] == kept["full_output"]["label"] && page["bytes"] == 18 + 1048576 && page["data"].get<std::string>().size() == 256 * 1024 &&
+                   page["data"].get<std::string>().rfind("tick1\ntick2\ntick3\nxxx", 0) == 0 && page["done"] == false,
+               "a client fetches it 256 KiB at a time, with the label");
+        page = api.get("/api/sessions/" + sid + "/output/call_1?offset=1048576", &status);
+        expect(status == 200 && page["data"] == std::string(18, 'x') && page["done"] == true, "to the end");
+        api.get("/api/sessions/" + sid + "/output/call_1?session=elsewhere", &status);
+        expect(status == 404, "only from the session itself or its subagents");
     }
 
     section("interrupt");
@@ -367,8 +454,8 @@ int main() {
         json r = api.post("/api/sessions/" + sid + "/interrupt", json::object(), &status);
         expect(status == 200 && r["interrupting"] == true, "interrupt reaches a running turn");
         streaming.join();
-        const json* done = find_event(events, "done");
-        expect(done && (*done)["interrupted"] == true && std::chrono::steady_clock::now() - t0 < 3s, "the turn stops quickly and says so");
+        const json* done = find_event(events, "maic.response.cancelled");
+        expect(done && (*done)["response"]["status"] == "cancelled" && std::chrono::steady_clock::now() - t0 < 3s, "the turn stops quickly and says so");
         expect(api.get("/api/sessions/" + sid)["running"] == false, "the session is idle again");
         {
             std::lock_guard lock(fake.mu);
@@ -386,8 +473,8 @@ int main() {
         expect(approval.is_object(), "an approval is waiting");
         api.post("/api/sessions/" + sid + "/interrupt", json::object());
         streaming2.join();
-        const json* answered = find_event(events2, "approval_answered");
-        expect(answered && (*answered)["choice"] == "no" && find_event(events2, "done"), "interrupt denies the pending approval and ends the turn");
+        const json* answered = find_event(events2, "maic.approval.answered");
+        expect(answered && (*answered)["choice"] == "no" && find_event(events2, "maic.response.cancelled"), "interrupt denies the pending approval and ends the turn");
     }
 
     section("mode and status");
@@ -398,7 +485,7 @@ int main() {
         api.post("/api/sessions/" + id + "/mode", {{"mode", "root"}}, &status);
         expect(status == 400, "an unknown mode is refused");
         json st = api.get("/api/status");
-        expect(st["sessions"] == 4 && st["workspaces"][0] == fs::weakly_canonical(root / "ws").string() && st["listen"] == "127.0.0.1:" + std::to_string(port),
+        expect(st["sessions"] == 5 && st["workspaces"][0] == fs::weakly_canonical(root / "ws").string() && st["listen"] == "127.0.0.1:" + std::to_string(port),
                "status counts sessions and shows the roots");
         expect(st["remote_model"] == false && st["harness"].contains("tripped"), "status says whether the model is remote and the harness state");
     }

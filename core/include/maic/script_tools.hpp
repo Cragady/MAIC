@@ -54,8 +54,10 @@ std::vector<Action> script_tool_actions(const Harness& harness, const ScriptTool
 
 // Runs the script in the command sandbox, the arguments as JSON on its stdin, the workspace as its working directory
 // and writable only when `read_only` is false. stdout is the result, capped like command output; a non-zero exit fails
-// the call with stderr appended; the process group is killed at timeout_s.
-ToolResult run_script_tool(const ScriptTool& tool, const nlohmann::json& args, const Harness& harness, bool read_only, const std::atomic<bool>& cancel);
+// the call with stderr appended; the process group is killed at timeout_s. `taps` get copies of stdout and stderr
+// apart (run_sandboxed_argv).
+ToolResult run_script_tool(const ScriptTool& tool, const nlohmann::json& args, const Harness& harness, bool read_only, const std::atomic<bool>& cancel,
+                           const OutputTaps& taps = {});
 
 // `maic tools new`: writes <dir>/tool.json and a stub that echoes its arguments; `lang` is python, sh, perl or node.
 // Returns the files written. Throws when the directory exists, the name is illegal or the language unknown.

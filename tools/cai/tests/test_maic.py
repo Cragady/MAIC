@@ -110,6 +110,16 @@ check("resumable: the result is its own user record after the call, as a resumed
       [r["type"] for r in split] == ["assistant", "user"]
       and split[1]["message"]["content"][0]["tool_use_id"] == split[0]["message"]["content"][0]["id"])
 
+kept = dict(BY_TYPE["tool"], type="tool", time=T, tool="run_shell", result="exit code 0\nhead ... tail",
+            full_output={"path": "20260101-120000-tui-1.d/call_1.out", "bytes": 2097152, "sha256": "0" * 64,
+                         "delivered_to_model": False})
+read_kept = maic.to_claude([kept])[0]["message"]["content"][1]["content"]
+check("read: a result whose whole output was kept says so, labelled display only",
+      read_kept == "exit code 0\nhead ... tail\n\n[full output, display only: the model saw the capped result] "
+                   "2097152 bytes: maic sessions output 20260101-120000-tui-1 call_1", read_kept)
+check("resumable: the model's copy is exactly what the model got",
+      maic.to_claude([kept], resumable=True)[1]["message"]["content"][0]["content"] == "exit code 0\nhead ... tail")
+
 # --- detection refuses what is not a MAIC session ---
 CLAUDE = [{"type": "user", "uuid": "u", "sessionId": "s", "message": {"role": "user", "content": "hi"}},
           {"type": "assistant", "uuid": "a", "parentUuid": "u", "sessionId": "s",

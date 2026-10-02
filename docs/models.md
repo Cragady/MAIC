@@ -33,7 +33,7 @@ MAIC keeps a catalog of the models it knows how to install: `models/catalog.json
 | `vram` | `[{context, gb}]`: estimated GB on the card at each context that fits an 8 GB card (context 0: a whisper model, which has none) |
 | `context` | the recommended context in tokens |
 | `presets` | MAIC preset names that use it; `maic models` adds any preset in your settings whose model names the entry's folder |
-| `notes` | anything else |
+| `notes` | anything else, including measured behaviour: what the model was found to do, with the date and the page that holds the measurement (a finding from one family is recorded on that family's entries only) |
 
 The VRAM figures are estimates, computed the way `maic gpu` computes its budget sentence: the files' size on disk (a projector counts) plus a KV cache of 65 MB per 1k tokens, or 130 MB per 1k tokens for a model over 6B parameters; a whisper model is its file plus 300 MB of buffers. Each process's own CUDA overhead (a few hundred MB) is not in them. `maic models check` recomputes every figure from the sizes and fails on a mismatch.
 

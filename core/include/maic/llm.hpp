@@ -46,6 +46,13 @@ struct Message {
 nlohmann::json message_to_json(const Message& m);
 Message message_from_json(const nlohmann::json& j);
 
+// Whether `host` (a URL's host; [brackets] allowed) is this machine's loopback: localhost, ::1, or 127.0.0.0/8
+// written as a plain dotted quad. Anything else is not, a name that merely starts with "127." included.
+bool loopback_host(std::string host);
+// Whether `url` reaches only this machine: an http(s) URL whose host, once the scheme, userinfo and port are
+// parsed off, is a loopback host, or a unix socket (unix:PATH). Everything else is remote.
+bool local_url(const std::string& url);
+
 // Where a model lives. Model strings are "<provider>/<model>", e.g. "anthropic/claude-opus-5-5".
 struct Provider {
     std::string name;
@@ -55,7 +62,11 @@ struct Provider {
     std::string api_key_env;      // environment variable holding the API key
     std::string api_key_command;  // or a command that prints it (a password manager); never a key in a file
     nlohmann::json options = nlohmann::json::object();  // kind-specific, see docs/settings.md
+    // The software behind it, whatever it is called here: the shipped llamacpp and llamacpp-2 are both "llamacpp".
+    // "" lets the name stand for it. Names the source in what the adapter rules rewrite (normalize_openai).
+    std::string upstream;
 
+    std::string upstream_name() const { return upstream.empty() ? name : upstream; }
     // Anything not on this machine. Prompts, files the agent reads and tool output leave the machine.
     bool remote() const;
     std::string api_key() const;  // throws with a clear message when it can't be found
@@ -85,6 +96,9 @@ struct ChatOptions {
     std::vector<std::string> stop;
     nlohmann::json logit_bias;  // null when none
     nlohmann::json sampling;    // temperature, top_k, top_p, min_p, seed, ... merged into the provider's options
+    // Hears, once per call, each adapter rule that rewrote what an OpenAI-compatible server sent into OpenAI's
+    // shape (normalize_openai) and how many times it applied, before the reply returns or the error is thrown.
+    std::function<void(const std::string& rule, int count)> normalized;
 };
 
 struct Cancelled : std::runtime_error {
@@ -118,6 +132,13 @@ using TextSink = std::function<void(std::string_view delta, bool thinking)>;
 std::vector<std::string> list_openai_models(const Provider& provider);
 // Whether something answers HTTP at the provider's host (GET /health, any status): a local server that is up.
 bool server_answers(const Provider& provider);
+
+// The OpenAI-compatible client's adapter rules ("Adapter normalizations" in docs/standards.md): rewrites one parsed
+// chunk or error body that `provider` sent into the shape OpenAI's description (protocol/openai/) gives it, in
+// place, and returns the names of the rules that applied. A numeric error code becomes "maic_<upstream>_<code>"; an
+// error object keeps what was replaced, `upstream` as its provider, and the rules' names in error.maic.upstream.
+// chat() runs it on everything it reads from an OpenAI-compatible server, with the provider's upstream_name().
+std::vector<std::string> normalize_openai(nlohmann::json& body, const std::string& upstream);
 
 // Tool schemas are given in OpenAI function format and converted per provider.
 // Throws Cancelled if `cancel` is set, std::runtime_error on transport or API errors.

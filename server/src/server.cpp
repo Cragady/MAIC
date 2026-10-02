@@ -5,12 +5,10 @@
 #include "tls.hpp"
 #include "tunnel.hpp"
 
-#include "maic/agent.hpp"
+#include "maic/engine.hpp"
+#include "maic/full_output.hpp"
 #include "maic/paths.hpp"
-#include "maic/service.hpp"
 #include "maic/session.hpp"
-#include "maic/status.hpp"
-#include "maic/tripwire.hpp"
 #include "maic/trust.hpp"
 
 #include "maic/http.hpp"
@@ -19,16 +17,14 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
-#include <condition_variable>
+#include <chrono>
 #include <cstring>
 #include <ctime>
 #include <fstream>
-#include <map>
 #include <mutex>
-#include <optional>
-#include <thread>
 
 namespace maic::server {
 
@@ -49,97 +45,76 @@ std::string dump(const json& j) {
     return j.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
-const char* choice_name(Approval a) {
-    switch (a) {
-        case Approval::Yes: return "yes";
-        case Approval::No: return "no";
-        case Approval::Always: return "always";
-        case Approval::Trip: return "trip";
-    }
-    return "no";
-}
-
-std::optional<Approval> parse_choice(const std::string& s) {
-    if (s == "yes") return Approval::Yes;
-    if (s == "no") return Approval::No;
-    if (s == "always") return Approval::Always;
-    if (s == "trip") return Approval::Trip;
-    return std::nullopt;
-}
-
 // A handler throws one of these for a client error; anything else is a 500.
 struct HttpError {
     int status;
     std::string message;
 };
 
-// One agent, its transcript, and the event log clients stream from. Events carry a `seq` so a client that lost
-// its connection can pick up where it was (GET .../events?after=N).
-struct Session {
+// The engine's refusal as an HTTP status: its JSON-RPC code, then OpenAI's or MAIC's code in data.
+HttpError http_error(const json& err) {
+    int code = err.value("code", -32603);
+    std::string data = err.contains("data") && err["data"].value("code", json()).is_string() ? err["data"]["code"].get<std::string>() : "";
+    std::string message = err.value("message", "the engine refused the request");
+    if (data == "maic_not_found") return {404, message};
+    if (data == "maic_forbidden_remote" || data == "maic_step_up_required") return {403, message};
+    if (data == "maic_already_answered" || data == "maic_resync" || data == "maic_busy" || data == "response_not_active") return {409, message};
+    if (code == -32601) return {404, message};
+    if (code == -32602 || code == -32600) return {400, message};
+    return {500, message};
+}
+
+// One HTTP request's connection to the engine: remote, named by the request's token, said hello, and gone with the request.
+struct Conn {
+    Engine& engine;
     std::string id;
-    fs::path workspace;
-    std::unique_ptr<SessionLog> log;
-    Agent agent;
-    std::string created = utc_now();
+    int next = 1;
 
-    std::mutex mu;
-    std::condition_variable cv;
-    std::vector<json> events;
-    bool running = false;
-    int turns = 0;
-    std::atomic<bool> cancel{false};
-    std::thread worker;
-
-    struct Pending {
-        std::string id;
-        ApprovalRequest request;
-        std::optional<ApprovalAnswer> answer;
-    };
-    std::optional<Pending> pending;
-    int approvals = 0;
-
-    Session(fs::path ws, std::string model) : workspace(std::move(ws)), agent(workspace, std::move(model)) {}
-
-    void push_locked(json e) {
-        e["seq"] = events.size();
-        events.push_back(std::move(e));
-        cv.notify_all();
+    Conn(Engine& e, const std::string& name) : engine(e), id(e.connect(Origin::Remote, name, "http")) {
+        call("maic.hello", {{"protocol", 1}, {"client", {{"name", name}}}, {"capabilities", {"tool_output"}}});
     }
-    void push(json e) {
-        std::lock_guard lock(mu);
-        push_locked(std::move(e));
-    }
+    ~Conn() { engine.disconnect(id); }
+    Conn(const Conn&) = delete;
+    Conn& operator=(const Conn&) = delete;
 
-    static json approval_json(const Pending& p) {
-        const auto& r = p.request;
-        return {{"type", "approval"}, {"id", p.id}, {"tool", r.tool}, {"summary", r.summary}, {"reason", r.reason},
-                {"origin", r.origin == Origin::Remote ? "remote" : "local"}, {"always_covers", r.always_covers}, {"preview", r.preview}};
+    json call(const std::string& method, json params = json::object()) {
+        json reply = engine.call(id, {{"jsonrpc", "2.0"}, {"id", next++}, {"method", method}, {"params", std::move(params)}});
+        if (reply.contains("error")) throw http_error(reply["error"]);
+        return reply["result"];
     }
 };
 
-// The agent's callbacks become events; ask() parks the worker thread until a client answers or the turn is interrupted.
-class Events : public AgentEvents {
-public:
-    explicit Events(Session& s) : s_(s) {}
-    void on_text(std::string_view delta, bool thinking) override { s_.push({{"type", "text"}, {"text", std::string(delta)}, {"thinking", thinking}}); }
-    void on_tool_call(const std::string& summary) override { s_.push({{"type", "tool_call"}, {"summary", summary}}); }
-    void on_tool_result(const std::string& text, bool ok) override { s_.push({{"type", "tool_result"}, {"text", text}, {"ok", ok}}); }
-    void on_notice(const std::string& text) override { s_.push({{"type", "notice"}, {"text", text}}); }
-    ApprovalAnswer ask(const ApprovalRequest& request) override {
-        std::unique_lock lock(s_.mu);
-        std::string id = "a" + std::to_string(++s_.approvals);
-        s_.pending = Session::Pending{id, request, std::nullopt};
-        s_.push_locked(Session::approval_json(*s_.pending));
-        s_.cv.wait(lock, [&] { return s_.pending->answer.has_value() || s_.cancel.load(); });
-        ApprovalAnswer answer = s_.pending->answer.value_or(ApprovalAnswer{Approval::No, "interrupted by the user"});
-        s_.pending.reset();
-        s_.push_locked({{"type", "approval_answered"}, {"id", id}, {"choice", choice_name(answer.choice)}});
-        return answer;
-    }
+// The session as the HTTP API has shown it: the index entry's fields, the stream position, the waiting approval.
+json session_json(const json& snapshot) {
+    const json& e = snapshot["entry"];
+    return {{"id", e["id"]},
+            {"title", e["title"]},
+            {"workspace", e["workspace"]},
+            {"model", e["model"]},
+            {"mode", e["mode"]},
+            {"remote_model", e.value("remote_model", false)},
+            {"running", e["activity"] != "idle"},
+            {"turns", e.value("turns", 0)},
+            {"created", e.value("created", "")},
+            {"sequence_number", snapshot["sequence_number"]},
+            {"pending_approval", snapshot["pending"].empty() ? json() : snapshot["pending"][0]}};
+}
 
-private:
-    Session& s_;
-};
+// The transcript folded for display, from the session file: the entries the web client renders above the stream.
+json transcript_json(const fs::path& file) {
+    json out = json::array();
+    for (const auto& t : load_session(file).transcript) {
+        if (t.type == "assistant") out.push_back({{"type", "text"}, {"text", t.text}, {"thinking", false}});
+        else if (t.type == "tool_call") out.push_back({{"type", "tool_call"}, {"summary", t.text}});
+        else if (t.type == "tool_result") {
+            json r = {{"type", "tool_result"}, {"text", t.text}, {"ok", t.ok}};
+            out.push_back(r);
+        } else {
+            out.push_back({{"type", t.type}, {"text", t.text}});
+        }
+    }
+    return out;
+}
 
 }  // namespace
 
@@ -163,8 +138,8 @@ struct Server::Impl {
     PairStore pairs;
     std::unique_ptr<HomeLink> home;  // the outbound connection to server.relay, when one is set
 
-    std::mutex sessions_mu;
-    std::map<std::string, std::shared_ptr<Session>> sessions;
+    // The sessions, their streams and approvals: every HTTP request is one connection to it, remote, named by its token.
+    std::unique_ptr<Engine> engine;
 
     std::optional<std::string> token_name(const httplib::Request& req) {
         std::string auth = req.get_header_value("Authorization");
@@ -205,142 +180,60 @@ struct Server::Impl {
         return j;
     }
 
-    std::shared_ptr<Session> find(const std::string& id) {
-        std::lock_guard lock(sessions_mu);
-        auto it = sessions.find(id);
-        if (it == sessions.end()) throw HttpError{404, "no session " + id};
-        return it->second;
+    Conn conn(const httplib::Request& req) { return Conn(*engine, token_name(req).value_or("-")); }
+
+    // attach, for what the session looks like now; the connection goes with the request.
+    json snapshot(Conn& c, const std::string& id) { return c.call("maic.session.attach", {{"session", id}}); }
+
+    // The session's file, for its history and kept outputs; only a session the engine has loaded.
+    fs::path transcript(Conn& c, const std::string& id) {
+        c.call("getConversation", {{"conversation_id", id}});
+        auto info = find_session(id);
+        if (!info) throw HttpError{404, "no session " + id};
+        return info->path;
     }
 
-    // Resolved with symlinks followed, then checked against every allowed root.
-    fs::path allowed_workspace(const std::string& given) {
-        std::error_code ec;
-        fs::path ws = fs::weakly_canonical(given, ec);
-        if (ec || !fs::is_directory(ws)) throw HttpError{400, "not a directory: " + given};
-        for (const auto& root : roots) {
-            auto rel = ws.lexically_relative(root);
-            if (!rel.empty() && *rel.begin() != "..") return ws;
-        }
-        throw HttpError{403, "workspace outside the allowed roots (server.workspaces in settings): " + given};
-    }
-
-    std::shared_ptr<Session> make_session(const fs::path& ws, const std::string& model, Mode mode) {
-        const Settings& st = options.settings;
-        if (st.tripwire == "isolated") throw HttpError{403, "this MAIC runs isolated sessions (tripwire = isolated): it takes no remote work"};
-        auto s = std::make_shared<Session>(ws, model);
-        s->agent.providers = st.providers;
-        s->agent.set_forbid(st.forbid);
-        s->agent.set_permission(st.permission);
-        s->agent.agents = st.agents;
-        s->agent.presets = st.presets;
-        s->agent.small_model = st.small_model;
-        s->agent.reviewer_budget_tokens = st.reviewer_budget_tokens;
-        s->agent.mode = mode;
-        s->agent.think = st.think;
-        s->agent.compaction.at = st.compact_at;
-        s->agent.compaction.keep_results = st.compact_keep_results;
-        s->agent.compaction.model = st.compact_model;
-        s->agent.budget_tokens = st.budget_tokens;
-        s->agent.set_instruction_names(st.instruction_files);
-        return s;
-    }
-
-    json session_json(Session& s) {
-        std::lock_guard lock(s.mu);
-        json j = {{"id", s.id},      {"workspace", s.workspace.string()}, {"model", s.agent.model}, {"mode", std::string(mode_name(s.agent.mode))},
-                  {"remote_model", s.agent.remote()}, {"running", s.running}, {"turns", s.turns}, {"created", s.created}, {"seq", s.events.size()},
-                  {"transcript", s.log->path().string()}};
-        j["pending_approval"] = s.pending && !s.pending->answer ? Session::approval_json(*s.pending) : json();
-        return j;
-    }
-
-    // The event log folded for display: text deltas of one reply become one entry.
-    static json transcript_json(const Session& s) {
-        json out = json::array();
-        for (const auto& e : s.events) {
-            std::string type = e.value("type", "");
-            if (type == "text" && !out.empty() && out.back()["type"] == "text" && out.back()["thinking"] == e["thinking"]) {
-                out.back()["text"] = out.back()["text"].get<std::string>() + e["text"].get<std::string>();
-                continue;
-            }
-            if (type == "approval" || type == "approval_answered" || type == "done") continue;
-            out.push_back(e);
-        }
-        return out;
-    }
-
-    json status_json() {
-        auto services = load_services(root_dir() / "services");
-        StatusReport r = status_report(services);
-        json svc = json::array();
-        for (const auto& s : r.services) svc.push_back({{"name", s.name}, {"state", s.state}, {"runtime", s.runtime}, {"where", s.where}, {"detail", s.detail}});
-        const Settings& st = options.settings;
-        auto [provider, model_name] = resolve_model(st.providers, st.model);
-        json roots_json = json::array();
-        for (const auto& p : roots) roots_json.push_back(p.string());
-        size_t count;
-        {
-            std::lock_guard lock(sessions_mu);
-            count = sessions.size();
-        }
+    json status_json(Conn& c) {
+        json st = c.call("maic.engine.status");
         json relay;
         if (home) {
             HomeLink::State hs = home->state();
-            relay = {{"url", st.server.relay}, {"connected", hs.connected}, {"since", hs.since}, {"last_connected", hs.last_connected}, {"error", hs.error}};
+            relay = {{"url", options.settings.server.relay}, {"connected", hs.connected}, {"since", hs.since}, {"last_connected", hs.last_connected}, {"error", hs.error}};
         }
-        return {{"harness", {{"tripped", r.tripped}, {"reason", r.tripwire}}},
-                {"relay", relay},
-                {"services", svc},
-                {"model", st.model},
-                {"provider", provider.name},
-                {"remote_model", provider.remote()},
-                {"mode", st.mode},
-                {"sessions", count},
-                {"listen", host + ":" + std::to_string(port)},
-                {"tls", tls},
-                {"fingerprint", fingerprint},
-                {"workspaces", roots_json},
-                {"version", MAIC_VERSION}};
+        st["relay"] = relay;
+        st["listen"] = host + ":" + std::to_string(port);
+        st["tls"] = tls;
+        st["fingerprint"] = fingerprint;
+        return st;
     }
 
-    void start_turn(const std::shared_ptr<Session>& s, const std::string& text) {
-        if (s->worker.joinable()) s->worker.join();
-        s->worker = std::thread([s, text] {
-            Events events(*s);
-            try {
-                s->agent.submit(text, Origin::Remote, events, s->cancel);
-            } catch (const std::exception& e) {
-                s->push({{"type", "error"}, {"text", e.what()}});
-            }
-            Agent::UsageReport u = s->agent.usage();
-            std::lock_guard lock(s->mu);
-            s->running = false;
-            ++s->turns;
-            s->push_locked({{"type", "done"},
-                            {"interrupted", s->cancel.exchange(false)},
-                            {"usage", {{"input", u.total_input}, {"output", u.total_output}, {"calls", u.calls}, {"context", u.last.context}, {"last_input", u.last.input}}}});
-        });
-    }
-
-    // Server-sent events from `from` on: everything already logged, then whatever the running turn adds, until
-    // the session is idle again. A comment line every 15 s keeps the connection open through silence.
-    void stream(std::shared_ptr<Session> s, size_t from, httplib::Response& res) {
+    // The session's events as server-sent events, each one a maic.event's params as the engine sent it, until the
+    // turn that was running (or that this request started) is over: an idle maic.session.state numbered after
+    // `idle_after`, or, when nothing ran, everything up to `replay_to`. A comment line every 15 s keeps the
+    // connection open through silence.
+    void stream(std::shared_ptr<Conn> c, long idle_after, long replay_to, httplib::Response& res) {
         res.set_header("Cache-Control", "no-cache");
-        res.set_chunked_content_provider("text/event-stream", [this, s, next = from](size_t, httplib::DataSink& sink) mutable {
-            std::string out;
-            bool finished = false;
-            {
-                std::unique_lock lock(s->mu);
-                s->cv.wait_for(lock, 15s, [&] { return next < s->events.size() || stopping.load(); });
-                for (; next < s->events.size(); ++next) out += "data: " + dump(s->events[next]) + "\n\n";
-                finished = !s->running;
-            }
-            if (stopping.load()) return false;
-            if (out.empty()) out = ": keepalive\n\n";
-            if (!sink.write(out.data(), out.size())) return false;
-            if (finished) sink.done();
-            return true;
-        });
+        res.set_chunked_content_provider(
+            "text/event-stream",
+            [this, c, idle_after, replay_to](size_t, httplib::DataSink& sink) {
+                if (stopping.load()) return false;
+                std::string out;
+                bool finished = false;
+                for (const auto& m : engine->take(c->id, std::chrono::seconds(15))) {
+                    if (m.value("method", "") != "maic.event") continue;
+                    const json& e = m["params"];
+                    out += "data: " + dump(e) + "\n\n";
+                    long n = e.value("sequence_number", -1L);
+                    if (e["type"] == "maic.session.state" && e["activity"] == "idle" && n > idle_after) finished = true;
+                    if (replay_to >= 0 && n >= replay_to) finished = true;
+                }
+                if (!engine->closed(c->id).empty()) finished = true;
+                if (out.empty() && !finished) out = ": keepalive\n\n";
+                if (!out.empty() && !sink.write(out.data(), out.size())) return false;
+                if (finished) sink.done();
+                return true;
+            },
+            [c](bool) {});
     }
 
     void routes() {
@@ -380,131 +273,153 @@ struct Server::Impl {
             res.set_content(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()), "text/html; charset=utf-8");
         });
 
-        srv->Get("/api/status", [this](const httplib::Request&, httplib::Response& res) { reply(res, status_json()); });
+        srv->Get("/api/status", [this](const httplib::Request& req, httplib::Response& res) {
+            Conn c = conn(req);
+            reply(res, status_json(c));
+        });
 
-        srv->Get("/api/sessions", [this](const httplib::Request&, httplib::Response& res) {
-            std::vector<std::shared_ptr<Session>> all;
-            {
-                std::lock_guard lock(sessions_mu);
-                for (const auto& [id, s] : sessions) all.push_back(s);
-            }
+        // The loaded sessions, from the engine's index.
+        srv->Get("/api/sessions", [this](const httplib::Request& req, httplib::Response& res) {
+            Conn c = conn(req);
+            json index = c.call("maic.index.get");
             json out = json::array();
-            for (const auto& s : all) out.push_back(session_json(*s));
+            for (const auto& e : index["entries"]) {
+                if (e["state"] != "live" && e["state"] != "background") continue;
+                out.push_back({{"id", e["id"]}, {"title", e["title"]}, {"workspace", e["workspace"]}, {"model", e["model"]}, {"mode", e["mode"]},
+                               {"remote_model", e.value("remote_model", false)}, {"running", e["activity"] != "idle"}, {"turns", e.value("turns", 0)},
+                               {"created", e.value("created", "")}});
+            }
             reply(res, {{"sessions", out}});
         });
 
         srv->Post("/api/sessions", [this](const httplib::Request& req, httplib::Response& res) {
             json body = body_of(req);
-            std::string mode_str = body.value("mode", options.settings.mode);
-            auto mode = parse_mode(mode_str);
-            if (!mode) throw HttpError{400, "unknown mode '" + mode_str + "' (manual, auto-read, edit, auto, plan)"};
-            std::shared_ptr<Session> s;
+            Conn c = conn(req);
+            std::string id;
             if (body.contains("resume")) {
-                auto info = find_session(body["resume"].get<std::string>());
-                if (!info) throw HttpError{404, "no session matching " + body["resume"].get<std::string>()};
-                fs::path ws = allowed_workspace(info->workspace);
-                LoadedSession old = load_session(info->path);
-                s = make_session(ws, body.value("model", old.model.empty() ? options.settings.model : old.model), *mode);
-                s->log = std::make_unique<SessionLog>(SessionLog::Reopen{}, info->path);
-                s->id = info->id;
-                s->agent.set_log(s->log.get());
-                s->agent.restore(old.messages);
-                for (const auto& t : old.transcript) {
-                    if (t.type == "assistant") s->push({{"type", "text"}, {"text", t.text}, {"thinking", false}});
-                    else if (t.type == "tool_call") s->push({{"type", "tool_call"}, {"summary", t.text}});
-                    else if (t.type == "tool_result") s->push({{"type", "tool_result"}, {"text", t.text}, {"ok", t.ok}});
-                    else s->push({{"type", t.type}, {"text", t.text}});
-                }
+                id = c.call("maic.session.resume", {{"session", body["resume"].get<std::string>()}})["id"];
+                if (body.contains("mode")) c.call("maic.session.set", {{"session", id}, {"mode", body["mode"]}});
             } else {
-                fs::path ws = allowed_workspace(body.value("workspace", roots.front().string()));
-                s = make_session(ws, body.value("model", options.settings.model), *mode);
-                s->log = std::make_unique<SessionLog>("server", resolve_sessions_home(options.settings, ws));
-                s->id = s->log->path().stem().string();
-                s->agent.set_log(s->log.get());
+                json m = json::object();  // no mode: the engine starts the settings' own, held at manual where auto waits
+                if (body.contains("mode")) m["mode"] = body["mode"];
+                if (body.contains("workspace")) m["workspace"] = body["workspace"];
+                if (body.contains("model")) m["model"] = body["model"];
+                id = c.call("createConversation", {{"maic", m}})["id"];
             }
-            {
-                std::lock_guard lock(sessions_mu);
-                sessions[s->id] = s;
-            }
-            reply(res, session_json(*s), 201);
+            reply(res, session_json(snapshot(c, id)), 201);
         });
 
         srv->Get(R"(/api/sessions/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
-            auto s = find(req.matches[1]);
-            json j = session_json(*s);
-            Agent::UsageReport u = s->agent.usage();
-            j["usage"] = {{"input", u.total_input}, {"output", u.total_output}, {"calls", u.calls}, {"context", u.last.context}, {"last_input", u.last.input}};
-            std::lock_guard lock(s->mu);
-            j["entries"] = transcript_json(*s);
+            Conn c = conn(req);
+            std::string id = req.matches[1];
+            json snap = snapshot(c, id);
+            json j = session_json(snap);
+            const json& u = snap["usage"];
+            j["usage"] = {{"input", u["total"]["input"]}, {"output", u["total"]["output"]}, {"calls", u["calls"]}, {"context", u["context"]}, {"last_input", u["last_input"]}};
+            j["entries"] = transcript_json(transcript(c, id));
             reply(res, j);
         });
 
+        // The session's events after starting_after (`after=N`, the older spelling, meant from N on).
         srv->Get(R"(/api/sessions/([^/]+)/events)", [this](const httplib::Request& req, httplib::Response& res) {
-            auto s = find(req.matches[1]);
-            size_t after = 0;
-            if (req.has_param("after")) after = std::stoul(req.get_param_value("after"));
-            stream(s, after, res);
+            auto c = std::make_shared<Conn>(*engine, token_name(req).value_or("-"));
+            long after = -1;
+            if (req.has_param("starting_after")) after = std::stol(req.get_param_value("starting_after"));
+            else if (req.has_param("after")) after = std::stol(req.get_param_value("after")) - 1;
+            json sub = c->call("maic.session.subscribe", {{"session", req.matches[1].str()}, {"starting_after", after}});
+            long at = sub["sequence_number"];
+            if (sub["activity"] == "idle") {
+                if (after >= at) {
+                    res.set_content("", "text/event-stream");
+                    return;
+                }
+                stream(c, at, at, res);
+            } else {
+                stream(c, at, -1, res);
+            }
         });
 
+        // A command's kept output (docs/sessions.md, Full output), 256 KiB at a time: the session's own, or one of its
+        // subagents' (`session`). Display only, and labelled so.
+        srv->Get(R"(/api/sessions/([^/]+)/output/([A-Za-z0-9_-]+))", [this](const httplib::Request& req, httplib::Response& res) {
+            Conn c = conn(req);
+            std::string id = req.matches[1];
+            fs::path owner = transcript(c, id);
+            if (req.has_param("session") && req.get_param_value("session") != id) {
+                std::string sub = req.get_param_value("session");
+                auto subs = sub_sessions_of(owner);
+                auto it = std::find_if(subs.begin(), subs.end(), [&](const fs::path& p) { return p.stem().string() == sub; });
+                if (it == subs.end()) throw HttpError{404, "no subagent session " + sub + " of " + id};
+                owner = *it;
+            }
+            fs::path file = side_dir(owner) / (req.matches[2].str() + ".out");
+            std::error_code ec;
+            if (!fs::is_regular_file(file, ec)) throw HttpError{404, "no kept output " + req.matches[2].str()};
+            size_t size = fs::file_size(file, ec);
+            size_t offset = req.has_param("offset") ? std::stoul(req.get_param_value("offset")) : 0;
+            size_t length = std::min<size_t>(req.has_param("length") ? std::stoul(req.get_param_value("length")) : 256 * 1024, 256 * 1024);
+            std::ifstream in(file, std::ios::binary);
+            std::string data(std::min(length, size > offset ? size - offset : 0), '\0');
+            in.seekg(static_cast<std::streamoff>(std::min(offset, size)));
+            in.read(data.data(), static_cast<std::streamsize>(data.size()));
+            reply(res, {{"label", kFullOutputLabel}, {"bytes", size}, {"offset", offset}, {"data", data}, {"done", offset + data.size() >= size}});
+        });
+
+        // response.create, then the session's stream from just before its input until the turn is over. Mid-turn the
+        // message is response.steer: it reaches the running response at its next boundary (or resumes a paused turn).
         srv->Post(R"(/api/sessions/([^/]+)/messages)", [this](const httplib::Request& req, httplib::Response& res) {
-            auto s = find(req.matches[1]);
             std::string text = body_of(req).value("text", "");
             if (text.empty()) throw HttpError{400, "text is empty"};
-            size_t from;
-            bool start = false;
-            {
-                std::lock_guard lock(s->mu);
-                from = s->events.size();
-                if (s->running) {
-                    // Mid-turn, like typing while the agent works: reaches the model at its next call.
-                    s->agent.post_message(text);
-                    s->agent.deliver_now();
-                    s->push_locked({{"type", "user"}, {"text", text}, {"queued", true}});
-                } else {
-                    s->running = true;
-                    s->cancel = false;
-                    s->push_locked({{"type", "user"}, {"text", text}});
-                    start = true;
+            auto c = std::make_shared<Conn>(*engine, token_name(req).value_or("-"));
+            std::string id = req.matches[1];
+            json entry = c->call("getConversation", {{"conversation_id", id}})["maic"]["entry"];
+            if (entry["response"].is_string()) {
+                json snap = c->call("maic.session.attach", {{"session", id}});
+                try {
+                    c->call("response.steer", {{"previous_response_id", entry["response"]}, {"input", text}});
+                    stream(c, snap["sequence_number"], -1, res);
+                    return;
+                } catch (const HttpError&) {
+                    c->call("maic.session.unsubscribe", {{"session", id}});  // it ended meanwhile: the message starts a turn
                 }
             }
-            if (start) start_turn(s, text);
-            stream(s, from, res);
+            json r = c->call("response.create", {{"conversation", id}, {"input", text}});
+            long from = r["maic"]["sequence_number"];
+            c->call("maic.session.subscribe", {{"session", id}, {"starting_after", from}});
+            stream(c, from, -1, res);
         });
 
         srv->Post(R"(/api/sessions/([^/]+)/approvals/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
-            auto s = find(req.matches[1]);
             json body = body_of(req);
-            auto choice = parse_choice(body.value("choice", ""));
-            if (!choice) throw HttpError{400, "choice must be yes, no, always or trip"};
-            std::lock_guard lock(s->mu);
-            if (!s->pending || s->pending->id != req.matches[2].str()) throw HttpError{404, "no approval " + req.matches[2].str() + " is waiting"};
-            if (s->pending->answer) throw HttpError{409, "already answered"};
-            s->pending->answer = ApprovalAnswer{*choice, body.value("feedback", "")};
-            s->cv.notify_all();
-            reply(res, {{"id", s->pending->id}, {"choice", choice_name(*choice)}});
+            Conn c = conn(req);
+            json params = {{"session", req.matches[1].str()}, {"approval", req.matches[2].str()}, {"choice", body.value("choice", "")}};
+            if (body.contains("feedback")) params["feedback"] = body["feedback"];
+            json r = c.call("maic.approval.answer", params);
+            reply(res, {{"id", req.matches[2].str()}, {"choice", r["choice"]}});
         });
 
         srv->Post(R"(/api/sessions/([^/]+)/interrupt)", [this](const httplib::Request& req, httplib::Response& res) {
-            auto s = find(req.matches[1]);
-            std::lock_guard lock(s->mu);
-            if (!s->running) {
+            Conn c = conn(req);
+            json entry = c.call("getConversation", {{"conversation_id", req.matches[1].str()}})["maic"]["entry"];
+            if (entry["response"].is_null()) {
                 reply(res, {{"running", false}});
                 return;
             }
-            s->cancel = true;
-            if (s->pending && !s->pending->answer) s->pending->answer = ApprovalAnswer{Approval::No, "interrupted by the user"};
-            s->cv.notify_all();
+            try {
+                c.call("cancelResponse", {{"response_id", entry["response"]}});
+            } catch (const HttpError& e) {
+                if (e.status != 404) throw;
+                reply(res, {{"running", false}});  // it ended meanwhile
+                return;
+            }
             reply(res, {{"running", true}, {"interrupting", true}});
         });
 
         srv->Post(R"(/api/sessions/([^/]+)/mode)", [this](const httplib::Request& req, httplib::Response& res) {
-            auto s = find(req.matches[1]);
-            std::string name = body_of(req).value("mode", "");
-            auto mode = parse_mode(name);
-            if (!mode) throw HttpError{400, "unknown mode '" + name + "' (manual, auto-read, edit, auto, plan)"};
-            s->agent.mode = *mode;
-            s->push({{"type", "mode"}, {"mode", std::string(mode_name(*mode))}});
-            reply(res, session_json(*s));
+            Conn c = conn(req);
+            std::string id = req.matches[1];
+            c.call("maic.session.set", {{"session", id}, {"mode", body_of(req).value("mode", "")}});
+            reply(res, session_json(snapshot(c, id)));
         });
 
         // Trust from a paired device (docs/harness.md, Trust): only with a step-up proof the registered verifier
@@ -540,19 +455,8 @@ struct Server::Impl {
         // The panic button works from a phone; the reset does not exist here (it needs the local sudo password).
         srv->Post("/api/trip", [this](const httplib::Request& req, httplib::Response& res) {
             std::string reason = body_of(req).value("reason", "tripped from a remote client");
-            trip_tripwire("remote: " + reason);
-            std::vector<std::shared_ptr<Session>> all;
-            {
-                std::lock_guard lock(sessions_mu);
-                for (const auto& [id, s] : sessions) all.push_back(s);
-            }
-            for (const auto& s : all) {
-                std::lock_guard lock(s->mu);
-                if (s->running) s->cancel = true;
-                if (s->pending && !s->pending->answer) s->pending->answer = ApprovalAnswer{Approval::Trip, ""};
-                s->cv.notify_all();
-            }
-            reply(res, {{"tripped", true}});
+            Conn c = conn(req);
+            reply(res, c.call("maic.engine.trip", {{"reason", reason}}));
         });
     }
 };
@@ -561,16 +465,8 @@ Server::Server(ServerOptions options) : impl_(std::make_unique<Impl>(std::move(o
 
 Server::~Server() {
     stop();
-    std::vector<std::shared_ptr<Session>> all;
-    {
-        std::lock_guard lock(impl_->sessions_mu);
-        for (const auto& [id, s] : impl_->sessions) all.push_back(s);
-    }
-    for (const auto& s : all) {
-        if (s->worker.joinable()) s->worker.join();
-    }
-    std::lock_guard lock(impl_->sessions_mu);
-    impl_->sessions.clear();
+    impl_->srv.reset();
+    impl_->engine.reset();
 }
 
 int Server::bind() {
@@ -589,8 +485,15 @@ int Server::bind() {
     fs::permissions(o.state, fs::perms::owner_all, fs::perm_options::replace, ec);
     for (const auto& w : o.workspaces) im.roots.push_back(fs::weakly_canonical(w, ec));
     if (im.roots.empty()) throw std::runtime_error("no allowed workspace root");
+    // Every maic-server client is remote; its sessions are kind server. The session index file is the daemon's
+    // (step 13), so this engine keeps none.
+    EngineOptions eo;
+    eo.settings = o.settings;
+    eo.workspaces = im.roots;
+    eo.kind = "server";
+    im.engine = std::make_unique<Engine>(std::move(eo));
 
-    bool loopback = im.host == "localhost" || im.host == "::1" || im.host.rfind("127.", 0) == 0;
+    bool loopback = loopback_host(im.host);
     fs::path cert = o.settings.server.cert, key = o.settings.server.key;
     if (cert.empty() != key.empty()) throw std::runtime_error("server.cert and server.key go together");
     // Off loopback TLS is not optional; on loopback it is used when a pair is configured.
@@ -642,17 +545,7 @@ void Server::stop() {
     Impl& im = *impl_;
     im.stopping = true;
     if (im.home) im.home->stop();
-    std::vector<std::shared_ptr<Session>> all;
-    {
-        std::lock_guard lock(im.sessions_mu);
-        for (const auto& [id, s] : im.sessions) all.push_back(s);
-    }
-    for (const auto& s : all) {
-        std::lock_guard lock(s->mu);
-        s->cancel = true;
-        if (s->pending && !s->pending->answer) s->pending->answer = ApprovalAnswer{Approval::No, "the server is shutting down"};
-        s->cv.notify_all();
-    }
+    if (im.engine) im.engine->shutdown();
     if (im.srv) im.srv->stop();
 }
 

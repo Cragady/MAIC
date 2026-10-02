@@ -4,6 +4,8 @@
 
 `comfyui/` holds MAIC's own helpers for the manga workflow, installed beside `maic` as `maic-workflow-edit`, `maic-storyboard`, `maic-danbooru-tags` and `maic-panel-check` ([comfyui/README.md](comfyui/README.md)).
 
+`audit/` holds `maic-leak-audit`, which checks transcripts for agents that reached for a host socket from the sandbox, judged by a local model ([docs/leak-audit.md](../docs/leak-audit.md)).
+
 Still to come: per-tool network grants declared in the manifest (`network: true` is refused today).
 
 Design background: [docs/programming-lang-for-agentic-cli.md](../docs/programming-lang-for-agentic-cli.md).

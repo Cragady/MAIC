@@ -20,6 +20,9 @@ struct LlamaVimPlan {
     bool update = false;         // Write: the file is MAIC's already
 };
 
+// True when `program` (a name, or a path) is an executable on PATH.
+bool on_path(const std::string& program);
+
 // The spec as docs/models.md shows it, for pasting by hand.
 std::string llama_vim_spec();
 // What MAIC writes: a header naming MAIC, `date`, the undo command and the docs, then `return` and the spec.

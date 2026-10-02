@@ -1,13 +1,17 @@
+#include "audit_trail.hpp"
 #include "commands.hpp"
 #include "doctor.hpp"
 #include "headless.hpp"
 #include "setup.hpp"
 #include "maic/artifacts.hpp"
+#include "maic/harness.hpp"
+#include "maic/full_output.hpp"
 #include "maic/import.hpp"
 #include "maic/lazy_lock.hpp"
 #include "maic/nvim_keymaps.hpp"
 #include "maic/nvim_setup.hpp"
 #include "maic/paths.hpp"
+#include "maic/protocol.hpp"
 #include "maic/redact.hpp"
 #include "maic/service.hpp"
 #include "maic/session.hpp"
@@ -55,12 +59,15 @@ void usage(std::ostream& out = std::cerr) {
                  "                                          one from --no-record too); no argument: pick from a list\n"
                  "       maic -p \"prompt\" [--json] [--think] one turn without the UI (prompt \"-\" reads stdin; -c/-r work here too)\n"
                  "       maic -p \"prompt\" --interactive     an interactive session that opens with that prompt sent (-i)\n"
+                 "       maic --rpc                         the engine on stdin and stdout, JSON-RPC 2.0 one message per line, for an\n"
+                 "                                          interface such as maic.nvim (docs/design/engine-protocol.md); the agent's\n"
+                 "                                          flags apply to the sessions it opens\n"
                  "       --context FILE, -C FILE            attach a text file to the conversation before the prompt; repeatable;\n"
                  "                                          FILE \"-\" reads stdin (then the prompt can't also be stdin)\n"
                  "       --image FILE, -I                   a picture sent with the first (or only) prompt; repeatable; the model must\n"
                  "                                          be a vision one (both Qwen3.5 GGUFs here are)\n"
                  "       --system TEXT|@FILE, -S            operator instructions placed first in the system prompt (front-loads behaviour)\n"
-                 "       --no-instructions                  load no MAIC.md / AGENTS.md anywhere; combines with --system\n"
+                 "       --no-instructions                  load no instruction file anywhere; combines with --system\n"
                  "       --ctx N                            context window in tokens: starts (or restarts) the local llama.cpp server\n"
                  "                                          with --ctx-size N and sizes the readout; also `maic up llamacpp --ctx N`\n"
                  "       --ctx2 N                           the same for the side server llamacpp-2 (port 8082; default 8192)\n"
@@ -71,11 +78,13 @@ void usage(std::ostream& out = std::cerr) {
                  "       --xtc P[,T]                        exclude top choices: probability and threshold (0.5,0.1); llama.cpp-style\n"
                  "                                          servers only (maic help sampling)\n"
                  "       --sampling KEY=VALUE               any sampler key for this run (temperature=0.7, min_p=0.05, seed=7); repeatable\n"
-                 "       --harness smart|dumb               smart (default): a model reviews commands and writes the rules would let\n"
-                 "                                          through without asking; dumb: the rule list alone (maic help harness)\n"
-                 "       --accept-dumb-auto                 skip the warning when combining --harness dumb with --mode auto\n"
+                 "       --harness smart|dumb               dumb (default): the rule list alone; smart: a model also reviews commands\n"
+                 "                                          and writes the rules would let through without asking (maic help harness)\n"
+                 "       --accept-dumb-auto                 skip the dumb + auto warning that dumb_auto_ok = false turns on\n"
                  "       --bare                             nothing from nvim: no $NVIM host, no nvim highlighter or theme, no lazy-lock\n"
                  "                                          notice or keymap check (also MAIC_BARE=1, bare = true; maic help bare)\n"
+                 "       --ui nvim|tui                      nvim with maic.nvim as the whole interface (your config and mappings), the\n"
+                 "                                          engine its job; or MAIC's own (ui in settings; maic help ui)\n"
                  "       --record / --no-record             keep a transcript or not (interactive: yes by default, or \"record\" in\n"
                  "                                          settings; -p: none by default)\n"
                  "       --append / --no-append             with -c/-r: write into the old session file, or into a new one that\n"
@@ -110,6 +119,11 @@ void usage(std::ostream& out = std::cerr) {
                  "                             directory's Lua and script tools with their language and declared reads/writes\n"
                  "  tools check                validate every tool manifest here and in ~/.config/maic/tools (exit 1 on a problem)\n"
                  "  tools new NAME --lang python|sh|perl|node [--global]   scaffold .maic/tools/NAME/ with a manifest and a stub\n"
+                 "  protocol check [--openai|--blind] FILE|DIR...   recorded engine protocol streams (JSON lines of {dir, conn,\n"
+                 "                             msg}, a directory's *.jsonl) against protocol/'s schemas and ordering.json and the\n"
+                 "                             skeletons the file declares; --openai checks the OpenAI-only view, --blind uses\n"
+                 "                             only the file's own skeletons; exit 0 all conform, 1 a violation (docs/testing.md)\n"
+                 "  protocol hash              this build's protocol hash, as each session load names it\n"
                  "  themes                     the themes there are (yours in ~/.config/maic/themes, then the shipped ones), the\n"
                  "                             active one marked, with where each comes from (maic help theme)\n"
                  "  themes import NAME [--as FILE]   a neovim colorscheme as a theme file, from a headless nvim with your config\n"
@@ -154,6 +168,8 @@ void usage(std::ostream& out = std::cerr) {
                  "  sessions redact ID|FILE [--in-place | -o FILE]   a copy with credential material replaced by [REDACTED:kind]\n"
                  "                             (default: ./<id>.redacted.jsonl, outside the sessions tree)\n"
                  "  sessions read ID [--range A-B] [--tools]   the conversation as plain text (user turns A to B), for piping\n"
+                 "  sessions output ID [CALL] [--replay]   a command's whole output, kept when the model got it capped (display\n"
+                 "                             only; no CALL: the list); --replay plays it back with its timing, stderr apart\n"
                  "  sessions state ID          one screen: turns, tool calls per tool, files touched, tokens and budget,\n"
                  "                             compactions, forks and subagents\n"
                  "  sessions time ID [--slowest N]   how long each turn took, and the slowest tool calls\n"
@@ -171,6 +187,10 @@ void usage(std::ostream& out = std::cerr) {
                  "  trans-fairy-write [args...]   maic cai trans-fairy-write ...: overwrite one, with a backup first\n"
                  "                             (both take a MAIC session or a Claude Code transcript, told apart by content)\n"
                  "  settings init [--json]|path  write the global settings file (Lua; --json for JSON), or show where it goes\n"
+                 "  audit-trail [init|status [--json]|purge|offsite DEST [--older-than 90d]|schedule install|remove]\n"
+                 "                             the audit trail, off by default (docs/audit-trail.md): init writes audit.lua;\n"
+                 "                             status counts, never contents; purge asks first; offsite prints, never runs,\n"
+                 "                             the commands that move old archive chunks on; schedule a systemd timer\n"
                  "  settings read diction      diction.lua beside settings.lua, evaluated in a restricted Lua state, as JSON\n"
                  "                             ({} when it does not exist); diction reads its config through this\n"
                  "  init                       scaffold this project: MAIC.md and .maic/settings.lua (transcripts then\n"
@@ -906,6 +926,11 @@ int cmd_sessions_state(const std::vector<std::string>& args) {
     }
     if (st.context) std::cout << "; context window " << st.context;
     std::cout << "\n";
+    if (!st.normalized.empty()) {
+        std::cout << "adapter normalizations (docs/standards.md):";
+        for (const auto& [rule, n] : st.normalized) std::cout << " " << rule << " " << n << ";";
+        std::cout << "\n";
+    }
     if (!st.compactions.empty() || st.clears || st.undos) {
         std::cout << "compactions:";
         for (const auto& [stage, n] : st.compactions) std::cout << " " << stage << " " << n;
@@ -1039,6 +1064,55 @@ int cmd_sessions_read(const std::vector<std::string>& args) {
     return 0;
 }
 
+// maic sessions output ID [CALL] [--replay]: a tool call's kept output (docs/sessions.md, Full output). The label goes
+// to stderr so the output itself can be piped; --replay plays it back as it ran, stdout and stderr each to its own.
+int cmd_sessions_output(const std::vector<std::string>& args) {
+    const std::string use = "maic sessions output ID [CALL] [--replay]";
+    std::vector<std::string> plain;
+    bool replay = false;
+    for (size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "--replay") replay = true;
+        else if (args[i][0] != '-' && plain.size() < 2) plain.push_back(args[i]);
+        else throw std::runtime_error(use);
+    }
+    if (plain.empty()) throw std::runtime_error(use);
+    auto s = need_session(plain[0]);
+    struct Kept {
+        std::filesystem::path file;
+        nlohmann::json record;
+    };
+    std::vector<Kept> kept;
+    maic::walk_records(s.path, ~size_t(0), [&](const nlohmann::json& j) {
+        if (j.value("type", "") != "tool" || !j.contains("full_output")) return;
+        kept.push_back({maic::resolve_full_output(s.path, j["full_output"]), j});
+    });
+    auto name_of = [](const nlohmann::json& j) { return std::filesystem::path(j["full_output"].value("path", "")).stem().string(); };
+    if (plain.size() == 1) {
+        if (kept.empty()) std::cout << "no output of " << s.id << " was kept whole (only outputs over the model's cap are)\n";
+        for (const auto& k : kept) {
+            std::string args_text = k.record.value("arguments", nlohmann::json::object()).value("command", k.record.value("tool", ""));
+            std::cout << name_of(k.record) << "  " << k.record["full_output"].value("bytes", size_t(0)) << " bytes" << (k.file.empty() ? " (file missing)" : "") << "  "
+                      << k.record.value("tool", "") << ": " << args_text.substr(0, 80) << "\n";
+        }
+        return 0;
+    }
+    auto it = std::find_if(kept.begin(), kept.end(), [&](const Kept& k) { return name_of(k.record) == plain[1]; });
+    if (it == kept.end()) throw std::runtime_error("no kept output named " + plain[1] + " in " + s.id + " (maic sessions output " + s.id + " lists them)");
+    if (it->file.empty()) throw std::runtime_error("the kept output " + plain[1] + " of " + s.id + " is missing from " + maic::side_dir(s.path).string());
+    std::cerr << "maic: " << maic::kFullOutputLabel << " (" << it->record["full_output"].value("bytes", size_t(0)) << " bytes, " << it->file.string() << ")\n";
+    if (!replay) {
+        std::ifstream in(it->file, std::ios::binary);
+        std::cout << in.rdbuf() << std::flush;
+        return 0;
+    }
+    maic::replay_full_output(it->file, [](char stream, std::string_view bytes) {
+        FILE* to = stream == 'o' ? stdout : stderr;
+        fwrite(bytes.data(), 1, bytes.size(), to);
+        fflush(to);
+    });
+    return 0;
+}
+
 // diction's launcher: the installed one beside this binary (a release), else the repository's (a dev build).
 std::filesystem::path diction_launcher() {
     std::error_code ec;
@@ -1080,6 +1154,36 @@ int cmd_model(const std::vector<std::string>& args) {
     nlohmann::json out = {{"provider", provider.name}, {"kind", provider.kind}, {"base_url", provider.base_url}, {"model", name}, {"context", context},
                           {"remote", provider.remote()}, {"api_key_env", provider.api_key_env}, {"api_key_command", provider.api_key_command}};
     std::cout << out.dump() << "\n";
+    return 0;
+}
+
+// `maic trust imports --approve`: asks at the terminal about each import of your own instruction files that waits
+// for approval (docs/instructions.md, Imports from your own files).
+int cmd_approve_imports() {
+    maic::Settings settings = maic::load_settings();
+    std::vector<maic::PendingImport> pending;
+    maic::load_instructions(std::filesystem::current_path(), settings.instructions, {}, &pending);
+    if (pending.empty()) {
+        std::cout << "no import of your own instruction files waits for approval\n";
+        return 0;
+    }
+    if (!isatty(STDIN_FILENO)) {
+        std::cerr << "maic: approving an import asks at a terminal; run maic trust imports --approve in one. Nothing was approved.\n";
+        return 2;
+    }
+    for (const auto& p : pending) {
+        std::cout << "\nyour instruction file imports a file from outside your trusted directories:\n";
+        for (const auto& l : maic::import_prompt(p.importer, p.target, maic::import_exception_status(p.importer, p.target))) std::cout << "  " << l << "\n";
+        std::cout << "approve it? [y/N] " << std::flush;
+        std::string line;
+        if (!std::getline(std::cin, line)) break;
+        if (line == "y" || line == "Y" || line == "yes") {
+            maic::approve_import(p.importer, p.target, maic::Origin::Local);
+            std::cout << "approved: it is read from the next turn of every session\n";
+        } else {
+            std::cout << "not approved\n";
+        }
+    }
     return 0;
 }
 
@@ -1180,6 +1284,15 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    // audit-trail keeps its own flags (--json), so it is handed off before maic's are read.
+    if (argc >= 2 && std::string(argv[1]) == "audit-trail") {
+        try {
+            return maic::cmd_audit_trail(std::vector<std::string>(argv + 2, argv + argc));
+        } catch (const std::exception& e) {
+            std::cerr << "maic: " << e.what() << "\n";
+            return 1;
+        }
+    }
     std::vector<std::string> args;
     // Clustered short flags: -pi is -p -i. A flag that takes a value (-m, -C) must come last in a cluster.
     for (int i = 1; i < argc; ++i) {
@@ -1198,6 +1311,7 @@ int main(int argc, char** argv) {
         maic::HeadlessOptions headless;
         bool print = false;
         bool interactive = false;
+        bool rpc = false;
         std::optional<bool> append;
         bool continue_last = false;
         std::optional<std::string> resume_id;
@@ -1227,6 +1341,7 @@ int main(int argc, char** argv) {
             else if (a == "--no-append") append = false;
             else if (a == "--fork-at") tui.fork_at = headless.fork_at = std::stoul(value("--fork-at"));
             else if (a == "--interactive" || a == "-i") interactive = true;
+            else if (a == "--rpc") rpc = true;
             else if (a == "--system" || a == "-S") tui.system = headless.system = value("--system");
             else if (a == "--no-instructions") tui.load_instructions = headless.load_instructions = false;
             else if (a == "--trust" || a.rfind("--trust=", 0) == 0) continue;  // read before anything else, at the top of main
@@ -1239,6 +1354,10 @@ int main(int argc, char** argv) {
             else if (a == "--harness") tui.harness = headless.harness = value("--harness");
             else if (a == "--accept-dumb-auto") tui.accept_dumb_auto = headless.accept_dumb_auto = true;
             else if (a == "--bare") tui.bare = true;
+            else if (a == "--ui") {
+                tui.ui = value("--ui");
+                if (*tui.ui != "tui" && *tui.ui != "nvim") throw std::runtime_error("--ui takes nvim or tui");
+            }
             else if (a == "--xtc") {
                 // --xtc P or --xtc P,T (threshold defaults to 0.1)
                 std::string v = value("--xtc");
@@ -1314,6 +1433,14 @@ int main(int argc, char** argv) {
             tui.append = headless.append = false;
         }
         if (headless.append) headless.record = true;
+        if (tui.ui && (rpc || (print && !interactive))) throw std::runtime_error("--ui chooses the interactive interface; -p and --rpc have none");
+        if (rpc) {
+            // Sessions are opened over the protocol (createConversation, maic.session.resume), not by flags.
+            if (print || interactive || continue_last || resume || !rest.empty() || !tui.context.empty() || !tui.images.empty()) {
+                throw std::runtime_error("--rpc takes the agent's flags (--model, --mode, ...); sessions, prompts, files and images come over the protocol");
+            }
+            return maic::run_rpc(tui);
+        }
         if (print && interactive) {
             // An interactive session that starts with the prompt: interactive transcript rules apply, whatever
             // the order of the flags. --json has no meaning here.
@@ -1322,7 +1449,17 @@ int main(int argc, char** argv) {
             return maic::run_tui(tui);
         }
         if (print) return maic::run_headless(headless);
-        if (rest.empty()) return maic::run_tui(tui);
+        if (rest.empty()) {
+            // The agent's flags as given, for `maic --rpc` when nvim is the interface: all but --ui and the session
+            // flags (the interface resumes the session over the protocol).
+            for (size_t i = 0; i < args.size(); ++i) {
+                const std::string& a = args[i];
+                if (a == "--ui") ++i;
+                else if (a == "-r" || a == "--resume") i += i + 1 < args.size() && args[i + 1][0] != '-';
+                else if (a != "-c" && a != "--continue" && a != "--append" && a != "--no-append") tui.engine_args.push_back(a);
+            }
+            return maic::run_tui(tui);
+        }
 
         const std::string& cmd = rest[0];
         std::vector<std::string> cargs(rest.begin() + 1, rest.end());
@@ -1394,6 +1531,7 @@ int main(int argc, char** argv) {
             return rc;
         }
         if (cmd == "settings") return cmd_settings(cargs);
+        if (cmd == "trust" && cargs == std::vector<std::string>{"imports", "--approve"}) return cmd_approve_imports();
         if (cmd == "trust" || cmd == "untrust") {
             std::cout << maic::trust_command(cmd, cargs, std::filesystem::current_path()) << "\n";
             return 0;
@@ -1442,6 +1580,45 @@ int main(int argc, char** argv) {
             if (r.ok) std::cout << r.output;
             else std::cerr << "maic lua: " << r.output << (r.output.empty() || r.output.back() != '\n' ? "\n" : "");
             return r.ok ? 0 : 1;
+        }
+        if (cmd == "protocol" && cargs.size() == 1 && cargs[0] == "hash") {
+            std::cout << maic::protocol::protocol_hash() << "\n";
+            return 0;
+        }
+        if (cmd == "protocol" && !cargs.empty() && cargs[0] == "check") {
+            bool openai = false, blind = false;
+            std::vector<std::filesystem::path> files;
+            for (size_t i = 1; i < cargs.size(); ++i) {
+                if (cargs[i] == "--openai") {
+                    openai = true;
+                    continue;
+                }
+                if (cargs[i] == "--blind") {
+                    blind = true;
+                    continue;
+                }
+                std::error_code ec;
+                if (std::filesystem::is_directory(cargs[i], ec)) {
+                    std::vector<std::filesystem::path> in;
+                    for (const auto& e : std::filesystem::directory_iterator(cargs[i], ec)) {
+                        if (e.path().extension() == ".jsonl") in.push_back(e.path());
+                    }
+                    std::sort(in.begin(), in.end());
+                    files.insert(files.end(), in.begin(), in.end());
+                } else {
+                    files.emplace_back(cargs[i]);
+                }
+            }
+            if (files.empty()) throw std::runtime_error("usage: maic protocol check [--openai|--blind] FILE|DIR...");
+            int bad = 0;
+            for (const auto& f : files) {
+                size_t events = 0;
+                auto v = maic::protocol::check_file(f.string(), openai, &events, blind);
+                if (v) ++bad;
+                std::cout << (v ? "FAIL  " : "ok    ") << f.string() << ": " << (v ? maic::protocol::describe(*v) : std::to_string(events) + " events conform") << "\n";
+            }
+            std::cout << files.size() << " stream" << (files.size() == 1 ? "" : "s") << ", " << bad << " with a violation\n";
+            return bad ? 1 : 0;
         }
         if (cmd == "tools" && !cargs.empty() && cargs[0] == "check") {
             // Every manifest, good or bad, with the reason: the loader's notices plus the ones that loaded.
@@ -1642,6 +1819,7 @@ int main(int argc, char** argv) {
             if (!cargs.empty() && cargs[0] == "time") return cmd_sessions_time(cargs);
             if (!cargs.empty() && cargs[0] == "name") return cmd_sessions_name(cargs);
             if (!cargs.empty() && cargs[0] == "read") return cmd_sessions_read(cargs);
+            if (!cargs.empty() && cargs[0] == "output") return cmd_sessions_output(cargs);
             if (!cargs.empty() && cargs[0] == "rehome") return cmd_sessions_rehome(cargs);
             if (cargs.size() >= 2 && (cargs[0] == "path" || cargs[0] == "export")) {
                 auto s = maic::find_session(cargs[1]);
@@ -1709,6 +1887,11 @@ int main(int argc, char** argv) {
 
         auto services = maic::load_services(maic::root_dir() / "services");
         if (cmd == "status") {
+            try {
+                maic::audit_gate(maic::load_settings());
+            } catch (const std::exception&) {
+                // a broken settings file must not hide the services; the commands that need settings report it
+            }
             maic::StatusReport report = maic::status_report(services);
             try {
                 report.lazy_lock = maic::lazy_lock_summary(maic::lazy_lock_state(maic::lazy_lock_path(maic::load_settings().lazy_lock)));

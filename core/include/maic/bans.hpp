@@ -4,6 +4,7 @@
 
 #include <regex.h>
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -26,9 +27,25 @@ namespace maic {
 // expanded. Anything else is one entry. Throws when the file cannot be read.
 std::vector<std::string> expand_ban_entry(const std::string& value);
 
+// A string or pattern entry may name a steer action for its hits instead of the cut, tell and re-ask:
+// `{ "kubernetes|helm chart", steer = "drop", note = "..." }` (docs/bans.md, engine-protocol.md section 11).
+struct BanSteer {
+    std::string action;  // "" for none: steer, drop, interrupt, keep, halt
+    std::string note;
+};
+
+// A ban entry with a steer that fired: its action, note, and which entry ({list, index}, never the matched text).
+struct BanHit {
+    std::string action, note;
+    std::string list;  // "strings" or "patterns"
+    size_t index = 0;
+};
+
 struct Bans {
     std::vector<std::string> strings;
     std::vector<std::string> patterns;
+    std::vector<BanSteer> string_steers;   // beside strings, by index; shorter means none for the rest
+    std::vector<BanSteer> pattern_steers;  // beside patterns
     std::vector<nlohmann::json> tokens;  // integers (token ids) or strings (for servers that accept them)
     int retries = 3;
     std::string replacement = "[banned]";
@@ -36,6 +53,8 @@ struct Bans {
     int window = 64;
 
     bool empty() const { return strings.empty() && patterns.empty() && tokens.empty(); }
+    // Layers add up: another file's entries after these, steers kept beside their entries.
+    void add(const Bans& more);
     nlohmann::json to_json() const;
     static Bans from_json(const nlohmann::json& j);
 };
@@ -59,6 +78,8 @@ public:
 
     bool triggered() const { return !hit_.empty(); }
     const std::string& hit() const { return hit_; }
+    // The steer of the entry that triggered, when it names one. Such an entry cuts in replace mode too.
+    std::optional<BanHit> hit_steer() const;
     const std::string& clean() const { return clean_; }  // everything released so far
 
 private:
@@ -72,7 +93,12 @@ private:
     std::string clean_;
     std::string hit_;
     size_t longest_ = 0;
+    const BanSteer* steer_of(const std::string& list, size_t index) const;
+
     std::vector<regex_t> res_;
+    std::vector<size_t> re_index_;  // each compiled pattern's index in bans_.patterns
+    std::string hit_list_;
+    size_t hit_index_ = 0;
     std::vector<std::string> bad_;
     std::string rtext_;    // text past the literal stage, not yet released by the regex stage
     size_t rscan_ = 0;     // rtext_ before this is known clean

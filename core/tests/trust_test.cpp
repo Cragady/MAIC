@@ -5,6 +5,7 @@
 #include "check.hpp"
 
 #include "maic/agent.hpp"
+#include "maic/audit_trail.hpp"
 #include "maic/instructions.hpp"
 #include "maic/paths.hpp"
 #include "maic/settings.hpp"
@@ -376,13 +377,127 @@ int main() {
         expect(trust_status(project_dir(dir)).level == "standard", "the directory's tier is still the global default");
     }
 
+    section("steering: a project only narrows, and never sets clients");
+    {
+        fs::path dir = g_home / "dev" / "steady";
+        write_file(dir / ".maic" / "settings.lua", "return { steering = { actions = { 'interrupt', 'keep', 'halt' }, drop_trim = 'all', clients = { remote = 'none' } } }\n");
+        trust_dir(project_dir(dir), Origin::Local, "", "sandbox");
+        Settings s = load_settings(dir);
+        expect(s.steering.actions == std::vector<std::string>{"interrupt", "keep", "halt"} && s.steering.drop_trim == "all" && s.steering.clients_remote.size() == 6 &&
+                   s.steering.from["actions"].find("steady") != std::string::npos,
+               "the project removes actions and sets drop's trim; clients stays the global file's");
+        expect(contains(joined(s.warnings), "steering.clients is ignored"), "clients in a project is a warning naming the file");
+        expect(!s.steering.allows("drop", false) && s.steering.allows("halt", true), "allows: in actions and the client side's list");
+
+        fs::path wide = g_home / "dev" / "widening";
+        write_file(wide / ".maic" / "settings.lua", "return { steering = { actions = { 'steer' } }, agents = { explore = { steering = { actions = { 'interrupt' } } } } }\n");
+        trust_dir(project_dir(wide), Origin::Local, "", "sandbox");
+        write_file(g_home / ".config" / "maic" / "settings.lua", "return { steering = { actions = { 'interrupt', 'keep' } } }\n");
+        std::string why;
+        try {
+            load_settings(wide);
+        } catch (const std::exception& e) {
+            why = e.what();
+        }
+        expect(contains(why, "steer is not allowed above; this layer can only remove actions"), "a project cannot add an action the global file took away: " + why);
+        write_file(g_home / ".config" / "maic" / "settings.lua", "return { bans = { patterns = { { 'kubernetes', steer = 'further' } } } }\n");
+        why.clear();
+        try {
+            load_settings(g_home);
+        } catch (const std::exception& e) {
+            why = e.what();
+        }
+        expect(contains(why, "further never is"), "a ban never names further: " + why);
+        fs::remove(g_home / ".config" / "maic" / "settings.lua");
+        fs::path scout = g_home / "dev" / "scouting";
+        write_file(scout / ".maic" / "settings.lua", "return { agents = { explore = { steering = { actions = { 'interrupt', 'keep', 'halt' }, clients = { remote = 'none' } } } } }\n");
+        trust_dir(project_dir(scout), Origin::Local, "", "sandbox");
+        Settings a = load_settings(scout);
+        const AgentDef* explore = find_agent_def(a.agents, "explore");
+        expect(explore && explore->steering["actions"].size() == 3 && !explore->steering.contains("clients") && contains(joined(a.warnings), "explore.steering.clients is ignored"),
+               "an agent's steering narrows the same keys; clients in a project's agent is dropped with a warning");
+    }
+
+    section("audit.lua is the user's alone: a project can never set any of it");
+    {
+        fs::path audit = g_home / ".config" / "maic" / "audit.lua";
+        fs::path dir = g_home / "dev" / "audit-sneaky";
+        write_file(dir / ".maic" / "audit.lua", "return { enabled = true, stale_days = 1 }\n");
+        write_file(dir / ".maic" / "settings.lua", "return { audit = { enabled = true, archive = '/tmp/x' }, enabled = true, mode = 'plan' }\n");
+        trust_dir(project_dir(dir), Origin::Local, "", "sandbox");
+        Settings s = load_settings(dir);
+        expect(!s.audit.enabled && s.audit.stale_days == 14 && s.audit.archive == "off" && s.audit.every_seconds == 86400 && s.mode == "plan",
+               "off by default; a trusted project's .maic/audit.lua and an `audit` table in its settings change nothing");
+        write_file(audit, "return { enabled = true, every = '12h', stale_days = 3, archive = '~/trail-archive', order = 'newest-first', live_window = '2d' }\n");
+        s = load_settings(dir);
+        expect(s.audit.enabled && s.audit.every_seconds == 43200 && s.audit.stale_days == 3 && s.audit.archive == g_home.string() + "/trail-archive" &&
+                   s.audit.order == "newest-first" && s.audit.live_window_seconds == 2 * 86400 && s.audit.enforce == "judge-and-hold",
+               "~/.config/maic/audit.lua turns it on; durations parse and ~ expands");
+        for (const auto& [text, error] : std::vector<std::pair<std::string, std::string>>{
+                 {"return { stale_days = 0 }", "stale_days must be a whole number of at least 1"},
+                 {"return { every = 'soon' }", "every \"soon\" is not a duration"},
+                 {"return { order = 'random' }", "order must be one of \"stale-first\""},
+                 {"return { enforce = 'block' }", "enforce must be one of \"judge-and-hold\", \"scan-and-continue\", \"notify\""},
+                 {"return { archive = 'relative/dir' }", "archive must be \"off\" or an absolute directory"},
+                 {"return { enabled = 'yes' }", "enabled must be true or false"},
+                 {"return { judge_thinking = 1 }", "judge_thinking must be true or false"},
+                 {"return { judge_max_tokens = 0 }", "judge_max_tokens must be a whole number of at least 1"},
+                 {"return { enabld = true }", "enabld is not an audit trail setting"}}) {
+            write_file(audit, text + "\n");
+            std::string err;
+            try {
+                load_settings(dir);
+            } catch (const std::exception& e) {
+                err = e.what();
+            }
+            expect(contains(err, audit.string() + ": " + error), text + ": " + err);
+        }
+        // It runs at the user's Lua level, like diction.lua: full by default, sandboxed under global_lua = "sandbox".
+        fs::path global = g_home / ".config" / "maic" / "settings.lua";
+        write_file(audit, "return { enabled = os.getenv('HOME') ~= nil }\n");
+        expect(load_settings(dir).audit.enabled, "full Lua by default");
+        write_file(global, "return { global_lua = 'sandbox' }\n");
+        write_file(audit, "local f = io.open('/dev/null')\nreturn { enabled = true }\n");
+        std::string err;
+        try {
+            load_settings(dir);
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
+        expect(contains(err, audit.string() + ":1:") && contains(err, "io is not available"), "global_lua = \"sandbox\" runs it sandboxed: " + err);
+        fs::remove(global);
+        fs::remove(audit);
+        expect(write_default_audit_settings() && !write_default_audit_settings(), "maic audit-trail init writes audit.lua once and never overwrites it");
+        AuditSettings defaults;
+        s = load_settings(dir);
+        expect(!s.audit.enabled && s.audit.every == defaults.every && s.audit.grace == defaults.grace && s.audit.live_window == defaults.live_window &&
+                   s.audit.stale_days == defaults.stale_days && s.audit.order == defaults.order && s.audit.enforce == defaults.enforce &&
+                   s.audit.start_services == defaults.start_services && s.audit.judge == defaults.judge && s.audit.judge_thinking == defaults.judge_thinking &&
+                   s.audit.judge_max_tokens == defaults.judge_max_tokens && s.audit.file_mb == defaults.file_mb &&
+                   s.audit.live_mb == defaults.live_mb && s.audit.chunk_mb == defaults.chunk_mb && s.audit.archive == defaults.archive,
+               "the written file holds the defaults");
+        std::istringstream lines(read_file(audit));
+        std::string prev, line;
+        size_t keys = 0;
+        bool commented = true;
+        while (std::getline(lines, line)) {
+            if (line.rfind("  ", 0) == 0 && line.find(" = ") != std::string::npos && line.rfind("  --", 0) != 0) {
+                ++keys;
+                commented = commented && prev.rfind("  --", 0) == 0;
+            }
+            prev = line;
+        }
+        expect(keys == 15 && commented, "every one of its 15 keys has a comment");
+        fs::remove(audit);
+    }
+
     section("which directories are projects; $HOME and / never");
     {
         write_file(g_home / "MAIC.md", "home rules\n");
-        write_file(g_home / ".maic" / "settings.lua", "return { mode = 'auto' }\n");
+        write_file(g_home / ".maic" / "settings.lua", "return { mode = 'plan' }\n");
         expect(project_dirs(g_home).empty() && project_dirs("/").empty(), "$HOME and / are never offered");
         expect(contains(joined(trust_notices(g_home)), "is $HOME, never a project: its files are ignored"), "with $HOME as the workspace, a notice says its files are ignored");
-        expect(load_settings(g_home).mode == "manual", "$HOME's .maic/settings.lua is not applied");
+        expect(load_settings(g_home).mode == "auto", "$HOME's .maic/settings.lua is not applied");
         bool home_md = false;
         for (const auto& f : load_instructions(g_home)) home_md = home_md || f.path == g_home / "MAIC.md";
         expect(!home_md, "$HOME's MAIC.md is not given to the model");
@@ -413,7 +528,7 @@ int main() {
         git_as(repo, "me@example.com", "init -q");
         auto chain = config_chain(ws);
         expect(chain.size() == 2 && chain[0] == repo && chain[1] == ws, "a workspace in a .git project two levels below $HOME reads up to the root only");
-        expect(load_settings(ws).mode == "manual", "a settings file above the root is not applied");
+        expect(load_settings(ws).mode == "auto", "a settings file above the root is not applied");
         bool above = false;
         for (const auto& f : load_instructions(ws)) above = above || f.path == top / "MAIC.md";
         expect(!above, "nor its instructions");
@@ -708,6 +823,23 @@ int main() {
 
                "every request is an audit line naming the device:\n" + audit);
         set_step_up_verifier({});
+    }
+
+    section("auto at start: only where every project directory is trusted fully");
+    {
+        fs::path plain = g_home / "autostart" / "plain", proj = g_home / "autostart" / "proj", sub = proj / "src";
+        fs::create_directories(plain);
+        fs::create_directories(sub);
+        write_file(proj / "MAIC.md", "rules\n");
+        expect(contains(auto_held(plain), "nothing here is trusted"), "a directory with nothing to trust starts in manual");
+        expect(contains(auto_held(g_home), "nothing here is trusted"), "so does $HOME");
+        expect(contains(auto_held(sub), proj.string() + " is not trusted"), "an untrusted project directory holds auto, named");
+        trust_dir(project_dir(proj), Origin::Local, "", "sandbox");
+        expect(contains(auto_held(sub), "trusted with sandbox Lua, not fully"), "trusted sandboxed is not trusted fully");
+        trust_dir(project_dir(proj), Origin::Local, "", "full");
+        expect(auto_held(sub).empty() && auto_held(proj).empty(), "trusted fully: auto starts");
+        write_file(sub / "AGENTS.md", "nested\n");
+        expect(contains(auto_held(sub), " is not trusted"), "a new instruction file below holds auto again until it is trusted");
     }
 
     section("the agent can't reach any of it");

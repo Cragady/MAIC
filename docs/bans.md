@@ -47,3 +47,19 @@ bans = {
 ## What the model sees
 
 When a ban fires the reply so far (the clean part) is kept as the assistant's turn, followed by a system line: the phrase it started, the full list of bans, and the instruction to continue from exactly where it stopped. After `retries` cuts the filter switches to replace mode for that reply and the text streams through with the match replaced. The transcript records the clean text only.
+
+## Steers instead of re-asking
+
+A string or pattern entry written as a table names one of the steering actions for its hits ([design/engine-protocol.md, section 11](design/engine-protocol.md#steers-from-bans)), in place of the cut, tell and re-ask above:
+
+```lua
+bans = {
+  patterns = {
+    "as an ai( language model)?",                                                  -- cut, tell, re-ask
+    { "kubernetes|helm chart", steer = "drop", note = "This project has no cluster; leave deployment out." },
+    { "curl [^|]*[|] *(ba)?sh", steer = "halt" },
+  },
+}
+```
+
+In a JSON settings file the entry is `{"text": "...", "steer": "drop", "note": "..."}`. On a hit the filter cuts before the match as always, so it never reaches a screen, and the engine applies the action as a person's steer with `trigger: "ban"`: `drop` trims the partial reply (to before the match at least, further by `steering.drop_trim`) and the turn goes on with drop's text and the note; `steer` goes on with the note; `interrupt` pauses the turn for a person (`maic -p`, with no one to resume it, ends it); `keep` ends the turn with the clean part; `halt` discards it and tells the model so. `maic.steer.applied` names the entry (`ban: {list, index}`), never the matched text. An entry that fires again past `retries` halts the turn; in replace mode, after `retries`, a steer entry still cuts. Which actions an entry may name is `steering.ban_actions` (all but `further`, which would go deeper into the banned topic; naming it is an error when the settings load). Token bans never produce text, so they name nothing. Bans set with `:ban` are plain entries.

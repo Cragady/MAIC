@@ -1,5 +1,6 @@
 #pragma once
 
+#include "maic/audit_trail.hpp"
 #include "maic/bans.hpp"
 #include "maic/harness.hpp"
 #include "maic/instructions.hpp"
@@ -7,6 +8,7 @@
 #include "maic/lua_tools.hpp"
 #include "maic/agent_def.hpp"
 #include "maic/nvim_host.hpp"
+#include "maic/sandbox.hpp"
 #include "maic/script_tools.hpp"
 #include "maic/session.hpp"
 #include "maic/settings.hpp"
@@ -35,12 +37,25 @@ struct ApprovalRequest {
     std::string preview;        // for writes: the lines that would change
     std::filesystem::path path;  // the file or directory the action is about; empty for a command
     std::optional<std::string> proposed;  // for a write_file, edit_file, multi_edit or apply_patch: the file's content after it
+    std::string agent;                    // a subagent's request: the agent asking ("" for the session's own)
 };
 
 // The user's answer; `feedback` is a sentence for the model when the answer is No ("use the test config").
+// `withdrawn`: a steer took the approval's place, and `feedback` is what the call's result says instead.
 struct ApprovalAnswer {
     Approval choice = Approval::No;
     std::string feedback;
+    bool withdrawn = false;
+};
+
+// What a turn its front end stopped does next (AgentEvents::stopped): a cancel ends it; the steering actions of
+// docs/design/engine-protocol.md section 11 keep the partial reply or not, and go on, pause or end.
+struct Redirect {
+    enum class Then { End, Continue, Pause, Keep, Halt };
+    Then then = Then::End;
+    std::optional<std::string> kept;  // the partial reply as it stays in the history (trimmed for a drop); nullopt: none
+    std::string say;                  // Continue: the user turn the model gets; Halt: the halt message
+    std::string unrun;                // the result of each call the stop leaves unrun
 };
 
 // One line of the model's plan (the todo tool).
@@ -50,12 +65,15 @@ struct TodoItem {
 };
 
 // What a front end (the CLI now, the server later) implements to follow and steer a turn.
-// Every method is called from the agent's worker thread.
+// Every method is called from the agent's worker thread, except on_tool_output (below).
 class AgentEvents {
 public:
     virtual ~AgentEvents() = default;
     virtual void on_text(std::string_view delta, bool thinking) = 0;
     virtual void on_tool_call(const std::string& summary) = 0;
+    // Right before on_tool_call: the call as the model gave it (its id, name and arguments). A subagent's arrive
+    // while the parent's task call runs, with the id as "<agent>:<call id>".
+    virtual void on_tool_proposed(const ToolCall& call) { (void)call; }
     virtual void on_tool_result(const std::string& text, bool ok) = 0;
     virtual void on_notice(const std::string& text) = 0;
     // Blocks until the user answers.
@@ -75,12 +93,34 @@ public:
     // A tool call that changed this file finished without error (a write, an edit, a patch, a move's two ends,
     // a delete; a Lua tool's maic.write).
     virtual void on_file_written(const std::filesystem::path& path, const std::string& tool) { (void)path, (void)tool; }
+    // A running command's output, for display only (the model gets the result): run_shell's output, a script
+    // tool's stderr, what a Lua tool's maic.shell prints. `chunk` starts at byte `offset` of the call's stream; a
+    // gap between two chunks is output dropped because the front end fell behind. Called between on_tool_call
+    // and on_tool_result, in order, from the sandbox's delivery thread while the worker waits for the tool. A
+    // subagent's calls arrive as "<agent>:<call id>".
+    virtual void on_tool_output(const std::string& call_id, OutputStream stream, std::string_view chunk, size_t offset) {
+        (void)call_id, (void)stream, (void)chunk, (void)offset;
+    }
+    // Right before on_tool_result, when the call's whole output outgrew the model's cap and was kept beside the
+    // session (`file`, its .out; Agent::full_output). Display only: the result is what the model got.
+    virtual void on_tool_full_output(const std::filesystem::path& file) { (void)file; }
+    // Messages typed during the turn are about to reach the model, at a boundary between two model calls; `remote`
+    // when one came from a remote client.
+    virtual void on_delivered(const std::vector<std::string>& texts, bool remote) { (void)texts, (void)remote; }
+    // The turn was stopped (its cancel flag rose, or `ban` names a ban entry's steer that fired): what to do now.
+    // The default ends the turn, as a cancel; for a ban that leaves the cut, tell and re-ask of bans.hpp.
+    virtual Redirect stopped(const BanHit* ban) {
+        (void)ban;
+        return {};
+    }
 };
 
 // An action that would change which directories are trusted or at what tier (a write to <state>/trust*, a
 // `maic trust` / `maic untrust` / `maic ... --trust` command). The agent's authorise step never lets one run:
 // the smart harness trips on it, the dumb one refuses it.
 bool touches_trust(const Action& action);
+// Whether the action writes a file the user's own instructions import with their approval (maic trust imports).
+bool changes_approved_import(const Action& action);
 
 class Agent {
 public:
@@ -103,14 +143,28 @@ public:
     std::string add_context_file(const std::filesystem::path& path);
 
     // Messages typed while a turn is running. They reach the model at its next call in the current turn;
-    // deliver_now() also aborts the model call in progress so the next one starts at once. Thread-safe.
-    void post_message(const std::string& text);
+    // deliver_now() also aborts the model call in progress so the next one starts at once. Thread-safe. A message
+    // from a remote client raises the turn's origin to Remote once it is delivered (docs/design/engine-protocol.md,
+    // section 6): what the model does next is shaped by remote input, so the rest of the turn is asked as remote.
+    void post_message(const std::string& text, Origin origin = Origin::Local);
     void deliver_now();
     size_t queued() const;
-    std::vector<std::string> take_queued();
+    struct Queued {
+        std::string text;
+        Origin origin;
+    };
+    std::vector<Queued> take_queued();
+    // The running turn's origin: submit's, raised to Remote when a remote message was delivered into it.
+    Origin turn_origin() const { return turn_origin_.load(); }
 
     // Every turn is also written here when set.
     void set_log(SessionLog* log);
+
+    // A command's whole output (run_shell, a script tool), kept beside the session file when it outgrows what the
+    // model is given, at most full_output_max_mb of it (FullOutputWriter); settings `full_output` and
+    // `full_output_max_mb`. Only with a log.
+    bool full_output = true;
+    size_t full_output_max_mb = 64;
 
     // Continues an earlier session: its messages become the history, and the model is told it resumed.
     void restore(std::vector<Message> messages);
@@ -193,8 +247,8 @@ public:
     void set_agent_def(const AgentDef& def);
     const std::string& agent_name() const { return agent_name_; }  // "" for a session
 
-    // Names of instruction files (MAIC.md, AGENTS.md, ...) looked for beside files the model reads.
-    void set_instruction_names(std::vector<std::string> names);
+    // Which instruction files are read and how (the global settings' `instructions`; docs/instructions.md).
+    void set_instruction_options(InstructionOptions options);
 
     // The harness's second reader. When on ("smart" harness), a model reads the recent conversation and the
     // action before any command or write that the rules would let through without asking, and answers
@@ -205,6 +259,9 @@ public:
     // cheaper one, or the reviewer goes off; off, every action it would review is asked (fail closed). Its
     // tokens count toward budget_tokens, and past reviewer_budget_tokens it goes off the same way.
     bool review_with_model = true;
+    // audit.lua (docs/audit-trail.md): when enabled, every tool call also goes to the audit trail, recorded
+    // session or not. Subagents inherit it.
+    AuditSettings audit;
     std::string reviewer_model;
     std::string small_model;
     long reviewer_budget_tokens = 0;  // 0 = no cap of its own
@@ -238,7 +295,7 @@ public:
     // prompt itself is never rewritten (append-only history).
     void set_system_prefix(const std::string& text);
     void set_rules(std::vector<std::string> new_rules);
-    // When false, no MAIC.md / AGENTS.md is loaded or attached, anywhere.
+    // When false, no instruction file is loaded or attached, anywhere.
     bool load_instruction_files = true;
 
     // Token accounting: the last model call and this session's running totals. Thread-safe.
@@ -247,6 +304,7 @@ public:
         long total_input = 0;
         long total_output = 0;
         int calls = 0;
+        std::map<std::string, int> normalized;  // adapter rules applied to what the providers sent (normalize_openai), by rule
     };
     UsageReport usage() const;
 
@@ -257,11 +315,12 @@ public:
     // subagents get the same host.
     void set_nvim_host(std::shared_ptr<NvimHost> host) { nvim_ = std::move(host); }
 
-    // MAIC.md / AGENTS.md files in effect. Re-read from disk at the start of every turn.
+    // Instruction files in effect. Re-read from disk at the start of every turn, with the nested files on-demand
+    // loading may attach.
     const std::vector<InstructionFile>& instructions() const { return instructions_; }
-    void reload_instructions() {
-        instructions_ = load_instruction_files ? load_instructions(harness_.workspace(), instruction_names_) : std::vector<InstructionFile>{};
-    }
+    void reload_instructions();
+    // Imports of your own files waiting for your approval, as of the last reload (read it while idle).
+    const std::vector<PendingImport>& pending_imports() const { return pending_imports_; }
 
     // The model's current plan, replaced whole by every todo call; cleared with the conversation.
     const std::vector<TodoItem>& todo() const { return todo_; }
@@ -274,8 +333,9 @@ public:
 
 private:
     Message run_tool_call(const ToolCall& call, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel);
+    void audit_tool_call(const nlohmann::json& record, bool ran, bool ok, const std::string& text, AgentEvents& events);
     ToolResult run_task(const nlohmann::json& args, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel, nlohmann::json& record);
-    // Policy, then this session's "always" answers, then the user. Never returns Ask: a No becomes Deny with the
+    // Policy, then this session's "always" answers (local requests only), then the user. Never returns Ask: a No becomes Deny with the
     // user's words, a Trip has already tripped the lock. For Deny and Trip the reason is the text the model
     // sees. Every tool action, built-in or from a Lua tool, goes through here; `record` gets the log fields.
     Decision authorise(const Action& action, const std::string& tool, const std::string& summary, const std::string& preview,
@@ -292,6 +352,9 @@ private:
     // the first turn are appended as system messages instead of rewriting the system prompt.
     void start_or_update_conversation();
     void push(Message m);  // appends to the history and the session log
+    // ChatOptions::normalized for a call to `provider`: counts the rule in usage_ and writes a `normalized` record
+    // {rule, provider, upstream, count}, so a server's departure from OpenAI's shapes is never silent.
+    std::function<void(const std::string&, int)> count_normalized(const Provider& provider);
 
     Harness harness_;
     std::vector<Message> messages_;
@@ -304,10 +367,14 @@ private:
     mutable std::mutex usage_mu_;
     UsageReport usage_;
     mutable std::mutex mailbox_mu_;
-    std::deque<std::string> mailbox_;
+    std::deque<Queued> mailbox_;
+    std::atomic<Origin> turn_origin_{Origin::Local};
     std::vector<ImageData> pending_images_;
     std::atomic<bool> deliver_now_{false};
-    bool drain_mailbox();  // appends queued messages as user turns; true if any
+    bool drain_mailbox(AgentEvents& events);  // appends queued messages as user turns; true if any
+    // Applies a stop the front end decided (AgentEvents::stopped) to the history: the kept part of the reply, then
+    // what the model is told. True when the turn goes on.
+    bool redirected(const Redirect& r, AgentEvents& events);
     void rewrite_log();    // after compaction: a reset record and the new history, so resume sees the same thing
     size_t history_bytes() const;
     std::string summarise(size_t from, size_t to, const std::atomic<bool>& cancel);  // messages [from, to) -> summary text
@@ -330,8 +397,10 @@ private:
     std::vector<ScriptTool> script_tools_;
     std::vector<std::string> tool_notices_;
     nlohmann::json schemas_;  // the built-ins, then the Lua tools, then the script tools
-    std::vector<std::string> instruction_names_ = {"MAIC.md", "AGENTS.md"};
-    std::set<std::string> attached_instructions_;
+    InstructionOptions instruction_options_;
+    std::vector<PendingImport> pending_imports_;
+    std::set<std::filesystem::path> nested_allowed_;        // nested files trusted chain directories hash (nested_allowed)
+    std::set<std::filesystem::path> attached_instructions_;  // nested files attached in this conversation
     std::string last_call_;
     int repeats_ = 0;
     int denials_ = 0;

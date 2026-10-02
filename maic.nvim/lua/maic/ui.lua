@@ -1,0 +1,962 @@
+-- nvim as MAIC's interface: the engine (`maic --rpc`) as this tab's job, JSON-RPC one message per line each way;
+-- the conversation and the input as nvim buffers; approvals, questions, the engine's own questions and the pause
+-- menu as floats. The protocol and its events: MAIC's docs/design/engine-protocol.md.
+local U = {}
+
+local function maic() return require("maic") end
+
+local ns = vim.api.nvim_create_namespace("maic.ui")
+local uv = vim.uv or vim.loop
+
+-- Highlight groups, linked by default so a colorscheme can set its own.
+local groups = { MaicUser = "Title", MaicTool = "Function", MaicToolOk = "DiagnosticOk", MaicToolErr = "DiagnosticError", MaicNotice = "Comment",
+  MaicError = "ErrorMsg", MaicSteer = "WarningMsg", MaicFooter = "NonText", MaicThinking = "Comment" }
+for name, link in pairs(groups) do vim.api.nvim_set_hl(0, name, { link = link, default = true }) end
+
+-- The interface of each tab page.
+local uis = {}
+
+local function alive(ui) return ui and ui.job and vim.api.nvim_buf_is_valid(ui.conv) end
+
+-- This tab's interface, while its engine runs.
+function U.here()
+  local ui = uis[vim.api.nvim_get_current_tabpage()]
+  if alive(ui) then return ui end
+end
+
+-- ---------- the engine ----------
+
+local function request(ui, method, params, cb)
+  if not ui.job then return end
+  local id = ui.next
+  ui.next = id + 1
+  ui.waiting[id] = cb or false
+  vim.fn.chansend(ui.job, vim.json.encode({ jsonrpc = "2.0", id = id, method = method, params = params or vim.empty_dict() }) .. "\n")
+end
+
+local function err_text(e) return (e.data and e.data.message) or e.message or "the engine refused it" end
+
+-- ---------- the conversation buffer ----------
+
+-- Writes into the conversation (unmodifiable between writes); a window whose cursor was on its last line follows.
+local function edit(ui, fn)
+  local buf = ui.conv
+  local n = vim.api.nvim_buf_line_count(buf)
+  local follow = {}
+  for _, w in ipairs(vim.fn.win_findbuf(buf)) do
+    if vim.api.nvim_win_get_cursor(w)[1] >= n then follow[#follow + 1] = w end
+  end
+  vim.bo[buf].modifiable = true
+  fn(buf)
+  vim.bo[buf].modifiable = false
+  local m = vim.api.nvim_buf_line_count(buf)
+  for _, w in ipairs(follow) do pcall(vim.api.nvim_win_set_cursor, w, { m, 0 }) end
+end
+
+local function mark(ui, b)
+  if not b.hl then return end
+  b.mark = vim.api.nvim_buf_set_extmark(ui.conv, ns, b.start, 0, { id = b.mark, end_row = b.stop, end_col = 0, hl_group = b.hl, priority = 150 })
+end
+
+-- Lines [start, stop) after `b` in the buffer moved by `d`, and `b` grew by it.
+local function grow(ui, b, d)
+  if d == 0 then return end
+  for i = #ui.blocks, 1, -1 do
+    local o = ui.blocks[i]
+    if o == b then break end
+    o.start, o.stop = o.start + d, o.stop + d
+  end
+  b.stop = b.stop + d
+end
+
+-- A block of lines at the end: `o.gap` puts a blank line before it, `o.prefix` starts each line, `o.hl` colours
+-- it, `o.id` names it for later deltas.
+local function add(ui, text, o)
+  o = o or {}
+  local b = { prefix = o.prefix or "", hl = o.hl, fold = o.fold }
+  local rows = {}
+  if o.gap and not ui.empty then rows[1] = "" end
+  local first = #rows
+  for _, l in ipairs(vim.split(text, "\n", { plain = true })) do rows[#rows + 1] = b.prefix .. l end
+  edit(ui, function(buf)
+    local n = ui.empty and 0 or vim.api.nvim_buf_line_count(buf)
+    vim.api.nvim_buf_set_lines(buf, n, ui.empty and 1 or n, false, rows)
+    b.start, b.stop = n + first, n + #rows
+  end)
+  ui.empty = false
+  ui.blocks[#ui.blocks + 1] = b
+  if o.id then ui.by_id[o.id] = b end
+  mark(ui, b)
+  return b
+end
+
+local function append(ui, b, text)
+  if text == "" then return end
+  local pieces = vim.split(text, "\n", { plain = true })
+  edit(ui, function(buf)
+    local row = b.stop - 1
+    local rows = { (vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or "") .. pieces[1] }
+    for i = 2, #pieces do rows[i] = b.prefix .. pieces[i] end
+    vim.api.nvim_buf_set_lines(buf, row, row + 1, false, rows)
+  end)
+  grow(ui, b, #pieces - 1)
+  mark(ui, b)
+end
+
+local function replace(ui, b, text)
+  local rows = {}
+  for _, l in ipairs(vim.split(text, "\n", { plain = true })) do rows[#rows + 1] = b.prefix .. l end
+  edit(ui, function(buf) vim.api.nvim_buf_set_lines(buf, b.start, b.stop, false, rows) end)
+  grow(ui, b, #rows - (b.stop - b.start))
+  mark(ui, b)
+end
+
+local function notice(ui, text, hl, gap) return add(ui, text, { hl = hl or "MaicNotice", gap = gap }) end
+
+-- A closed fold over `b` in every window showing the conversation (manual folds live in the window; BufWinEnter
+-- makes them again for a window that shows it later).
+local function fold(ui, b)
+  local least = maic().config.fold_output
+  if not least or b.stop - b.start < least then return end
+  b.fold = true
+  for _, w in ipairs(vim.fn.win_findbuf(ui.conv)) do
+    vim.api.nvim_win_call(w, function() vim.cmd(("silent! %d,%dfold"):format(b.start + 1, b.stop)) end)
+  end
+end
+
+local function refold(ui, win)
+  vim.api.nvim_win_call(win, function()
+    vim.cmd("silent! normal! zE")
+    for _, b in ipairs(ui.blocks) do
+      if b.fold then vim.cmd(("silent! %d,%dfold"):format(b.start + 1, b.stop)) end
+    end
+  end)
+end
+
+function U.foldtext()
+  local n = vim.v.foldend - vim.v.foldstart + 1
+  return ("  ▸ %d lines: %s"):format(n, vim.trim(vim.fn.getline(vim.v.foldstart)))
+end
+
+local function bar_text(s) return (tostring(s or ""):gsub("%%", "%%%%")) end
+
+-- The winbar of the conversation: the session's title, model, mode and what it is doing.
+local function status(ui)
+  local parts = { "MAIC" }
+  if ui.title and ui.title ~= "" then parts[#parts + 1] = ui.title end
+  if ui.model then parts[#parts + 1] = ui.model end
+  if ui.mode then parts[#parts + 1] = ui.mode end
+  if ui.paused then
+    parts[#parts + 1] = "PAUSED: <C-q> resumes"
+  elseif ui.activity and ui.activity ~= "idle" then
+    parts[#parts + 1] = ui.activity
+  end
+  if not ui.job then parts[#parts + 1] = "engine stopped" end
+  local text = " " .. bar_text(table.concat(parts, " · "))
+  for _, w in ipairs(vim.fn.win_findbuf(ui.conv)) do vim.wo[w].winbar = text end
+end
+
+local function fire(ui, pattern, data)
+  data.session = ui.session
+  pcall(vim.api.nvim_exec_autocmds, "User", { pattern = pattern, modeline = false, data = data })
+end
+
+local function absolute(ui, path)
+  if not path or path == "" then return "" end
+  if path:sub(1, 1) ~= "/" and ui.workspace then path = ui.workspace .. "/" .. path end
+  return vim.fs.normalize(path)
+end
+
+-- ---------- floats: approvals, questions, the engine's questions, the pause menu ----------
+
+local function close_float(ui)
+  local f = ui.float
+  ui.float = nil
+  if f and vim.api.nvim_win_is_valid(f.win) then
+    local back = f.back
+    vim.api.nvim_win_close(f.win, true)
+    if back and vim.api.nvim_win_is_valid(back) and vim.api.nvim_get_current_tabpage() == ui.tab then vim.api.nvim_set_current_win(back) end
+  end
+end
+
+-- A float over the bottom of the conversation with `lines` and `keys` (key = function), focused when this tab is
+-- the interface's.
+local function float(ui, kind, title, lines, keys, id)
+  close_float(ui)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].bufhidden = "wipe"
+  local width = #title + 4
+  for _, l in ipairs(lines) do width = math.max(width, vim.fn.strdisplaywidth(l) + 2) end
+  local conv = vim.fn.win_findbuf(ui.conv)[1]
+  local cfg
+  if conv and vim.api.nvim_win_get_tabpage(conv) == vim.api.nvim_get_current_tabpage() then
+    local cw, ch = vim.api.nvim_win_get_width(conv), vim.api.nvim_win_get_height(conv)
+    width = math.max(math.min(width, cw - 4), 10)
+    local height = math.min(#lines, math.max(ch - 3, 1))
+    cfg = { relative = "win", win = conv, row = math.max(ch - height - 2, 0), col = 1, width = width, height = height }
+  else
+    width = math.min(width, vim.o.columns - 4)
+    local height = math.min(#lines, vim.o.lines - 6)
+    cfg = { relative = "editor", row = math.floor((vim.o.lines - height) / 2), col = math.floor((vim.o.columns - width) / 2), width = width, height = height }
+  end
+  cfg.border, cfg.title, cfg.style = "rounded", " " .. title .. " ", "minimal"
+  local enter = vim.api.nvim_get_current_tabpage() == ui.tab
+  local back = vim.api.nvim_get_current_win()
+  local win = vim.api.nvim_open_win(buf, enter, cfg)
+  ui.float = { win = win, buf = buf, kind = kind, id = id, back = enter and back or nil }
+  for key, fn in pairs(keys) do
+    vim.keymap.set("n", key, fn, { buffer = buf, nowait = true, silent = true, desc = "MAIC: " .. kind })
+  end
+end
+
+local show_next
+
+local function approval_lines(e)
+  local lines = { e.summary or "", "why asking: " .. (e.reason or "") .. (e.origin == "remote" and "  [REMOTE REQUEST]" or "") }
+  local preview = vim.split(e.preview or "", "\n", { plain = true })
+  if preview[#preview] == "" then table.remove(preview) end
+  for i = 1, math.min(#preview, 14) do lines[#lines + 1] = "  " .. preview[i] end
+  local covers = e.always_covers or (e.tool == "run_shell" and "this program" or "this file")
+  lines[#lines + 1] = "[y] yes  [n] no  [N] no, and say why  [a] always: " .. covers .. " (this session)  [t] trip the harness"
+  if e.path and e.path ~= "" then lines[#lines + 1] = "[e] open the file" .. (e.proposed_size and "  [d] diff the proposed content in a new tab" or "") end
+  return lines
+end
+
+local function answer(ui, e, choice, feedback)
+  table.remove(ui.asks, 1)
+  close_float(ui)
+  request(ui, "maic.approval.answer", { session = ui.session, approval = e.id, choice = choice, feedback = feedback }, function(_, err)
+    if err then notice(ui, "✗ " .. err_text(err), "MaicError") end
+  end)
+  show_next(ui)
+end
+
+-- A window to open a file in: the previous one unless it is MAIC's or a float, else any plain one in the tab.
+local function editing_window(ui)
+  local function plain(w)
+    local b = vim.api.nvim_win_get_buf(w)
+    return vim.api.nvim_win_get_config(w).relative == "" and b ~= ui.conv and b ~= ui.input and vim.bo[b].buftype == ""
+  end
+  local prev = vim.fn.win_getid(vim.fn.winnr("#"))
+  if prev ~= 0 and plain(prev) then return prev end
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if plain(w) then return w end
+  end
+end
+
+local function open_file(ui, path)
+  close_float(ui)
+  local w = editing_window(ui)
+  if w then
+    vim.api.nvim_set_current_win(w)
+  else
+    vim.cmd("aboveleft split")
+  end
+  vim.cmd("drop " .. vim.fn.fnameescape(absolute(ui, path)))
+end
+
+-- The file against the proposed content, both diffthis, in a new tab; the scratch side is read-only.
+local function diff(ui, e)
+  request(ui, "maic.approval.proposed", { session = ui.session, approval = e.id }, function(r, err)
+    if err or type(r) ~= "table" or type(r.text) ~= "string" then
+      vim.notify("maic.nvim: no proposed content to diff for this call", vim.log.levels.WARN)
+      return
+    end
+    local path = absolute(ui, e.path)
+    vim.cmd("tabnew " .. vim.fn.fnameescape(path))
+    vim.cmd("diffthis")
+    vim.cmd("vnew")
+    local buf = vim.api.nvim_get_current_buf()
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(r.text, "\n", { plain = true }))
+    vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].modifiable = "nofile", "wipe", false
+    vim.bo[buf].filetype = vim.filetype.match({ filename = path }) or ""
+    pcall(vim.api.nvim_buf_set_name, buf, path .. " (proposed)")
+    vim.cmd("diffthis")
+  end)
+end
+
+local function show_approval(ui, e)
+  local function choose(c) return function() answer(ui, e, c) end end
+  local keys = { y = choose("yes"), Y = choose("yes"), n = choose("no"), ["<Esc>"] = choose("no"), a = choose("always"), A = choose("always"),
+    t = choose("trip"), T = choose("trip") }
+  keys.N = function()
+    vim.ui.input({ prompt = "no, because: " }, function(why)
+      if why then answer(ui, e, "no", why) end
+    end)
+  end
+  keys["<C-c>"] = function()
+    answer(ui, e, "no")
+    U.interrupt(ui)
+  end
+  if e.path and e.path ~= "" then
+    keys.e = function() open_file(ui, e.path) end
+    if e.proposed_size then keys.d = function() diff(ui, e) end end
+  end
+  float(ui, "approval", "approve?", approval_lines(e), keys, e.id)
+end
+
+local function show_question(ui, q)
+  local lines = { q.text }
+  for i, o in ipairs(q.options or {}) do lines[#lines + 1] = ("[%d] %s"):format(i, o) end
+  lines[#lines + 1] = (#(q.options or {}) > 0 and "a number picks; " or "") .. "<CR> types an answer; <Esc> gives none"
+  local function reply(text)
+    table.remove(ui.asks, 1)
+    close_float(ui)
+    add(ui, "❯ " .. (text == "" and "(no answer)" or text), { gap = true, hl = "MaicUser" })
+    request(ui, "maic.question.reply", { session = ui.session, question = q.id, text = text })
+    show_next(ui)
+  end
+  local keys = { ["<Esc>"] = function() reply("") end, ["<C-c>"] = function() reply("") end }
+  keys["<CR>"] = function()
+    vim.ui.input({ prompt = "answer: " }, function(text)
+      if text then reply(text) end
+    end)
+  end
+  keys.i = keys["<CR>"]
+  for i, o in ipairs(q.options or {}) do
+    if i <= 9 then keys[tostring(i)] = function() reply(o) end end
+  end
+  float(ui, "question", "the agent asks", lines, keys, q.id)
+end
+
+local show_result
+
+-- The engine's own question about a command (maic.session.command's `ask`): one key answers, Esc is n.
+local function show_confirm(ui, a)
+  local lines = vim.deepcopy(a.lines or {})
+  lines[#lines + 1] = "[" .. table.concat(vim.split(a.keys, ""), "] [") .. "]"
+  local function pick(key)
+    table.remove(ui.asks, 1)
+    close_float(ui)
+    request(ui, "maic.session.command", { session = ui.session, ask = a.id, key = key }, function(r, err) show_result(ui, r, err) end)
+    show_next(ui)
+  end
+  local keys = { ["<Esc>"] = function() pick("n") end, ["<C-c>"] = function() pick("n") end }
+  for _, k in ipairs(vim.split(a.keys, "")) do
+    keys[k] = function() pick(k) end
+    if a.keys == "yn" then keys[k:upper()] = keys[k] end
+  end
+  float(ui, "confirm", a.title or "MAIC asks", lines, keys, a.id)
+end
+
+local function show_pause(ui)
+  local function act(action) return function() U.steer(ui, action) end end
+  float(ui, "pause", "paused", {
+    "[<C-q>] resume  [s] steer  [d] drop  [f] further  [k] keep  [h] halt",
+    "what is in the input goes with s, d and f as their note; <Esc> leaves this to type a message (sending it resumes)",
+  }, { ["<C-q>"] = act("steer"), s = act("steer"), d = act("drop"), f = act("further"), k = act("keep"), h = act("halt"),
+    ["<C-c>"] = function() U.interrupt(ui) end, ["<Esc>"] = function() close_float(ui) end })
+end
+
+-- The first waiting approval or question, else the pause menu while paused.
+function show_next(ui)
+  local first = ui.asks[1]
+  if ui.float and first and ui.float.id == first.id then return end
+  if first then
+    if first.kind == "approval" then show_approval(ui, first.e)
+    elseif first.kind == "question" then show_question(ui, first.e)
+    else show_confirm(ui, first.e) end
+  elseif ui.paused then
+    show_pause(ui)
+  end
+end
+
+local function drop_ask(ui, id)
+  for i, a in ipairs(ui.asks) do
+    if a.id == id then table.remove(ui.asks, i) break end
+  end
+  if ui.float and ui.float.id == id then close_float(ui) end
+  show_next(ui)
+end
+
+-- ---------- events ----------
+
+local function item_text(item)
+  local t = {}
+  for _, p in ipairs(item.content or {}) do t[#t + 1] = p.text or "" end
+  return table.concat(t)
+end
+
+local function user_block(ui, text, extra)
+  local lines = vim.split(text, "\n", { plain = true })
+  for i = 2, #lines do lines[i] = "  " .. lines[i] end
+  add(ui, "❯ " .. table.concat(lines, "\n") .. (extra or ""), { gap = true, hl = "MaicUser" })
+end
+
+local function tool_line(ui, id, summary)
+  ui.tool_calls = ui.tool_calls + 1
+  add(ui, "⏺ " .. summary, { gap = true, hl = "MaicTool", id = id })
+end
+
+-- The output block of a call (a live one is made on its first chunk), under its id and the call's.
+local function output_block(ui, id, call)
+  local b = ui.by_id[id] or (call and ui.by_id["out:" .. call])
+  if not b then b = add(ui, "", { prefix = "  ", id = id }) end
+  ui.by_id[id] = b
+  if call then ui.by_id["out:" .. call] = b end
+  return b
+end
+
+local function finish_output(ui, b, call, text, ok, full)
+  if text ~= "" or b.stop - b.start > 1 then replace(ui, b, text) end
+  if full then append(ui, b, "\n[full output: maic sessions output " .. (full.session or "") .. " " .. (full.call or "") .. "]") end
+  local line = call and ui.by_id["call:" .. call]
+  if line then
+    line.hl = ok and "MaicToolOk" or "MaicToolErr"
+    mark(ui, line)
+  end
+  fold(ui, b)
+end
+
+local function duration(s)
+  if s < 1 then return ("%.0fms"):format(s * 1000) end
+  if s < 60 then return ("%.1fs"):format(s) end
+  if s < 3600 then return ("%dm %ds"):format(s / 60, s % 60) end
+  return ("%dh %dm"):format(s / 3600, (s % 3600) / 60)
+end
+
+local handlers = {}
+
+handlers["maic.input.added"] = function(ui, e)
+  local pics = e.item.maic and e.item.maic.images and #e.item.maic.images or 0
+  user_block(ui, item_text(e.item), pics > 0 and ("\n  (with %d image%s)"):format(pics, pics == 1 and "" or "s") or nil)
+end
+
+handlers["response.created"] = function(ui, e)
+  ui.response, ui.paused = e.response.id, false
+  if ui.float and ui.float.kind == "pause" then close_float(ui) end
+  if not e.response.previous_response_id then
+    ui.t0, ui.tool_calls = uv.hrtime(), 0
+    fire(ui, "MaicTurnStart", { model = e.response.model or ui.model })
+  end
+  status(ui)
+end
+
+handlers["response.output_item.added"] = function(ui, e)
+  local item = e.item
+  if item.type == "message" then
+    add(ui, "", { gap = true, id = item.id })
+  elseif item.type == "reasoning" then
+    add(ui, "", { gap = true, id = item.id, hl = "MaicThinking" })
+  elseif item.type == "function_call" or item.type == "shell_call" then
+    local summary = item.maic and item.maic.summary or item.name or "tool"
+    ui.by_id["out:" .. item.call_id] = nil -- call ids repeat across turns: the newest call owns its id
+    tool_line(ui, "call:" .. item.call_id, summary)
+    local tool, path = "run_shell", ""
+    if item.type == "function_call" then
+      tool = item.name
+      local ok, args = pcall(vim.json.decode, item.arguments or "{}")
+      if ok and type(args) == "table" then path = type(args.path) == "string" and args.path or type(args.from) == "string" and args.from or "" end
+    end
+    fire(ui, "MaicToolCall", { tool = tool, path = absolute(ui, path), summary = summary })
+  elseif item.type == "function_call_output" or item.type == "shell_call_output" then
+    output_block(ui, item.id, item.call_id)
+  end
+end
+
+local function text_delta(ui, e)
+  local b = ui.by_id[e.item_id] or add(ui, "", { gap = true, id = e.item_id })
+  append(ui, b, e.delta)
+end
+handlers["response.output_text.delta"] = text_delta
+handlers["response.reasoning_text.delta"] = text_delta
+
+handlers["response.output_text.done"] = function(ui, e)
+  local b = ui.by_id[e.item_id]
+  if b and e.maic and e.maic.trimmed then replace(ui, b, e.text) end
+end
+
+handlers["response.reasoning_text.done"] = function(ui, e)
+  local b = ui.by_id[e.item_id]
+  if b then fold(ui, b) end
+end
+
+handlers["response.shell_call_output_content.delta"] = function(ui, e)
+  local d = e.delta or {}
+  append(ui, output_block(ui, e.item_id), (d.stdout or "") .. (d.stderr or ""))
+end
+
+handlers["maic.tool.output.delta"] = function(ui, e)
+  if not e.data then return end
+  if not e.output_index then
+    if ui.shell then append(ui, ui.shell, e.data) end -- a `!cmd` of this session's
+    return
+  end
+  append(ui, output_block(ui, e.item_id or e.call, e.call), e.data)
+end
+
+handlers["response.output_item.done"] = function(ui, e)
+  local item = e.item
+  if item.type == "message" and item.maic and item.maic.status == "discarded" then
+    notice(ui, "(the reply above was discarded: the model never sees it)")
+  elseif (item.type == "function_call_output" or item.type == "shell_call_output") and item.maic then
+    local text = item.type == "function_call_output" and (type(item.output) == "string" and item.output or "")
+      or (item.output and item.output[1] and item.output[1].stdout or "")
+    finish_output(ui, output_block(ui, item.id, item.call_id), item.call_id, text, item.maic.ok, item.maic.full_output)
+  end
+end
+
+handlers["maic.notice"] = function(ui, e)
+  if e.kind == "tool_call" then
+    tool_line(ui, "sub:" .. ui.tool_calls, e.text)
+    if e.tool then fire(ui, "MaicToolCall", { tool = e.tool, path = absolute(ui, e.path), summary = (e.text:gsub("^↳ ", "")) }) end
+  elseif e.kind == "tool_result" then
+    local b = add(ui, "", { prefix = "  " })
+    finish_output(ui, b, nil, e.text, e.ok, e.full_output)
+  else
+    notice(ui, (e.level == "info" or not e.level) and e.text or ("✗ " .. e.text), e.level == "error" and "MaicError" or e.level == "warn" and "MaicSteer" or nil)
+  end
+end
+
+handlers["maic.approval.requested"] = function(ui, e)
+  ui.approvals[e.id] = { tool = e.tool or "", path = absolute(ui, e.path), summary = e.summary or "", reason = e.reason or "", verdict = "pending" }
+  fire(ui, "MaicApproval", vim.deepcopy(ui.approvals[e.id]))
+  ui.asks[#ui.asks + 1] = { kind = "approval", id = e.id, e = e }
+  show_next(ui)
+end
+
+handlers["maic.approval.answered"] = function(ui, e)
+  local seen = ui.approvals[e.id]
+  if seen then
+    seen.verdict = e.choice or "no"
+    fire(ui, "MaicApproval", seen)
+    ui.approvals[e.id] = nil
+  end
+  drop_ask(ui, e.id)
+end
+
+handlers["maic.question.asked"] = function(ui, e)
+  ui.asks[#ui.asks + 1] = { kind = "question", id = e.id, e = e }
+  show_next(ui)
+end
+
+handlers["maic.question.answered"] = function(ui, e) drop_ask(ui, e.id) end
+
+handlers["maic.steer.applied"] = function(ui, e)
+  local line = "↯ " .. e.action .. (e.trigger == "ban" and " (a ban's steer)" or "") .. (e.note and e.note ~= "" and (": " .. e.note) or "")
+  if e.waits_for then line = line .. "  (at the next step)" end
+  if e.withdrawn and #e.withdrawn > 0 then line = line .. ("  (withdrew %d waiting)"):format(#e.withdrawn) end
+  notice(ui, line, "MaicSteer")
+end
+
+handlers["maic.turn.paused"] = function(ui, e)
+  ui.paused, ui.response = true, e.response_id
+  status(ui)
+  show_next(ui)
+end
+
+handlers["response.steer.failed"] = function(ui, e)
+  notice(ui, "✗ not delivered: " .. ((e.error and e.error.message) or "the turn ended first"), "MaicError")
+end
+
+handlers["error"] = function(ui, e) notice(ui, "halted: " .. (e.message or ""), "MaicError") end
+
+handlers["maic.file.written"] = function(ui, e)
+  pcall(vim.cmd, "checktime")
+  fire(ui, "MaicFileWritten", { tool = e.tool or "", path = absolute(ui, e.path) })
+end
+
+handlers["maic.session.state"] = function(ui, e)
+  ui.activity = e.activity
+  status(ui)
+end
+
+handlers["maic.session.settings"] = function(ui, e)
+  ui.mode, ui.model = e.mode or ui.mode, e.model or ui.model
+  if e.workspace then ui.workspace = e.workspace end
+  status(ui)
+end
+
+handlers["maic.session.title"] = function(ui, e)
+  ui.title = e.text
+  notice(ui, e.source == "auto" and ("titled: " .. e.text .. "  (/rename changes it)") or ("titled: " .. e.text))
+  status(ui)
+end
+
+local function finished(ui, e, kind)
+  local r = e.response
+  if r.maic and r.maic.final == false then
+    if kind == "maic.response.cancelled" then notice(ui, "paused · <C-q> resumes · s steer · d drop · f further · k keep · h halt", "MaicSteer") end
+    return
+  end
+  if kind == "response.failed" then notice(ui, "✗ " .. ((r.error and r.error.message) or "the response failed"), "MaicError") end
+  local cancelled = kind == "maic.response.cancelled"
+  local secs = ui.t0 and (uv.hrtime() - ui.t0) / 1e9 or 0
+  local model = r.model or ui.model or ""
+  local calls = ui.tool_calls or 0
+  add(ui, "▣ " .. model .. " · " .. duration(secs) .. (calls > 0 and (" · %d tool call%s"):format(calls, calls == 1 and "" or "s") or "")
+    .. (cancelled and " · interrupted" or ""), { gap = true, hl = "MaicFooter" })
+  ui.response, ui.paused = nil, false
+  if ui.float and ui.float.kind == "pause" then close_float(ui) end
+  fire(ui, "MaicTurnEnd", { model = model, tool_calls = calls, seconds = secs, interrupted = cancelled })
+  status(ui)
+end
+for _, kind in ipairs({ "response.completed", "response.failed", "response.incomplete", "maic.response.cancelled" }) do
+  handlers[kind] = function(ui, e) finished(ui, e, kind) end
+end
+
+local function on_message(ui, msg)
+  if msg.method == "maic.event" then
+    local h = handlers[msg.params.type]
+    if h then h(ui, msg.params) end
+  elseif msg.method == "maic.engine" then
+    if msg.params.tripped then notice(ui, "✗ the harness is TRIPPED: " .. (msg.params.reason or ""), "MaicError") end
+    if msg.params.notice then notice(ui, msg.params.notice, msg.params.level == "error" and "MaicError" or nil) end
+  elseif msg.id ~= nil and not msg.method then
+    local cb = ui.waiting[msg.id]
+    ui.waiting[msg.id] = nil
+    if cb then cb(msg.result, msg.error) end
+  end
+end
+
+-- ---------- requests from the person ----------
+
+function show_result(ui, r, err)
+  if err then
+    notice(ui, "✗ " .. err_text(err), "MaicError")
+    return
+  end
+  for i, l in ipairs(r.lines or {}) do notice(ui, l.text, l.level == "info" and "MaicNotice" or "MaicError", i == 1) end
+  if r.ask then
+    ui.asks[#ui.asks + 1] = { kind = "confirm", id = r.ask.id, e = r.ask }
+    show_next(ui)
+  end
+  if r.send then U.submit(ui, r.send) end
+end
+
+-- An engine `:` command, its colon left out ("mode plan").
+function U.command(ui, line)
+  request(ui, "maic.session.command", { session = ui.session, line = line }, function(r, err) show_result(ui, r, err) end)
+end
+
+local function shell(ui, command)
+  if ui.shell_running then
+    notice(ui, "✗ a shell command is still running; <C-c> stops it", "MaicError")
+    return
+  end
+  add(ui, "$ " .. command, { gap = true, hl = "MaicTool" })
+  ui.shell = add(ui, "", { prefix = "  " })
+  ui.shell_running = true
+  request(ui, "maic.session.shell", { session = ui.session, command = command }, function(r, err)
+    ui.shell_running = false
+    if err then
+      notice(ui, "✗ " .. err_text(err), "MaicError")
+    else
+      local b = ui.shell
+      local last = vim.api.nvim_buf_get_lines(ui.conv, b.stop - 1, b.stop, false)[1]
+      if b.stop - b.start > 1 and last == b.prefix then -- the output's own final newline
+        edit(ui, function(buf) vim.api.nvim_buf_set_lines(buf, b.stop - 1, b.stop, false, {}) end)
+        grow(ui, b, -1)
+      end
+      if r and r.exit_code and r.exit_code ~= 0 then append(ui, b, "\n[exit code " .. r.exit_code .. "]") end
+    end
+    fold(ui, ui.shell)
+  end)
+end
+
+local function create(ui, text)
+  request(ui, "response.create", { conversation = ui.session, input = text }, function(r, err)
+    if err then
+      notice(ui, "✗ " .. err_text(err), "MaicError")
+    elseif r.maic and r.maic.queued then
+      notice(ui, "queued: it runs when the turn before it ends")
+    else
+      ui.response = r.id
+    end
+  end)
+end
+
+-- Text from the input: `/cmd` an engine command (`//` a message starting with one slash), `!cmd` a shell command,
+-- a message while a turn runs goes to it (OpenAI's response.steer), else a new turn.
+function U.submit(ui, text)
+  if text:match("^/[^/%s]") then return U.command(ui, text:sub(2)) end
+  if text:match("^//") then text = text:sub(2) end
+  if text:match("^!.") then return shell(ui, text:sub(2)) end
+  if ui.response then
+    request(ui, "response.steer", { previous_response_id = ui.response, input = text }, function(_, err)
+      if err then return create(ui, text) end -- it ended meanwhile: this one starts the next turn
+      if not ui.paused then notice(ui, "queued: it reaches the model at its next step") end
+    end)
+    return
+  end
+  create(ui, text)
+end
+
+-- Sends what the input holds and empties it.
+function U.send(ui)
+  ui = ui or U.here()
+  if not ui then return end
+  if not ui.session then
+    vim.notify("maic.nvim: MAIC is still starting", vim.log.levels.INFO)
+    return
+  end
+  local text = vim.trim(table.concat(vim.api.nvim_buf_get_lines(ui.input, 0, -1, false), "\n"))
+  if text == "" then return end
+  vim.api.nvim_buf_set_lines(ui.input, 0, -1, false, {})
+  U.submit(ui, text)
+end
+
+-- Text into the input, after a blank line when it holds a draft; never sent.
+function U.add_input(ui, text)
+  local lines = vim.split(text, "\n", { plain = true })
+  local have = vim.api.nvim_buf_get_lines(ui.input, 0, -1, false)
+  if #have == 1 and have[1] == "" then
+    vim.api.nvim_buf_set_lines(ui.input, 0, -1, false, lines)
+  else
+    table.insert(lines, 1, "")
+    vim.api.nvim_buf_set_lines(ui.input, -1, -1, false, lines)
+  end
+end
+
+-- Ctrl-C: a running `!cmd` stops, else the running (or paused) turn is cancelled.
+function U.interrupt(ui)
+  if ui.shell_running then return request(ui, "maic.session.shell", { session = ui.session, interrupt = true }) end
+  if not ui.response then
+    vim.notify("maic.nvim: nothing to interrupt (MAIC is idle)", vim.log.levels.INFO)
+    return
+  end
+  request(ui, "cancelResponse", { response_id = ui.response }, function(_, err)
+    if err then notice(ui, "✗ " .. err_text(err), "MaicError") end
+  end)
+end
+
+-- A steering action on the running response or the paused turn; steer, drop and further take the input as their
+-- note (or `note`).
+function U.steer(ui, action, note)
+  if not ui.response then
+    vim.notify("maic.nvim: no turn to " .. action .. " (MAIC is idle)", vim.log.levels.INFO)
+    return
+  end
+  if action == "steer" and not ui.paused and not note then
+    vim.notify("maic.nvim: the turn is not paused; type a message to steer it", vim.log.levels.INFO)
+    return
+  end
+  local from_input = false
+  if not note and (action == "steer" or action == "drop" or action == "further") then
+    local text = vim.trim(table.concat(vim.api.nvim_buf_get_lines(ui.input, 0, -1, false), "\n"))
+    if text ~= "" then note, from_input = text, true end
+  end
+  if ui.float and ui.float.kind == "pause" then close_float(ui) end
+  request(ui, "maic.steer", { session = ui.session, response_id = ui.response, action = action, note = note }, function(_, err)
+    if err then
+      notice(ui, "✗ " .. err_text(err), "MaicError")
+      if ui.paused then show_next(ui) end
+    elseif from_input then
+      vim.api.nvim_buf_set_lines(ui.input, 0, -1, false, {})
+    end
+  end)
+end
+
+-- :MaicSteer ACTION [NOTE]
+function U.steer_command(fargs)
+  local ui = U.here()
+  if not ui then
+    vim.notify("maic.nvim: :MaicSteer steers the interface's turn; no interface in this tab", vim.log.levels.WARN)
+    return
+  end
+  local note = #fargs > 1 and table.concat(fargs, " ", 2) or nil
+  U.steer(ui, fargs[1], note)
+end
+
+-- ---------- windows ----------
+
+local function scratch(name, filetype)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].bufhidden = "hide"
+  vim.bo[buf].swapfile = false
+  pcall(vim.api.nvim_buf_set_name, buf, name)
+  vim.bo[buf].filetype = filetype
+  if not pcall(vim.treesitter.start, buf, "markdown") then vim.bo[buf].syntax = "markdown" end
+  return buf
+end
+
+local function window_opts(ui, w)
+  local wo = vim.wo[w]
+  wo.wrap, wo.linebreak, wo.number, wo.relativenumber, wo.signcolumn = true, true, false, false, "no"
+  wo.foldmethod, wo.foldtext, wo.foldenable = "manual", "v:lua.require'maic.ui'.foldtext()", true
+  refold(ui, w)
+  status(ui)
+end
+
+-- The conversation (in `win`, or a window of the configured layout) and the input under it.
+local function show(ui, win)
+  local c = maic().config
+  local conv = win or vim.fn.win_findbuf(ui.conv)[1]
+  if conv and vim.api.nvim_win_get_tabpage(conv) ~= vim.api.nvim_get_current_tabpage() then conv = nil end
+  if conv then
+    vim.api.nvim_win_set_buf(conv, ui.conv)
+  else
+    conv = maic().make_window(ui.conv)
+  end
+  window_opts(ui, conv)
+  local input
+  for _, w in ipairs(vim.fn.win_findbuf(ui.input)) do
+    if vim.api.nvim_win_get_tabpage(w) == vim.api.nvim_get_current_tabpage() then input = w end
+  end
+  if not input then
+    local cfg = vim.api.nvim_win_get_config(conv)
+    if cfg.relative ~= "" then
+      local h = c.input_height
+      cfg.height = math.max(cfg.height - h - 2, 3)
+      vim.api.nvim_win_set_config(conv, cfg)
+      input = vim.api.nvim_open_win(ui.input, true, { relative = "editor", row = cfg.row + cfg.height + 2, col = cfg.col, width = cfg.width, height = h, border = "rounded" })
+    else
+      input = vim.api.nvim_open_win(ui.input, true, { split = "below", win = conv, height = c.input_height })
+    end
+  end
+  vim.wo[input].winfixheight = true
+  vim.api.nvim_set_current_win(input)
+  return conv, input
+end
+
+local function set_keys(ui)
+  if vim.g.maic_keymap_check == 1 then return end
+  for _, k in ipairs(maic().buffer_planned("conversation")) do maic().map(k, ui.conv) end
+  for _, k in ipairs(maic().buffer_planned("input")) do maic().map(k, ui.input) end
+end
+
+local function engine_args(args)
+  local c = maic().config
+  local cmd = type(c.cmd) == "table" and vim.deepcopy(c.cmd) or { c.cmd }
+  cmd[#cmd + 1] = "--rpc"
+  vim.list_extend(cmd, c.args or {})
+  vim.list_extend(cmd, args or {})
+  return cmd
+end
+
+-- Starts the engine and opens a session in it (or resumes `o.session`), in this tab: `o.win` holds the
+-- conversation, else a window of the configured layout.
+function U.start(args, o)
+  o = o or {}
+  local c = maic().config
+  local tab = vim.api.nvim_get_current_tabpage()
+  local ui = { tab = tab, blocks = {}, by_id = {}, waiting = {}, next = 1, partial = "", empty = true, asks = {}, approvals = {}, stderr = {}, tool_calls = 0 }
+  ui.conv = scratch("maic://conversation/" .. tab, c.filetypes.conversation)
+  ui.input = scratch("maic://input/" .. tab, c.filetypes.input)
+  vim.bo[ui.conv].modifiable = false
+  vim.api.nvim_create_autocmd("BufWinEnter", { buffer = ui.conv, callback = function()
+    window_opts(ui, vim.api.nvim_get_current_win())
+  end })
+  uis[tab] = ui
+  set_keys(ui)
+  show(ui, o.win)
+  local cmd = engine_args(args)
+  ui.job = vim.fn.jobstart(cmd, {
+    cwd = vim.fn.getcwd(),
+    on_stdout = function(_, data)
+      data[1] = ui.partial .. data[1]
+      ui.partial = table.remove(data)
+      for _, line in ipairs(data) do
+        if line ~= "" then
+          local ok, msg = pcall(vim.json.decode, line, { luanil = { object = true, array = true } })
+          if ok and type(msg) == "table" then on_message(ui, msg) end
+        end
+      end
+    end,
+    on_stderr = function(_, data)
+      for _, l in ipairs(data) do
+        if l ~= "" then ui.stderr[#ui.stderr + 1] = l end
+      end
+      while #ui.stderr > 40 do table.remove(ui.stderr, 1) end
+    end,
+    on_exit = function(_, code)
+      ui.job = nil
+      if not vim.api.nvim_buf_is_valid(ui.conv) then return end
+      local tail = table.concat(ui.stderr, "\n")
+      notice(ui, ("the engine exited (code %d)%s"):format(code, tail ~= "" and (":\n" .. tail) or ""), code == 0 and "MaicNotice" or "MaicError")
+      if not ui.session then notice(ui, "`maic --rpc` did not start; :MaicTerminal runs MAIC's own TUI (or ui = \"terminal\" in setup())") end
+      status(ui)
+    end,
+  })
+  if ui.job <= 0 then
+    ui.job = nil
+    uis[tab] = nil
+    vim.notify("maic.nvim: cannot start " .. table.concat(cmd, " "), vim.log.levels.ERROR)
+    return
+  end
+  local v = vim.version()
+  local hello = { protocol = 1, client = { name = "maic.nvim", version = ("nvim %d.%d.%d"):format(v.major, v.minor, v.patch) },
+    capabilities = { "tool_output", "autocmds" }, view = { collapse_over = 0 } }
+  request(ui, "maic.hello", hello, function(_, err)
+    if err then return notice(ui, "✗ " .. err_text(err), "MaicError") end
+    local function attach(id)
+      ui.session = id
+      request(ui, "maic.session.attach", { session = id, exchanges = 3 }, function(r, aerr)
+        if aerr then return notice(ui, "✗ " .. err_text(aerr), "MaicError") end
+        local entry = r.entry or {}
+        ui.workspace, ui.model, ui.mode, ui.title, ui.activity = entry.workspace, entry.model, entry.mode, entry.title, entry.activity
+        ui.response = entry.response
+        for _, item in ipairs(r.items or {}) do
+          if item.type == "message" and item.role == "user" then user_block(ui, item_text(item))
+          elseif item.type == "message" then add(ui, item_text(item), { gap = true })
+          elseif item.maic and item.maic.summary then
+            tool_line(ui, "call:" .. (item.call_id or item.id), item.maic.summary)
+            local b = add(ui, item.maic.head or "", { prefix = "  " })
+            fold(ui, b)
+          end
+        end
+        for _, a in ipairs(r.pending or {}) do handlers["maic.approval.requested"](ui, a) end
+        for _, q in ipairs(r.questions or {}) do handlers["maic.question.asked"](ui, q) end
+        status(ui)
+      end)
+    end
+    if o.session then
+      request(ui, "maic.session.resume", { session = o.session }, function(r, rerr)
+        if rerr then return notice(ui, "✗ " .. err_text(rerr), "MaicError") end
+        attach((r.entry and r.entry.id) or r.id or o.session)
+      end)
+    else
+      request(ui, "createConversation", vim.empty_dict(), function(r, cerr)
+        if cerr then return notice(ui, "✗ " .. err_text(cerr), "MaicError") end
+        attach(r.id)
+      end)
+    end
+  end)
+  vim.cmd("startinsert")
+  return ui
+end
+
+-- :Maic in the interface: focus this tab's input (a waiting float first), showing its windows again if hidden, or
+-- start one with `args`.
+function U.open(args)
+  local ui = U.here()
+  if not ui then return U.start(args) end
+  show(ui)
+  if ui.float and vim.api.nvim_win_is_valid(ui.float.win) then vim.api.nvim_set_current_win(ui.float.win) end
+end
+
+-- :MaicToggle: hides the conversation and the input (the engine keeps running), or shows them.
+function U.toggle()
+  local ui = U.here()
+  local wins = {}
+  for _, buf in ipairs({ ui.conv, ui.input }) do
+    for _, w in ipairs(vim.fn.win_findbuf(buf)) do
+      if vim.api.nvim_win_get_tabpage(w) == vim.api.nvim_get_current_tabpage() then wins[#wins + 1] = w end
+    end
+  end
+  if #wins > 0 and #wins < #vim.api.nvim_tabpage_list_wins(0) then
+    close_float(ui)
+    for _, w in ipairs(wins) do vim.api.nvim_win_hide(w) end
+  else
+    U.open()
+  end
+end
+
+-- `maic --ui nvim`: the interface in the whole of the first tab; quitting nvim ends the engine.
+function U.main(o)
+  if not maic().opts then maic().setup({}) end
+  if o.cmd then maic().config.cmd = o.cmd end
+  return U.start(o.args, { win = vim.api.nvim_get_current_win(), session = o.session })
+end
+
+-- For tests and statuslines: the interface of this tab as plain values.
+function U.state(ui)
+  ui = ui or U.here()
+  if not ui then return nil end
+  return { job = ui.job, session = ui.session, response = ui.response, paused = ui.paused, activity = ui.activity, mode = ui.mode, model = ui.model,
+    conversation = ui.conv, input = ui.input, float = ui.float and { kind = ui.float.kind, win = ui.float.win, buf = ui.float.buf } or nil }
+end
+
+return U

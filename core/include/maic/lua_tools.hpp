@@ -48,8 +48,10 @@ using Authorise = std::function<Decision(const Action& action, const std::string
 // and go through `authorise`, and a denial is raised as a Lua error carrying the denial text. With a connected
 // `nvim` host it also offers maic.nvim.diagnostics(path?) and maic.nvim.buffers(), read-only, each authorised as
 // a read (of the path, or of the workspace) and limited to the workspace. The call is aborted on cancel or
-// after `timeout`; the result is capped at 64 KB.
+// after `timeout`; the result is capped at 64 KB. `on_output` gets what maic.shell commands print while they
+// run, as one stream across the call (run_sandboxed).
 ToolResult run_lua_tool(const LuaTool& tool, const nlohmann::json& args, const Harness& harness, const Authorise& authorise,
-                        const std::atomic<bool>& cancel, std::chrono::seconds timeout = std::chrono::seconds(60), NvimHost* nvim = nullptr);
+                        const std::atomic<bool>& cancel, std::chrono::seconds timeout = std::chrono::seconds(60), NvimHost* nvim = nullptr,
+                        const OnOutput& on_output = {});
 
 }  // namespace maic

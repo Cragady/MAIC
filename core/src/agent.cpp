@@ -1,5 +1,7 @@
 #include "maic/agent.hpp"
 
+#include "maic/full_output.hpp"
+
 #include "maic/paths.hpp"
 #include "maic/settings.hpp"
 #include "maic/tools.hpp"
@@ -9,6 +11,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <fstream>
 #include <regex>
 #include <iostream>
@@ -52,15 +55,25 @@ struct ChildEvents : AgentEvents {
     ChildEvents(AgentEvents& parent, std::string agent) : parent(parent), agent(std::move(agent)) {}
     void on_text(std::string_view, bool) override {}
     void on_tool_call(const std::string& summary) override { parent.on_tool_call("↳ " + agent + ": " + summary); }
+    void on_tool_proposed(const ToolCall& call) override {
+        ToolCall named = call;
+        named.id = agent + ":" + call.id;
+        parent.on_tool_proposed(named);
+    }
     void on_tool_result(const std::string& text, bool ok) override { parent.on_tool_result(text, ok); }
     void on_notice(const std::string& text) override { parent.on_notice(agent + ": " + text); }
     void on_tool_started(const std::string& tool, const std::string& path, const std::string& summary) override {
         parent.on_tool_started(tool, path, agent + ": " + summary);
     }
     void on_file_written(const std::filesystem::path& path, const std::string& tool) override { parent.on_file_written(path, tool); }
+    void on_tool_output(const std::string& call_id, OutputStream stream, std::string_view chunk, size_t offset) override {
+        parent.on_tool_output(agent + ":" + call_id, stream, chunk, offset);
+    }
+    void on_tool_full_output(const std::filesystem::path& file) override { parent.on_tool_full_output(file); }
     ApprovalAnswer ask(const ApprovalRequest& request) override {
         ApprovalRequest r = request;
         r.summary = agent + ": " + request.summary;
+        if (r.agent.empty()) r.agent = agent;
         return parent.ask(r);
     }
 };
@@ -131,11 +144,18 @@ std::string Agent::instructions_text() const {
            "The user wrote the files below about themselves and about how they want you to work. Follow them. "
            "In them, \"I\", \"me\" and \"my\" mean the user, never you: they describe the person you are talking to. "
            "You are MAIC's agent, a separate thing from the user. Their contents are included right here; do not "
-           "read these files with a tool.\n";
+           "read these files with a tool. They run from the most general (system-wide, then the user's own) to the "
+           "most specific (the directory closest to the workspace); where two conflict, the later one takes precedence.\n";
     for (const auto& f : instructions_) {
-        out += "\n## " + f.path.string() + "\n" + f.text + "\n";
+        out += "\n## " + f.path.string() + (f.imported_by.empty() ? "" : " (imported by " + f.imported_by.string() + ")") + "\n" + f.text + "\n";
     }
     return out;
+}
+
+void Agent::reload_instructions() {
+    pending_imports_.clear();
+    instructions_ = load_instruction_files ? load_instructions(harness_.workspace(), instruction_options_, {}, &pending_imports_) : std::vector<InstructionFile>{};
+    nested_allowed_ = load_instruction_files ? nested_allowed(harness_.workspace()) : std::set<std::filesystem::path>{};
 }
 
 // The operator instructions again, at the end of the user's turn. Measured with a 4B against this very
@@ -371,6 +391,7 @@ void Agent::clear() {
     messages_.clear();
     always_allowed_.clear();
     todo_.clear();
+    attached_instructions_.clear();  // the new conversation has not seen them
     if (log_) log_->write("clear", {});
 }
 
@@ -419,7 +440,9 @@ std::string Agent::summarise(size_t from, size_t to, const std::atomic<bool>& ca
     };
     auto ask = [&](const std::string& m) {
         auto [provider, model_name] = resolve_model(providers, m);
-        return chat(provider, ChatOptions{model_name, false}, req, nlohmann::json::array(), [](std::string_view, bool) {}, cancel).content;
+        ChatOptions options{model_name, false};
+        options.normalized = count_normalized(provider);
+        return chat(provider, options, req, nlohmann::json::array(), [](std::string_view, bool) {}, cancel).content;
     };
     // compaction.model writes the note when set, a remote one only for a remote session so a local session's
     // history stays on the machine; when it hits its usage limit, the session's model writes it.
@@ -516,6 +539,16 @@ Agent::UsageReport Agent::usage() const {
     return usage_;
 }
 
+std::function<void(const std::string&, int)> Agent::count_normalized(const Provider& provider) {
+    return [this, name = provider.name, upstream = provider.upstream_name()](const std::string& rule, int count) {
+        {
+            std::lock_guard lock(usage_mu_);
+            usage_.normalized[rule] += count;
+        }
+        if (log_) log_->write("normalized", {{"rule", rule}, {"provider", name}, {"upstream", upstream}, {"count", count}});
+    };
+}
+
 std::string Agent::add_context_file(const std::filesystem::path& path) {
     std::string text;
     std::string label = path.string();
@@ -532,9 +565,9 @@ std::string Agent::add_context_file(const std::filesystem::path& path) {
     return "attached " + label + " (" + std::to_string(text.size()) + " bytes) as context";
 }
 
-void Agent::post_message(const std::string& text) {
+void Agent::post_message(const std::string& text, Origin origin) {
     std::lock_guard lock(mailbox_mu_);
-    mailbox_.push_back(text);
+    mailbox_.push_back({text, origin});
 }
 
 void Agent::deliver_now() {
@@ -546,27 +579,42 @@ size_t Agent::queued() const {
     return mailbox_.size();
 }
 
-std::vector<std::string> Agent::take_queued() {
+std::vector<Agent::Queued> Agent::take_queued() {
     std::lock_guard lock(mailbox_mu_);
-    std::vector<std::string> out(mailbox_.begin(), mailbox_.end());
+    std::vector<Queued> out(mailbox_.begin(), mailbox_.end());
     mailbox_.clear();
     return out;
 }
 
-bool Agent::drain_mailbox() {
-    std::deque<std::string> pending;
+bool Agent::drain_mailbox(AgentEvents& events) {
+    std::deque<Queued> pending;
     {
         std::lock_guard lock(mailbox_mu_);
         pending.swap(mailbox_);
     }
-    for (const auto& text : pending) {
-        if (log_) log_->write("user", {{"text", text}, {"queued", true}});
-        push({"user", with_operator_note(text)});
+    if (!pending.empty()) {
+        std::vector<std::string> texts;
+        bool remote = false;
+        for (const auto& q : pending) {
+            texts.push_back(q.text);
+            remote = remote || q.origin == Origin::Remote;
+        }
+        events.on_delivered(texts, remote);
+    }
+    for (const auto& q : pending) {
+        nlohmann::json record = {{"text", q.text}, {"queued", true}};
+        if (q.origin == Origin::Remote) {
+            record["origin"] = "remote";
+            turn_origin_ = Origin::Remote;
+        }
+        if (log_) log_->write("user", record);
+        push({"user", with_operator_note(q.text)});
     }
     return !pending.empty();
 }
 
 void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel) {
+    turn_origin_ = origin;
     start_or_update_conversation();
     if (agent_name_.empty()) {
         // The agents and the model can change between turns, and with them what task may use.
@@ -593,6 +641,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
 
     ChatOptions options{model_name, think};
     options.notice = [&](const std::string& t) { events.on_notice(t); };
+    options.normalized = count_normalized(provider);
     options.sampling = sampling;
     // Token bans: logit_bias where the provider takes it; elsewhere text tokens become string bans (the filter
     // does that) and numeric ids are reported once.
@@ -613,7 +662,8 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
     int context_retries = 0;
     denials_ = 0;
     for (int step = 0; step < max_steps; ++step) {
-        if (drain_mailbox()) events.on_notice("delivered your queued message");
+        if (drain_mailbox(events)) events.on_notice("delivered your queued message");
+        origin = turn_origin_;  // a remote message delivered into the turn makes the rest of it remote
         if (budget_tokens > 0) {
             UsageReport u = usage();
             if (u.total_input + u.total_output >= budget_tokens) {
@@ -709,8 +759,18 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
                 abort = true;
                 watcher.join();
                 if (filter.triggered()) {
-                    // Keep the clean part, tell the model, and ask again.
                     ++ban_attempts;
+                    if (auto hit = filter.hit_steer()) {
+                        // The entry names a steer action: the front end applies it as a person's steer. One that keeps
+                        // firing past `retries` halts the turn.
+                        if (ban_attempts > bans.retries) hit->action = "halt";
+                        Redirect r = events.stopped(&*hit);
+                        if (r.then != Redirect::Then::End) {
+                            if (!redirected(r, events)) return;
+                            continue;
+                        }
+                    }
+                    // Keep the clean part, tell the model, and ask again.
                     if (!filter.clean().empty()) push({"assistant", filter.clean()});
                     push({"system", "The reply was cut off because it started the banned phrase \"" + filter.hit() + "\". Continue from exactly where it stopped, "
                                     "without that phrase or any of these: " + [&] {
@@ -735,9 +795,8 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
                 events.on_notice("delivering your message now");
                 continue;  // nothing from the aborted call was kept; the loop re-asks with the mailbox drained
             }
-            push({"user", "[interrupted by the user]"});
-            events.on_notice("interrupted");
-            return;
+            if (!redirected(events.stopped(nullptr), events)) return;
+            continue;
         } catch (const ApiError& e) {
             if (!agent_name_.empty() && is_usage_limit(e)) {
                 // A subagent continues on its preset's on_limit model, once, with the conversation so far.
@@ -784,18 +843,31 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
         if (reply.tool_calls.empty()) {
             return;
         }
+        bool stopped = false;
         for (size_t i = 0; i < reply.tool_calls.size(); ++i) {
-            push(run_tool_call(reply.tool_calls[i], origin, events, cancel));
-            if (cancel.load()) {
+            Message result = run_tool_call(reply.tool_calls[i], origin, events, cancel);
+            if (!cancel.load()) {
+                push(std::move(result));
+            } else {
+                Redirect r = events.stopped(nullptr);
+                if (r.then == Redirect::Then::Halt) result.content = r.unrun;  // a halt discards what the call printed
+                push(std::move(result));
                 // Every call in the turn needs a result, or the next request is rejected.
                 for (size_t j = i + 1; j < reply.tool_calls.size(); ++j) {
                     const auto& c = reply.tool_calls[j];
-                    push({"tool", "cancelled by the user", {}, c.name, c.id, true});
+                    push({"tool", r.unrun.empty() ? "cancelled by the user" : r.unrun, {}, c.name, c.id, true});
                 }
-                events.on_notice("interrupted");
-                return;
+                if (r.then == Redirect::Then::End) {
+                    events.on_notice("interrupted");
+                    return;
+                }
+                r.kept.reset();  // the reply went into the history with its calls
+                if (!redirected(r, events)) return;
+                stopped = true;
+                break;
             }
         }
+        if (stopped) continue;
         // A session keeps running while tripped, so the user can talk it through; a subagent has no one to talk to.
         if (!agent_name_.empty() && tripwire_state()) {
             events.on_notice("the harness is tripped; the subagent stops here");
@@ -805,8 +877,71 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
     events.on_notice("stopped after " + std::to_string(max_steps) + " steps" + (agent_name_.empty() ? "; send a message to continue" : " (the agent's limit)"));
 }
 
+bool Agent::redirected(const Redirect& r, AgentEvents& events) {
+    if (r.kept && !r.kept->empty()) {
+        if (log_) log_->write("assistant", {{"text", *r.kept}});
+        push({"assistant", *r.kept});
+    }
+    switch (r.then) {
+        case Redirect::Then::End:
+            push({"user", "[interrupted by the user]"});
+            events.on_notice("interrupted");
+            return false;
+        case Redirect::Then::Continue:
+            push({"user", with_operator_note(r.say)});
+            return true;
+        case Redirect::Then::Halt:
+            push({"user", r.say});
+            return false;
+        case Redirect::Then::Pause:
+        case Redirect::Then::Keep:
+            return false;
+    }
+    return false;
+}
+
+// One audit trail entry: the call as given and what the harness, the reviewer and the user made of it. Never the
+// result text, a feedback the user typed, the answer to a question, or the reviewer's reasoning.
+void Agent::audit_tool_call(const nlohmann::json& record, bool ran, bool ok, const std::string& text, AgentEvents& events) {
+    auto pick = [](const nlohmann::json& from) {
+        nlohmann::json out = nlohmann::json::object();
+        for (const char* key : {"tool", "arguments", "decision", "reason", "approval"}) {
+            if (from.contains(key)) out[key] = from[key];
+        }
+        out["judged_by"] = "harness";
+        if (from.contains("review") && from["review"].is_object()) {
+            out["review"] = {{"verdict", from["review"].value("verdict", "")}, {"model", from["review"].value("model", "")}};
+            out["judged_by"] = "reviewer";
+        }
+        if (from.contains("approval")) out["judged_by"] = "user";
+        return out;
+    };
+    nlohmann::json entry = pick(record);
+    if (record.contains("actions")) {
+        entry["actions"] = nlohmann::json::array();
+        for (const auto& a : record["actions"]) {
+            nlohmann::json sub = pick(a);
+            sub["action"] = a.value("action", "");
+            entry["actions"].push_back(sub);
+        }
+    }
+    entry["session"] = log_ ? log_->path().stem().string() : "";
+    entry["recorded"] = log_ && log_->recorded();
+    entry["workspace"] = harness_.workspace().string();
+    entry["ran"] = ran;
+    entry["ok"] = ok;
+    if (record.contains("full_output")) entry["full_output"] = true;  // that it was kept, never where or what
+    if (int code; ran && std::sscanf(text.c_str(), "exit code %d", &code) == 1) entry["exit"] = code;
+    try {
+        append_audit_trail(std::move(entry), audit.file_mb);
+    } catch (const std::exception& e) {
+        events.on_notice(std::string("audit trail: ") + e.what());
+    }
+}
+
 Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel) {
     nlohmann::json record = {{"tool", call.name}, {"arguments", call.arguments}};
+    bool ran = false;
     auto result = [&](const std::string& text, bool ok) {
         events.on_tool_result(text, ok);
         if (log_) {
@@ -814,10 +949,12 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
             record["result"] = text.size() > kMaxLoggedResult ? text.substr(0, kMaxLoggedResult) + "\n[truncated]" : text;
             log_->write("tool", record);
         }
+        if (audit.enabled) audit_tool_call(record, ran, ok, text, events);
         return Message{"tool", text, {}, call.name, call.id, !ok};
     };
 
     std::string summary = tool_summary(call.name, call.arguments);
+    events.on_tool_proposed(call);
     events.on_tool_call(summary);
     {
         std::string named;
@@ -925,7 +1062,28 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         return result("REFUSED: this exact call has been made " + std::to_string(repeats_) + " times in a row. Do something different, or tell the user what is blocking you.", false);
     }
 
+    // A running command's output reaches the front end as it arrives; the model gets only the result. Its whole
+    // output is kept beside the session when it outgrows that result.
+    OnOutput stream_output = [&](OutputStream s, std::string_view chunk, size_t offset) { events.on_tool_output(call.id, s, chunk, offset); };
+    std::optional<FullOutputWriter> keep;
+    if (log_ && full_output && (name == "run_shell" || script)) keep.emplace(full_output_path(log_->path(), call.id), full_output_max_mb << 20);
+    auto taps = [&](OnOutput display) {
+        OutputTaps t{std::move(display), {}};
+        if (keep) t.on_read = [&](OutputStream s, std::string_view bytes, size_t) { keep->add(s, bytes); };
+        return t;
+    };
+    auto kept = [&] {
+        if (!keep) return;
+        if (auto j = keep->finish(log_->path().parent_path())) {
+            record["full_output"] = *j;
+            events.on_tool_full_output(log_->path().parent_path() / (*j)["path"].get<std::string>());
+        } else if (!keep->error().empty()) {
+            events.on_notice("the whole output was not kept: " + keep->error());
+        }
+    };
+
     if (name == "task") {
+        ran = true;
         ToolResult r = run_task(call.arguments, origin, events, cancel, record);
         return result(r.text, r.ok);
     }
@@ -938,12 +1096,14 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
                 if (o.is_string()) options.push_back(o.get<std::string>());
             }
         }
+        ran = true;
         std::string answer = events.question(call.arguments["question"].get<std::string>(), options);
         record["answer"] = answer;
         return result(answer.empty() ? "(the user gave no answer)" : answer, true);
     }
     if (name == "todo") {
         if (!call.arguments.contains("items") || !call.arguments["items"].is_array()) return result("error: missing array argument 'items'", false);
+        ran = true;
         todo_.clear();
         for (const auto& it : call.arguments["items"]) {
             if (it.is_string()) todo_.push_back({it.get<std::string>(), false});
@@ -972,7 +1132,8 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
             record["actions"].push_back(sub);
             return d;
         };
-        ToolResult r = run_lua_tool(*lua, call.arguments, harness_, gate, cancel, std::chrono::seconds(60), nvim_.get());
+        ran = true;
+        ToolResult r = run_lua_tool(*lua, call.arguments, harness_, gate, cancel, std::chrono::seconds(60), nvim_.get(), stream_output);
         for (const auto& p : written) events.on_file_written(p, name);
         return result(r.text, r.ok);
     }
@@ -987,13 +1148,19 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
             if (d.verdict != Verdict::Allow) return result(d.reason, false);
         }
         // The workspace is writable only for a tool that declared writes; the mode has already allowed each of them.
-        ToolResult r = run_script_tool(*script, call.arguments, harness_, script->writes.empty(), cancel);
+        ran = true;
+        // Its stdout is the result, so only stderr streams.
+        ToolResult r = run_script_tool(*script, call.arguments, harness_, script->writes.empty(), cancel, taps([&](OutputStream s, std::string_view chunk, size_t offset) {
+            if (s == OutputStream::Stderr) stream_output(s, chunk, offset);
+        }));
+        kept();
         return result(r.text, r.ok);
     }
 
     if (name == "diagnostics") {
         Decision d = authorise(actions[0], name, summary, "", origin, events, record);
         if (d.verdict != Verdict::Allow) return result(d.reason, false);
+        ran = true;
         ToolResult r = run_diagnostics(call.arguments, actions[0]);
         return result(r.text, r.ok);
     }
@@ -1012,7 +1179,9 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
             if (a.kind == Action::Kind::Write) save_undo_point(a.path, summary);
         }
     }
-    ToolResult r = run_tool(harness_, name, call.arguments, d.read_only_sandbox, cancel);
+    ran = true;
+    ToolResult r = run_tool(harness_, name, call.arguments, d.read_only_sandbox, cancel, taps(stream_output));
+    kept();
     if (r.ok && name == "move_file") push_undo({actions[0].path, std::nullopt, summary, actions[1].path});
     if (r.ok) {
         for (const auto& a : actions) {
@@ -1072,10 +1241,18 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     Decision d = harness_.check(action, mode, origin);
     if (action.kind != Action::Kind::Read && touches_harness(action) && d.verdict == Verdict::Allow) d = {Verdict::Ask, "changes the harness's own files"};
     if (touches_trust(action) && d.verdict != Verdict::Trip) d = {Verdict::Deny, "trust is the user's alone: only they grant it, at the terminal (:trust, maic trust PATH)"};
+    // A file the user's own instructions import with their approval would change their standing instructions.
+    if (d.verdict != Verdict::Trip && d.verdict != Verdict::Deny && changes_approved_import(action)) {
+        if (!review_with_model) d = {Verdict::Deny, "it is a file your own instructions import (an approved import); the dumb harness never lets the agent change it"};
+        else if (d.verdict == Verdict::Allow) d = {Verdict::Ask, "changes a file your own instructions import (an approved import)"};
+    }
     record["decision"] = verdict_name(d.verdict);
     record["reason"] = d.reason;
     bool user_allowed = false;
-    if (d.verdict == Verdict::Ask && (action.kind != Action::Kind::Shell || is_simple_command(action.command)) && always_allowed_.count(Harness::approval_key(action))) {
+    // A session's "always" answers are the local user's and speak only for local requests: a remote one is asked
+    // every time (docs/harness.md, rule 5), and an "always" answered for it counts once.
+    if (d.verdict == Verdict::Ask && origin == Origin::Local && (action.kind != Action::Kind::Shell || is_simple_command(action.command)) &&
+        always_allowed_.count(Harness::approval_key(action))) {
         d = {Verdict::Allow, "allowed earlier this session"};
         user_allowed = true;
     }
@@ -1093,8 +1270,15 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     }
     if (d.verdict == Verdict::Ask) {
         std::string key = Harness::approval_key(action);
-        std::string covers = key.rfind("shell:", 0) == 0 ? "the program `" + key.substr(6) + "`" : key.rfind("write:", 0) == 0 ? "writes to this file" : "reads of this file";
+        std::string covers = origin != Origin::Local ? "this call only (a remote request is asked every time)"
+                             : key.rfind("shell:", 0) == 0 ? "the program `" + key.substr(6) + "`"
+                             : key.rfind("write:", 0) == 0 ? "writes to this file"
+                             : "reads of this file";
         ApprovalAnswer answer = events.ask({tool, summary, d.reason, origin, covers, preview, action.path, std::move(proposed)});
+        if (answer.withdrawn) {
+            record["approval"] = "withdrawn";
+            return {Verdict::Deny, answer.feedback};
+        }
         record["approval"] = approval_name(answer.choice);
         if (!answer.feedback.empty()) record["feedback"] = answer.feedback;
         switch (answer.choice) {
@@ -1102,7 +1286,8 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
                 d.verdict = Verdict::Allow;
                 break;
             case Approval::Always:
-                always_allowed_.insert(key);
+                if (origin == Origin::Local) always_allowed_.insert(key);
+                else events.on_notice("\"always\" for a remote request counts for this call only: the next one is asked again");
                 d.verdict = Verdict::Allow;
                 break;
             case Approval::No:
@@ -1188,11 +1373,12 @@ ToolResult Agent::run_task(const nlohmann::json& args, Origin origin, AgentEvent
     child.bans = bans;
     child.operator_note_in_turn = operator_note_in_turn;
     child.load_instruction_files = load_instruction_files;
-    child.instruction_names_ = instruction_names_;
+    child.instruction_options_ = instruction_options_;
     child.system_prefix = system_prefix;
     child.rules = rules;
     child.compaction = compaction;
     child.review_with_model = review_with_model;
+    child.audit = audit;
     child.reviewer_model = reviewer_model;
     child.small_model = small_model;
     if (review_with_model) review_budget_check(events);
@@ -1204,6 +1390,8 @@ ToolResult Agent::run_task(const nlohmann::json& args, Origin origin, AgentEvent
         child.reviewer_off_ = reviewer_off_;
         if (reviewer_budget_tokens > 0) child.reviewer_budget_tokens = reviewer_budget_tokens - reviewer_tokens_;
     }
+    child.full_output = full_output;
+    child.full_output_max_mb = full_output_max_mb;
     child.repeat_limit = repeat_limit;
     child.repeat_trip = repeat_trip;
     child.denials_limit = denials_limit;
@@ -1248,6 +1436,7 @@ ToolResult Agent::run_task(const nlohmann::json& args, Origin origin, AgentEvent
         std::lock_guard child_lock(child.usage_mu_);
         usage_.total_input += cu.total_input;
         usage_.total_output += cu.total_output;
+        for (const auto& [rule, n] : cu.normalized) usage_.normalized[rule] += n;
         reviewer_tokens_ += child.reviewer_tokens_;
         reviewer_failed_.insert(child.reviewer_failed_.begin(), child.reviewer_failed_.end());
         if (reviewer_off_.empty()) reviewer_off_ = child.reviewer_off_;
@@ -1301,6 +1490,17 @@ bool touches_trust(const Action& action) {
     return std::regex_search(action.command, re);
 }
 
+// A write to a target `maic trust imports` lists, or a command that is not read-only and names one.
+bool changes_approved_import(const Action& action) {
+    if (action.kind == Action::Kind::Read) return false;
+    if (action.kind == Action::Kind::Shell && is_read_only_command(action.command)) return false;
+    std::error_code ec;
+    for (const auto& t : import_exception_targets()) {
+        if (action.kind == Action::Kind::Shell ? action.command.find(t.string()) != std::string::npos : std::filesystem::weakly_canonical(action.path, ec) == t) return true;
+    }
+    return false;
+}
+
 bool Agent::touches_harness(const Action& action) const {
     if (touches_trust(action)) return true;
     std::error_code ec;
@@ -1324,8 +1524,8 @@ bool Agent::touches_harness(const Action& action) const {
     return false;
 }
 
-void Agent::set_instruction_names(std::vector<std::string> names) {
-    instruction_names_ = std::move(names);
+void Agent::set_instruction_options(InstructionOptions options) {
+    instruction_options_ = std::move(options);
 }
 
 Agent::ReviewerInfo Agent::reviewer() const {
@@ -1423,6 +1623,7 @@ Decision Agent::review(const Action& action, const std::string& summary, const s
         auto [provider, name] = resolve_model(providers, reviewer);
         ChatOptions opt{name, false};
         opt.retries = 1;
+        opt.normalized = count_normalized(provider);
         std::atomic<bool> no{false};
         Message reply = chat(provider, opt, req, nlohmann::json::array(), [](std::string_view, bool) {}, no);
         {
@@ -1509,26 +1710,16 @@ std::string Agent::undo(size_t count) {
 }
 
 std::string Agent::nested_instructions(const std::filesystem::path& file) {
-    if (!load_instruction_files || !trusted(harness_.workspace())) return "";  // nested files come with a trusted workspace only
+    if (!load_instruction_files) return "";
     std::error_code ec;
-    std::filesystem::path ws = std::filesystem::weakly_canonical(harness_.workspace(), ec);
-    std::filesystem::path dir = std::filesystem::weakly_canonical(file, ec).parent_path();
-    auto rel = dir.lexically_relative(ws);
-    if (rel.empty() || *rel.begin() == "..") return "";  // outside the workspace: nothing extra
+    std::set<std::filesystem::path> seen = attached_instructions_;
+    for (const auto& f : instructions_) seen.insert(std::filesystem::weakly_canonical(f.path, ec));
     std::string out;
-    for (std::filesystem::path d = dir; d != ws && d != d.parent_path(); d = d.parent_path()) {
-        for (const auto& fname : instruction_names_) {
-            std::filesystem::path f = d / fname;
-            if (!std::filesystem::is_regular_file(f, ec) || attached_instructions_.count(f.string())) continue;
-            bool at_top = false;
-            for (const auto& top : instructions_) at_top = at_top || top.path == f;
-            if (at_top) continue;
-            std::ifstream in(f);
-            std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-            if (text.size() > 32 * 1024) text = text.substr(0, 32 * 1024) + "\n[truncated]";
-            attached_instructions_.insert(f.string());
-            out += "[Instructions from " + f.string() + " apply to files under " + d.string() + "; follow them]\n" + text + "\n";
-        }
+    for (const auto& f : maic::nested_instructions(harness_.workspace(), file, instruction_options_, nested_allowed_, seen)) {
+        attached_instructions_.insert(std::filesystem::weakly_canonical(f.path, ec));
+        std::string from = f.imported_by.empty() ? "" : ", imported by " + f.imported_by.string();
+        out += "[MAIC system note: standing instructions from " + f.path.string() + from + ". They apply to the files under " +
+               (f.imported_by.empty() ? f.path : f.imported_by).parent_path().string() + " and take precedence over the earlier ones there; follow them]\n" + f.text + "\n";
     }
     return out;
 }

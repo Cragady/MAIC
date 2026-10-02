@@ -4,8 +4,12 @@
     python3 tests/test_tui.py [PATH_TO_MAIC] [-v]           (re-runs itself under `uv run --offline --with pyte` if pyte is missing)
 
 Exit 77 when neither pyte nor uv is available, which ctest reports as a skip. Every case starts its own maic in
-a throwaway home (XDG_* under a temp dir, --no-record, the dumb harness, no instruction files), 120x40."""
-import os, shutil, subprocess, sys, tempfile, time, unittest
+a throwaway home (XDG_* under a temp dir, --no-record, the dumb harness, no instruction files), 120x40.
+
+The protocol is checked in every case: each maic records its engine connection (MAIC_PROTOCOL_RECORD) and the case
+fails when `maic protocol check` finds a violation in it, or when the engine's own guarded checks logged one
+(protocol.log)."""
+import json, os, shutil, subprocess, sys, tempfile, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAIC = os.environ.get("MAIC_BIN", os.path.join(HERE, "..", "build", "cli", "maic"))
@@ -43,6 +47,28 @@ class TuiTest(unittest.TestCase):
         cls.home, cls.env = cli_smoke.make_home(port)
         cls.ws = os.path.join(cls.home, "ws")
         os.makedirs(cls.ws)
+        cls.streams = os.path.join(cls.home, "protocol-streams")
+        os.makedirs(cls.streams)
+        cls.env["MAIC_PROTOCOL_RECORD"] = cls.streams
+
+    def setUp(self):
+        self.addCleanup(self.check_protocol)  # the first cleanup runs last, after every maic of the case is gone
+
+    def check_protocol(self):
+        """Turns what the guarded tier logs, and what the recorded streams break, into this case's failure."""
+        logs = [os.path.join(d, "protocol.log") for d, _, files in os.walk(self.home) if "protocol.log" in files]
+        faults = ""
+        for log in logs:
+            with open(log) as f:
+                faults += f.read()
+            os.remove(log)
+        streams = [os.path.join(self.streams, f) for f in os.listdir(self.streams)]
+        r = subprocess.run([MAIC, "protocol", "check", self.streams], capture_output=True, text=True, env=self.env, timeout=60) if streams else None
+        for f in streams:
+            os.remove(f)
+        self.assertEqual(faults, "", "the engine's guarded checks logged faults")
+        if r is not None:
+            self.assertEqual(r.returncode, 0, "a recorded stream breaks the protocol:\n" + r.stdout + r.stderr)
 
     @classmethod
     def tearDownClass(cls):
@@ -82,6 +108,82 @@ class TuiTest(unittest.TestCase):
         tui = self.start()
         tui.send("iping<m-cr>", settle=False)
         tui.wait_for("echo: ping")
+
+    def test_ctrl_u_scrolls_up_and_ctrl_d_down(self):
+        tui = self.start()
+        tui.send("i" + "<cr>".join("scroll%02d" % n for n in range(1, 61)))
+        tui.send("<esc>:w<cr>", settle=False)
+        tui.wait_for("echo: scroll01")
+        tui.settle()
+        self.assertNotIn("scroll05", tui.text())
+        for _ in range(4):
+            tui.send("<c-u>")
+        self.assertIn("scroll05", tui.text(), "Ctrl-U scrolls up, toward older lines, as in vim")
+        self.assertNotIn("echo: scroll01", tui.text())
+        for _ in range(4):
+            tui.send("<c-d>")
+        self.assertIn("echo: scroll01", tui.text(), "Ctrl-D scrolls back down")
+
+    def test_a_running_command_shows_its_output_live(self):
+        tui = self.start()
+        # The output's words are not in the command's text, so finding them on screen means the output is there.
+        tui.send("ishell:printf 'live-%s\\n' one; sleep 4; printf 'live-%s\\n' two<esc>:w<cr>", settle=False)
+        tui.wait_for("[y] yes")
+        tui.send("y", settle=False)
+        text = tui.wait_for("live-one", timeout=3)
+        self.assertNotIn("live-two", text, "the first line shows while the command is still running")
+        self.assertIn("▸ $ printf", text)
+        text = tui.wait_for("ran it", timeout=15)
+        self.assertIn("exit code 0", text, "the result took the live view's place")
+        self.assertIn("live-two", text)
+
+    def test_a_long_output_is_kept_whole_and_labelled(self):
+        tui = self.start()
+        tui.send("ishell:seq 1 20000<esc>:w<cr>", settle=False)
+        tui.wait_for("[y] yes")
+        tui.send("y", settle=False)
+        tui.wait_for("ran it", timeout=15)
+        tui.send(":set details on<cr>")
+        tui.send("<c-w>kgg")
+        text = tui.wait_for("[full output, display only: the model saw the capped result: maic sessions output ")
+        self.assertIn("call_1]", text)
+        # The same file from the shell: the label on stderr, the output itself on stdout.
+        runtime = os.path.join(self.env["XDG_RUNTIME_DIR"], "maic", "sessions")
+        newest = max((os.path.join(runtime, f) for f in os.listdir(runtime) if f.endswith(".jsonl")), key=os.path.getmtime)
+        r = subprocess.run([MAIC, "sessions", "output", newest, "call_1"], capture_output=True, text=True, env=self.env, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "".join("%d\n" % i for i in range(1, 20001)))
+        self.assertIn("full output, display only: the model saw the capped result", r.stderr)
+
+    def test_ctrl_s_pauses_and_ctrl_q_resumes(self):
+        tui = self.start()
+        tui.send("ihold on<m-cr>", settle=False)
+        tui.wait_for("working… ctrl-c interrupts, ctrl-s pauses")
+        tui.send("<c-s>", settle=False)
+        text = tui.wait_for("PAUSED: ctrl-q resumes")
+        self.assertIn("[Ctrl-Q] resume", text, "the pause menu is up")
+        self.assertIn("↯ interrupt", text)
+        self.assertNotIn("▣ ", text, "a pause is not the end of the turn: no footer yet")
+        tui.send("<c-q>", settle=False)
+        text = tui.wait_for("echo: Continue from where you stopped.")
+        tui.wait_for("▣ ")
+        self.assertNotIn("PAUSED", tui.text())
+
+    def test_pause_menu_keeps_and_steer_drops(self):
+        tui = self.start()
+        tui.send("ihold on<m-cr>", settle=False)
+        tui.wait_for("working… ctrl-c interrupts")
+        tui.send("<c-s>", settle=False)
+        tui.wait_for("[Ctrl-Q] resume")
+        tui.send("k", settle=False)
+        text = tui.wait_for("▣ ")
+        self.assertIn("↯ keep", text)
+        self.assertIn("holding", text, "keep leaves the partial reply as the answer")
+        tui.send("ihold again<m-cr>", settle=False)
+        tui.wait_for("working… ctrl-c interrupts")
+        tui.send("<esc>:steer drop leave it out<cr>", settle=False)
+        text = tui.wait_for("echo: The user dropped the topic")
+        self.assertIn("↯ drop: leave it out", text)
 
     def test_help_opens(self):
         tui = self.start()
@@ -355,6 +457,69 @@ class TuiTest(unittest.TestCase):
         self.assertIn("trusted " + ws, tui.wait_for("trusted " + ws))
         again = start()
         self.assertNotIn("[t] trust fully", again.wait_for(STRIP))
+
+    def test_own_import_from_outside_is_asked_once(self):
+        # A config of its own: instruction files on, and a MAIC.md that imports a file outside every trusted directory.
+        base = os.path.join(self.home, "own-import")
+        cfg = os.path.join(base, "config", "maic")
+        os.makedirs(cfg)
+        os.makedirs(os.path.join(base, "outside"))
+        target = os.path.join(base, "outside", "style.md")
+        with open(target, "w") as f:
+            f.write("write like a heron\n")
+        with open(os.path.join(self.home, "config", "maic", "settings.lua")) as f:
+            settings = f.read().replace("load_instructions = false", "load_instructions = true")
+        with open(os.path.join(cfg, "settings.lua"), "w") as f:
+            f.write(settings)
+        with open(os.path.join(cfg, "MAIC.md"), "w") as f:
+            f.write("Follow @%s please.\n" % target)
+        env = dict(self.env, XDG_CONFIG_HOME=os.path.join(base, "config"), XDG_STATE_HOME=os.path.join(base, "state"))
+
+        def start():
+            tui = Tui([MAIC, "--no-record", "--harness", "dumb"], env=env, cwd=self.ws)
+            self.addCleanup(tui.close)
+            return tui
+
+        tui = start()
+        text = tui.wait_for("import from outside?")
+        self.assertIn("target:         " + target, text)
+        self.assertIn("size:           19 bytes", text)
+        self.assertIn("it becomes standing instructions for every agent in every project", text)
+        self.assertIn("its contents are sent to whatever model provider a session uses, cloud included", text)
+        self.assertIn("every session pays its tokens", text)
+        self.assertIn("if an agent or another tool can write that file, it can change future instructions", text)
+        tui.send("y", settle=False)
+        tui.wait_for("approved import: " + target)
+        self.assertEqual(os.stat(os.path.join(base, "state", "maic", "trust-imports.json")).st_mode & 0o777, 0o600)
+        again = start()
+        self.assertNotIn("import from outside?", again.wait_for(STRIP))  # remembered: never asked again
+
+    def test_the_session_stream_passes_the_protocol_check(self):
+        # A turn with a tool call and its approval, a `!cmd`, the engine's `:` commands and a quit: the TUI's own
+        # connection, recorded, passes `maic protocol check` (every case is checked the same way when it ends).
+        tui = self.start()
+        tui.send("ishell:printf 'whisker\\n'<esc>:w<cr>", settle=False)
+        tui.wait_for("[y] yes")
+        tui.send("y", settle=False)
+        tui.wait_for("ran it", timeout=15)
+        tui.send("i!printf 'paw-%s\\n' print<esc>:w<cr>", settle=False)
+        tui.wait_for("paw-print")
+        tui.send(":rename the fluffy tail<cr>")
+        tui.wait_for("titled: the fluffy tail")
+        tui.send(":q<cr>", settle=False)
+        self.assertEqual(tui.wait_exit(), 0)
+        streams = [os.path.join(self.streams, f) for f in os.listdir(self.streams) if f.startswith("tui-")]
+        self.assertEqual(len(streams), 1)
+        r = subprocess.run([MAIC, "protocol", "check", streams[0]], capture_output=True, text=True, env=self.env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("events conform", r.stdout)
+        with open(streams[0]) as f:
+            # The recording also holds its header and skeleton lines (docs/design/engine-protocol.md section 17); those carry no msg.
+            types = [m["msg"]["params"].get("type") for m in map(json.loads, f) if "msg" in m and m["msg"].get("method") == "maic.event"]
+        for t in ("maic.input.added", "maic.approval.requested", "response.shell_call_output_content.delta", "maic.tool.output.delta",
+                  "maic.session.title", "response.completed"):
+            self.assertIn(t, types)
+        self.assertEqual(types[-1], "maic.session.state")  # the quit parks the session
 
     def test_quit_prints_the_transcript_line(self):
         tui = self.start()

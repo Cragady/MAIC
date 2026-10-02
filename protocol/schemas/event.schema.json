@@ -1,0 +1,1466 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "maic.event: one session event",
+  "description": "The params of a maic.event notification: one event, exactly as the Responses WebSocket would send it, plus stream_id (the session id). The union over `type`, as OpenAI's ResponseStreamEvent is: OpenAI's events by $ref into ../openai/subset.json, then MAIC's own maic.* events. Exactly the types the engine emits (docs/design/engine-protocol.md, section 3); the order they come in is ordering.json.",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/response.created"
+    },
+    {
+      "$ref": "#/$defs/response.in_progress"
+    },
+    {
+      "$ref": "#/$defs/response.completed"
+    },
+    {
+      "$ref": "#/$defs/response.failed"
+    },
+    {
+      "$ref": "#/$defs/response.incomplete"
+    },
+    {
+      "$ref": "#/$defs/error"
+    },
+    {
+      "$ref": "#/$defs/response.steer.accepted"
+    },
+    {
+      "$ref": "#/$defs/response.steer.failed"
+    },
+    {
+      "$ref": "#/$defs/response.output_item.added"
+    },
+    {
+      "$ref": "#/$defs/response.output_item.done"
+    },
+    {
+      "$ref": "#/$defs/response.content_part.added"
+    },
+    {
+      "$ref": "#/$defs/response.content_part.done"
+    },
+    {
+      "$ref": "#/$defs/response.output_text.delta"
+    },
+    {
+      "$ref": "#/$defs/response.output_text.done"
+    },
+    {
+      "$ref": "#/$defs/response.reasoning_text.delta"
+    },
+    {
+      "$ref": "#/$defs/response.reasoning_text.done"
+    },
+    {
+      "$ref": "#/$defs/response.function_call_arguments.done"
+    },
+    {
+      "$ref": "#/$defs/response.shell_call_command.added"
+    },
+    {
+      "$ref": "#/$defs/response.shell_call_command.done"
+    },
+    {
+      "$ref": "#/$defs/response.shell_call_output_content.delta"
+    },
+    {
+      "$ref": "#/$defs/response.shell_call_output_content.done"
+    },
+    {
+      "$ref": "#/$defs/maic.response.cancelled"
+    },
+    {
+      "$ref": "#/$defs/maic.steer.applied"
+    },
+    {
+      "$ref": "#/$defs/maic.turn.paused"
+    },
+    {
+      "$ref": "#/$defs/maic.input.added"
+    },
+    {
+      "$ref": "#/$defs/maic.approval.requested"
+    },
+    {
+      "$ref": "#/$defs/maic.approval.answered"
+    },
+    {
+      "$ref": "#/$defs/maic.question.asked"
+    },
+    {
+      "$ref": "#/$defs/maic.question.answered"
+    },
+    {
+      "$ref": "#/$defs/maic.tool.output.delta"
+    },
+    {
+      "$ref": "#/$defs/maic.file.written"
+    },
+    {
+      "$ref": "#/$defs/maic.notice"
+    },
+    {
+      "$ref": "#/$defs/maic.todo.updated"
+    },
+    {
+      "$ref": "#/$defs/maic.session.state"
+    },
+    {
+      "$ref": "#/$defs/maic.session.settings"
+    },
+    {
+      "$ref": "#/$defs/maic.session.title"
+    },
+    {
+      "$ref": "#/$defs/maic.usage.updated"
+    }
+  ],
+  "$defs": {
+    "Envelope": {
+      "description": "What every event carries: OpenAI's `type` and `sequence_number`, and `stream_id`, the session's id, as the Responses WebSocket echoes its lane.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence_number": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stream_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "maic": {
+          "type": "object",
+          "properties": {
+            "filtered_from": {
+              "description": "The first sequence_number filtered out of this connection's stream (maic.hello's `exclude`) since the last event it was sent: the numbers from it up to this event's, or its merged_from's, are accounted for.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "cause": {
+              "description": "The sequence_number of the event that caused this one, where OpenAI's own fields do not already say it: on response.created, the maic.input.added of the input the response answers.",
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      },
+      "required": [
+        "type",
+        "sequence_number",
+        "stream_id"
+      ]
+    },
+    "Maic": {
+      "description": "MAIC's fields on an OpenAI event.",
+      "type": "object"
+    },
+    "response.created": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseCreatedEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            },
+            "response": {
+              "type": "object",
+              "properties": {
+                "maic": {
+                  "$ref": "maic.schema.json#/$defs/ResponseMaic"
+                }
+              },
+              "required": [
+                "maic"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "response.in_progress": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseInProgressEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            },
+            "response": {
+              "type": "object",
+              "properties": {
+                "maic": {
+                  "$ref": "maic.schema.json#/$defs/ResponseMaic"
+                }
+              },
+              "required": [
+                "maic"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "response.completed": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseCompletedEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            },
+            "response": {
+              "type": "object",
+              "properties": {
+                "maic": {
+                  "$ref": "maic.schema.json#/$defs/ResponseMaic"
+                }
+              },
+              "required": [
+                "maic"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "response.failed": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseFailedEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            },
+            "response": {
+              "type": "object",
+              "properties": {
+                "maic": {
+                  "$ref": "maic.schema.json#/$defs/ResponseMaic"
+                }
+              },
+              "required": [
+                "maic"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "response.incomplete": {
+      "description": "A response that stopped short. `incomplete_details.reason: \"steered\"` when a steer ended it at a boundary; its successor's response.created follows.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseIncompleteEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            },
+            "response": {
+              "type": "object",
+              "properties": {
+                "maic": {
+                  "$ref": "maic.schema.json#/$defs/ResponseMaic"
+                }
+              },
+              "required": [
+                "maic"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "error": {
+      "description": "OpenAI's error event: a halted turn's (`code: \"maic_halted\"`, the halt message), before its maic.response.cancelled.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseErrorEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            }
+          }
+        }
+      ]
+    },
+    "response.steer.accepted": {
+      "description": "The engine owns a steer's input (response.steer, or maic.steer's steer, drop and further); the successor's response.created commits it.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseSteerAcceptedEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            }
+          }
+        }
+      ]
+    },
+    "response.steer.failed": {
+      "description": "Accepted input that cannot be committed (a keep or halt ended the turn first), returned with OpenAI's steering error code.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseSteerFailedEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            }
+          }
+        }
+      ]
+    },
+    "response.output_item.added": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseOutputItemAddedEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            },
+            "item": {
+              "type": "object",
+              "properties": {
+                "maic": {
+                  "$ref": "maic.schema.json#/$defs/ItemMaic"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "response.output_item.done": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseOutputItemDoneEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            },
+            "item": {
+              "type": "object",
+              "properties": {
+                "maic": {
+                  "$ref": "maic.schema.json#/$defs/ItemMaic"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "response.content_part.added": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseContentPartAddedEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            }
+          }
+        }
+      ]
+    },
+    "response.content_part.done": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseContentPartDoneEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            }
+          }
+        }
+      ]
+    },
+    "response.output_text.delta": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseTextDeltaEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "type": "object",
+              "properties": {
+                "merged_from": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      ],
+      "description": "A slow connection may get several deltas of one item merged into one, carrying the last sequence_number and maic.merged_from, the first it covers."
+    },
+    "response.output_text.done": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseTextDoneEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            }
+          }
+        }
+      ]
+    },
+    "response.reasoning_text.delta": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseReasoningTextDeltaEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "type": "object",
+              "properties": {
+                "merged_from": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "response.reasoning_text.done": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseReasoningTextDoneEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            }
+          }
+        }
+      ]
+    },
+    "response.function_call_arguments.done": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseFunctionCallArgumentsDoneEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            }
+          }
+        }
+      ]
+    },
+    "response.shell_call_command.added": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseShellCallCommandAddedStreamingEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            }
+          }
+        }
+      ]
+    },
+    "response.shell_call_command.done": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseShellCallCommandDoneStreamingEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            }
+          }
+        }
+      ]
+    },
+    "response.shell_call_output_content.delta": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseShellCallOutputContentDeltaStreamingEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "type": "object",
+              "properties": {
+                "offset": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "skipped": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "offset"
+              ]
+            }
+          },
+          "required": [
+            "maic"
+          ]
+        }
+      ],
+      "description": "run_shell's output while it runs. maic.offset is the byte offset in the whole output; maic.skipped, with an empty delta, counts bytes not sent to this connection."
+    },
+    "response.shell_call_output_content.done": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "$ref": "../openai/subset.json#/components/schemas/ResponseShellCallOutputContentDoneStreamingEvent"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "maic": {
+              "$ref": "#/$defs/Maic"
+            }
+          }
+        }
+      ]
+    },
+    "maic.response.cancelled": {
+      "description": "A response ended by cancelResponse, or by an interrupt (final: false, the turn paused) or a halt steer: OpenAI defines no stream event for a cancelled response, so MAIC adds one.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.response.cancelled"
+            },
+            "response": {
+              "allOf": [
+                {
+                  "$ref": "maic.schema.json#/$defs/MaicResponse"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "const": "cancelled"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "response"
+          ]
+        }
+      ]
+    },
+    "maic.steer.applied": {
+      "description": "One of the six steering actions (section 11), before every event it causes: what it trimmed, which approvals and questions it withdrew, the tool it cancelled or waits for.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.steer.applied"
+            },
+            "steer": {
+              "description": "The steer's id.",
+              "type": "string",
+              "minLength": 1
+            },
+            "action": {
+              "$ref": "maic.schema.json#/$defs/SteerAction"
+            },
+            "trigger": {
+              "enum": [
+                "client",
+                "ban"
+              ]
+            },
+            "by": {
+              "$ref": "maic.schema.json#/$defs/By"
+            },
+            "ban": {
+              "description": "A ban's steer: which entry fired, never the matched text.",
+              "type": "object",
+              "properties": {
+                "list": {
+                  "enum": [
+                    "strings",
+                    "patterns"
+                  ]
+                },
+                "index": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "list",
+                "index"
+              ]
+            },
+            "note": {
+              "type": "string"
+            },
+            "trimmed": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "from": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "to": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "item_id",
+                    "from",
+                    "to"
+                  ]
+                }
+              ]
+            },
+            "withdrawn": {
+              "description": "The approvals and questions it withdrew.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "cancelled_tool": {
+              "description": "The call it stopped, by call_id.",
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "waits_for": {
+              "description": "A steer that waits: the running call's call_id, the open approval or question, or \"boundary\" (the end of the model call).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "steer",
+            "action",
+            "trigger",
+            "by",
+            "trimmed",
+            "withdrawn",
+            "cancelled_tool"
+          ]
+        }
+      ]
+    },
+    "maic.turn.paused": {
+      "description": "An interrupt paused the turn after its response was cancelled (final: false); a steer or a message resumes it, keep, halt or cancelResponse ends it.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.turn.paused"
+            },
+            "turn": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "steer": {
+              "type": "string",
+              "minLength": 1
+            },
+            "response_id": {
+              "description": "The paused turn's last response.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "turn",
+            "steer",
+            "response_id"
+          ]
+        }
+      ]
+    },
+    "maic.input.added": {
+      "description": "What a person typed, naming the client it came from; queued when it was delivered into a running response.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.input.added"
+            },
+            "item": {
+              "allOf": [
+                {
+                  "$ref": "../openai/subset.json#/components/schemas/InputMessage"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "const": "user"
+                    },
+                    "maic": {
+                      "type": "object",
+                      "properties": {
+                        "images": {
+                          "description": "The pictures attached to this message, by name.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "type"
+                  ]
+                }
+              ]
+            },
+            "queued": {
+              "type": "boolean"
+            },
+            "by": {
+              "$ref": "maic.schema.json#/$defs/By"
+            }
+          },
+          "required": [
+            "type",
+            "item",
+            "queued",
+            "by"
+          ]
+        }
+      ]
+    },
+    "maic.approval.requested": {
+      "description": "An action waits for a person. Raised on the top-level session's stream, `thread` naming a subagent's.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.approval.requested"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "call_id": {
+              "description": "The call this approval is about; absent for a subagent's (then `thread` names it).",
+              "type": "string"
+            },
+            "item_id": {
+              "type": "string"
+            },
+            "thread": {
+              "$ref": "maic.schema.json#/$defs/Thread"
+            },
+            "tool": {
+              "type": "string"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "origin": {
+              "$ref": "maic.schema.json#/$defs/Origin"
+            },
+            "always_covers": {
+              "type": "string"
+            },
+            "preview": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "proposed_size": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "tool",
+            "summary",
+            "reason",
+            "origin",
+            "always_covers",
+            "preview"
+          ]
+        }
+      ]
+    },
+    "maic.approval.answered": {
+      "description": "The first valid answer; every client closes its prompt.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.approval.answered"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "call_id": {
+              "type": "string"
+            },
+            "choice": {
+              "enum": [
+                "yes",
+                "no",
+                "always",
+                "trip",
+                "withdrawn"
+              ]
+            },
+            "by": {
+              "$ref": "maic.schema.json#/$defs/By"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "choice",
+            "by"
+          ]
+        }
+      ]
+    },
+    "maic.question.asked": {
+      "description": "The question tool: the model asks the person.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.question.asked"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "thread": {
+              "$ref": "maic.schema.json#/$defs/Thread"
+            },
+            "text": {
+              "type": "string"
+            },
+            "options": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "text",
+            "options"
+          ]
+        }
+      ]
+    },
+    "maic.question.answered": {
+      "description": "The question was answered, or withdrawn.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.question.answered"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "by": {
+              "$ref": "maic.schema.json#/$defs/By"
+            },
+            "withdrawn": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "by",
+            "withdrawn"
+          ]
+        }
+      ]
+    },
+    "maic.tool.output.delta": {
+      "description": "A script tool's stderr, or a Lua tool's maic.shell output, while it runs: `data`, or `skipped` bytes not sent to this connection. A `!cmd` (maic.session.shell) streams the same way with its own item_id and no output_index: it is no response's item.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.tool.output.delta"
+            },
+            "item_id": {
+              "type": "string"
+            },
+            "output_index": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The output item it streams under; absent for a `!cmd`."
+            },
+            "call": {
+              "description": "A subagent's call (<agent>:<call id>) streaming under the task's output item; offset is then within that call.",
+              "type": "string"
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "data": {
+              "type": "string"
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "type",
+            "item_id",
+            "offset"
+          ]
+        }
+      ]
+    },
+    "maic.file.written": {
+      "description": "A tool call changed this file.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.file.written"
+            },
+            "path": {
+              "type": "string"
+            },
+            "tool": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path",
+            "tool"
+          ]
+        }
+      ]
+    },
+    "maic.notice": {
+      "description": "A line for the person. A subagent's call and its result come as notices too, `kind` saying which, until its own stream (step 14).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.notice"
+            },
+            "text": {
+              "type": "string"
+            },
+            "level": {
+              "enum": [
+                "info",
+                "warn",
+                "error"
+              ]
+            },
+            "kind": {
+              "description": "A subagent's tool call (`tool` and `path` as the call names them) or its result (`ok`, and `full_output` when its whole output was kept).",
+              "enum": [
+                "tool_call",
+                "tool_result"
+              ]
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "tool": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "full_output": {
+              "$ref": "maic.schema.json#/$defs/FullOutput"
+            }
+          },
+          "required": [
+            "type",
+            "text",
+            "level"
+          ]
+        }
+      ]
+    },
+    "maic.todo.updated": {
+      "description": "The model replaced its plan.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.todo.updated"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "maic.schema.json#/$defs/TodoItem"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "items"
+          ]
+        }
+      ]
+    },
+    "maic.session.state": {
+      "description": "The session's lifecycle and activity. The first event of every load is one, and it carries the stream's header: the epoch, the protocol hash and, for a new epoch, what it replaced.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.session.state"
+            },
+            "state": {
+              "$ref": "maic.schema.json#/$defs/SessionState"
+            },
+            "activity": {
+              "$ref": "maic.schema.json#/$defs/Activity"
+            },
+            "waiting": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "maic.schema.json#/$defs/Waiting"
+                }
+              ]
+            },
+            "by": {
+              "$ref": "maic.schema.json#/$defs/By"
+            },
+            "epoch": {
+              "description": "The history incarnation this stream belongs to: kept across loads while the history is unchanged, new when it starts fresh, is reset, forked or rewritten. maic.session.subscribe takes it back.",
+              "type": "string",
+              "minLength": 1
+            },
+            "protocol": {
+              "description": "The protocol this load speaks: the digest of protocol/ in RFC 8785 form (maic protocol hash), and that form's name.",
+              "type": "object",
+              "properties": {
+                "hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "canonical": {
+                  "const": "RFC 8785"
+                }
+              },
+              "required": [
+                "hash",
+                "canonical"
+              ]
+            },
+            "previous_epoch": {
+              "description": "A new epoch's predecessor in the same session, and why it was replaced.",
+              "type": "object",
+              "properties": {
+                "epoch": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "epoch"
+              ]
+            },
+            "forked_from": {
+              "description": "A forked session's first epoch: the parent session, its epoch and the transcript records the fork holds.",
+              "type": "object",
+              "properties": {
+                "session": {
+                  "type": "string"
+                },
+                "epoch": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "records": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "session",
+                "records"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "state",
+            "activity",
+            "waiting"
+          ]
+        }
+      ]
+    },
+    "maic.session.settings": {
+      "description": "Whichever settings changed, and who changed them.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.session.settings"
+            },
+            "mode": {
+              "$ref": "maic.schema.json#/$defs/Mode"
+            },
+            "model": {
+              "type": "string"
+            },
+            "remote_model": {
+              "type": "boolean"
+            },
+            "think": {
+              "type": "boolean"
+            },
+            "harness": {
+              "type": "string"
+            },
+            "judge": {
+              "type": "string"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "tier": {
+              "$ref": "maic.schema.json#/$defs/Tier"
+            },
+            "workspace": {
+              "description": "The workspace `:cd` moved the session to.",
+              "type": "string"
+            },
+            "by": {
+              "$ref": "maic.schema.json#/$defs/By"
+            }
+          },
+          "required": [
+            "type",
+            "by"
+          ]
+        }
+      ]
+    },
+    "maic.session.title": {
+      "description": "The session's title: `auto` when small_model titled it after its first turn, `rename` when a person did (:rename, updateConversation).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.session.title"
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source": {
+              "enum": [
+                "auto",
+                "rename"
+              ]
+            },
+            "by": {
+              "$ref": "maic.schema.json#/$defs/By"
+            }
+          },
+          "required": [
+            "type",
+            "text",
+            "source"
+          ]
+        }
+      ]
+    },
+    "maic.usage.updated": {
+      "description": "The last model call's usage in OpenAI's shape, the call count, the context window and the session's totals.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.usage.updated"
+            },
+            "usage": {
+              "$ref": "../openai/subset.json#/components/schemas/ResponseUsage"
+            },
+            "calls": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "context": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "last_input": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "budget": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "total": {
+              "type": "object",
+              "properties": {
+                "input": {
+                  "type": "integer"
+                },
+                "output": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "input",
+                "output"
+              ]
+            },
+            "normalized": {
+              "description": "How often each adapter rule normalized what a provider sent, this session (standards.md, adapter normalizations).",
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "required": [
+            "type",
+            "usage",
+            "calls",
+            "context",
+            "last_input"
+          ]
+        }
+      ]
+    }
+  }
+}

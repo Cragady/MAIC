@@ -1,19 +1,23 @@
 #include "tui.hpp"
 
+#include "audit_trail.hpp"
 #include "commands.hpp"
 #include "editor.hpp"
 #include "highlight.hpp"
 #include "nvim_host.hpp"
 #include "maic/agent.hpp"
+#include "maic/engine.hpp"
 #include "maic/artifacts.hpp"
 #include "maic/clipboard.hpp"
+#include "maic/full_output.hpp"
 #include "maic/image.hpp"
 #include "maic/lazy_lock.hpp"
 #include "maic/places.hpp"
+#include "maic/protocol.hpp"
 #include "maic/vendor.hpp"
-#include "maic/lua.hpp"
 #include "maic/nvim_host.hpp"
 #include "maic/nvim_keymaps.hpp"
+#include "maic/nvim_setup.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
@@ -32,11 +36,6 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/terminal.hpp>
 
-#include <fcntl.h>
-#include <poll.h>
-#include <signal.h>
-#include <sys/wait.h>
-#include <regex.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -44,13 +43,12 @@
 #include <chrono>
 #include <atomic>
 #include <cctype>
-#include <cerrno>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
-#include <future>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -109,127 +107,57 @@ std::vector<InputRow> chunk_rows(const std::vector<StyledLine>& lines, size_t wi
     return rows;
 }
 
-// A command the user runs themselves (`!cmd`): their shell, their environment, no sandbox. Output streams to
-// `on_output`; cancel kills the whole process group.
-int run_user_shell(const std::string& command, const std::filesystem::path& cwd, const std::atomic<bool>& cancel,
-                   const std::function<void(std::string_view)>& on_output) {
-    int fds[2];
-    if (pipe2(fds, O_CLOEXEC) != 0) return -1;
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        setpgid(0, 0);
-        int null_fd = open("/dev/null", O_RDONLY);
-        dup2(null_fd, STDIN_FILENO);
-        dup2(fds[1], STDOUT_FILENO);
-        dup2(fds[1], STDERR_FILENO);
-        if (chdir(cwd.c_str()) != 0) _exit(127);
-        const char* shell = std::getenv("SHELL");
-        if (!shell || !*shell) shell = "/bin/bash";
-        execl(shell, shell, "-c", command.c_str(), nullptr);
-        _exit(127);
-    }
-    close(fds[1]);
-    char buf[8192];
-    bool killed = false;
-    for (;;) {
-        if (cancel.load() && !killed) {
-            kill(-pid, SIGTERM);
-            killed = true;
-        }
-        pollfd pfd{fds[0], POLLIN, 0};
-        int ready = poll(&pfd, 1, 200);
-        if (ready > 0) {
-            ssize_t n = read(fds[0], buf, sizeof(buf));
-            if (n <= 0) break;
-            on_output(std::string_view(buf, static_cast<size_t>(n)));
-        } else if (ready < 0 && errno != EINTR) {
-            break;
-        }
-    }
-    close(fds[0]);
-    if (killed) kill(-pid, SIGKILL);
-    int status = 0;
-    waitpid(pid, &status, 0);
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
-}
-
-// Scaffolds a project: a MAIC.md placeholder and .maic/settings.lua. Returns what was created.
-std::string init_project(const std::filesystem::path& ws) {
-    std::string made;
-    std::filesystem::create_directories(ws / ".maic");
-    if (!std::filesystem::exists(ws / ".maic" / "settings.lua") && !std::filesystem::exists(ws / ".maic" / "settings.json")) {
-        std::ofstream(ws / ".maic" / "settings.lua") << "-- Project settings for MAIC, committed with the code. Personal overrides go in settings.local.lua\n"
-                                                          "-- (add it to .gitignore). Keys: docs/settings.md\n"
-                                                          "return {\n}\n";
-        made += "created .maic/settings.lua\n";
-    }
-    if (!std::filesystem::exists(ws / "MAIC.md")) {
-        std::ofstream(ws / "MAIC.md") << "# " << ws.filename().string() << "\n\nStanding instructions for agents working in this project.\n";
-        made += "created MAIC.md (transcripts for this project now go under sessions/projects/)\n";
-    }
-    return made;
-}
-
 std::filesystem::path session_home_dir(const Settings& settings) {
     return resolve_sessions_home(settings, std::filesystem::current_path());
 }
 
+// An approval the engine is waiting on (maic.approval.requested).
 struct PendingApproval {
-    ApprovalRequest request;
-    std::promise<ApprovalAnswer> answer;
+    std::string id;
+    nlohmann::json event;
     bool typing = false;   // after N: a sentence for the model is being typed
     std::string feedback;
 };
 
-// The question tool: shown like an approval; a number picks an option, typed text is a free answer.
-// A yes/no the UI needs from the user before it does something (entering auto under a dumb harness).
+// A question one of the engine's `:` commands asks before it goes on (entering auto under a dumb harness, a
+// directory's trust on :cd): one of `keys`, Esc and Ctrl-C giving "n".
 struct PendingConfirm {
+    std::string id;
     std::string title;
     std::vector<std::string> lines;
-    std::function<void(bool)> then;  // y / n
-    std::string keys = "";           // instead: one of these keys (Esc and Ctrl-C give "n") goes to `pick`
-    std::function<void(const std::string&)> pick = {};
+    std::string keys;
 };
 
+// The question tool: shown like an approval; a number picks an option, typed text is a free answer.
 struct PendingQuestion {
+    std::string id;
     std::string text;
     std::vector<std::string> options;
-    std::promise<std::string> answer;
     std::string typed;
+};
+
+// What the welcome says about the session, read from its agent while the engine sets it up.
+struct Startup {
+    std::string model;
+    bool remote = false;
+    Provider provider;
+    std::vector<std::string> instructions, tools, tool_notices;
+    std::vector<std::pair<Kind, std::string>> context;  // --context files attached before the first turn
 };
 
 enum class Focus { Input, Conversation };
 
-class App : public AgentEvents {
+// The TUI is a client of an in-process engine (docs/design/engine-protocol.md, build step 6): its session's turns,
+// approvals, questions, `!cmd` and the `:` commands that act on the session go through Engine::call, and what it
+// shows comes from the engine's events. The view, the editor, themes, the nvim host and the machine's services
+// stay here.
+class App {
 public:
     App(ScreenInteractive& screen, Settings settings, const std::optional<std::filesystem::path>& resume, bool append, std::optional<size_t> fork_at,
-        std::shared_ptr<HostNvim> host, std::string host_refused)
-        : host_(std::move(host)), host_refused_(std::move(host_refused)), screen_(screen), settings_(std::move(settings)),
-          log_(!resume ? std::make_unique<SessionLog>("tui", settings_.record ? session_home_dir(settings_) : runtime_sessions_dir())
-               : append && settings_.record ? std::make_unique<SessionLog>(SessionLog::Reopen{}, *resume)
-                                            : std::make_unique<SessionLog>(SessionLog::Fork{}, *resume, fork_at.value_or(count_records(*resume)), "tui",
-                                                                           settings_.record ? session_home_dir(settings_) : runtime_sessions_dir())),
-          agent_(std::filesystem::current_path(), settings_.model), editor_(&register_), view_(&register_) {
-        agent_.providers = settings_.providers;
-        set_context(agent_.providers, settings_.context);
-        set_context(agent_.providers, settings_.context_2, "llamacpp-2");
-        agent_.think = settings_.think;
-        agent_.review_with_model = settings_.harness != "dumb";
-        agent_.reviewer_model = settings_.reviewer_model;
-        agent_.small_model = settings_.small_model;
-        agent_.reviewer_budget_tokens = settings_.reviewer_budget_tokens;
-        agent_.presets = settings_.presets;
-        dumb_auto_ok_ = settings_.dumb_auto_ok;
-        if (auto m = parse_mode(settings_.mode)) {
-            // Auto under a dumb harness is confirmed first; until then the session starts one step safer.
-            if (*m == Mode::Auto && !agent_.review_with_model && !dumb_auto_ok_) {
-                agent_.mode = Mode::Edit;
-                request_mode(Mode::Auto);
-            } else {
-                agent_.mode = *m;
-            }
-        }
+        std::shared_ptr<HostNvim> host, std::string host_refused, std::function<Settings(const std::filesystem::path&)> settings_at,
+        const std::vector<std::filesystem::path>& context)
+        : settings_at_(std::move(settings_at)), host_(std::move(host)), host_refused_(std::move(host_refused)), screen_(screen), settings_(std::move(settings)),
+          editor_(&register_), view_(&register_) {
         view_.set_markdown(settings_.markdown);
         editor_.set_leader(settings_.leader);
         editor_.set_enter_sends(settings_.enter_sends);
@@ -245,29 +173,20 @@ public:
             editor_.set_history(std::move(items));
         }
         view_.set_leader(settings_.leader);
-        agent_.compaction.at = settings_.compact_at;
-        agent_.compaction.keep_results = settings_.compact_keep_results;
-        agent_.compaction.model = settings_.compact_model;
-        agent_.budget_tokens = settings_.budget_tokens;
-        agent_.set_instruction_names(settings_.instruction_files);
-        agent_.load_instruction_files = settings_.load_instructions;
-        agent_.system_prefix = resolve_system_prompt(settings_.system_prompt);
-        agent_.prefill = resolve_system_prompt(settings_.prefill);
-        agent_.rules = settings_.rules;
-        agent_.set_permission(settings_.permission);
-        agent_.agents = settings_.agents;
-        agent_.set_forbid(settings_.forbid);
-        set_tripwire_scope(settings_.tripwire, log_->path().string() + ".tripped");
-        if (settings_.tripwire == "isolated") agent_.set_confined(true);
-        agent_.reload_instructions();
-        agent_.bans = settings_.bans;
-        agent_.set_nvim_host(host_);
-        apply_sampling();
         view_.set_timestamps(settings_.timestamps);
-        for (const auto& n : log_->recovered()) view_.append(Kind::Notice, n);
+        confined_ = settings_.tripwire == "isolated";
+        open_recording();
+
+        auto log = !resume ? std::make_unique<SessionLog>("tui", settings_.record ? session_home_dir(settings_) : runtime_sessions_dir())
+                   : append && settings_.record ? std::make_unique<SessionLog>(SessionLog::Reopen{}, *resume)
+                                                : std::make_unique<SessionLog>(SessionLog::Fork{}, *resume, fork_at.value_or(count_records(*resume)), "tui",
+                                                                               settings_.record ? session_home_dir(settings_) : runtime_sessions_dir());
+        set_tripwire_scope(settings_.tripwire, log->path().string() + ".tripped");
+        for (const auto& n : log->recovered()) view_.append(Kind::Notice, n);
         for (const auto& n : recover_relocations()) view_.append(Kind::Notice, n);
+        LoadedSession old;
         if (resume) {
-            LoadedSession old = load_session(append && settings_.record ? log_->path() : *resume, fork_at.value_or(~size_t(0)));
+            old = load_session(append && settings_.record ? log->path() : *resume, fork_at.value_or(~size_t(0)));
             for (const auto& t : old.transcript) {
                 if (t.type == "user") view_.append(Kind::User, t.text);
                 else if (t.type == "assistant") view_.append(Kind::Assistant, t.text);
@@ -275,246 +194,138 @@ public:
                 else if (t.type == "tool_result") view_.append(t.ok ? Kind::ToolOk : Kind::ToolErr, t.text);
                 else view_.append(Kind::Notice, t.text);
             }
-            agent_.set_log(log_.get());
-            agent_.restore(std::move(old.messages));
-            view_.append(Kind::Notice, "resumed session " + resume->stem().string() + " (" + std::to_string(old.transcript.size()) + " entries" +
+        }
+        size_t entries = old.transcript.size();
+
+        EngineOptions eo;
+        eo.settings = settings_;
+        eo.kind = "tui";
+        // :cd reads the new directory's settings as a start there would, flags included; the TUI keeps that copy.
+        eo.settings_at = [this](const std::filesystem::path& ws) {
+            Settings st = settings_at_(ws);
+            cd_settings_ = st;
+            return st;
+        };
+        engine_ = std::make_unique<Engine>(std::move(eo));
+        client_ = engine_->connect(Origin::Local, "maic", "in-process", [this] { wake_pump(); });
+        call("maic.hello", {{"protocol", 1}, {"client", {{"name", "maic"}, {"version", MAIC_VERSION}}}, {"capabilities", {"tool_output"}}});
+
+        bool want_auto = false;
+        LocalSession ls;
+        ls.workspace = std::filesystem::current_path();
+        ls.settings = settings_;
+        ls.log = std::move(log);
+        ls.setup = [&](Agent& agent, SessionLog& l) {
+            configure_agent(agent, settings_);
+            if (auto m = parse_mode(settings_.mode)) {
+                // Auto under a dumb harness is confirmed first; until then the session starts one step safer.
+                want_auto = *m == Mode::Auto && !agent.review_with_model && !settings_.dumb_auto_ok;
+                agent.mode = want_auto ? Mode::Edit : *m;
+            }
+            if (confined_) agent.set_confined(true);
+            agent.reload_instructions();
+            agent.set_nvim_host(host_);
+            agent.set_log(&l);
+            if (resume) agent.restore(std::move(old.messages));
+            startup_.model = agent.model;
+            startup_.remote = agent.remote();
+            startup_.provider = resolve_model(agent.providers, agent.model).first;
+            for (const auto& f : agent.instructions()) startup_.instructions.push_back(f.path.string());
+            for (const auto& t : agent.tools()) startup_.tools.push_back(t.name);
+            for (const auto& t : agent.script_tools()) startup_.tools.push_back(t.name);
+            startup_.tool_notices = agent.tool_notices();
+            for (const auto& f : context) {
+                try {
+                    startup_.context.emplace_back(Kind::Notice, agent.add_context_file(f));
+                } catch (const std::exception& e) {
+                    startup_.context.emplace_back(Kind::Error, e.what());
+                }
+            }
+        };
+        session_ = engine_->open_local(client_, std::move(ls));
+        nlohmann::json snap = result(call("maic.session.attach", {{"session", session_}}));
+        call("maic.index.subscribe");
+        take_events();
+        follow_entry(snap.value("entry", nlohmann::json::object()));
+        usage_ = snap.value("usage", nlohmann::json::object());
+        for (const auto& t : snap.value("todo", nlohmann::json::array())) todo_.push_back({t.value("text", ""), t.value("done", false)});
+        pump_ = std::thread([this] { pump(); });
+        if (resume) {
+            view_.append(Kind::Notice, "resumed session " + resume->stem().string() + " (" + std::to_string(entries) + " entries" +
                                            (fork_at ? ", forked at record " + std::to_string(*fork_at) : "") + ")" +
                                            (append ? ", continuing in the same file" : ", continuing in a new file that points at it"));
-        } else {
-            agent_.set_log(log_.get());
         }
+        if (want_auto) command("mode auto");
+        if (!asking()) command("trust imports --pending");
     }
 
-    ~App() override { shutdown(); }
-
-    // The settings as a start in `workspace` would read them, command-line flags included (:cd).
-    std::function<Settings(const std::filesystem::path&)> settings_at;
+    ~App() { shutdown(); }
 
     void welcome();
     void startup_notice(const std::string& t) { view_.append(Kind::Notice, t); }
-    void attach_image(const std::filesystem::path& f) {
-        try {
-            agent_.attach_image(f.string().rfind("~/", 0) == 0 ? std::filesystem::path(std::getenv("HOME")) / f.string().substr(2) : f);
-            post(Kind::Notice, "image attached to the next message: " + f.filename().string() + "  (:image lists, :image clear drops)");
-        } catch (const std::exception& e) {
-            post(Kind::Error, e.what());
-        }
-    }
-    // A file dragged onto the terminal arrives as its path in the input, quoted or backslash-escaped the way
-    // terminals write a drop. Only that shape is taken as an attachment: the whole message being one image
-    // path, or a message that begins with a quoted/escaped/file:// one. A plain path inside a sentence stays
-    // text, so a pasted path is something the agent can be asked to read rather than a picture MAIC sends.
-    std::string take_dropped_image(const std::string& text) {
-        // The explicit form first: ![alt](path) or [text](path) whose target is an image file, anywhere in the
-        // message. Micaiah's suggestion: no guessing, and it works for a pasted path too.
-        {
-            std::string out;
-            size_t pos = 0;
-            bool any = false;
-            while (true) {
-                size_t lb = text.find('[', pos);
-                if (lb == std::string::npos) break;
-                size_t rb = text.find("](", lb);
-                size_t rp = rb == std::string::npos ? std::string::npos : text.find(')', rb + 2);
-                if (rp == std::string::npos) break;
-                std::string alt = text.substr(lb + 1, rb - lb - 1), target = text.substr(rb + 2, rp - rb - 2);
-                while (!target.empty() && (target.front() == '"' || target.front() == '\'' || target.front() == '<')) target.erase(0, 1);
-                while (!target.empty() && (target.back() == '"' || target.back() == '\'' || target.back() == '>')) target.pop_back();
-                if (target.rfind("file://", 0) == 0) target = target.substr(7);
-                if (target.rfind("~/", 0) == 0) target = std::string(std::getenv("HOME")) + target.substr(1);
-                std::filesystem::path p = std::filesystem::path(target).is_absolute() ? std::filesystem::path(target) : agent_.harness().workspace() / target;
-                std::error_code ec;
-                size_t start = lb > 0 && text[lb - 1] == '!' ? lb - 1 : lb;
-                if (is_image_path(p) && std::filesystem::is_regular_file(p, ec)) {
-                    try {
-                        agent_.attach_image(p);
-                        out += text.substr(pos, start - pos) + "[image: " + (alt.empty() ? p.filename().string() : alt) + "]";
-                        any = true;
-                        pos = rp + 1;
-                        continue;
-                    } catch (const std::exception&) {
-                    }
-                }
-                out += text.substr(pos, rp + 1 - pos);
-                pos = rp + 1;
-            }
-            if (any) return out + text.substr(pos);
-        }
-        std::string t = text;
-        while (!t.empty() && std::isspace(static_cast<unsigned char>(t.back()))) t.pop_back();
-        size_t start = t.find_first_not_of(" \t\n");
-        if (start == std::string::npos) return text;
-        t = t.substr(start);
-        std::string path, rest;
-        bool dropped_shape = false;
-        if (t.rfind("file://", 0) == 0) {
-            dropped_shape = true;
-            size_t sp = t.find_first_of(" \n");
-            path = t.substr(7, sp == std::string::npos ? std::string::npos : sp - 7);
-            rest = sp == std::string::npos ? "" : t.substr(sp);
-        } else if (t.front() == '\'' || t.front() == '"') {
-            size_t end = t.find(t.front(), 1);
-            if (end == std::string::npos) return text;
-            dropped_shape = true;
-            path = t.substr(1, end - 1);
-            rest = t.substr(end + 1);
-        } else {
-            // Backslash-escaped spaces mark a drop; a path with no spaces counts only when it is the whole message.
-            size_t i = 0;
-            while (i < t.size() && !(t[i] == ' ' || t[i] == '\n')) {
-                if (t[i] == '\\' && i + 1 < t.size()) {
-                    path += t[i + 1];
-                    dropped_shape = true;
-                    i += 2;
-                } else {
-                    path += t[i++];
-                }
-            }
-            rest = t.substr(i);
-            if (!dropped_shape && !rest.empty()) return text;  // a bare path followed by words: text
-        }
-        if (path.rfind("~/", 0) == 0) path = std::string(std::getenv("HOME")) + path.substr(1);
-        std::filesystem::path p(path);
-        std::error_code ec;
-        if (!is_image_path(p) || !std::filesystem::is_regular_file(p, ec)) return text;
-        try {
-            agent_.attach_image(p);
-        } catch (const std::exception&) {
-            return text;
-        }
-        std::string r = rest;
-        size_t rs = r.find_first_not_of(" \t\n");
-        r = rs == std::string::npos ? "" : r.substr(rs);
-        return "[image: " + p.filename().string() + "]" + (r.empty() ? "" : " " + r);
-    }
-    // The current provider's `sampling` settings table, merged into every request.
-    void apply_sampling() {
-        auto [provider, name] = resolve_model(agent_.providers, agent_.model);
-        nlohmann::json s = settings_.sampling.is_object() ? settings_.sampling : nlohmann::json::object();
-        nlohmann::json per_provider = provider.options.value("sampling", nlohmann::json::object());
-        for (const auto& [k, v] : per_provider.items()) s[k] = v;
-        for (const auto& [k, v] : live_sampling_.items()) {
-            if (v.is_null()) s.erase(k);
-            else s[k] = v;
-        }
-        agent_.sampling = s;
-        agent_.operator_note_in_turn = provider.options.value("operator_note", provider.kind != "anthropic");
-    }
-    nlohmann::json live_sampling_ = nlohmann::json::object();  // :sampling changes, over the settings
-    std::string transcript_path() const { return log_->path().string(); }
+    void attach_image(const std::filesystem::path& f) { command("image " + f.string()); }
+    std::string transcript_path() const { return transcript_; }
     std::string exit_note() const { return exit_note_; }
     void send(const std::string& text) { submit(text, false); }
-    void attach_context(const std::vector<std::filesystem::path>& files) {
-        for (const auto& f : files) {
-            try {
-                view_.append(Kind::Notice, agent_.add_context_file(f));
-            } catch (const std::exception& e) {
-                view_.append(Kind::Error, e.what());
-            }
-        }
+    void attach_context() {
+        for (const auto& [kind, text] : startup_.context) view_.append(kind, text);
     }
     Element render();
     bool handle(Event e);
 
-    // AgentEvents, from the worker thread.
-    void on_text(std::string_view delta, bool thinking) override {
-        view_.append_to_last(thinking ? Kind::Thinking : Kind::Assistant, delta);
-        screen_.PostEvent(Event::Custom);
-    }
-    void on_tool_call(const std::string& summary) override {
-        ++tool_calls_;
-        post(Kind::Tool, summary);
-    }
-    void on_tool_started(const std::string& tool, const std::string& path, const std::string& summary) override {
-        if (!host_up()) return;
-        std::string resolved = path;
-        try {
-            if (!path.empty()) resolved = agent_.harness().resolve(path).string();
-        } catch (const std::exception&) {
-        }
-        fire("MaicToolCall", {{"tool", tool}, {"path", resolved}, {"summary", summary}});
-    }
-    void on_file_written(const std::filesystem::path& path, const std::string& tool) override {
-        if (!host_up()) return;
-        host_checktime(*host_);
-        fire("MaicFileWritten", {{"tool", tool}, {"path", path.string()}});
-    }
-    void on_tool_result(const std::string& text, bool ok) override { post(ok ? Kind::ToolOk : Kind::ToolErr, text); }
-    void on_notice(const std::string& text) override { post(Kind::Notice, text); }
-    ApprovalAnswer ask(const ApprovalRequest& request) override {
-        std::future<ApprovalAnswer> answer;
-        {
-            std::lock_guard lock(mu_);
-            approval_.emplace(PendingApproval{request, {}});
-            answer = approval_->answer.get_future();
-        }
-        screen_.PostEvent(Event::Custom);
-        nlohmann::json data = {{"tool", request.tool}, {"path", request.path.string()}, {"summary", request.summary}, {"reason", request.reason}, {"verdict", "pending"}};
-        fire("MaicApproval", data);
-        ApprovalAnswer a = answer.get();
-        const char* verdicts[] = {"yes", "no", "always", "trip"};
-        data["verdict"] = verdicts[static_cast<int>(a.choice)];
-        fire("MaicApproval", data);
-        return a;
-    }
-    std::string question(const std::string& text, const std::vector<std::string>& options) override {
-        std::future<std::string> answer;
-        {
-            std::lock_guard lock(mu_);
-            question_.emplace(PendingQuestion{text, options, {}, ""});
-            answer = question_->answer.get_future();
-        }
-        screen_.PostEvent(Event::Custom);
-        return answer.get();
-    }
-    void on_todo(const std::vector<TodoItem>& items) override {
-        {
-            std::lock_guard lock(mu_);
-            todo_ = items;
-        }
-        screen_.PostEvent(Event::Custom);
-    }
-
 private:
+    // ---------- the engine connection ----------
+    nlohmann::json call(const std::string& method, nlohmann::json params = nlohmann::json::object(), bool from_ui = true);
+    static nlohmann::json result(const nlohmann::json& reply) { return reply.value("result", nlohmann::json::object()); }
+    void command(const std::string& line);              // a `:` command the engine owns, its answer shown
+    void show(const nlohmann::json& reply);              // a maic.session.command answer: lines, a question, text to send
+    void wake_pump();
+    void pump();
+    void take_events();  // what the engine has queued, into the inbox, in order
+    void drain();        // the inbox applied, on the UI thread
+    void apply(const nlohmann::json& message);
+    void on_event(const nlohmann::json& e);
+    void follow_entry(const nlohmann::json& e);
+    void follow_workspace(const std::filesystem::path& to);
+    void live(const std::string& key, int stream, const std::string& data, size_t offset);
+    void after_turn();
+    void open_recording();
+    void record(const char* dir, const nlohmann::json& msg);
+    std::function<Settings(const std::filesystem::path&)> settings_at_;
+    std::optional<Settings> cd_settings_;  // what :cd read in the new directory, until its maic.session.settings arrives
+    std::unique_ptr<Engine> engine_;
+    std::string client_, session_;
+    std::atomic<long> next_id_{1};
+    std::mutex inbox_mu_;  // the inbox, and the order calls and events are recorded in
+    std::vector<nlohmann::json> inbox_;
+    std::mutex pump_mu_;
+    std::condition_variable pump_cv_;
+    bool pump_wake_ = false, pump_stop_ = false;
+    std::thread pump_;
+    std::atomic<bool> drain_posted_{false};
+    std::unique_ptr<protocol::Recorder> recorder_;  // MAIC_PROTOCOL_RECORD: this connection's exchange
+    Startup startup_;
+
+    // The session as the engine reports it.
+    std::string ws_, transcript_, model_, mode_ = "manual";
+    bool remote_ = false, think_ = false, dumb_ = false, confined_ = false;
+    size_t queued_ = 0;
+    nlohmann::json usage_ = nlohmann::json::object();
+    std::string response_;   // the running response (a paused turn's last)
+    bool paused_ = false;    // an interrupt (Ctrl-S) paused the turn
+    bool pause_menu_ = false;  // its menu is up: Ctrl-Q, s, d, f, k, h; Esc leaves it to type a message
+    long turn_seq_ = -1;     // the stream's position before the turn this client started: an idle at or before it is an earlier turn's
+    std::chrono::steady_clock::time_point response_t0_;
+    bool last_cancelled_ = false;
+    std::map<std::string, nlohmann::json> approvals_seen_;  // for MaicApproval's verdict
+
     void post(Kind k, std::string text) {
         view_.append(k, std::move(text));
         screen_.PostEvent(Event::Custom);
     }
-    bool asking() {
-        std::lock_guard lock(mu_);
-        return approval_.has_value() || question_.has_value() || confirm_.has_value();
-    }
-    // Changes the mode; auto under a dumb harness is confirmed once per session (or dumb_auto_ok in settings).
-    void request_mode(Mode m) {
-        if (m == Mode::Auto && !agent_.review_with_model && !dumb_auto_ok_) {
-            confirm_dumb_auto([this](bool yes) {
-                if (yes) {
-                    dumb_auto_ok_ = true;
-                    agent_.mode = Mode::Auto;
-                    post(Kind::Notice, "auto mode under a dumb harness: the rule list alone decides what runs. `:harness smart` brings the reviewer back.");
-                } else {
-                    post(Kind::Notice, "staying in " + std::string(mode_name(agent_.mode.load())));
-                }
-            });
-            return;
-        }
-        agent_.mode = m;
-    }
-    void confirm_dumb_auto(std::function<void(bool)> then) {
-        std::lock_guard lock(mu_);
-        confirm_ = PendingConfirm{
-            " dumb harness + auto mode ",
-            {"No model reads the conversation before the agent acts. In auto mode only the rule list stands between",
-             "the agent and your shell: the trip patterns, the read-only classifier, the workspace fence and the",
-             "sandbox. A wrong but well-formed command runs. Nothing asks you first.",
-             "",
-             "Continue into auto mode?  [y] yes, for this session   [n] stay in " + std::string(mode_name(agent_.mode.load())) +
-                 "   (dumb_auto_ok = true in settings skips this)"},
-            std::move(then)};
-        screen_.PostEvent(Event::Custom);
-    }
-    std::string todo_text() {
-        std::lock_guard lock(mu_);
+    bool asking() const { return approval_.has_value() || question_.has_value() || confirm_.has_value(); }
+    void request_mode(Mode m) { command("mode " + std::string(mode_name(m))); }
+    std::string todo_text() const {
         if (todo_.empty()) return "";
         size_t done = 0;
         std::string out;
@@ -568,11 +379,15 @@ private:
     void act(const Editor::Result& r);
     void answer(Approval a, std::string feedback = "");
     void answer_question(std::string text);
+    void cancel_turn();
+    void steer(const std::string& action);  // maic.steer on the running response; the input, if any, is its note
     void submit(std::string text, bool now);
     void start_turn(const std::string& text);
+    std::string take_dropped_image(const std::string& text);
+    bool attach(const std::filesystem::path& file);  // :image FILE, quietly: true when it is attached
     void run_command(const std::string& line);
     void run_shell(const std::string& command);
-    void set_model(const std::string& model);
+    void run_lua(const std::string& code, bool from_file);
     void set_focus(Focus f);
     void edit_externally();
     void quit();
@@ -580,44 +395,35 @@ private:
 
     ScreenInteractive& screen_;
     Settings settings_;
-    std::unique_ptr<SessionLog> log_;
     std::filesystem::path previous_ws_;  // the workspace before the last :cd
-    std::string log_path() const { return log_->path().string() + (settings_.record ? "" : "  (temporary: --no-record)"); }
-    Agent agent_;
+    std::string log_path() const { return transcript_ + (settings_.record ? "" : "  (temporary: --no-record)"); }
     std::string register_;
     Editor editor_;
     View view_;
     Focus focus_ = Focus::Input;
 
-    std::mutex mu_;  // guards approval_, question_ and todo_
     std::optional<PendingApproval> approval_;
     std::optional<PendingQuestion> question_;
     std::optional<PendingConfirm> confirm_;
-    bool dumb_auto_ok_ = false;
     Element render_confirm();
     bool handle_confirm(const Event& e);
+    Element render_pause_menu();
+    bool handle_pause_menu(const Event& e);
     std::vector<TodoItem> todo_;
 
     std::atomic<bool> busy_{false};
-    std::atomic<bool> cancel_{false};
-    std::thread worker_;
-
     std::atomic<bool> shell_busy_{false};
-    std::atomic<bool> shell_cancel_{false};
     std::thread shell_thread_;
+    bool stopped_ = false;
 
     std::string status_msg_;
-    std::atomic<int> tool_calls_{0};  // this turn
+    int tool_calls_ = 0;       // this response
+    std::string live_call_;    // the call the live entry shows, and the next offset per stream
+    size_t live_next_[2] = {0, 0};
+    std::atomic<bool> redraw_posted_{false};
     std::atomic<bool> quit_when_idle_{false};  // :wq
     std::string exit_note_;
-    bool titled_ = false;
-    void maybe_title(const std::string& first_prompt);
-    void set_title(const std::string& title);
-    std::unique_ptr<Lua> lua_;  // created on first :lua; keeps globals between calls
     bool lua_mode_ = false;     // :lua with no argument: sends go to Lua until :chat (or :lua again)
-    void run_lua(const std::string& code, bool from_file);
-    void cd_to(const std::filesystem::path& ws, const std::filesystem::path& to);
-    void ask_cd_trust(std::vector<ProjectDir> dirs, const std::filesystem::path& ws, const std::filesystem::path& to);
     bool ctrl_w_pending_ = false;
     bool ctrl_x_pending_ = false;
     size_t palette_sel_ = 0;
@@ -632,10 +438,10 @@ private:
 };
 
 void App::welcome() {
-    std::string remote = agent_.remote() ? "  ·  REMOTE" : "  ·  local";
-    view_.append(Kind::Notice, "MAIC  ·  workspace " + agent_.harness().workspace().string() + "  ·  model " + agent_.model + remote);
+    std::string remote = startup_.remote ? "  ·  REMOTE" : "  ·  local";
+    view_.append(Kind::Notice, "MAIC  ·  workspace " + ws_ + "  ·  model " + startup_.model + remote);
     std::string files;
-    for (const auto& f : agent_.instructions()) files += (files.empty() ? "" : ", ") + f.path.string();
+    for (const auto& f : startup_.instructions) files += (files.empty() ? "" : ", ") + f;
     if (!settings_.theme_error.empty()) view_.append(Kind::Error, settings_.theme_error + "; the default theme is in use (:theme reload after fixing it)");
     if (session_tripped()) view_.append(Kind::Error, "this session is tripped (its own lock, from an earlier run): :unlock removes it");
     if (settings_.lazy_lock_notice && !settings_.bare) {
@@ -644,20 +450,19 @@ void App::welcome() {
     }
     if (!settings_.bare) maybe_check_keymaps(lazy_lock_ ? lazy_lock_->check() : lazy_lock_state(lazy_lock_path(settings_.lazy_lock)));
     view_.append(Kind::Notice, "session transcript: " + log_path() + (files.empty() ? "" : "\ninstructions: " + files));
-    if (!agent_.tools().empty() || !agent_.script_tools().empty()) {
+    if (!startup_.tools.empty()) {
         std::string names;
-        for (const auto& t : agent_.tools()) names += (names.empty() ? "" : ", ") + t.name;
-        for (const auto& t : agent_.script_tools()) names += (names.empty() ? "" : ", ") + t.name;
+        for (const auto& t : startup_.tools) names += (names.empty() ? "" : ", ") + t;
         view_.append(Kind::Notice, "tools: " + names + "  (:tools lists them)");
     }
-    for (const auto& n : agent_.tool_notices()) view_.append(Kind::Error, n);
+    for (const auto& n : startup_.tool_notices) view_.append(Kind::Error, n);
     start_host();
     view_.append(Kind::Notice, std::string("Press i to type, ") + (settings_.enter_sends ? "Enter to send a one-line input (Shift+Enter or Alt+Enter for a new line, :w sends any)" : "Alt+Enter (or :w) to send, Enter for a new line") +
                                    ". Esc = normal mode: j/k scroll, u/Ctrl-R undo/redo, :e opens nvim, Ctrl-W k = conversation window, :help for everything.");
-    if (agent_.remote()) view_.append(Kind::Error, "This model runs off this machine: prompts, files the agent reads and command output are sent to it.");
+    if (startup_.remote) view_.append(Kind::Error, "This model runs off this machine: prompts, files the agent reads and command output are sent to it.");
     // The service behind the current model, if any: say so when it is down. Never a service the model does not use.
     try {
-        auto [provider, name] = resolve_model(agent_.providers, agent_.model);
+        const Provider& provider = startup_.provider;
         if (!provider.remote()) {
             std::string hint = unreachable_hint(provider, load_services(root_dir() / "services"));
             if (hint.find("is not running") != std::string::npos) view_.append(Kind::Error, hint.substr(0, hint.find(':')) + ": :up " + hint.substr(0, hint.find(' ')));
@@ -667,17 +472,121 @@ void App::welcome() {
     }
 }
 
-// Moves the workspace to `to` once its project directories are settled: the settings re-read there use the trust
-// and Lua level of the new chain.
-void App::cd_to(const std::filesystem::path& ws, const std::filesystem::path& to) {
-    for (const auto& n : trust_notices(to)) post(Kind::Notice, n);
-    for (const auto& n : settle_trust(to)) post(Kind::Notice, n);
-    Settings next = settings_at(to);
-    agent_.set_workspace(to, Origin::Local);
-    std::filesystem::current_path(to);
-    previous_ws_ = ws;
-    // What a start there would read, but the session's safety stays its own: a directory never changes these.
-    const std::set<std::string> keep = {"tripwire", "allow_isolated", "forbid", "record", "harness", "dumb_auto_ok", "bare"};
+// ---------- the engine connection ----------
+
+// Calls from the UI thread hold the inbox while they run, so a call and the events it causes are recorded in that
+// order; a call from another thread (a `!cmd`, which runs until the command ends) is recorded when it returns.
+nlohmann::json App::call(const std::string& method, nlohmann::json params, bool from_ui) {
+    nlohmann::json msg = {{"jsonrpc", "2.0"}, {"id", next_id_++}, {"method", method}, {"params", std::move(params)}};
+    std::unique_lock lock(inbox_mu_, std::defer_lock);
+    if (from_ui) lock.lock();
+    nlohmann::json reply = engine_->call(client_, msg);
+    if (!from_ui) lock.lock();
+    record("in", msg);
+    record("out", reply);
+    return reply;
+}
+
+void App::command(const std::string& line) {
+    nlohmann::json reply = call("maic.session.command", {{"session", session_}, {"line", line}});
+    drain();
+    show(reply);
+}
+
+void App::show(const nlohmann::json& reply) {
+    if (reply.contains("error")) {
+        post(Kind::Error, reply["error"].value("message", "the engine refused it"));
+        return;
+    }
+    const nlohmann::json& r = reply["result"];
+    for (const auto& l : r.value("lines", nlohmann::json::array())) post(l.value("level", "info") == "info" ? Kind::Notice : Kind::Error, l.value("text", ""));
+    if (r.contains("ask")) {
+        const auto& a = r["ask"];
+        confirm_ = PendingConfirm{a.value("id", ""), a.value("title", ""), a.value("lines", std::vector<std::string>{}), a.value("keys", "yn")};
+        screen_.PostEvent(Event::Custom);
+    }
+    if (r.contains("send")) submit(r["send"], false);
+}
+
+// The engine calls this from whichever thread sent; it must not call back into the engine.
+void App::wake_pump() {
+    {
+        std::lock_guard lock(pump_mu_);
+        pump_wake_ = true;
+    }
+    pump_cv_.notify_one();
+}
+
+// Moves what the engine queues for this client into the inbox as it comes, so the engine's queue never backs up
+// behind a busy screen, and asks the UI thread to apply it.
+void App::pump() {
+    for (;;) {
+        {
+            std::unique_lock lock(pump_mu_);
+            pump_cv_.wait(lock, [this] { return pump_wake_ || pump_stop_; });
+            if (pump_stop_) return;
+            pump_wake_ = false;
+        }
+        take_events();
+        if (!drain_posted_.exchange(true)) {
+            screen_.Post([this] { drain(); });
+            screen_.PostEvent(Event::Custom);
+        }
+    }
+}
+
+void App::take_events() {
+    std::lock_guard lock(inbox_mu_);
+    for (auto& m : engine_->take(client_, std::chrono::milliseconds(0))) {
+        record("out", m);
+        inbox_.push_back(std::move(m));
+    }
+}
+
+void App::drain() {
+    drain_posted_ = false;
+    take_events();
+    std::vector<nlohmann::json> batch;
+    {
+        std::lock_guard lock(inbox_mu_);
+        batch.swap(inbox_);
+    }
+    for (const auto& m : batch) apply(m);
+}
+
+void App::apply(const nlohmann::json& m) {
+    std::string method = m.value("method", "");
+    const nlohmann::json& p = m.contains("params") ? m["params"] : nlohmann::json::object();
+    if (method == "maic.event") {
+        on_event(p);
+    } else if (method == "maic.index") {
+        if (p.contains("entry") && p["entry"].value("id", "") == session_) follow_entry(p["entry"]);
+    } else if (method == "maic.engine" && p.contains("notice")) {
+        post(p.value("level", "warn") == "info" ? Kind::Notice : Kind::Error, p["notice"]);
+    }
+}
+
+void App::follow_entry(const nlohmann::json& e) {
+    if (e.contains("workspace") && ws_.empty()) ws_ = e["workspace"];
+    transcript_ = e.value("transcript", transcript_);
+    model_ = e.value("model", model_);
+    mode_ = e.value("mode", mode_);
+    remote_ = e.value("remote_model", remote_);
+    think_ = e.value("think", think_);
+    if (e.contains("harness")) dumb_ = e["harness"] == "dumb";
+    queued_ = e.value("queued", queued_);
+    screen_.PostEvent(Event::Custom);
+}
+
+// :cd moved the session: the process follows it, and the view takes the new directory's settings as a start there
+// would, but the session's safety stays its own.
+void App::follow_workspace(const std::filesystem::path& to) {
+    previous_ws_ = ws_;
+    ws_ = to.string();
+    std::error_code ec;
+    std::filesystem::current_path(to, ec);
+    Settings next = cd_settings_ ? std::move(*cd_settings_) : settings_at_(to);
+    cd_settings_.reset();
     next.tripwire = settings_.tripwire;
     next.allow_isolated = settings_.allow_isolated;
     next.forbid = settings_.forbid;
@@ -685,78 +594,228 @@ void App::cd_to(const std::filesystem::path& ws, const std::filesystem::path& to
     next.harness = settings_.harness;
     next.dumb_auto_ok = settings_.dumb_auto_ok;
     next.bare = settings_.bare;
-    std::vector<std::string> changed, kept;
-    std::set<std::string> keys;
-    for (const auto& [k, v] : settings_.layered.items()) keys.insert(k);
-    for (const auto& [k, v] : next.layered.items()) keys.insert(k);
-    for (const auto& k : keys) {
-        if (k.rfind("//", 0) == 0 || settings_.layered.value(k, nlohmann::json()) == next.layered.value(k, nlohmann::json())) continue;
-        (keep.count(k) ? kept : changed).push_back(k);
-    }
+    auto changed = [&](const char* k) { return settings_.layered.value(k, nlohmann::json()) != next.layered.value(k, nlohmann::json()); };
+    if (changed("markdown")) view_.set_markdown(next.markdown);
+    if (changed("leader")) editor_.set_leader(next.leader), view_.set_leader(next.leader);
+    if (changed("enter_sends")) editor_.set_enter_sends(next.enter_sends);
+    if (changed("timestamps")) view_.set_timestamps(next.timestamps);
     settings_ = std::move(next);
-    auto has = [&](const char* k) { return std::find(changed.begin(), changed.end(), k) != changed.end(); };
-    if (has("providers") || has("context") || has("context_2")) {
-        agent_.providers = settings_.providers;
-        set_context(agent_.providers, settings_.context);
-        set_context(agent_.providers, settings_.context_2, "llamacpp-2");
-    }
-    if (has("models")) agent_.presets = settings_.presets;
-    if (has("think")) agent_.think = settings_.think;
-    if (has("reviewer_model")) agent_.reviewer_model = settings_.reviewer_model;
-    if (has("small_model") || has("title_model")) agent_.small_model = settings_.small_model;
-    if (has("reviewer_budget_tokens")) agent_.reviewer_budget_tokens = settings_.reviewer_budget_tokens;
-    if (has("budget_tokens")) agent_.budget_tokens = settings_.budget_tokens;
-    if (has("compact_at")) agent_.compaction.at = settings_.compact_at;
-    if (has("compact_keep_results")) agent_.compaction.keep_results = settings_.compact_keep_results;
-    if (has("compact_model")) agent_.compaction.model = settings_.compact_model;
-    if (has("system_prompt")) agent_.set_system_prefix(resolve_system_prompt(settings_.system_prompt));
-    if (has("prefill")) agent_.prefill = resolve_system_prompt(settings_.prefill);
-    if (has("rules")) agent_.set_rules(settings_.rules);
-    if (has("permission")) agent_.set_permission(settings_.permission);
-    if (has("agents")) agent_.agents = settings_.agents;
-    if (has("bans")) agent_.bans = settings_.bans;
-    if (has("markdown")) view_.set_markdown(settings_.markdown);
-    if (has("leader")) editor_.set_leader(settings_.leader), view_.set_leader(settings_.leader);
-    if (has("enter_sends")) editor_.set_enter_sends(settings_.enter_sends);
-    if (has("timestamps")) view_.set_timestamps(settings_.timestamps);
-    if (has("instruction_files") || has("load_instructions")) {
-        agent_.set_instruction_names(settings_.instruction_files);
-        agent_.load_instruction_files = settings_.load_instructions;
-        agent_.reload_instructions();
-    }
-    apply_sampling();
-    auto list = [](const std::vector<std::string>& v) {
-        std::string out;
-        for (const auto& x : v) out += (out.empty() ? "" : ", ") + x;
-        return out;
-    };
-    std::vector<std::string> files;
-    for (const auto& f : agent_.instructions()) files.push_back(f.path.string());
-    post(Kind::Notice, "workspace: " + to.string() + "  (was " + ws.string() + "; :cd - returns)" +
-                           (files.empty() ? "\ninstructions: none there" : "\ninstructions: " + list(files)) +
-                           (changed.empty() ? "\nsettings: unchanged" : "\nsettings changed: " + list(changed)) +
-                           (kept.empty() ? "" : "\nkept as they were (a directory never changes them mid-session): " + list(kept)));
-    // Last: these can ask or fail on their own, and the move itself is done.
-    if (has("mode")) {
-        if (auto md = parse_mode(settings_.mode)) request_mode(*md);
-    }
-    if (has("model")) set_model(settings_.model);
 }
 
-// :cd's trust prompt: each untrusted project directory of the new chain in turn, in a modal (t, s, n or v), then the move.
-void App::ask_cd_trust(std::vector<ProjectDir> dirs, const std::filesystem::path& ws, const std::filesystem::path& to) {
-    if (dirs.empty()) return cd_to(ws, to);
-    ProjectDir p = dirs.front();
-    dirs.erase(dirs.begin());
-    std::lock_guard lock(mu_);
-    std::vector<std::string> lines = trust_prompt(p);
-    lines.push_back("[t] trust fully: its Lua runs as you   [s] trust sandboxed: its Lua runs in a child process that cannot reach the system");
-    lines.push_back("[n] not now (untrusted this session)   [v] never (remember)");
-    confirm_ = PendingConfirm{" trust this directory? ", lines, {}, "tsnv", [this, p, dirs, ws, to](const std::string& answer) {
-                                  post(Kind::Notice, answer_trust(p, answer));
-                                  ask_cd_trust(dirs, ws, to);
-                              }};
+// A running command's output: the live entry under its call keeps the last lines; a gap in a stream's offsets is
+// output the screen never got.
+void App::live(const std::string& key, int stream, const std::string& data, size_t offset) {
+    if (key != live_call_) {
+        live_call_ = key;
+        live_next_[0] = live_next_[1] = 0;
+    }
+    size_t& next = live_next_[stream];
+    std::string text;
+    if (offset > next) text = "\n[" + std::to_string(offset - next) + " bytes not shown: the screen fell behind]\n";
+    next = offset + data.size();
+    text += data;
+    view_.live_output(text);
+    if (!redraw_posted_.exchange(true)) screen_.PostEvent(Event::Custom);
+}
+
+void App::on_event(const nlohmann::json& e) {
+    const std::string type = e.value("type", "");
+    long seq = e.value("sequence_number", -1L);
+    if (type == "maic.session.state") {
+        bool was = busy_;
+        if (e.value("activity", "idle") != "idle") busy_ = true;
+        else if (seq > turn_seq_) busy_ = false;
+        if (was && !busy_) screen_.Post([this] { after_turn(); });
+    } else if (type == "maic.input.added") {
+        std::string text;
+        for (const auto& part : e["item"].value("content", nlohmann::json::array())) text += part.value("text", "");
+        size_t pics = e["item"].contains("maic") ? e["item"]["maic"].value("images", nlohmann::json::array()).size() : 0;
+        view_.append(Kind::User, text + (pics == 0 ? "" : "\n(with " + std::to_string(pics) + " image" + (pics == 1 ? "" : "s") + ")"));
+    } else if (type == "response.created") {
+        response_ = e["response"].value("id", "");
+        paused_ = pause_menu_ = false;
+        // A successor (a steer's, or a paused turn resumed) continues the turn: its footer comes at the turn's end.
+        if (!e["response"]["previous_response_id"].is_string()) {
+            response_t0_ = std::chrono::steady_clock::now();
+            tool_calls_ = 0;
+            fire("MaicTurnStart", {{"model", e["response"].value("model", model_)}});
+        }
+    } else if (type == "maic.steer.applied") {
+        std::string action = e.value("action", ""), note = e.value("note", "");
+        std::string line = "↯ " + action + (e.value("trigger", "") == "ban" ? " (a ban's steer)" : "") + (note.empty() ? "" : ": " + note);
+        if (e.contains("waits_for")) line += "  (at the next step)";
+        if (!e["withdrawn"].empty()) line += "  (withdrew " + std::to_string(e["withdrawn"].size()) + " waiting)";
+        view_.append(Kind::Notice, line);
+    } else if (type == "maic.turn.paused") {
+        paused_ = pause_menu_ = true;
+    } else if (type == "error") {
+        view_.append(Kind::Notice, "halted: " + e.value("message", ""));
+    } else if (type == "response.output_text.done") {
+        if (e.contains("maic") && e["maic"].contains("trimmed")) view_.replace_last(Kind::Assistant, e.value("text", ""));
+    } else if (type == "response.output_text.delta" || type == "response.reasoning_text.delta") {
+        view_.append_to_last(type == "response.output_text.delta" ? Kind::Assistant : Kind::Thinking, e.value("delta", ""));
+    } else if (type == "response.output_item.added") {
+        const nlohmann::json& item = e["item"];
+        std::string kind = item.value("type", "");
+        if (kind != "function_call" && kind != "shell_call") return;
+        ++tool_calls_;
+        std::string summary = item.contains("maic") ? item["maic"].value("summary", "") : "";
+        view_.append(Kind::Tool, summary);
+        if (host_up()) {
+            std::string tool = "run_shell", path;
+            if (kind == "function_call") {
+                std::string name = item.value("name", "");
+                tool = canonical_tool_name(name).empty() ? name : canonical_tool_name(name);
+                auto args = nlohmann::json::parse(item.value("arguments", "{}"), nullptr, false);
+                for (const char* key : {"path", "from"}) {
+                    if (path.empty() && args.is_object() && args.contains(key) && args[key].is_string()) path = args[key];
+                }
+            }
+            try {
+                if (!path.empty()) path = resolve_path(ws_, path).string();
+            } catch (const std::exception&) {
+            }
+            fire("MaicToolCall", {{"tool", tool}, {"path", path}, {"summary", summary}});
+        }
+    } else if (type == "response.shell_call_output_content.delta") {
+        const nlohmann::json& d = e["delta"];
+        std::string out = d.value("stdout", ""), err = d.value("stderr", "");
+        size_t offset = e.contains("maic") ? e["maic"].value("offset", size_t(0)) : 0;
+        if (!out.empty()) live(e.value("item_id", ""), 0, out, offset);
+        else if (!err.empty()) live(e.value("item_id", ""), 1, err, offset);
+    } else if (type == "maic.tool.output.delta") {
+        if (!e.contains("data")) return;  // a skip: the next chunk's offset shows the gap
+        if (!e.contains("output_index")) {
+            // A `!cmd` of this session's: it streams under the command's line.
+            view_.append_to_last(Kind::ToolOk, e["data"].get<std::string>());
+            screen_.PostEvent(Event::Custom);
+            return;
+        }
+        live(e.value("call", e.value("item_id", "")), 0, e["data"], e.value("offset", size_t(0)));
+    } else if (type == "response.output_item.done") {
+        const nlohmann::json& item = e["item"];
+        std::string kind = item.value("type", "");
+        if (kind == "message" && item.contains("maic") && item["maic"].value("status", "") == "discarded") {
+            view_.append(Kind::Notice, "(the reply above was discarded: the model never sees it)");
+            return;
+        }
+        if ((kind != "function_call_output" && kind != "shell_call_output") || !item.contains("maic")) return;  // a call that never ran keeps its live lines
+        std::string text = kind == "function_call_output" ? item.value("output", "")
+                                                          : item["output"].empty() ? "" : item["output"][0].value("stdout", "");
+        std::string full;
+        if (item["maic"].contains("full_output")) {
+            const auto& f = item["maic"]["full_output"];
+            // Opening the fold shows the whole output as it looked when it ended, at most its last MiB.
+            full = std::string("[") + kFullOutputLabel + ": maic sessions output " + f.value("session", "") + " " + f.value("call", "") + "]\n" +
+                   full_output_screen(full_output_path(transcript_, f.value("call", "")), 1 << 20);
+        }
+        view_.finish_live(item["maic"].value("ok", false) ? Kind::ToolOk : Kind::ToolErr, text, std::move(full));
+    } else if (type == "maic.notice") {
+        std::string kind = e.value("kind", ""), text = e.value("text", "");
+        if (kind == "tool_call") {
+            // A subagent's call, or a line about one ("↳ explore on ...").
+            ++tool_calls_;
+            view_.append(Kind::Tool, text);
+            if (e.contains("tool") && host_up()) {
+                std::string path = e.value("path", "");
+                try {
+                    if (!path.empty()) path = resolve_path(ws_, path).string();
+                } catch (const std::exception&) {
+                }
+                fire("MaicToolCall", {{"tool", e["tool"]}, {"path", path}, {"summary", text.rfind("↳ ", 0) == 0 ? text.substr(std::strlen("↳ ")) : text}});
+            }
+        } else if (kind == "tool_result") {
+            std::string full;
+            if (e.contains("full_output")) {
+                const auto& f = e["full_output"];
+                full = std::string("[") + kFullOutputLabel + ": maic sessions output " + f.value("session", "") + " " + f.value("call", "") + "]\n" +
+                       full_output_screen(full_output_path(transcript_, f.value("call", "")), 1 << 20);
+            }
+            view_.finish_live(e.value("ok", false) ? Kind::ToolOk : Kind::ToolErr, text, std::move(full));
+        } else {
+            view_.append(Kind::Notice, text);
+        }
+    } else if (type == "maic.approval.requested") {
+        approval_ = PendingApproval{e.value("id", ""), e};
+        nlohmann::json data = {{"tool", e.value("tool", "")}, {"path", e.value("path", "")}, {"summary", e.value("summary", "")}, {"reason", e.value("reason", "")}, {"verdict", "pending"}};
+        approvals_seen_[e.value("id", "")] = data;
+        fire("MaicApproval", data);
+    } else if (type == "maic.approval.answered") {
+        std::string id = e.value("id", "");
+        if (approval_ && approval_->id == id) approval_.reset();
+        if (auto it = approvals_seen_.find(id); it != approvals_seen_.end()) {
+            it->second["verdict"] = e.value("choice", "no");
+            fire("MaicApproval", it->second);
+            approvals_seen_.erase(it);
+        }
+    } else if (type == "maic.question.asked") {
+        question_ = PendingQuestion{e.value("id", ""), e.value("text", ""), e.value("options", std::vector<std::string>{}), ""};
+    } else if (type == "maic.question.answered") {
+        if (question_ && question_->id == e.value("id", "")) question_.reset();
+    } else if (type == "maic.todo.updated") {
+        todo_.clear();
+        for (const auto& t : e.value("items", nlohmann::json::array())) todo_.push_back({t.value("text", ""), t.value("done", false)});
+    } else if (type == "maic.file.written") {
+        if (!host_up()) return;
+        host_checktime(*host_);
+        fire("MaicFileWritten", {{"tool", e.value("tool", "")}, {"path", e.value("path", "")}});
+    } else if (type == "maic.usage.updated") {
+        usage_ = e;
+    } else if (type == "maic.session.settings") {
+        if (e.contains("mode")) mode_ = e["mode"];
+        if (e.contains("model")) model_ = e["model"];
+        if (e.contains("remote_model")) remote_ = e["remote_model"];
+        if (e.contains("think")) think_ = e["think"];
+        if (e.contains("harness")) dumb_ = e["harness"] == "dumb";
+        if (e.contains("workspace")) follow_workspace(e["workspace"].get<std::string>());
+    } else if (type == "maic.session.title") {
+        std::string text = e.value("text", "");
+        view_.append(Kind::Notice, e.value("source", "") == "auto" ? "titled: " + text + "  (:rename changes it)" : "titled: " + text);
+    } else if (type == "response.completed" || type == "response.failed" || type == "maic.response.cancelled" || type == "response.incomplete") {
+        const nlohmann::json& r = e["response"];
+        if (!r["maic"].value("final", true)) {
+            if (type == "maic.response.cancelled") view_.append(Kind::Notice, "paused · Ctrl-Q resumes · s steer · d drop · f further · k keep · h halt · Esc types a message");
+            screen_.PostEvent(Event::Custom);
+            return;  // the turn goes on
+        }
+        if (type == "response.failed") view_.append(Kind::Error, r.contains("error") && r["error"].is_object() ? r["error"].value("message", "") : "");
+        last_cancelled_ = type == "maic.response.cancelled";
+        // The footer: model, how long the response took, how many tools ran.
+        double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - response_t0_).count();
+        char dur[32];
+        if (secs < 1) snprintf(dur, sizeof(dur), "%.0fms", secs * 1000);
+        else if (secs < 60) snprintf(dur, sizeof(dur), "%.1fs", secs);
+        else if (secs < 3600) snprintf(dur, sizeof(dur), "%dm %ds", static_cast<int>(secs) / 60, static_cast<int>(secs) % 60);
+        else snprintf(dur, sizeof(dur), "%dh %dm", static_cast<int>(secs) / 3600, (static_cast<int>(secs) % 3600) / 60);
+        std::string model = r.value("model", model_);
+        view_.append(Kind::Notice, "▣ " + model + " · " + dur + (tool_calls_ ? " · " + std::to_string(tool_calls_) + (tool_calls_ == 1 ? " tool call" : " tool calls") : "") +
+                                       (last_cancelled_ ? " · interrupted" : ""));
+        fire("MaicTurnEnd", {{"model", model}, {"tool_calls", tool_calls_}, {"seconds", secs}, {"interrupted", last_cancelled_}});
+    }
     screen_.PostEvent(Event::Custom);
+}
+
+// The session went idle after a turn: the checks that wait for one, and :wq's quit.
+void App::after_turn() {
+    if (lazy_lock_) maybe_check_keymaps(lazy_lock_->check());
+    if (!asking()) command("trust imports --pending");
+    if (quit_when_idle_.load() && !last_cancelled_) {
+        quit_when_idle_ = false;
+        quit();
+    }
+}
+
+// MAIC_PROTOCOL_RECORD=DIR keeps this connection's exchange as DIR/tui-<pid>.jsonl for `maic protocol check`, checked
+// as it goes: a violation is shown once. The test suite runs every case this way.
+void App::open_recording() {
+    const char* dir = std::getenv("MAIC_PROTOCOL_RECORD");
+    if (dir && *dir) recorder_ = std::make_unique<protocol::Recorder>(std::filesystem::path(dir) / ("tui-" + std::to_string(getpid()) + ".jsonl"));
+}
+
+// Under inbox_mu_.
+void App::record(const char* dir, const nlohmann::json& msg) {
+    if (!recorder_) return;
+    if (auto v = recorder_->add(dir, client_, msg)) view_.append(Kind::Error, "protocol: " + protocol::describe(*v));
 }
 
 // When lazy-lock.json is not the one the keymap check last ran at (a plugin update, or no check yet), the check runs
@@ -862,7 +921,7 @@ std::vector<std::string> App::palette_entries() {
         for (const auto& s : load_services(root_dir() / "services")) ctx.services.push_back(s.name);
     } catch (const std::exception&) {
     }
-    for (const auto& p : agent_.providers) ctx.providers.push_back(p.name);
+    for (const auto& p : settings_.providers) ctx.providers.push_back(p.name);
     ctx.models = installed_models();
     std::string cmd = line.substr(0, space), partial = line.substr(space + 1);
     auto matches = match_commands(cmd);
@@ -877,8 +936,8 @@ std::vector<std::string> App::installed_models() {
     auto now = std::chrono::steady_clock::now();
     if (!models_cache_.empty() && now - models_cached_at_ < std::chrono::seconds(30)) return models_cache_;
     std::vector<std::string> out;
-    for (size_t i = 0; i < agent_.providers.size(); ++i) {
-        const auto& p = agent_.providers[i];
+    for (size_t i = 0; i < settings_.providers.size(); ++i) {
+        const auto& p = settings_.providers[i];
         if (p.remote()) continue;
         try {
             std::vector<std::string> names = p.kind == "openai" ? list_openai_models(p) : std::vector<std::string>{};
@@ -1007,7 +1066,7 @@ void App::follow_host_theme(bool announce) {
 
 void App::fire(const std::string& event, nlohmann::json data) {
     if (!host_up()) return;
-    data["session"] = log_->path().stem().string();
+    data["session"] = session_;
     host_fire(*host_, event, data);
 }
 
@@ -1154,35 +1213,32 @@ void App::complete_command() {
 }
 
 Element App::render_top_status() {
-    Mode m = agent_.mode.load();
-    std::string mode_s(mode_name(m));
+    std::string mode_s = mode_;
     Elements left = {
         text(" ⏵ " + mode_s) | decorate(settings_.style("mode_" + mode_s)),
         text(" (shift-tab to cycle)") | decorate(settings_.style("status_dim")),
     };
     Elements right;
-    right.push_back(text(agent_.model + (agent_.think ? " +think" : "")));
-    right.push_back(text(agent_.remote() ? " REMOTE" : " local") | decorate(settings_.style(agent_.remote() ? "remote" : "status_dim")));
+    right.push_back(text(model_ + (think_ ? " +think" : "")));
+    right.push_back(text(remote_ ? " REMOTE" : " local") | decorate(settings_.style(remote_ ? "remote" : "status_dim")));
     if (host_up()) right.push_back(text(" nvim") | decorate(settings_.style("status_dim")));
     if (settings_.bare) right.push_back(text(" bare") | decorate(settings_.style("status_dim")));
     right.push_back(text(" · ") | decorate(settings_.style("status_dim")));
     if (tripwire_state()) right.push_back(text("HARNESS TRIPPED") | decorate(settings_.style("harness_tripped")));
     else right.push_back(text("harness armed") | decorate(settings_.style("harness_armed")));
-    {
-        std::lock_guard lock(mu_);
-        if (!todo_.empty()) {
-            size_t done = std::count_if(todo_.begin(), todo_.end(), [](const TodoItem& t) { return t.done; });
-            right.push_back(text(" · todo " + std::to_string(done) + "/" + std::to_string(todo_.size()) + " done") | decorate(settings_.style("notice")));
-        }
+    if (!todo_.empty()) {
+        size_t done = std::count_if(todo_.begin(), todo_.end(), [](const TodoItem& t) { return t.done; });
+        right.push_back(text(" · todo " + std::to_string(done) + "/" + std::to_string(todo_.size()) + " done") | decorate(settings_.style("notice")));
     }
-    if (size_t q = agent_.queued()) right.push_back(text(" · " + std::to_string(q) + " queued (:w now)") | decorate(settings_.style("notice")));
-    if (busy_) right.push_back(text(" · working… ctrl-c interrupts") | decorate(settings_.style("notice")));
+    if (queued_) right.push_back(text(" · " + std::to_string(queued_) + " queued (:w now)") | decorate(settings_.style("notice")));
+    if (paused_) right.push_back(text(" · PAUSED: ctrl-q resumes") | decorate(settings_.style("notice")));
+    else if (busy_) right.push_back(text(" · working… ctrl-c interrupts, ctrl-s pauses") | decorate(settings_.style("notice")));
     if (shell_busy_) right.push_back(text(" · shell running") | decorate(settings_.style("shell")));
     if (lua_mode_) right.push_back(text(" · LUA MODE (:chat returns)") | decorate(settings_.style("shell")));
-    if (!agent_.review_with_model) right.push_back(text(" · DUMB HARNESS") | decorate(settings_.style("error")));
-    if (agent_.harness().confined()) right.push_back(text(" · ISOLATED") | decorate(settings_.style("notice")));
+    if (dumb_) right.push_back(text(" · DUMB HARNESS") | decorate(settings_.style("error")));
+    if (confined_) right.push_back(text(" · ISOLATED") | decorate(settings_.style("notice")));
     if (!previous_ws_.empty()) {
-        std::string ws = agent_.harness().workspace().string(), home = std::getenv("HOME");
+        std::string ws = ws_, home = std::getenv("HOME");
         if (ws.rfind(home + "/", 0) == 0) ws = "~" + ws.substr(home.size());
         right.push_back(text(" · in " + ws) | decorate(settings_.style("status_dim")));
     }
@@ -1216,23 +1272,24 @@ Element App::render_bottom_status() {
     if (!hint.empty()) parts.push_back(text(hint + " ") | decorate(settings_.style("status_dim")));
     if (!status_msg_.empty()) parts.push_back(text(status_msg_) | decorate(settings_.style("notice")));
     parts.push_back(filler());
-    auto u = agent_.usage();
-    if (u.calls) {
+    if (usage_.value("calls", 0) > 0) {
         auto k = [](long n) {
             char buf[32];
             if (n >= 1000) snprintf(buf, sizeof(buf), "%.1fk", n / 1000.0);
             else snprintf(buf, sizeof(buf), "%ld", n);
             return std::string(buf);
         };
-        std::string ctx = "ctx " + k(u.last.input);
+        long input = usage_.value("last_input", 0L), context = usage_.value("context", 0L);
+        nlohmann::json total = usage_.value("total", nlohmann::json::object());
+        std::string ctx = "ctx " + k(input);
         const char* style = "status_dim";
-        if (u.last.context > 0) {
-            int pct = static_cast<int>(100.0 * u.last.input / u.last.context);
-            ctx += "/" + k(u.last.context) + " (" + std::to_string(pct) + "%)";
+        if (context > 0) {
+            int pct = static_cast<int>(100.0 * input / context);
+            ctx += "/" + k(context) + " (" + std::to_string(pct) + "%)";
             if (pct >= 85) style = "harness_tripped";
             else if (pct >= 60) style = "notice";
         }
-        parts.push_back(text(ctx + " · Σ↑" + k(u.total_input) + " ↓" + k(u.total_output) + "  ") | decorate(settings_.style(style)));
+        parts.push_back(text(ctx + " · Σ↑" + k(total.value("input", 0L)) + " ↓" + k(total.value("output", 0L)) + "  ") | decorate(settings_.style(style)));
     }
     parts.push_back(text(focus_ == Focus::Conversation ? "Ctrl-W j: input · v y / · :help  " : "Ctrl-W k: conversation · :help  ") |
                     decorate(settings_.style("status_dim")));
@@ -1240,13 +1297,13 @@ Element App::render_bottom_status() {
 }
 
 Element App::render_approval() {
-    std::lock_guard lock(mu_);
     if (!approval_) return emptyElement();
-    const auto& r = approval_->request;
-    std::string key = r.always_covers.empty() ? (r.tool == "run_shell" ? "this program" : "this file") : r.always_covers;
-    Elements rows = {text(r.summary) | bold, text("why asking: " + r.reason + (r.origin == Origin::Remote ? "  [REMOTE REQUEST]" : "")) | dim};
-    if (!r.preview.empty()) {
-        std::istringstream in(r.preview);
+    const auto& r = approval_->event;
+    std::string tool = r.value("tool", ""), covers = r.value("always_covers", ""), preview = r.value("preview", "");
+    std::string key = covers.empty() ? (tool == "run_shell" ? "this program" : "this file") : covers;
+    Elements rows = {text(r.value("summary", "")) | bold, text("why asking: " + r.value("reason", "") + (r.value("origin", "local") == "remote" ? "  [REMOTE REQUEST]" : "")) | dim};
+    if (!preview.empty()) {
+        std::istringstream in(preview);
         int n = 0;
         for (std::string line; std::getline(in, line) && n < 14; ++n) {
             rows.push_back(render_line(settings_, {{line, diff_flags(line)}}, Style{}));
@@ -1258,9 +1315,9 @@ Element App::render_approval() {
         rows.push_back(hbox({text("[y]") | bold | decorate(settings_.style("harness_armed")), text(" yes   "), text("[n]") | bold | decorate(settings_.style("tool_err")), text(" no   "),
                              text("[N]") | bold | decorate(settings_.style("tool_err")), text(" no, and say why   "), text("[a]") | bold, text(" always: " + key + " (this session)   "),
                              text("[t]") | bold | decorate(settings_.style("error")), text(" trip the harness")}));
-        if (!r.path.empty()) {
+        if (!r.value("path", "").empty()) {
             Elements extra = {text("[e]") | bold, text(host_up() ? " open in nvim   " : " open in $EDITOR   ")};
-            if (host_up() && r.proposed) extra.insert(extra.end(), {text("[d]") | bold, text(" diff in a new nvim tab")});
+            if (host_up() && r.contains("proposed_size")) extra.insert(extra.end(), {text("[d]") | bold, text(" diff in a new nvim tab")});
             rows.push_back(hbox(extra));
         }
     }
@@ -1268,48 +1325,31 @@ Element App::render_approval() {
 }
 
 Element App::render_confirm() {
-    std::lock_guard lock(mu_);
     if (!confirm_) return emptyElement();
     Elements rows;
     for (const auto& l : confirm_->lines) rows.push_back(text(l));
     return window(text(confirm_->title) | bold | decorate(settings_.style("error")), vbox(rows)) | decorate(settings_.style("approval"));
 }
 
+// The engine's question: a yes/no takes y and n in either case, the rest exactly one of their keys; Esc and Ctrl-C
+// answer n. The answer goes back to the engine, which may ask the next.
 bool App::handle_confirm(const Event& e) {
+    if (!confirm_) return true;
     const std::string& k = e.input();
-    std::function<void(bool)> then;
-    std::function<void(const std::string&)> pick;
     std::string key;
-    bool yes = false;
-    {
-        std::lock_guard lock(mu_);
-        if (!confirm_) return true;
-        if (confirm_->pick) {
-            key = e == Event::Escape || k == "\x03" ? "n" : k;
-            if (key.size() != 1 || confirm_->keys.find(key) == std::string::npos) return true;
-            pick = std::move(confirm_->pick);
-            confirm_.reset();
-        }
-    }
-    if (pick) {
-        pick(key);
-        return true;
-    }
-    {
-        std::lock_guard lock(mu_);
-        if (!confirm_) return true;
-        if (k == "y" || k == "Y") yes = true;
-        else if (k == "n" || k == "N" || e == Event::Escape || k == "\x03") yes = false;
-        else return true;
-        then = std::move(confirm_->then);
-        confirm_.reset();
-    }
-    if (then) then(yes);
+    if (e == Event::Escape || k == "\x03") key = "n";
+    else if (confirm_->keys == "yn" && (k == "y" || k == "Y" || k == "n" || k == "N")) key = std::string(1, static_cast<char>(std::tolower(static_cast<unsigned char>(k[0]))));
+    else if (confirm_->keys != "yn" && k.size() == 1 && confirm_->keys.find(k) != std::string::npos) key = k;
+    else return true;
+    std::string id = confirm_->id;
+    confirm_.reset();
+    nlohmann::json reply = call("maic.session.command", {{"session", session_}, {"ask", id}, {"key", key}});
+    drain();
+    show(reply);
     return true;
 }
 
 Element App::render_question() {
-    std::lock_guard lock(mu_);
     if (!question_) return emptyElement();
     Elements rows = {text(question_->text) | bold};
     for (size_t i = 0; i < question_->options.size(); ++i) {
@@ -1328,10 +1368,11 @@ Element App::render() {
     // saved settings on exit.
     {
         termios t;
-        if (tcgetattr(STDIN_FILENO, &t) == 0 && (t.c_cc[VINTR] != _POSIX_VDISABLE || t.c_cc[VQUIT] != _POSIX_VDISABLE || !(t.c_lflag & ISIG))) {
+        if (tcgetattr(STDIN_FILENO, &t) == 0 && (t.c_cc[VINTR] != _POSIX_VDISABLE || t.c_cc[VQUIT] != _POSIX_VDISABLE || !(t.c_lflag & ISIG) || (t.c_iflag & IXON))) {
             t.c_lflag |= ISIG;
             t.c_cc[VINTR] = _POSIX_VDISABLE;
             t.c_cc[VQUIT] = _POSIX_VDISABLE;
+            t.c_iflag &= ~IXON;  // Ctrl-S and Ctrl-Q are the pause keys, not flow control
             tcsetattr(STDIN_FILENO, TCSANOW, &t);
         }
     }
@@ -1345,23 +1386,29 @@ Element App::render() {
     bool focused = focus_ == Focus::Conversation;
     int approval_rows = 0;
     if (is_asking) {
-        std::lock_guard lock(mu_);
-        approval_rows = 5 + (approval_ && !approval_->request.path.empty() ? 1 : 0);
-        if (approval_) approval_rows += std::min(14, static_cast<int>(std::count(approval_->request.preview.begin(), approval_->request.preview.end(), '\n')));
+        approval_rows = 5 + (approval_ && !approval_->event.value("path", "").empty() ? 1 : 0);
+        if (approval_) {
+            std::string preview = approval_->event.value("preview", "");
+            approval_rows += std::min(14, static_cast<int>(std::count(preview.begin(), preview.end(), '\n')));
+        }
         if (confirm_) approval_rows += static_cast<int>(confirm_->lines.size()) + 2;
         if (question_) approval_rows = 4 + static_cast<int>(question_->options.size());
     }
+    if (pause_menu_ && paused_) approval_rows += 4;
     view_height_ = std::max(1, size.dimy - input_rows - palette_rows - 3 - approval_rows - (focused ? 2 : 0));
     Element conversation = view_.render(settings_, focused ? width - 2 : width, view_height_);
     if (focused) conversation = conversation | borderLight | decorate(settings_.style("focus"));
-    return vbox({conversation, render_approval(), render_question(), render_confirm(), render_top_status(), separator() | decorate(settings_.style("separator")), input, palette,
+    return vbox({conversation, render_approval(), render_question(), render_confirm(), render_pause_menu(), render_top_status(), separator() | decorate(settings_.style("separator")), input, palette,
                  render_bottom_status()});
 }
 
 // ---------- keys ----------
 
 bool App::handle(Event e) {
-    if (e == Event::Custom) return true;
+    if (e == Event::Custom) {
+        redraw_posted_ = false;
+        return true;
+    }
 
     // A bracketed paste (maic.nvim's :MaicSend when MAIC is not connected to it) goes into the input whole,
     // whatever the mode, and is never sent.
@@ -1417,22 +1464,19 @@ bool App::handle(Event e) {
     }
     if (raw != "\x03") quit_armed_ = false;
     status_msg_.clear();
-    if (asking()) {
-        bool q = false, c = false;
-        {
-            std::lock_guard lock(mu_);
-            q = question_.has_value();
-            c = !q && !approval_ && confirm_.has_value();
-        }
-        if (q) return handle_question(e);
-        if (c) return handle_confirm(e);
-    }
+    if (question_) return handle_question(e);
+    if (!approval_ && confirm_) return handle_confirm(e);
     if (asking()) return handle_approval(e);
+    if (pause_menu_ && paused_) return handle_pause_menu(e);
+    // Ctrl-S pauses a running turn (the interrupt steer), Ctrl-Q resumes a paused one: MAIC keeps the terminal's
+    // flow control off, so neither stops the output.
+    if (raw == "\x13" && busy_ && !paused_ && !response_.empty()) return steer("interrupt"), true;
+    if (raw == "\x11" && paused_) return steer("steer"), true;
 
     if (raw == "\x03") {  // Ctrl-C: interrupt, then clear input, then quit
         if (quit_when_idle_.exchange(false)) post(Kind::Notice, "staying after the reply (:wq cancelled)");
-        if (shell_busy_) shell_cancel_ = true;
-        else if (busy_) cancel_ = true;
+        if (shell_busy_) call("maic.session.shell", {{"session", session_}, {"interrupt", true}});
+        else if (busy_) cancel_turn();
         else if (!editor_.empty()) editor_.clear();
         else if (quit_armed_) quit();
         else {
@@ -1442,7 +1486,7 @@ bool App::handle(Event e) {
         return true;
     }
     if (e == Event::TabReverse && editor_.mode() != Editor::Mode::Command) {
-        request_mode(next_mode(agent_.mode.load()));
+        request_mode(next_mode(parse_mode(mode_).value_or(Mode::Manual)));
         return true;
     }
     // Ctrl-W j / k: move between the input and the conversation window (in insert mode Ctrl-W deletes a word).
@@ -1500,8 +1544,8 @@ bool App::handle(Event e) {
         return true;
     }
     if (editor_.mode() != Editor::Mode::Insert) {
-        if (raw == "\x04") return view_.half_page(-1), true;
-        if (raw == "\x15") return view_.half_page(1), true;
+        if (raw == "\x04") return view_.half_page(1), true;   // Ctrl-D: down, toward newer lines, as in vim
+        if (raw == "\x15") return view_.half_page(-1), true;  // Ctrl-U: up
         if (raw == "\x06" || e == Event::PageDown) return view_.page(1), true;
         if (raw == "\x02" || e == Event::PageUp) return view_.page(-1), true;
         if (raw == "\x05") return view_.scroll_by(-1), true;
@@ -1520,6 +1564,8 @@ bool App::handle(Event e) {
 }
 
 // What the editor asked for after a key: a command, a conversation search (`/`, `*`, `#`), or a send.
+
+// What the editor asked for after a key: a command, a conversation search (`/`, `*`, `#`), or a send.
 void App::act(const Editor::Result& r) {
     if (r.action == Editor::Action::Command) run_command(r.text);
     else if (r.action == Editor::Action::Search || r.action == Editor::Action::SearchBack) {
@@ -1533,65 +1579,57 @@ void App::act(const Editor::Result& r) {
 
 bool App::handle_approval(const Event& e) {
     const std::string& k = e.input();
-    {
-        std::lock_guard lock(mu_);
-        if (approval_ && approval_->typing) {
-            if (e == Event::Escape) approval_->typing = false, approval_->feedback.clear();
-            else if (e == Event::Return) {
-                approval_->answer.set_value({Approval::No, approval_->feedback});
-                approval_.reset();
-            } else if (e == Event::Backspace) {
-                if (!approval_->feedback.empty()) approval_->feedback.erase(utf8_prev(approval_->feedback, approval_->feedback.size()));
-            } else if (e.is_character()) approval_->feedback += k;
-            return true;
-        }
+    if (approval_ && approval_->typing) {
+        if (e == Event::Escape) approval_->typing = false, approval_->feedback.clear();
+        else if (e == Event::Return) answer(Approval::No, approval_->feedback);
+        else if (e == Event::Backspace) {
+            if (!approval_->feedback.empty()) approval_->feedback.erase(utf8_prev(approval_->feedback, approval_->feedback.size()));
+        } else if (e.is_character()) approval_->feedback += k;
+        return true;
     }
     if (k == "y" || k == "Y") answer(Approval::Yes);
     else if (k == "n" || e == Event::Escape) answer(Approval::No);
     else if (k == "N") {
-        std::lock_guard lock(mu_);
         if (approval_) approval_->typing = true;
     }
     else if (k == "a" || k == "A") answer(Approval::Always);
     else if (k == "t" || k == "T") answer(Approval::Trip);
     else if (k == "e" || k == "d") {
-        std::filesystem::path path;
-        std::optional<std::string> proposed;
-        {
-            std::lock_guard lock(mu_);
-            if (approval_) path = approval_->request.path, proposed = approval_->request.proposed;
-        }
+        std::filesystem::path path = approval_ ? approval_->event.value("path", "") : "";
         if (path.empty()) status_msg_ = "this approval is not about a file";
         else if (k == "e") open_file(path);
         else if (!host_up()) status_msg_ = "d shows the diff in nvim: run MAIC inside nvim (maic.nvim)";
-        else if (!proposed) status_msg_ = "no proposed content to diff for this call";
         else {
-            try {
-                host_diff(*host_, path, *proposed);
-                status_msg_ = "the diff is in a new nvim tab; answer here";
-            } catch (const std::exception& ex) {
-                post(Kind::Error, std::string("nvim: ") + ex.what());
+            nlohmann::json proposed = result(call("maic.approval.proposed", {{"session", session_}, {"approval", approval_->id}}));
+            if (!proposed.value("text", nlohmann::json()).is_string()) status_msg_ = "no proposed content to diff for this call";
+            else {
+                try {
+                    host_diff(*host_, path, proposed["text"].get<std::string>());
+                    status_msg_ = "the diff is in a new nvim tab; answer here";
+                } catch (const std::exception& ex) {
+                    post(Kind::Error, std::string("nvim: ") + ex.what());
+                }
             }
         }
     }
-    else if (k == "\x03") answer(Approval::No), cancel_ = true;
+    else if (k == "\x03") answer(Approval::No), cancel_turn();
     return true;
 }
 
 void App::answer(Approval a, std::string feedback) {
-    std::lock_guard lock(mu_);
-    if (approval_) {
-        approval_->answer.set_value({a, std::move(feedback)});
-        approval_.reset();
-    }
+    if (!approval_) return;
+    static const char* choices[] = {"yes", "no", "always", "trip"};
+    std::string id = approval_->id;
+    approval_.reset();
+    call("maic.approval.answer", {{"session", session_}, {"approval", id}, {"choice", choices[static_cast<int>(a)]}, {"feedback", std::move(feedback)}});
+    drain();
 }
 
-// Called with mu_ held.
 bool App::handle_question(const Event& e) {
     const std::string& k = e.input();
     if (e == Event::Escape) answer_question("");
     else if (e == Event::Return) answer_question(question_->typed);
-    else if (k == "\x03") answer_question(""), cancel_ = true;
+    else if (k == "\x03") answer_question(""), cancel_turn();
     else if (e == Event::Backspace) {
         if (!question_->typed.empty()) question_->typed.erase(utf8_prev(question_->typed, question_->typed.size()));
     } else if (e.is_character()) {
@@ -1603,11 +1641,55 @@ bool App::handle_question(const Event& e) {
 }
 
 void App::answer_question(std::string text) {
-    if (question_) {
-        view_.append(Kind::User, text.empty() ? "(no answer)" : text);
-        question_->answer.set_value(std::move(text));
-        question_.reset();
+    if (!question_) return;
+    view_.append(Kind::User, text.empty() ? "(no answer)" : text);
+    std::string id = question_->id;
+    question_.reset();
+    call("maic.question.reply", {{"session", session_}, {"question", id}, {"text", std::move(text)}});
+    drain();
+}
+
+// Ctrl-C: the running response is cancelled, and with it the turn.
+void App::cancel_turn() {
+    call("cancelResponse", {{"response_id", response_}});
+    drain();
+}
+
+// Ctrl-S (interrupt), Ctrl-Q (steer, to resume) and the pause menu: a steering action on the running response or the
+// paused turn. What is in the input goes with steer, drop and further as their note.
+void App::steer(const std::string& action) {
+    nlohmann::json params = {{"session", session_}, {"response_id", response_}, {"action", action}};
+    std::string note = editor_.text();
+    while (!note.empty() && std::isspace(static_cast<unsigned char>(note.back()))) note.pop_back();
+    bool with_note = !note.empty() && (action == "steer" || action == "drop" || action == "further");
+    if (with_note) params["note"] = note;
+    nlohmann::json reply = call("maic.steer", params);
+    drain();
+    if (reply.contains("error")) {
+        post(Kind::Error, reply["error"].value("message", "the engine refused the steer"));
+        return;
     }
+    if (with_note) editor_.clear();
+    pause_menu_ = false;
+}
+
+Element App::render_pause_menu() {
+    if (!pause_menu_ || !paused_) return emptyElement();
+    return window(text(" paused ") | bold, vbox({text("[Ctrl-Q] resume  [s] steer  [d] drop  [f] further  [k] keep  [h] halt"),
+                                                text("what is in the input goes with s, d and f as their note; Esc leaves this to type a message (Enter resumes with it)") | dim})) |
+           decorate(settings_.style("approval"));
+}
+
+bool App::handle_pause_menu(const Event& e) {
+    const std::string& k = e.input();
+    if (e == Event::Escape) pause_menu_ = false;
+    else if (k == "\x11" || k == "s") steer("steer");
+    else if (k == "d") steer("drop");
+    else if (k == "f") steer("further");
+    else if (k == "k") steer("keep");
+    else if (k == "h") steer("halt");
+    else if (k == "\x03") cancel_turn();
+    return true;
 }
 
 void App::set_focus(Focus f) {
@@ -1620,7 +1702,10 @@ void App::set_focus(Focus f) {
 void App::submit(std::string text, bool now) {
     while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) text.pop_back();
     if (text.empty()) {
-        if (now && agent_.queued()) agent_.deliver_now();
+        if (now && queued_) {
+            call("response.create", {{"conversation", session_}, {"maic", {{"now", true}}}});
+            drain();
+        }
         return;
     }
     editor_.remember(text);
@@ -1642,15 +1727,30 @@ void App::submit(std::string text, bool now) {
         run_lua(text, false);
         return;
     }
-    if (busy_) {
-        view_.append(Kind::User, text);
-        agent_.post_message(text);
-        if (now) {
-            agent_.deliver_now();
-            post(Kind::Notice, "delivering now");
-        } else {
-            post(Kind::Notice, "queued; it reaches the model at its next step (:w now to force it)");
+    if (busy_ && !now && !response_.empty()) {
+        // A message for the running response (or the paused turn, which it resumes): OpenAI's response.steer.
+        nlohmann::json reply = call("response.steer", {{"previous_response_id", response_}, {"input", text}});
+        if (!reply.contains("error")) {
+            drain();
+            if (!paused_) post(Kind::Notice, "queued; it reaches the model at its next step (:w now to force it)");
+            return;
         }
+        // It ended meanwhile: this one starts the next turn.
+    }
+    if (busy_) {
+        nlohmann::json params = {{"conversation", session_}, {"input", text}};
+        if (now) params["maic"] = {{"now", true}};
+        nlohmann::json reply = call("response.create", params);
+        if (!result(reply).contains("maic") || !result(reply)["maic"].value("queued", false)) {
+            // The turn ended meanwhile: this one starts the next.
+            busy_ = true;
+            turn_seq_ = result(reply).contains("maic") ? result(reply)["maic"].value("sequence_number", -1L) : -1;
+            response_ = result(reply).value("id", "");
+            drain();
+            return;
+        }
+        drain();
+        post(Kind::Notice, now ? "delivering now" : "queued; it reaches the model at its next step (:w now to force it)");
         return;
     }
     start_turn(text);
@@ -1658,70 +1758,107 @@ void App::submit(std::string text, bool now) {
 
 void App::start_turn(const std::string& text_in) {
     std::string text = take_dropped_image(text_in);
-    auto pics = agent_.pending_images();
-    view_.append(Kind::User, text + (pics.empty() ? "" : "\n(with " + std::to_string(pics.size()) + " image" + (pics.size() == 1 ? "" : "s") + ")"));
-    if (worker_.joinable()) worker_.join();
-    busy_ = true;
-    cancel_ = false;
-    worker_ = std::thread([this, text] {
-        std::string next = text;
-        for (;;) {
-            auto t0 = std::chrono::steady_clock::now();
-            tool_calls_ = 0;
-            fire("MaicTurnStart", {{"model", agent_.model}});
-            try {
-                agent_.submit(next, Origin::Local, *this, cancel_);
-            } catch (const std::exception& ex) {
-                view_.append(Kind::Error, failure_text(agent_, ex));
-            }
-            // The footer: model, how long the turn took, how many tools ran.
-            double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-            char dur[32];
-            if (secs < 1) snprintf(dur, sizeof(dur), "%.0fms", secs * 1000);
-            else if (secs < 60) snprintf(dur, sizeof(dur), "%.1fs", secs);
-            else if (secs < 3600) snprintf(dur, sizeof(dur), "%dm %ds", static_cast<int>(secs) / 60, static_cast<int>(secs) % 60);
-            else snprintf(dur, sizeof(dur), "%dh %dm", static_cast<int>(secs) / 3600, (static_cast<int>(secs) % 3600) / 60);
-            int calls = tool_calls_.load();
-            view_.append(Kind::Notice, "▣ " + agent_.model + " · " + dur + (calls ? " · " + std::to_string(calls) + (calls == 1 ? " tool call" : " tool calls") : "") +
-                                           (cancel_.load() ? " · interrupted" : ""));
-            fire("MaicTurnEnd", {{"model", agent_.model}, {"tool_calls", calls}, {"seconds", secs}, {"interrupted", cancel_.load()}});
-            maybe_title(next);
-            // Messages queued after the turn's last model call start a new turn on their own.
-            if (cancel_.load() || agent_.queued() == 0) break;
-            next.clear();
-            for (const auto& p : agent_.take_queued()) next += (next.empty() ? "" : "\n\n") + p;
-        }
-        if (lazy_lock_) screen_.Post([this, lock = lazy_lock_->check()] { maybe_check_keymaps(lock); });
-        busy_ = false;
-        if (quit_when_idle_.load() && !cancel_.load()) {
-            quit_when_idle_ = false;
-            screen_.Post([this] { quit(); });
-        }
-        screen_.PostEvent(Event::Custom);
-    });
-}
-
-void App::set_title(const std::string& title) {
-    if (log_) log_->write("title", {{"text", title}});
-    titled_ = true;
-}
-
-// After the first turn, ask a small model for a title when settings name one. A remote title model is never
-// used for a local session, so nothing leaves the machine that would not have anyway.
-void App::maybe_title(const std::string& first_prompt) {
-    if (titled_ || settings_.small_model.empty() || cancel_.load()) return;
-    titled_ = true;
-    try {
-        auto [provider, name] = resolve_model(agent_.providers, settings_.small_model);
-        if (provider.remote() && !agent_.remote()) return;
-        std::string t = generate_title(provider, name, first_prompt);
-        if (t.empty()) return;
-        if (log_) log_->write("title", {{"text", t}});
-        post(Kind::Notice, "titled: " + t + "  (:rename changes it)");
-    } catch (const std::exception&) {
+    nlohmann::json reply = call("response.create", {{"conversation", session_}, {"input", text}});
+    if (reply.contains("error")) {
+        drain();
+        post(Kind::Error, reply["error"].value("message", "the engine refused the message"));
+        return;
     }
+    busy_ = true;
+    turn_seq_ = result(reply)["maic"].value("sequence_number", -1L);
+    response_ = result(reply).value("id", "");
+    drain();
 }
 
+// :image FILE through the engine, quietly: whether the picture is attached to the next message.
+bool App::attach(const std::filesystem::path& file) {
+    nlohmann::json reply = call("maic.session.command", {{"session", session_}, {"line", "image " + file.string()}});
+    drain();
+    return !reply.contains("error") && result(reply).value("ok", false);
+}
+
+// A file dragged onto the terminal arrives as its path in the input, quoted or backslash-escaped the way
+// terminals write a drop. Only that shape is taken as an attachment: the whole message being one image
+// path, or a message that begins with a quoted/escaped/file:// one. A plain path inside a sentence stays
+// text, so a pasted path is something the agent can be asked to read rather than a picture MAIC sends.
+std::string App::take_dropped_image(const std::string& text) {
+    // The explicit form first: ![alt](path) or [text](path) whose target is an image file, anywhere in the
+    // message. Micaiah's suggestion: no guessing, and it works for a pasted path too.
+    {
+        std::string out;
+        size_t pos = 0;
+        bool any = false;
+        while (true) {
+            size_t lb = text.find('[', pos);
+            if (lb == std::string::npos) break;
+            size_t rb = text.find("](", lb);
+            size_t rp = rb == std::string::npos ? std::string::npos : text.find(')', rb + 2);
+            if (rp == std::string::npos) break;
+            std::string alt = text.substr(lb + 1, rb - lb - 1), target = text.substr(rb + 2, rp - rb - 2);
+            while (!target.empty() && (target.front() == '"' || target.front() == '\'' || target.front() == '<')) target.erase(0, 1);
+            while (!target.empty() && (target.back() == '"' || target.back() == '\'' || target.back() == '>')) target.pop_back();
+            if (target.rfind("file://", 0) == 0) target = target.substr(7);
+            if (target.rfind("~/", 0) == 0) target = std::string(std::getenv("HOME")) + target.substr(1);
+            std::filesystem::path p = std::filesystem::path(target).is_absolute() ? std::filesystem::path(target) : std::filesystem::path(ws_) / target;
+            std::error_code ec;
+            size_t start = lb > 0 && text[lb - 1] == '!' ? lb - 1 : lb;
+            if (is_image_path(p) && std::filesystem::is_regular_file(p, ec) && attach(p)) {
+                out += text.substr(pos, start - pos) + "[image: " + (alt.empty() ? p.filename().string() : alt) + "]";
+                any = true;
+                pos = rp + 1;
+                continue;
+            }
+            out += text.substr(pos, rp + 1 - pos);
+            pos = rp + 1;
+        }
+        if (any) return out + text.substr(pos);
+    }
+    std::string t = text;
+    while (!t.empty() && std::isspace(static_cast<unsigned char>(t.back()))) t.pop_back();
+    size_t start = t.find_first_not_of(" \t\n");
+    if (start == std::string::npos) return text;
+    t = t.substr(start);
+    std::string path, rest;
+    bool dropped_shape = false;
+    if (t.rfind("file://", 0) == 0) {
+        dropped_shape = true;
+        size_t sp = t.find_first_of(" \n");
+        path = t.substr(7, sp == std::string::npos ? std::string::npos : sp - 7);
+        rest = sp == std::string::npos ? "" : t.substr(sp);
+    } else if (t.front() == '\'' || t.front() == '"') {
+        size_t end = t.find(t.front(), 1);
+        if (end == std::string::npos) return text;
+        dropped_shape = true;
+        path = t.substr(1, end - 1);
+        rest = t.substr(end + 1);
+    } else {
+        // Backslash-escaped spaces mark a drop; a path with no spaces counts only when it is the whole message.
+        size_t i = 0;
+        while (i < t.size() && !(t[i] == ' ' || t[i] == '\n')) {
+            if (t[i] == '\\' && i + 1 < t.size()) {
+                path += t[i + 1];
+                dropped_shape = true;
+                i += 2;
+            } else {
+                path += t[i++];
+            }
+        }
+        rest = t.substr(i);
+        if (!dropped_shape && !rest.empty()) return text;  // a bare path followed by words: text
+    }
+    if (path.rfind("~/", 0) == 0) path = std::string(std::getenv("HOME")) + path.substr(1);
+    std::filesystem::path p(path);
+    std::error_code ec;
+    if (!is_image_path(p) || !std::filesystem::is_regular_file(p, ec)) return text;
+    if (!attach(p)) return text;
+    std::string r = rest;
+    size_t rs = r.find_first_not_of(" \t\n");
+    r = rs == std::string::npos ? "" : r.substr(rs);
+    return "[image: " + p.filename().string() + "]" + (r.empty() ? "" : " " + r);
+}
+
+// `!cmd` in the user's own shell, through the engine (maic.session.shell): it streams under the command's line
+// and what it printed reaches the model as context.
 void App::run_shell(const std::string& command) {
     if (shell_busy_) {
         post(Kind::Error, "a shell command is still running; Ctrl-C stops it");
@@ -1731,21 +1868,14 @@ void App::run_shell(const std::string& command) {
     view_.append(Kind::ToolOk, "");
     if (shell_thread_.joinable()) shell_thread_.join();
     shell_busy_ = true;
-    shell_cancel_ = false;
     shell_thread_ = std::thread([this, command] {
-        std::string output;
-        int rc = run_user_shell(command, agent_.harness().workspace(), shell_cancel_, [&](std::string_view chunk) {
-            output.append(chunk);
-            view_.append_to_last(Kind::ToolOk, chunk);
-            screen_.PostEvent(Event::Custom);
+        nlohmann::json reply = call("maic.session.shell", {{"session", session_}, {"command", command}}, false);
+        screen_.Post([this, reply] {
+            drain();
+            if (reply.contains("error")) post(Kind::Error, reply["error"].value("message", "the command did not run"));
+            else if (int rc = result(reply).value("exit_code", 0); rc != 0) view_.append_to_last(Kind::ToolOk, "\n[exit code " + std::to_string(rc) + "]");
+            shell_busy_ = false;
         });
-        std::string tail = rc == 0 ? "" : "\n[exit code " + std::to_string(rc) + "]";
-        if (!tail.empty()) view_.append_to_last(Kind::ToolOk, tail);
-        if (output.size() > 32 * 1024) output = output.substr(0, 32 * 1024) + "\n[truncated]";
-        std::string context = "[The user ran this in their shell: `" + command + "`]\n" + output + tail;
-        if (busy_) agent_.post_message(context);
-        else agent_.add_context(context);
-        shell_busy_ = false;
         screen_.PostEvent(Event::Custom);
     });
 }
@@ -1779,55 +1909,17 @@ void App::edit_externally() {
     editor_.escape();
 }
 
+// :lua and :luafile run in the session's Lua state in the engine; what the chunk prints reaches the model too.
 void App::run_lua(const std::string& code, bool from_file) {
-    if (!lua_) lua_ = std::make_unique<Lua>(agent_.harness().workspace(), [this](const std::string& t) { post(Kind::Notice, t); });
-    Lua::Result r;
-    if (from_file) r = lua_->run_file(agent_.harness().resolve(code));
-    else if (!code.empty() && code[0] == '=') r = lua_->run("return " + code.substr(1));
-    else {
-        // An expression shows its value; a statement runs as is.
-        r = lua_->compiles("return " + code) ? lua_->run("return " + code) : lua_->run(code);
-    }
+    nlohmann::json reply = call("maic.session.command", {{"session", session_}, {"line", (from_file ? "luafile " : "lua ") + code}});
+    drain();
     view_.append(Kind::Shell, (from_file ? "luafile " : "lua> ") + code);
-    std::string out = r.output;
-    while (!out.empty() && out.back() == '\n') out.pop_back();
-    view_.append(r.ok ? Kind::ToolOk : Kind::ToolErr, out.empty() ? "(no output)" : out);
-    if (!r.output.empty()) {
-        std::string context = "[The user ran Lua in MAIC: `" + code + "`]\n" + (r.output.size() > 32 * 1024 ? r.output.substr(0, 32 * 1024) + "\n[truncated]" : r.output);
-        if (busy_) agent_.post_message(context);
-        else agent_.add_context(context);
+    if (reply.contains("error")) {
+        post(Kind::Error, reply["error"].value("message", ""));
+        return;
     }
-}
-
-void App::set_model(const std::string& model_in) {
-    std::string preset = apply_preset(settings_, model_in);
-    std::string model = resolve_model_alias(preset.empty() ? model_in : settings_.model);
-    auto [provider, name] = resolve_model(agent_.providers, model);
-    agent_.model = model;
-    if (!preset.empty()) {
-        agent_.providers = settings_.providers;
-        agent_.think = settings_.think;
-        set_context(agent_.providers, settings_.context);
-        set_context(agent_.providers, settings_.context_2, "llamacpp-2");
-        if (is_llama_server(provider.name)) {
-            try {
-                std::string r = restart_llamacpp_if_changed(provider.name);
-                if (!r.empty()) post(Kind::Notice, r);
-            } catch (const std::exception& e) {
-                post(Kind::Error, e.what());
-            }
-        }
-    }
-    apply_sampling();
-    ModelPick reviewer = agent_.reviewer().pick;
-    std::string note = "model: " + model + " (" + provider.name + ", " + provider.kind + ")" +
-                       (preset.empty() ? "" : "  preset " + preset + ": context " + std::to_string(settings_.providers.empty() ? 0 : provider.options.value("context_window", 0)) +
-                                                  ", reviewer " + (reviewer.model.empty() ? "off" : reviewer.preset.empty() ? reviewer.model : reviewer.preset) + ", thinking " + (agent_.think ? "on" : "off"));
-    if (provider.remote()) {
-        post(Kind::Error, note + "\nREMOTE: prompts, files the agent reads and command output will be sent to " + provider.base_url);
-    } else {
-        post(Kind::Notice, note);
-    }
+    for (const auto& l : result(reply).value("lines", nlohmann::json::array())) view_.append(l.value("level", "info") == "info" ? Kind::ToolOk : Kind::ToolErr, l.value("text", ""));
+    screen_.PostEvent(Event::Custom);
 }
 
 void App::run_command(const std::string& line) {
@@ -1840,10 +1932,12 @@ void App::run_command(const std::string& line) {
     in >> cmd;
     std::getline(in >> std::ws, arg);
     auto services = [&] { return load_services(root_dir() / "services"); };
-    auto idle = [&] {
-        if (busy_) post(Kind::Error, ":" + cmd + " has to wait until the agent is idle");
-        return !busy_;
-    };
+    // The commands that act on the session are the engine's (maic.session.command), under the names the TUI has
+    // always taken; the rest are the view's, the editor's and the machine's.
+    static const std::set<std::string> engine_owned = {"mode", "harness", "model", "models", "think", "undo", "export", "rename", "title", "budget", "compact",
+                                                       "clear", "trip", "status", "todo", "tools", "init", "cd", "ban", "sampling", "sampler", "image", "img",
+                                                       "forbid", "allow", "rule", "rules", "ctx", "context-size", "ctx2", "prefill", "prefix", "system",
+                                                       "instructions", "session", "steer", "steering"};
     try {
         if (cmd == "wq") {
             // Send, then leave once the reply is in. With nothing to send it is just :q.
@@ -1862,62 +1956,11 @@ void App::run_command(const std::string& line) {
             submit(editor_.text(), true);
         } else if (cmd == "e" || cmd == "edit") {
             if (arg.empty()) edit_externally();
-            else open_file(agent_.harness().resolve(arg));
+            else open_file(resolve_path(ws_, arg));
         } else if (cmd == "nvim" || cmd == "host") {
             nvim_command(arg);
         } else if (cmd == "h" || cmd == "help") {
             post(Kind::Notice, help_text(arg));
-        } else if (cmd == "mode") {
-            if (auto m = parse_mode(arg)) request_mode(*m);
-            else post(Kind::Error, "modes: manual, auto-read, edit, auto, plan");
-        } else if (cmd == "harness") {
-            if (arg.empty()) {
-                Agent::ReviewerInfo r = agent_.reviewer();
-                std::string spent = ", " + std::to_string(r.tokens) + " tokens so far" + (settings_.reviewer_budget_tokens > 0 ? " of " + std::to_string(settings_.reviewer_budget_tokens) : "");
-                post(Kind::Notice, !agent_.review_with_model ? "harness: dumb. The rule list alone decides; nothing reads the conversation. `:harness smart` brings the reviewer back."
-                                   : r.pick.model.empty()
-                                       ? "harness: smart, but the reviewer is off for this session (" + r.pick.reason + spent + "): every action it would review is asked."
-                                       : "harness: smart. A model (" + r.pick.model + ", " + r.pick.reason + spent +
-                                             ") reads the conversation and reviews every command or write the rules would allow without asking. `:harness dumb` turns that off.");
-            } else if (arg == "smart") {
-                agent_.review_with_model = true;
-                post(Kind::Notice, "harness: smart (reviewer on)");
-            } else if (arg == "dumb") {
-                agent_.review_with_model = false;
-                if (agent_.mode.load() == Mode::Auto && !dumb_auto_ok_) {
-                    agent_.mode = Mode::Edit;
-                    post(Kind::Notice, "harness: dumb. Dropped to edit mode until you confirm auto.");
-                    request_mode(Mode::Auto);
-                } else {
-                    post(Kind::Notice, "harness: dumb (rules only)");
-                }
-            } else {
-                post(Kind::Error, ":harness [smart|dumb]");
-            }
-        } else if (cmd == "model") {
-            if (arg.empty()) {
-                std::string list = "model: " + agent_.model + "\npresets (:model NAME):" + preset_lines(settings_);
-                list += "\nproviders:";
-                for (const auto& p : agent_.providers) list += "\n  " + p.name + "/<model>  (" + p.kind + ", " + (p.kind == "cli" ? p.options.value("command", "") + ", text only" : p.base_url) + (p.remote() ? ", REMOTE)" : ")");
-                post(Kind::Notice, list);
-            } else if (idle()) {
-                set_model(arg);
-            }
-        } else if (cmd == "models") {
-            auto [provider, name] = resolve_model(agent_.providers, agent_.model);
-            std::string out = "models on " + provider.name + " (" + provider.base_url + "):";
-            try {
-                std::vector<std::string> names = list_openai_models(provider);
-                for (const auto& m : names) out += "\n  " + provider.name + "/" + m + (provider.name + "/" + m == agent_.model ? "   (in use)" : "");
-                if (is_llama_server(provider.name)) {
-                    out += "\nfiles under " + llamacpp_models_root().string() + " (a subdirectory holds a GGUF plus its mmproj); one model is resident per server; :model " + provider.name + "/NAME switches";
-                }
-            } catch (const std::exception& e) {
-                out += "\n  " + std::string(e.what());
-            }
-            post(Kind::Notice, out);
-        } else if (cmd == "think") {
-            if (idle()) agent_.think = arg != "off", post(Kind::Notice, agent_.think ? "thinking on (slower, better on hard problems)" : "thinking off");
         } else if (cmd == "set") {
             std::istringstream a(arg);
             std::string key, value;
@@ -1953,26 +1996,12 @@ void App::run_command(const std::string& line) {
             } else {
                 run_lua(arg, cmd == "luafile");
             }
-        } else if (cmd == "undo") {
-            if (idle()) {
-                post(Kind::Notice, agent_.undo(arg.empty() ? 1 : static_cast<size_t>(std::max(1, std::atoi(arg.c_str())))));
-                if (host_up()) host_checktime(*host_);
-            }
         } else if (cmd == "copy") {
             std::string last = view_.last_assistant();
             if (last.empty()) post(Kind::Error, "nothing to copy yet");
             else {
                 register_ = last;
                 post(Kind::Notice, "copied the last reply (" + copy_to_clipboard(last) + ")");
-            }
-        } else if (cmd == "export") {
-            auto info = find_session(log_->path().stem().string());
-            std::filesystem::path out = arg.empty() ? agent_.harness().workspace() / (log_->path().stem().string() + ".md") : agent_.harness().resolve(arg);
-            if (!info) post(Kind::Error, "this session is not listed (temporary transcripts cannot be exported by id yet)");
-            else {
-                std::ofstream f(out);
-                f << export_markdown(*info, load_session(log_->path()));
-                post(Kind::Notice, "exported to " + out.string());
             }
         } else if (cmd == "stash" || cmd == "pop") {
             std::filesystem::path stash = state_dir() / "prompt-stash.jsonl";
@@ -1999,40 +2028,9 @@ void App::run_command(const std::string& line) {
                     post(Kind::Notice, "popped (" + std::to_string(lines.size()) + " left)");
                 }
             }
-        } else if (cmd == "rename" || cmd == "title") {
-            if (arg.empty()) post(Kind::Error, ":rename TITLE");
-            else {
-                set_title(arg);
-                post(Kind::Notice, "titled: " + arg);
-            }
-        } else if (cmd == "budget") {
-            if (arg == "off" || arg == "0") agent_.budget_tokens = 0, post(Kind::Notice, "no token budget");
-            else if (!arg.empty()) agent_.budget_tokens = std::atol(arg.c_str()), post(Kind::Notice, "token budget: " + std::to_string(agent_.budget_tokens));
-            else {
-                auto u = agent_.usage();
-                post(Kind::Notice, "used " + std::to_string(u.total_input + u.total_output) + " tokens this session" +
-                                       (agent_.budget_tokens ? " of " + std::to_string(agent_.budget_tokens) : " (no budget; :budget N sets one)"));
-            }
         } else if (cmd == "chat") {
             lua_mode_ = false;
             post(Kind::Notice, "back to the model");
-        } else if (cmd == "compact") {
-            if (idle()) {
-                std::atomic<bool> no{false};
-                if (arg == "all") post(Kind::Notice, agent_.compact(Agent::Compaction::All, no));
-                else if (arg == "head") post(Kind::Notice, agent_.compact(Agent::Compaction::Head, no));
-                else if (arg == "prune") post(Kind::Notice, agent_.compact(Agent::Compaction::Prune, no));
-                else post(Kind::Notice, agent_.compact_auto(no));
-            }
-        } else if (cmd == "clear") {
-            if (idle()) {
-                agent_.clear();
-                view_.clear();
-            }
-        } else if (cmd == "trip") {
-            trip_tripwire("manual trip: " + (arg.empty() ? std::string("from the agent session") : arg));
-            post(Kind::Error, settings_.tripwire == "session" ? "SESSION TRIPPED. Nothing runs in this session until :unlock (no sudo: the lock is this session's own)"
-                                                                : "HARNESS TRIPPED. Nothing will run until :unlock");
         } else if (cmd == "unlock") {
             if (!tripwire_state()) post(Kind::Notice, "harness is not tripped");
             else if (session_tripped()) {
@@ -2043,46 +2041,6 @@ void App::run_command(const std::string& line) {
                 })();
                 post(Kind::Notice, tripwire_state() ? "still tripped" : "harness unlocked; carry on");
             }
-        } else if (cmd == "status") {
-            auto [provider, name] = resolve_model(agent_.providers, agent_.model);
-            StatusReport report = status_report(services());
-            report.lazy_lock = lazy_lock_summary(lazy_lock_ ? lazy_lock_->check() : lazy_lock_state(lazy_lock_path(settings_.lazy_lock)));
-            std::string out = format_status(report);
-            out += "model: " + name + " via " + provider.name + " at " + provider.base_url + (provider.remote() ? "  [REMOTE: data leaves this machine]" : "  [local]") + "\n";
-            out += "session: " + log_path() + "\n";
-            out += "mode: " + std::string(mode_name(agent_.mode.load())) + (busy_ ? "  (working)" : "  (idle)");
-            if (size_t q = agent_.queued()) out += "  " + std::to_string(q) + " queued  -> :w now";
-            if (!agent_.tools().empty() || !agent_.script_tools().empty()) {
-                out += "\ntools:";
-                for (const auto& t : agent_.tools()) out += " " + t.name;
-                for (const auto& t : agent_.script_tools()) out += " " + t.name;
-            }
-            if (std::string todo = todo_text(); !todo.empty()) out += "\n" + todo;
-            post(Kind::Notice, out);
-        } else if (cmd == "todo") {
-            std::string todo = todo_text();
-            post(Kind::Notice, todo.empty() ? "no plan yet: the agent keeps one with the todo tool during multi-step work" : todo);
-        } else if (cmd == "tools") {
-            std::string out = "built-in tools (all through the harness):";
-            for (const auto& t : tool_schemas()) {
-                std::string desc = t["function"].value("description", "");
-                if (auto nl = desc.find('\n'); nl != std::string::npos) desc = desc.substr(0, nl);
-                if (desc.size() > 90) desc = desc.substr(0, 87) + "...";
-                out += "\n  " + t["function"].value("name", "") + "  " + desc;
-            }
-            out += "\nhelpers: maic-workflow-edit, maic-storyboard, maic-danbooru-tags, maic-panel-check (run_shell; allow-listed)";
-            if (agent_.tools().empty() && agent_.script_tools().empty()) out += "\nno user-defined tools. Put a <name>.lua or a <name>/tool.json in .maic/tools/ or " + global_tools_dir().string() + " (see :h tools)";
-            for (const auto& t : agent_.tools()) out += "\n  " + t.name + "  (lua)  " + t.file.string() + "\n    " + t.description;
-            auto globs = [](const std::vector<std::string>& g) {
-                std::string s;
-                for (const auto& x : g) s += (s.empty() ? "" : ", ") + x;
-                return s.empty() ? "nothing" : s;
-            };
-            for (const auto& t : agent_.script_tools()) {
-                out += "\n  " + t.name + "  (" + script_tool_language(t) + ")  " + (t.dir / "tool.json").string() + "\n    " + t.description + "\n    reads " + globs(t.reads) + "; writes " + globs(t.writes);
-            }
-            for (const auto& n : agent_.tool_notices()) out += "\n  " + n;
-            post(Kind::Notice, out);
         } else if (cmd == "up" || cmd == "down") {
             bool found = false;
             for (const auto& s : services()) {
@@ -2120,8 +2078,9 @@ void App::run_command(const std::string& line) {
             std::istringstream words(arg);
             std::vector<std::string> args;
             for (std::string w; words >> w;) args.push_back(w);
+            if (cmd == "trust" && args == std::vector<std::string>{"imports", "--approve"}) return command("trust imports --approve");
             try {
-                post(Kind::Notice, trust_command(cmd, args, agent_.harness().workspace()));
+                post(Kind::Notice, trust_command(cmd, args, ws_));
             } catch (const std::exception& e) {
                 post(Kind::Error, e.what());
             }
@@ -2131,353 +2090,6 @@ void App::run_command(const std::string& line) {
             if (settings_.sources.empty()) out += "\n  none (defaults). `maic settings init` writes the global settings.lua; `:init` scaffolds a project's.";
             out += "\nsessions home: " + session_home_dir(settings_).lexically_relative(sessions_dir()).string() + "  (sessions_home = " + settings_.sessions_home + ")";
             post(Kind::Notice, out);
-        } else if (cmd == "init") {
-            std::filesystem::path ws = agent_.harness().workspace();
-            std::string made = init_project(ws);
-            post(Kind::Notice, made.empty() ? "already initialised: MAIC.md and .maic/settings.lua exist" : made);
-            if (!trusted(ws)) {
-                post(Kind::Notice, ws.string() + " is not trusted, so its MAIC.md and .maic/settings.lua are not read until it is: "
-                                   ":trust (fully: its Lua runs as you) or :trust --lua sandbox (its Lua in a child process that cannot reach the system)");
-            }
-            // The session joins the project's transcripts when it worked here throughout (docs/sessions.md, Homes).
-            InitMove m = init_move_check(log_->path(), ws, settings_.record, static_cast<size_t>(std::max(0, settings_.init_move_outside_reads)));
-            std::filesystem::path dest = sessions_home("project:" + ws.string());
-            std::string id = log_->path().stem().string(), here = log_->path().parent_path().lexically_relative(sessions_dir()).string();
-            std::string there = dest.lexically_relative(sessions_dir()).string() + "/";
-            auto move = [this, dest, id, here, there](const std::string& why) {
-                try {
-                    std::filesystem::path old_lock = log_->path().string() + ".tripped";
-                    std::filesystem::path to = log_->relocate(dest, "init");
-                    set_tripwire_scope(settings_.tripwire, to.string() + ".tripped");
-                    std::error_code ec;
-                    if (std::filesystem::exists(old_lock, ec)) std::filesystem::rename(old_lock, to.string() + ".tripped", ec);  // a trip while it moved
-                    post(Kind::Notice, "this session moved to " + there + why + "; `maic sessions rehome " + id + " " + here + "` moves it back");
-                } catch (const std::exception& e) {
-                    post(Kind::Error, "this session stays in " + here + "/: " + e.what());
-                }
-            };
-            if (m.verdict == InitMove::Move) {
-                move(" (" + m.reason + ")");
-            } else if (m.verdict == InitMove::Ask) {
-                std::lock_guard lock(mu_);
-                if (confirm_) {
-                    post(Kind::Notice, "this session stays in " + here + "/ for now (" + m.reason + "); `maic sessions rehome " + id + " project` moves it");
-                } else {
-                    confirm_ = PendingConfirm{" move this session? ",
-                                              {"this session read " + std::to_string(m.outside_reads) + " and wrote " + std::to_string(m.outside_writes) +
-                                                   " files outside the project; move it into the project's home anyway?",
-                                               "[y] move it to " + there + "   [n] leave it in " + here + "/   (later: maic sessions rehome " + id + " project)"},
-                                              [this, move, id, here](bool yes) {
-                                                  if (yes) move("");
-                                                  else post(Kind::Notice, "this session stays in " + here + "/; `maic sessions rehome " + id + " project` moves it later");
-                                              }};
-                    screen_.PostEvent(Event::Custom);
-                }
-            } else if (!settings_.record) {
-                post(Kind::Notice, "this session stays out of the project's home: " + m.reason);
-            }
-            if (!std::filesystem::exists(ws / "MAIC.md") || std::filesystem::file_size(ws / "MAIC.md") < 200) {
-                submit("Look over this project (list the top level, read the README and build files) and write a MAIC.md at the workspace root: "
-                       "what the project is, how it is built and tested, the conventions to follow, and anything an agent should know before editing. "
-                       "Keep it under 60 lines. Use write_file for MAIC.md only.", false);
-            }
-        } else if (cmd == "cd") {
-            std::filesystem::path ws = agent_.harness().workspace();
-            if (arg.empty()) {
-                post(Kind::Notice, "workspace: " + ws.string() + (previous_ws_.empty() ? "" : "\n:cd - returns to " + previous_ws_.string()));
-                return;
-            }
-            if (!idle()) return;
-            std::filesystem::path to = cd_target(arg, ws, previous_ws_, known_places(settings_, ws, services(), log_->path()));
-            if (to == ws) {
-                post(Kind::Notice, "already in " + ws.string());
-                return;
-            }
-            // A start there would ask about its project directories first: so does :cd, in a modal.
-            ask_cd_trust(trust_to_ask(to), ws, to);
-        } else if (cmd == "ban") {
-            std::istringstream a(arg);
-            std::string sub;
-            a >> sub;
-            std::string rest;
-            std::getline(a >> std::ws, rest);
-            auto& b = agent_.bans;
-            if (sub.empty() || sub == "list") {
-                std::string out = "banned strings (" + std::to_string(b.strings.size()) + "):";
-                for (size_t i = 0; i < b.strings.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". \"" + b.strings[i] + "\"";
-                out += "\nbanned patterns (" + std::to_string(b.patterns.size()) + ", POSIX extended regex, window " + std::to_string(b.window) + "):";
-                for (size_t i = 0; i < b.patterns.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". /" + b.patterns[i] + "/";
-                out += "\nbanned tokens (" + std::to_string(b.tokens.size()) + "):";
-                for (size_t i = 0; i < b.tokens.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". " + b.tokens[i].dump();
-                out += "\nretries " + std::to_string(b.retries) + ", then replaced by \"" + b.replacement + "\"" + (b.ignore_case ? ", case-insensitive" : "") +
-                       "\n:ban add TEXT|@FILE · :ban pattern REGEX|@FILE · :ban token ID|TEXT|@FILE · :ban remove N · :ban patterns remove N · :ban tokens remove N · :ban clear · :ban retries N · :ban case on|off · :ban window N";
-                post(Kind::Notice, out);
-            } else if (sub == "pattern" && !rest.empty()) {
-                std::vector<std::string> entries;
-                try {
-                    entries = expand_ban_entry(rest);
-                } catch (const std::exception& e) {
-                    post(Kind::Error, e.what());
-                    return;
-                }
-                int added = 0;
-                for (const auto& pat : entries) {
-                    regex_t re;
-                    int rc = regcomp(&re, pat.c_str(), REG_EXTENDED | (b.ignore_case ? REG_ICASE : 0));
-                    if (rc != 0) {
-                        char err[200];
-                        regerror(rc, &re, err, sizeof(err));
-                        post(Kind::Error, "not a valid POSIX extended regex: /" + pat + "/: " + err);
-                        continue;
-                    }
-                    regfree(&re);
-                    b.patterns.push_back(pat);
-                    ++added;
-                }
-                if (added) post(Kind::Notice, added == 1 && entries.size() == 1 ? "banned /" + entries[0] + "/ (from the next model call)" : "banned " + std::to_string(added) + " patterns from " + rest.substr(1));
-            } else if (sub == "patterns" && rest.rfind("remove ", 0) == 0) {
-                size_t n = static_cast<size_t>(std::atoi(rest.c_str() + 7));
-                if (n >= 1 && n <= b.patterns.size()) b.patterns.erase(b.patterns.begin() + static_cast<long>(n - 1)), post(Kind::Notice, "removed");
-                else post(Kind::Error, "no banned pattern " + rest.substr(7));
-            } else if (sub == "window" && !rest.empty()) {
-                b.window = std::max(8, std::atoi(rest.c_str()));
-                post(Kind::Notice, "regex hold-back window: " + std::to_string(b.window) + " characters");
-            } else if ((sub == "add" || sub == "token") && !rest.empty()) {
-                std::vector<std::string> entries;
-                try {
-                    entries = expand_ban_entry(rest);
-                } catch (const std::exception& e) {
-                    post(Kind::Error, e.what());
-                    return;
-                }
-                for (const auto& e : entries) {
-                    if (sub == "add") {
-                        b.strings.push_back(e);
-                        continue;
-                    }
-                    bool numeric = std::all_of(e.begin(), e.end(), [](unsigned char c) { return std::isdigit(c); });
-                    b.tokens.push_back(numeric ? nlohmann::json(std::stoll(e)) : nlohmann::json(e));
-                }
-                if (entries.size() == 1 && rest[0] != '@') {
-                    post(Kind::Notice, sub == "add" ? "banned \"" + rest + "\" (from the next model call)"
-                                                    : "banned token " + rest + (b.tokens.back().is_number() ? " (logit_bias on OpenAI-compatible providers only)" : ""));
-                } else {
-                    post(Kind::Notice, "banned " + std::to_string(entries.size()) + (sub == "add" ? " phrases" : " tokens") + " from " + rest.substr(1));
-                }
-            } else if (sub == "remove" && !rest.empty()) {
-                size_t n = static_cast<size_t>(std::atoi(rest.c_str()));
-                if (n >= 1 && n <= b.strings.size()) b.strings.erase(b.strings.begin() + static_cast<long>(n - 1)), post(Kind::Notice, "removed");
-                else post(Kind::Error, "no banned string " + rest);
-            } else if (sub == "tokens" && rest.rfind("remove ", 0) == 0) {
-                size_t n = static_cast<size_t>(std::atoi(rest.c_str() + 7));
-                if (n >= 1 && n <= b.tokens.size()) b.tokens.erase(b.tokens.begin() + static_cast<long>(n - 1)), post(Kind::Notice, "removed");
-                else post(Kind::Error, "no banned token " + rest.substr(7));
-            } else if (sub == "clear") {
-                b.strings.clear();
-                b.patterns.clear();
-                b.tokens.clear();
-                post(Kind::Notice, "bans cleared");
-            } else if (sub == "retries" && !rest.empty()) {
-                b.retries = std::max(0, std::atoi(rest.c_str()));
-                post(Kind::Notice, "ban retries: " + std::to_string(b.retries));
-            } else if (sub == "case") {
-                b.ignore_case = rest == "off" || rest == "ignore";
-                post(Kind::Notice, b.ignore_case ? "bans ignore case" : "bans match case");
-            } else {
-                post(Kind::Error, ":ban [list] · add TEXT · pattern REGEX · token ID|TEXT · remove N · patterns remove N · tokens remove N · clear · retries N · case on|off · window N");
-            }
-        } else if (cmd == "sampling" || cmd == "sampler") {
-            std::istringstream a(arg);
-            std::string key, v1, v2;
-            a >> key >> v1 >> v2;
-            auto [provider, mname] = resolve_model(agent_.providers, agent_.model);
-            auto number = [](const std::string& s) {
-                nlohmann::json j = nlohmann::json::parse(s, nullptr, false);
-                return j.is_number() ? j : nlohmann::json(s);
-            };
-            if (key.empty()) {
-                std::string out = "sampling for " + agent_.model + " (" + provider.kind + "):";
-                if (agent_.sampling.empty()) out += " defaults";
-                for (const auto& [k, v] : agent_.sampling.items()) out += "\n  " + k + " = " + v.dump();
-                out += "\n:sampling KEY VALUE · :sampling xtc P [T] · :sampling unset KEY · :sampling reset";
-                if (provider.kind == "anthropic") out += "\nAnthropic's current models reject sampling parameters; nothing is sent there.";
-                post(Kind::Notice, out);
-            } else if (key == "xtc") {
-                if (v1.empty()) post(Kind::Error, ":sampling xtc PROBABILITY [THRESHOLD]  (0.5 0.1 is a common start)");
-                else {
-                    live_sampling_["xtc_probability"] = number(v1);
-                    live_sampling_["xtc_threshold"] = v2.empty() ? nlohmann::json(0.1) : number(v2);
-                    apply_sampling();
-                    post(Kind::Notice, "XTC: probability " + live_sampling_["xtc_probability"].dump() + ", threshold " + live_sampling_["xtc_threshold"].dump() +
-                                           (provider.kind == "openai" ? " (sent as xtc_probability / xtc_threshold; llama.cpp server, koboldcpp and the like honour it)"
-                                                                      : " (this provider has no XTC; the keys are kept for when you switch to a llama.cpp-style server)"));
-                }
-            } else if (key == "unset" && !v1.empty()) {
-                live_sampling_.erase(v1);
-                live_sampling_[v1] = nullptr;  // masks a settings value
-                apply_sampling();
-                agent_.sampling.erase(v1);
-                post(Kind::Notice, "unset " + v1);
-            } else if (key == "reset") {
-                live_sampling_ = nlohmann::json::object();
-                apply_sampling();
-                post(Kind::Notice, "sampling back to the settings");
-            } else if (!v1.empty()) {
-                live_sampling_[key] = number(v1);
-                apply_sampling();
-                post(Kind::Notice, key + " = " + live_sampling_[key].dump() + (provider.kind == "anthropic" ? " (not sent to Anthropic)" : ""));
-            } else {
-                post(Kind::Error, ":sampling [KEY VALUE | xtc P [T] | unset KEY | reset]");
-            }
-        } else if (cmd == "image" || cmd == "img") {
-            if (arg.empty()) {
-                auto pics = agent_.pending_images();
-                std::string out = pics.empty() ? "no image attached. :image FILE attaches one to the next message; a file dropped onto the terminal is attached on send" : "attached to the next message:";
-                for (const auto& p : pics) out += "\n  " + p;
-                post(Kind::Notice, out);
-            } else if (arg == "clear") {
-                agent_.clear_pending_images();
-                post(Kind::Notice, "attachments dropped");
-            } else {
-                attach_image(arg);
-            }
-        } else if (cmd == "forbid") {
-            std::istringstream a(arg);
-            std::string sub;
-            a >> sub;
-            std::string rest;
-            std::getline(a >> std::ws, rest);
-            auto fb = agent_.harness().forbid();
-            if (arg.empty() || arg == "list") {
-                std::string out = "forbidden terms (" + std::to_string(fb.size()) + "; any tool call containing one is halted, in every mode, under every harness):";
-                for (size_t i = 0; i < fb.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". " + fb[i];
-                out += "\n:forbid TERM adds one · :forbid remove N   (forbid = { ... } in settings keeps them)";
-                post(Kind::Notice, out);
-            } else if (sub == "remove" && !rest.empty()) {
-                size_t n = static_cast<size_t>(std::atoi(rest.c_str()));
-                if (n >= 1 && n <= fb.size()) fb.erase(fb.begin() + static_cast<long>(n - 1)), agent_.set_forbid(fb), post(Kind::Notice, "removed");
-                else post(Kind::Error, "no term " + rest);
-            } else {
-                fb.push_back(arg);
-                agent_.set_forbid(fb);
-                post(Kind::Notice, "forbidden: " + arg);
-            }
-        } else if (cmd == "allow") {
-            std::istringstream a(arg);
-            std::string sub;
-            a >> sub;
-            std::string rest;
-            std::getline(a >> std::ws, rest);
-            auto al = agent_.harness().allow();
-            if (arg.empty() || arg == "list") {
-                std::string out = "allowed command patterns (" + std::to_string(al.size()) + "; no asking, no review, trip patterns still win):";
-                for (size_t i = 0; i < al.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". " + al[i];
-                out += "\n:allow PATTERN adds one (glob over the whole command, e.g. `pytest *`) · :allow remove N";
-                post(Kind::Notice, out);
-            } else if (sub == "remove" && !rest.empty()) {
-                size_t n = static_cast<size_t>(std::atoi(rest.c_str()));
-                if (n >= 1 && n <= al.size()) al.erase(al.begin() + static_cast<long>(n - 1)), agent_.set_allow(al), post(Kind::Notice, "removed");
-                else post(Kind::Error, "no pattern " + rest);
-            } else {
-                al.push_back(arg);
-                agent_.set_allow(al);
-                post(Kind::Notice, "allowed: " + arg + " (this session; put it under `allow` in settings to keep it)");
-            }
-        } else if (cmd == "rule" || cmd == "rules") {
-            std::istringstream a(arg);
-            std::string sub;
-            a >> sub;
-            std::string rest;
-            std::getline(a >> std::ws, rest);
-            auto rs = agent_.rules;
-            if (arg.empty() || arg == "list") {
-                std::string out = "standing rules (" + std::to_string(rs.size()) + "):";
-                for (size_t i = 0; i < rs.size(); ++i) out += "\n  " + std::to_string(i + 1) + ". " + rs[i];
-                out += "\n:rule TEXT adds one · :rule remove N · :rule clear   (a rule is a request the model is reminded of every turn; :prefix gives the literal first words)";
-                post(Kind::Notice, out);
-            } else if (!idle()) {
-                post(Kind::Error, "wait for the turn to finish");
-            } else if (sub == "remove" && !rest.empty()) {
-                size_t n = static_cast<size_t>(std::atoi(rest.c_str()));
-                if (n >= 1 && n <= rs.size()) {
-                    rs.erase(rs.begin() + static_cast<long>(n - 1));
-                    agent_.set_rules(rs);
-                    post(Kind::Notice, "rule removed");
-                } else post(Kind::Error, "no rule " + rest);
-            } else if (sub == "clear") {
-                agent_.set_rules({});
-                post(Kind::Notice, "rules cleared");
-            } else {
-                rs.push_back(arg);
-                agent_.set_rules(rs);
-                post(Kind::Notice, "rule " + std::to_string(rs.size()) + " added; it is carried with the operator instructions from the next turn");
-            }
-        } else if (cmd == "ctx" || cmd == "context-size" || cmd == "ctx2") {
-            bool side = cmd == "ctx2";
-            int& current = side ? settings_.context_2 : settings_.context;
-            std::string service = side ? "llamacpp-2" : "llamacpp";
-            if (arg.empty()) {
-                post(Kind::Notice, (side ? "side server context window: " : "context window: ") + std::to_string(current) + " tokens (:" + cmd + " N sets it and restarts " + service + "; --" + cmd + " N on the command line; " +
-                                       (side ? "context_2" : "context") + " in settings)");
-            } else if (!idle()) {
-                post(Kind::Error, "wait for the turn to finish");
-            } else {
-                int n = std::atoi(arg.c_str());
-                if (n < 1024) {
-                    post(Kind::Error, ":" + cmd + " N takes tokens (8192, 16384, 32768, ...)");
-                } else {
-                    current = n;
-                    set_context(agent_.providers, n, service);
-                    std::string r;
-                    try {
-                        require_armed("restart services");
-                        r = restart_llamacpp_if_changed(service);
-                    } catch (const std::exception& e) {
-                        r = e.what();
-                    }
-                    post(Kind::Notice, (side ? "side server context window: " : "context window: ") + std::to_string(n) + " tokens" + (r.empty() ? " (" + service + " was not running with another size)" : "; " + r));
-                }
-            }
-        } else if (cmd == "prefill" || cmd == "prefix") {
-            if (arg == "off" || arg == "none") agent_.prefill.clear(), post(Kind::Notice, "no prefill");
-            else if (!arg.empty()) {
-                agent_.prefill = resolve_system_prompt(arg);
-                post(Kind::Notice, "every reply now begins with these literal words: \"" + agent_.prefill + "\"  (a rule such as \"always start with X\" belongs in :system; here you give X itself)");
-            } else {
-                post(Kind::Notice, agent_.prefill.empty() ? "no prefill (:prefill TEXT makes every reply start with TEXT; :prefill off clears)" : "replies start with: " + agent_.prefill);
-            }
-        } else if (cmd == "system") {
-            if (arg == "off" && idle()) {
-                agent_.set_system_prefix("");
-                post(Kind::Notice, "operator instructions withdrawn");
-            } else if (!arg.empty() && idle()) {
-                agent_.set_system_prefix(resolve_system_prompt(arg));
-                post(Kind::Notice, "operator instructions set: they now lead the system prompt and close each of your messages as the model sees them");
-            } else if (arg.empty()) {
-                post(Kind::Notice, agent_.system_prefix.empty() ? "no operator instructions (:system TEXT or :system @file sets them; --system on the command line)"
-                                                                 : "operator instructions (placed first in the system prompt):\n" + agent_.system_prefix);
-            }
-        } else if (cmd == "instructions") {
-            agent_.reload_instructions();
-            if (!agent_.load_instruction_files) {
-                post(Kind::Notice, "instruction files are disabled for this session (--no-instructions or load_instructions = false); :instructions on enables them");
-                if (arg == "on") agent_.load_instruction_files = true, agent_.reload_instructions(), post(Kind::Notice, "instruction files enabled");
-                return;
-            }
-            if (arg == "off") {
-                agent_.load_instruction_files = false;
-                agent_.reload_instructions();
-                post(Kind::Notice, "instruction files disabled for the next turns");
-                return;
-            }
-            std::string out = "instruction files in effect (re-read every turn):";
-            for (const auto& f : agent_.instructions()) out += "\n  " + f.path.string() + "  (" + std::to_string(f.text.size()) + " bytes)";
-            if (agent_.instructions().empty()) out += "\n  none. Create " + global_instructions_path().string() + " or a MAIC.md / AGENTS.md in the workspace.";
-            post(Kind::Notice, out);
-        } else if (cmd == "session") {
-            post(Kind::Notice, "this session: " + log_path() + (settings_.record ? "\nhome: " + log_->path().parent_path().lexically_relative(sessions_dir()).string() +
-                                   "  (maic sessions rehome " + log_->path().stem().string() + " project|general|NAME moves it)" : "\nnot kept: it lives in the runtime directory and is gone at logout") + "\n"
-                                   "all sessions: " + sessions_dir().string() + "\n`maic sessions` lists them, `maic artifacts` cleans");
         } else if (cmd == "lazylock" || cmd == "lazy-lock" || cmd == "lazy_lock") {
             std::string out;
             int rc = lazy_lock_command(arg, lazy_lock_path(settings_.lazy_lock), out);
@@ -2505,7 +2117,7 @@ void App::run_command(const std::string& line) {
             std::istringstream a(arg);
             std::string name, what;
             a >> name >> what;
-            auto places = known_places(settings_, agent_.harness().workspace(), services(), log_->path());
+            auto places = known_places(settings_, ws_, services(), std::filesystem::path(transcript_));
             if (name.empty()) {
                 std::string out = "places (:path NAME shows one, :path NAME copy puts it on the clipboard, :open NAME opens it):";
                 for (const auto& p : places) out += "\n  " + p.name + "  " + p.path.string();
@@ -2530,7 +2142,7 @@ void App::run_command(const std::string& line) {
                 a >> name >> flag >> browser;
                 bool folder = flag == "folder" || flag == "--folder";
                 if (!folder && flag != "--browser") browser = flag;  // `:open comfyui firefox`
-                auto [cmdline, what] = open_command(name, settings_, agent_.harness().workspace(), services(), log_->path(), browser, folder);
+                auto [cmdline, what] = open_command(name, settings_, ws_, services(), std::filesystem::path(transcript_), browser, folder);
                 post(std::system(cmdline.c_str()) == 0 ? Kind::Notice : Kind::Error, "opened " + what);
             } catch (const std::exception& e) {
                 post(Kind::Error, e.what());
@@ -2547,6 +2159,15 @@ void App::run_command(const std::string& line) {
             std::string out = register_.empty() ? "register is empty" : "register:\n" + register_;
             for (const auto& [name, r] : editor_.registers()) out += "\n\"" + std::string(1, name) + (r.linewise ? " (lines):\n" : ":\n") + r.text;
             post(Kind::Notice, out);
+        } else if (engine_owned.count(cmd)) {
+            nlohmann::json reply = call("maic.session.command", {{"session", session_}, {"line", cmd + (arg.empty() ? "" : " " + arg)}});
+            drain();
+            show(reply);
+            bool ok = !reply.contains("error") && result(reply).value("ok", false);
+            if (ok && cmd == "clear") view_.clear();
+            if (ok && cmd == "undo" && host_up()) host_checktime(*host_);
+            // :gpu's budget reads the context sizes from the TUI's settings.
+            if (ok && (cmd == "ctx" || cmd == "context-size" || cmd == "ctx2") && std::atoi(arg.c_str()) >= 1024) (cmd == "ctx2" ? settings_.context_2 : settings_.context) = std::atoi(arg.c_str());
         } else if (!cmd.empty()) {
             // A unique prefix runs the command, like vim's :abbreviations.
             auto matches = match_commands(cmd);
@@ -2577,17 +2198,21 @@ void App::quit() {
 }
 
 void App::shutdown() {
+    if (stopped_) return;
+    stopped_ = true;
     if (host_) host_->set_handlers({});
     nvim_hl_.reset();
-    cancel_ = true;
-    shell_cancel_ = true;
-    answer(Approval::No);
-    {
-        std::lock_guard lock(mu_);
-        answer_question("");
-    }
-    if (worker_.joinable()) worker_.join();
+    // The engine interrupts the turn, answers what waits with no, ends a `!cmd` and parks the session.
+    engine_->shutdown();
     if (shell_thread_.joinable()) shell_thread_.join();
+    {
+        std::lock_guard lock(pump_mu_);
+        pump_stop_ = true;
+    }
+    pump_cv_.notify_one();
+    if (pump_.joinable()) pump_.join();
+    take_events();  // the session's last events, parked, for the recording
+    recorder_.reset();
     if (theme_thread_.joinable()) theme_thread_.join();
     if (nvim_colors_thread_.joinable()) nvim_colors_thread_.join();
     keymap_cancel_ = true;
@@ -2595,8 +2220,6 @@ void App::shutdown() {
 }
 
 }  // namespace
-
-namespace {
 
 // The settings files for `workspace` with the command line's flags over them.
 Settings tui_settings(const TuiOptions& options, const std::filesystem::path& workspace) {
@@ -2619,6 +2242,23 @@ Settings tui_settings(const TuiOptions& options, const std::filesystem::path& wo
     if (options.harness) settings.harness = *options.harness;
     if (options.accept_dumb_auto) settings.dumb_auto_ok = true;
     return settings;
+}
+
+namespace {
+
+// `maic --ui nvim`: nvim with this MAIC's maic.nvim as the whole interface and this binary's `maic --rpc`, with the
+// same agent flags, as its job. The user's config loads first; the plugin goes on 'runtimepath' after it (lazy.nvim
+// resets the path at setup). Returns why only when nvim could not be started.
+std::string exec_nvim_ui(const TuiOptions& options) {
+    std::error_code ec;
+    nlohmann::json o = {{"plugin", (root_dir() / "maic.nvim").string()}, {"cmd", std::filesystem::read_symlink("/proc/self/exe", ec).string()}, {"args", options.engine_args}};
+    if (options.resume) o["session"] = options.resume->stem().string();
+    setenv("MAIC_UI", o.dump().c_str(), 1);
+    execlp("nvim", "nvim", "-c",
+           "lua local o = vim.json.decode(vim.env.MAIC_UI); vim.env.MAIC_UI = nil; vim.opt.rtp:prepend(o.plugin); vim.cmd('runtime plugin/maic.lua'); require('maic.ui').main(o)",
+           static_cast<char*>(nullptr));
+    unsetenv("MAIC_UI");
+    return std::string("cannot run nvim: ") + std::strerror(errno);
 }
 
 }  // namespace
@@ -2655,13 +2295,36 @@ int run_tui(const TuiOptions& options) {
         fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
         return 2;
     }
+    // --mode auto is asked for here and now; auto from the settings starts only where the workspace is trusted.
+    if (!options.mode && parse_mode(settings.mode) == Mode::Auto) {
+        if (std::string why = auto_held(ws); !why.empty()) {
+            settings.mode = "manual";
+            trust_lines.push_back(why);
+        }
+    }
+    // nvim as the interface (--ui nvim, ui = "nvim"), started here with trust settled; the engine holds a due audit.
+    // Never inside nvim (maic.nvim's :Maic is the interface there) and never bare; what it cannot take runs here.
+    std::string ui = options.ui.value_or(settings.ui);
+    if (ui == "nvim") {
+        std::string why = std::getenv("NVIM") ? "inside nvim, where :Maic opens it"
+                          : bare || settings.bare ? "with bare, which takes nothing from nvim"
+                          : !options.context.empty() || !options.images.empty() || !options.initial_prompt.empty() || options.fork_at ? "with --context, --image, -i or --fork-at"
+                                                                                                                                       : exec_nvim_ui(options);
+        if (options.ui) {
+            std::cerr << "maic: --ui nvim: " << why << "\n";
+            return 2;
+        }
+        trust_lines.push_back("ui = \"nvim\": not " + why + "; MAIC's own interface instead");
+    }
+    // An audit that is due holds here, before the screen is drawn (docs/audit-trail.md).
+    audit_gate(settings);
     set_color_depth(settings.colors);
     auto screen = ScreenInteractive::Fullscreen();
     screen.TrackMouse(settings.mouse);
     std::string first = options.initial_prompt;
     if (first == "-") first.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
-    App app(screen, settings, options.resume, options.append, options.fork_at, host, host_refused);
-    app.settings_at = [&options](const std::filesystem::path& ws) { return tui_settings(options, ws); };
+    App app(screen, settings, options.resume, options.append, options.fork_at, host, host_refused,
+            [&options](const std::filesystem::path& ws) { return tui_settings(options, ws); }, options.context);
     if (options.ctx) {
         // --ctx: the local server is restarted to match before the first message.
         std::string r = restart_llamacpp_if_changed();
@@ -2673,7 +2336,12 @@ int run_tui(const TuiOptions& options) {
     }
     app.welcome();
     for (const auto& n : trust_lines) app.startup_notice(n);
-    app.attach_context(options.context);
+    // nvim as the interface, offered once when nvim is installed (docs/nvim.md).
+    if (ui == "tui" && !options.ui && !bare && !settings.bare && !std::getenv("NVIM") && on_path("nvim") && !std::filesystem::exists(state_dir() / "ui-offered")) {
+        app.startup_notice("nvim is installed: maic --ui nvim runs MAIC with nvim as its interface, your config and mappings included; ui = \"nvim\" in settings makes it the default (maic help ui). Said once.");
+        std::ofstream(state_dir() / "ui-offered");
+    }
+    app.attach_context();
     for (const auto& im : options.images) app.attach_image(im);
     if (!first.empty()) app.send(first);
     auto component = CatchEvent(Renderer([&] { return app.render(); }), [&](Event e) { return app.handle(e); });

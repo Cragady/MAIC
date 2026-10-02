@@ -287,6 +287,74 @@ std::pair<std::string, size_t> literal_lua_choice(const fs::path& lua_path) {
     return out;
 }
 
+}  // namespace
+
+bool SteeringSettings::allows(const std::string& action, bool remote) const {
+    const auto& side = remote ? clients_remote : clients_local;
+    return std::find(actions.begin(), actions.end(), action) != actions.end() && std::find(side.begin(), side.end(), action) != side.end();
+}
+
+void read_steering(SteeringSettings& into, const json& t, const std::string& where, bool global, bool narrow_only, std::vector<std::string>& warnings) {
+    if (!t.is_object()) throw std::runtime_error(where + " must be a table");
+    const auto all = SteeringSettings::steer_actions();
+    auto list = [&](const json& v, const std::string& key) {
+        if (v.is_string() && (v == "all" || v == "none")) return v == "all" ? all : std::vector<std::string>{};
+        if (!v.is_array()) throw std::runtime_error(where + "." + key + " must be a list of actions, \"all\" or \"none\"");
+        std::vector<std::string> out;
+        for (const auto& a : v) {
+            std::string name = a.is_string() ? a.get<std::string>() : "";
+            if (std::find(all.begin(), all.end(), name) == all.end()) throw std::runtime_error(where + "." + key + ": no steering action " + a.dump() + " (steer, drop, further, interrupt, keep, halt)");
+            out.push_back(name);
+        }
+        return out;
+    };
+    auto narrowed = [&](std::vector<std::string>& current, const std::vector<std::string>& given, const std::string& key) {
+        if (narrow_only) {
+            for (const auto& a : given) {
+                if (std::find(current.begin(), current.end(), a) == current.end()) throw std::runtime_error(where + "." + key + ": " + a + " is not allowed above; this layer can only remove actions");
+            }
+        }
+        current = given;
+        into.from[key] = where;
+    };
+    for (const auto& [key, v] : t.items()) {
+        if (key == "actions") {
+            narrowed(into.actions, list(v, key), key);
+        } else if (key == "ban_actions") {
+            auto given = list(v, key);
+            if (std::find(given.begin(), given.end(), "further") != given.end()) throw std::runtime_error(where + ".ban_actions: further is never a ban's (it would go deeper into the banned topic)");
+            narrowed(into.ban_actions, given, key);
+        } else if (key == "halt_message") {
+            if (!v.is_string() || v.get<std::string>().empty()) throw std::runtime_error(where + ".halt_message must be text");
+            into.halt_message = v;
+            into.from[key] = where;
+        } else if (key == "drop_trim") {
+            std::string d = v.is_string() ? v.get<std::string>() : "";
+            if (d != "none" && d != "sentence" && d != "paragraph" && d != "all") throw std::runtime_error(where + ".drop_trim must be none, sentence, paragraph or all");
+            into.drop_trim = d;
+            into.from[key] = where;
+        } else if (key == "on_running_tool") {
+            std::string d = v.is_string() ? v.get<std::string>() : "";
+            if (d != "cancel" && d != "wait") throw std::runtime_error(where + ".on_running_tool must be cancel or wait");
+            into.on_running_tool = d;
+            into.from[key] = where;
+        } else if (key == "clients") {
+            if (!global) {
+                warnings.push_back(where + ".clients is ignored: only your global settings file sets it");
+                continue;
+            }
+            if (!v.is_object()) throw std::runtime_error(where + ".clients must be a table: { [\"local\"] = \"all\", remote = \"all\" }");
+            if (v.contains("local")) into.clients_local = list(v["local"], "clients.local");
+            if (v.contains("remote")) into.clients_remote = list(v["remote"], "clients.remote");
+            into.from["clients"] = where;
+        } else {
+            throw std::runtime_error(where + ": steering has no key " + key + " (actions, halt_message, drop_trim, on_running_tool, clients, ban_actions)");
+        }
+    }
+}
+
+namespace {
+
 // Applies one settings location over `s`: `<stem>.lua` when it exists (a chunk returning a table), else
 // `<stem>.json`. Scalars replace, providers merge by name, styles merge by role. `global` is the user's own
 // file: its Lua runs at the tier it names literally (full by default), and only it sets global_lua,
@@ -347,15 +415,30 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             }
             s.instructions_bound = chain.value("bound", s.instructions_bound);
             if (s.instructions_bound != "project" && s.instructions_bound != "home") throw std::runtime_error(path.string() + ": instructions.bound must be \"project\" or \"home\"");
+            InstructionOptions& o = s.instructions;
+            if (chain.contains("files")) {
+                o.files = chain["files"].get<std::vector<std::string>>();
+                for (const auto& f : o.files) {
+                    if (f.empty() || f.find('/') != std::string::npos || f == "." || f == "..") throw std::runtime_error(path.string() + ": instructions.files holds file names, not \"" + f + "\"");
+                }
+            }
+            std::string read = chain.value("read", o.highest ? "highest" : "all");
+            if (read != "all" && read != "highest") throw std::runtime_error(path.string() + ": instructions.read must be \"all\" or \"highest\"");
+            o.highest = read == "highest";
+            o.local_files = chain.value("local_files", o.local_files);
+            o.import_depth = chain.value("imports", json::object()).value("depth", o.import_depth);
+            if (o.import_depth < 0) throw std::runtime_error(path.string() + ": instructions.imports.depth must be 0 or more");
+            o.extra_dirs = chain.value("extra_dirs", o.extra_dirs);
         } else if (j.is_object()) {
             for (const auto& [key, v] : j.items()) {
                 if (key == "global_lua" || key == "lua_memory_mb" || key.rfind("trust_", 0) == 0) s.warnings.push_back(path.string() + ": " + key + " is ignored: only your global settings file sets it");
             }
             json chain = j.value("instructions", json::object());
-            for (const char* key : {"project_markers", "bound"}) {
-                if (chain.is_object() && chain.contains(key)) s.warnings.push_back(path.string() + ": instructions." + key + " is ignored: only your global settings file sets it");
+            if (chain.is_object()) {
+                for (const auto& [key, v] : chain.items()) s.warnings.push_back(path.string() + ": instructions." + key + " is ignored: only your global settings file sets it");
             }
         }
+        if (j.is_object() && j.contains("instruction_files")) s.warnings.push_back(path.string() + ": instruction_files is ignored: instructions.files in your global settings file replaces it (docs/instructions.md)");
         s.model = j.value("model", s.model);
         s.mode = j.value("mode", s.mode);
         s.think = j.value("think", s.think);
@@ -364,11 +447,16 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.sound = j.value("sound", s.sound);
         s.sessions_home = j.value("sessions_home", s.sessions_home);
         s.init_move_outside_reads = j.value("init_move_outside_reads", s.init_move_outside_reads);
+        s.full_output = j.value("full_output", s.full_output);
+        s.full_output_max_mb = j.value("full_output_max_mb", s.full_output_max_mb);
+        if (s.full_output_max_mb < 1) throw std::runtime_error(path.string() + ": full_output_max_mb must be at least 1");
         s.leader = j.value("leader", s.leader);
         s.highlight = j.value("highlight", s.highlight);
         s.theme = j.value("theme", s.theme);
         s.follow_nvim_theme = j.value("follow_nvim_theme", s.follow_nvim_theme);
         s.bare = j.value("bare", s.bare);
+        s.ui = j.value("ui", s.ui);
+        if (s.ui != "tui" && s.ui != "nvim") throw std::runtime_error(path.string() + ": ui must be \"tui\" or \"nvim\", not \"" + s.ui + "\"");
         s.colors = j.value("colors", s.colors);
         if (s.colors != "auto" && s.colors != "truecolor" && s.colors != "256" && s.colors != "16") throw std::runtime_error(path.string() + ": colors must be \"auto\", \"truecolor\", \"256\" or \"16\", not \"" + s.colors + "\"");
         s.enter_sends = j.value("enter_sends", s.enter_sends);
@@ -383,7 +471,6 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.compact_keep_results = j.value("compact_keep_results", s.compact_keep_results);
         s.compact_model = j.value("compact_model", s.compact_model);
         if (s.leader == "space" || s.leader == "<space>") s.leader = " ";
-        if (j.contains("instruction_files")) s.instruction_files = j["instruction_files"].get<std::vector<std::string>>();
         s.load_instructions = j.value("load_instructions", s.load_instructions);
         s.system_prompt = j.value("system_prompt", s.system_prompt);
         s.prefill = j.value("prefill", s.prefill);
@@ -456,6 +543,13 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
                 }
                 if (pj.contains("reviewer")) p.reviewer = pj["reviewer"].get<bool>();
                 p.model = pj.value("model", p.model);
+                if (pj.contains("steering")) {
+                    // Checked now against the full set; the session's own narrows it again when it runs as the agent.
+                    SteeringSettings check;
+                    read_steering(check, pj["steering"], where + ".steering", global, true, s.warnings);
+                    p.steering = pj["steering"];
+                    if (!global) p.steering.erase("clients");
+                }
                 bool replaced = false;
                 for (auto& existing : s.agents) {
                     if (existing.name == name) existing = p, replaced = true;
@@ -482,12 +576,11 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.reviewer_model = j.value("reviewer_model", s.reviewer_model);
         s.reviewer_budget_tokens = j.value("reviewer_budget_tokens", s.reviewer_budget_tokens);
         s.dumb_auto_ok = j.value("dumb_auto_ok", s.dumb_auto_ok);
+        if (j.contains("steering")) read_steering(s.steering, j["steering"], path.string() + ": steering", global, !global, s.warnings);
         if (j.contains("bans")) {
             Bans b = Bans::from_json(j["bans"]);
-            // Layers add strings and tokens; the scalar knobs take the nearest value.
-            s.bans.strings.insert(s.bans.strings.end(), b.strings.begin(), b.strings.end());
-            s.bans.tokens.insert(s.bans.tokens.end(), b.tokens.begin(), b.tokens.end());
-            s.bans.patterns.insert(s.bans.patterns.end(), b.patterns.begin(), b.patterns.end());
+            // Layers add strings, patterns and tokens; the scalar knobs take the nearest value.
+            s.bans.add(b);
             if (j["bans"].contains("window")) s.bans.window = b.window;
             if (j["bans"].contains("retries")) s.bans.retries = b.retries;
             if (j["bans"].contains("replacement")) s.bans.replacement = b.replacement;
@@ -543,6 +636,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             p->base_url = pj.value("base_url", p->base_url);
             p->api_key_env = pj.value("api_key_env", p->api_key_env);
             p->api_key_command = pj.value("api_key_command", p->api_key_command);
+            p->upstream = pj.value("upstream", p->upstream);
             if (pj.contains("api_key")) throw std::runtime_error("providers." + name + ": keys don't go in settings; use api_key_env or api_key_command");
             json opts = pj.value("options", json::object());
             for (const auto& [k, v] : opts.items()) p->options[k] = v;
@@ -562,8 +656,10 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
 Settings load_settings(const fs::path& workspace) {
     Settings s;
     apply_file(s, settings_path(), workspace, true, LuaTier::Full, s.lua_memory_mb);
-    set_trust_config({s.trust_strictness, s.trust_identities, s.trust_levels, s.project_markers, s.instructions_bound});
+    set_trust_config({s.trust_strictness, s.trust_identities, s.trust_levels, s.project_markers, s.instructions_bound, s.instructions});
     set_lua_data_limits({*parse_lua_tier(s.global_lua), size_t(s.lua_memory_mb)});
+    // audit.lua is the user's own file, at their Lua level; no project layer below can touch it.
+    s.audit = load_audit_settings();
     // Project layers: the config chain (the project root, or just under $HOME, down to the workspace), like
     // instruction files, each only once its directory is trusted (docs/harness.md, Trust).
     for (const auto& d : config_chain(workspace)) {
@@ -587,6 +683,16 @@ Settings load_settings(const fs::path& workspace) {
         for (const auto& n : p.subagents) known(n, "subagents");
         if (!p.subagent.empty() && p.subagent != "same") known(p.subagent, "subagent");
         if (!p.on_limit.empty()) known(p.on_limit, "on_limit");
+    }
+    // A ban's steer is checked once every layer has said which actions bans may name.
+    for (const auto& steers : {s.bans.string_steers, s.bans.pattern_steers}) {
+        for (const auto& b : steers) {
+            if (b.action.empty()) continue;
+            if (std::find(s.steering.ban_actions.begin(), s.steering.ban_actions.end(), b.action) == s.steering.ban_actions.end()) {
+                throw std::runtime_error("bans: an entry names steer = \"" + b.action + "\", which is not in steering.ban_actions" +
+                                         (b.action == "further" ? " (further never is: it would go deeper into the banned topic)" : ""));
+            }
+        }
     }
     if (const char* bare = std::getenv("MAIC_BARE"); bare && std::string(bare) == "1") s.bare = true;
     // The theme is read once every layer has had its say; a broken one leaves the built-in default and the reason.
@@ -621,7 +727,7 @@ fs::path resolve_sessions_home(const Settings& settings, const fs::path& workspa
         bool project = false;
         std::error_code ec;
         for (const auto& d : config_chain(workspace)) {
-            for (const auto& name : settings.instruction_files) project = project || fs::is_regular_file(d / name, ec);
+            for (const auto& name : settings.instructions.files) project = project || fs::is_regular_file(d / name, ec);
         }
         home = project ? "project" : "general";
     }
@@ -667,6 +773,7 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
     for (const auto& pr : d.providers) {
         json pj = {{"kind", pr.kind}, {"base_url", pr.base_url}};
         if (!pr.api_key_env.empty()) pj["api_key_env"] = pr.api_key_env;
+        if (!pr.upstream.empty()) pj["upstream"] = pr.upstream;
         if (!pr.options.empty()) pj["options"] = pr.options;
         providers[pr.name] = pj;
     }
@@ -680,12 +787,18 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"sessions_home", d.sessions_home},
         {"init_move_outside_reads", d.init_move_outside_reads},
         {"//init_move_outside_reads", ":init moves this session into the project's home without asking when it wrote nothing outside the project and read at most this many files there"},
+        {"full_output", d.full_output},
+        {"//full_output", "keep a command's whole output beside the session when the model gets it capped: <session>.d/<call>.out, display only (maic sessions output). docs/sessions.md"},
+        {"full_output_max_mb", d.full_output_max_mb},
+        {"//full_output_max_mb", "at most this many MiB of it per call; past that the file keeps the head and the tail and says how much was dropped"},
         {"leader", "space"},
         {"highlight", d.highlight},
         {"theme", d.theme},
         {"//theme", "a theme by name: default, gruvbox-dark, gruvbox-light, mono, or a file of yours in ~/.config/maic/themes/NAME.lua; `style` entries below override single roles on top of it. :theme lists and switches, :theme nvim:NAME imports a neovim colorscheme. docs/themes.md"},
         {"follow_nvim_theme", d.follow_nvim_theme},
         {"//follow_nvim_theme", "inside nvim with maic.nvim (a connected host): follow its colorscheme live as the session theme nvim:NAME; false keeps `theme`"},
+        {"ui", d.ui},
+        {"//ui", "tui: MAIC's own interface; nvim: nvim with maic.nvim as the whole interface, your config and mappings included, the engine its job (maic --ui nvim; never inside nvim, never with bare). maic help ui"},
         {"bare", d.bare},
         {"//bare", "true: nothing from nvim (no $NVIM host, the built-in highlighter, no theme from nvim, no lazy-lock notice, no keymap check); MAIC's own settings, themes, Lua and tools still load. Also maic --bare and MAIC_BARE=1. :h bare"},
         {"colors", d.colors},
@@ -708,7 +821,8 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"compact_model", d.compact_model},
         {"//compact_model", "the model that writes compaction summaries (a preset or provider/model, e.g. claude-sonnet-cli); empty: the session's model. A remote one is used only when the session's model is remote too"},
         {"//sessions_home", "auto: a project's transcripts (it has a MAIC.md) go under sessions/projects/, others under sessions/general/. Or: general, project, a name."},
-        {"instruction_files", d.instruction_files},
+        {"instructions", {{"files", d.instructions.files}, {"read", "all"}, {"local_files", d.instructions.local_files}, {"imports", {{"depth", d.instructions.import_depth}}}, {"extra_dirs", d.instructions.extra_dirs}}},
+        {"//instructions", "which instruction files the model sees, global settings only: files are the classes, lowest priority first; read = \"highest\" takes only the top class in each directory; local_files reads MAIC.local.md and the like; imports.depth is how far @path imports go (0: none); extra_dirs lets extra directories add theirs. Also project_markers and bound. docs/instructions.md"},
         {"load_instructions", d.load_instructions},
         {"system_prompt", d.system_prompt},
         {"prefill", d.prefill},
@@ -741,6 +855,7 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"//reviewer_budget_tokens", "the reviewer's own token cap (it also counts toward budget_tokens); past it every action it would review is asked. 0: none"},
         {"dumb_auto_ok", d.dumb_auto_ok},
         {"bans", {{"strings", nlohmann::json::array()}, {"patterns", nlohmann::json::array()}, {"tokens", nlohmann::json::array()}, {"retries", 3}, {"replacement", "[banned]"}, {"ignore_case", false}, {"window", 64}}},
+        {"//steering", "the six steering actions (steer, drop, further, interrupt, keep, halt): which a session accepts (actions), from which clients (clients, this file only), drop's trim, what steer and drop do to a running tool, the halt message, and which actions a ban entry may name. :steering shows them. docs/design/engine-protocol.md section 11"},
         {"//bans", "strings and POSIX regex patterns the model must not say (cut and re-asked, then replaced); tokens (ids, or text) become logit_bias on OpenAI-compatible providers. docs/bans.md"},
         {"sampling", nlohmann::json::object()},
         {"//sampling", "sampler keys sent with every request: temperature, top_k, top_p, min_p, seed, repeat_penalty; xtc_probability / xtc_threshold on llama.cpp-style servers only. :sampling changes them live"},

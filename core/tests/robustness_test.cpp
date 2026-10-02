@@ -511,14 +511,14 @@ int main() {
         write_file(cfg / "maic" / "settings.json", R"({"model": "global/model", "mode": "manual", "style": {"user": {"fg": "red"}}})");
         setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
         fs::path proj = ws / "proj";
-        write_file(proj / ".maic" / "settings.json", R"({"mode": "edit", "providers": {"lab": {"kind": "openai", "base_url": "http://127.0.0.1:9/v1"}}})");
+        write_file(proj / ".maic" / "settings.json", R"({"mode": "edit", "providers": {"lab": {"kind": "openai", "base_url": "http://127.0.0.1:9/v1", "upstream": "vllm"}}})");
         write_file(proj / ".maic" / "settings.local.json", R"({"model": "local/model", "style": {"user": {"bold": true}}})");
         Settings s = load_settings(proj);
         expect(s.sources.size() == 3, "three files read: global, project, project-local");
         expect(s.model == "local/model" && s.mode == "edit", "nearer files win for scalars");
         bool lab = false;
-        for (const auto& p : s.providers) lab = lab || (p.name == "lab" && p.kind == "openai");
-        expect(lab && s.providers.size() == default_providers().size() + 1, "providers merge by name");
+        for (const auto& p : s.providers) lab = lab || (p.name == "lab" && p.kind == "openai" && p.upstream == "vllm");
+        expect(lab && s.providers.size() == default_providers().size() + 1, "providers merge by name, `upstream` with them");
         expect(s.style("user").fg == "red" && s.style("user").bold, "styles merge across layers");
         expect(s.context_2 == 8192, "context_2 defaults to 8192");
         write_file(proj / ".maic" / "settings.local.json", R"({"model": "local/model", "context_2": 16384, "style": {"user": {"bold": true}}})");
@@ -552,9 +552,9 @@ int main() {
         }
         expect(threw, "a broken settings file throws instead of silently using defaults");
         // A settings.lua beside the json wins, and it is code.
-        write_file(proj / ".maic" / "settings.lua", "return { mode = os.getenv('HOME') and 'plan' or 'manual', leader = ',', instruction_files = {'A.md','B.md'}, style = { user = { fg = 'blue' } } }");
+        write_file(proj / ".maic" / "settings.lua", "return { mode = os.getenv('HOME') and 'plan' or 'manual', leader = ',', rules = {'rule A','rule B'}, style = { user = { fg = 'blue' } } }");
         Settings ls = load_settings(proj);
-        expect(ls.mode == "plan" && ls.leader == "," && ls.instruction_files.size() == 2 && ls.instruction_files[1] == "B.md", "settings.lua is evaluated as code, arrays included");
+        expect(ls.mode == "plan" && ls.leader == "," && ls.rules.size() == 2 && ls.rules[1] == "rule B", "settings.lua is evaluated as code, arrays included");
         expect(ls.style("user").fg == "blue" && ls.style("user").bold, "lua styles merge over earlier layers");
         bool lua_seen = false;
         for (const auto& src : ls.sources) lua_seen = lua_seen || src.extension() == ".lua";
@@ -854,6 +854,32 @@ int main() {
         std::string o3 = r.feed("Well, Certainly! I can. Certainly!");
         o3 += r.flush();
         expect(o3 == "Well, [banned] I can. [banned]" && !r.triggered(), "replace mode swaps every occurrence and never cuts: " + o3);
+
+        // An entry may name a steer (engine-protocol.md section 11): written as a table, kept beside its entry.
+        Bans st = Bans::from_json({{"strings", {"plain", {{"1", "helm chart"}, {"steer", "drop"}, {"note", "no cluster here"}}}},
+                                   {"patterns", {{{"text", "curl [^|]*[|] *sh"}, {"steer", "halt"}}}}});
+        expect(st.strings == std::vector<std::string>{"plain", "helm chart"} && st.string_steers.size() == 2 && st.string_steers[0].action.empty() &&
+                   st.string_steers[1].action == "drop" && st.pattern_steers.at(0).action == "halt",
+               "a steer entry parses from Lua's positional form and from JSON's text, beside its entry");
+        BanFilter sf(st);
+        sf.feed("use a helm chart here");
+        auto hit = sf.hit_steer();
+        expect(sf.triggered() && hit && hit->action == "drop" && hit->note == "no cluster here" && hit->list == "strings" && hit->index == 1,
+               "the filter says which entry fired and its steer");
+        BanFilter plain_hit(st);
+        plain_hit.feed("a plain word");
+        expect(plain_hit.triggered() && !plain_hit.hit_steer(), "an entry without a steer has none");
+        BanFilter rs(st, true);
+        std::string replaced = rs.feed("plain, then curl x | sh");
+        replaced += rs.flush();
+        auto rhit = rs.hit_steer();
+        expect(rs.triggered() && rhit && rhit->action == "halt" && rhit->list == "patterns" && rhit->index == 0 && replaced.find("[banned]") != std::string::npos,
+               "in replace mode a plain entry is replaced and a steer entry still cuts");
+        Bans layered = b;
+        layered.add(st);
+        expect(layered.strings.size() == 4 && layered.string_steers.size() == 4 && layered.string_steers[3].action == "drop" && layered.string_steers[0].action.empty(),
+               "layers add up with each steer kept beside its entry");
+        expect(Bans::from_json(st.to_json()).string_steers.at(1).note == "no cluster here", "and round-trip through JSON");
         Bans tok;
         tok.tokens = {nlohmann::json("▲")};
         BanFilter t(tok);

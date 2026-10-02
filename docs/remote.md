@@ -97,6 +97,8 @@ What the relay sees, in full: the pairing id, that one side is `home` and the ot
 
 **Rate limiting and audit** stay on the workstation, where the tokens are. The relay adds nothing to security; it only adds reachability.
 
+The relay stays thin by design: it cannot review, validate or keep anything, because it never holds a key. How tightly it runs under each security tier, and how a machine of yours can be paired, or a relay deliberately promoted, as a trusted node (an endpoint that runs the whole toolchain itself, harness included, with the encryption ending there), are in [design/protocol-security.md](design/protocol-security.md#the-relay-and-a-trusted-node).
+
 Why not a VPN (Tailscale, WireGuard)? It works today and is a fine answer for anyone who already runs one; the relay is for the case where MAIC should not depend on a third party's control plane for something it can do with a public key and a few hundred lines. Both keep the same rule: the server end is always the workstation, and the harness is always in front of it.
 
 ### Why the tripwire stays local
@@ -175,39 +177,38 @@ With nothing configured, the first TLS start makes a self-signed P-256 certifica
 
 JSON in, JSON out, `Authorization: Bearer <token>` on everything under `/api/`. Errors are `{"error": "..."}` with the status. Streaming responses are `text/event-stream`: one `data: {json}` line per event, a `: keepalive` comment every 15 seconds of silence, and the stream ends when the session is idle again.
 
+Since the engine (engine protocol step 5, [design/engine-protocol.md](design/engine-protocol.md)) the server is an adapter over it: each request is one connection to the engine, remote, named by the request's token, and every event is the engine's own, in OpenAI's Responses names with MAIC's under `maic.` (the design's section 3). The routes stay until the web client speaks the protocol itself (step 16).
+
 | Method and path | Body | Result |
 | :--- | :--- | :--- |
 | `GET /` | | the web client, no token needed |
-| `GET /api/status` | | `harness {tripped, reason}`, `relay {url, connected, since, last_connected, error}` or null, `services [{name, state, where}]`, `model`, `provider`, `remote_model`, `mode`, `sessions`, `listen`, `tls`, `fingerprint`, `workspaces`, `version` |
-| `GET /api/sessions` | | `{sessions: [session]}` |
+| `GET /api/status` | | `harness {tripped, reason}`, `relay {url, connected, since, last_connected, error}` or null, `services [{name, state, where}]`, `model`, `provider`, `remote_model`, `mode`, `sessions`, `listen`, `tls`, `fingerprint`, `workspaces`, `tier`, `version` |
+| `GET /api/sessions` | | `{sessions: [{id, title, workspace, model, mode, remote_model, running, turns, created}]}`, the engine's index |
 | `POST /api/sessions` | `{workspace?, model?, mode?}` or `{resume: ID, mode?}` | 201 and the session; 403 when the workspace is outside the allowed roots; 400 for a missing directory or unknown mode |
-| `GET /api/sessions/{id}` | | the session plus `entries` (the folded transcript), `usage`, `pending_approval` |
-| `POST /api/sessions/{id}/messages` | `{text}` | streams the turn's events; when a turn is already running the text is queued for the model's next call and the stream continues from there |
-| `GET /api/sessions/{id}/events?after=N` | | streams events from sequence N: the way to reattach after a lost connection |
-| `POST /api/sessions/{id}/approvals/{approval_id}` | `{choice: yes/no/always/trip, feedback?}` | answers a pending approval; 404 when none by that id is waiting |
+| `GET /api/sessions/{id}` | | the session plus `entries` (the transcript folded from its file: `user`, `text`, `tool_call`, `tool_result`, `notice`) and `usage` |
+| `POST /api/sessions/{id}/messages` | `{text}` | `response.create`, then streams the session's events from the input on; when a turn is already running the text is delivered into it at the model's next step and the stream continues to the turn's end |
+| `GET /api/sessions/{id}/events?starting_after=N` | | streams the events after sequence number N from the session's ring: the way to reattach after a lost connection; 409 when they left the ring (load the session again). `?after=N`, the older spelling, means from N on |
+| `POST /api/sessions/{id}/approvals/{approval_id}` | `{choice: yes/no/trip, feedback?}` | answers a pending approval; 404 when none by that id is waiting, 409 when another client answered first, 403 for `always` (never from a remote client) |
 | `POST /api/sessions/{id}/interrupt` | | stops the running turn; a pending approval is answered no |
-| `POST /api/sessions/{id}/mode` | `{mode}` | changes the session's mode |
+| `POST /api/sessions/{id}/mode` | `{mode}` | changes the session's mode; loosening to `auto` needs a step-up (403 until accounts register a verifier) |
 | `POST /api/pair` | `{code, name, public_key}` | the LAN half of pairing a phone for the relay: 201 with `{name, pairing_id, relay, public_key}` when the code matches the offer from `maic server pair`; 403 for a wrong, expired or missing offer; 409 with no `server.relay` |
 | `POST /api/trip` | `{reason?}` | trips the harness lock. There is no reset route. |
 
-A session: `{id, workspace, model, mode, remote_model, running, turns, created, seq, transcript, pending_approval}`. `seq` is the next event number, for `events?after=`. `transcript` is the path of its `.jsonl` file.
+A session: `{id, title, workspace, model, mode, remote_model, running, turns, created, sequence_number, pending_approval}`. `sequence_number` (formerly `seq`) is the number of the last event on the session's stream, for `events?starting_after=`. The transcript's path is not shown to a remote client.
 
-Events, each with a `seq` and a `type`:
+Events are the engine's: each has `type`, `sequence_number` (0 at each load of the session, one more per event) and `stream_id` (the session's id). The ones the web client reads:
 
 | `type` | Fields |
 | :--- | :--- |
-| `user` | `text`, `queued` when it went in mid-turn |
-| `text` | `text` (a delta), `thinking` |
-| `tool_call` | `summary` |
-| `tool_result` | `text`, `ok` |
-| `notice` | `text` |
-| `approval` | `id`, `tool`, `summary`, `reason`, `origin` (`remote`), `always_covers`, `preview` |
-| `approval_answered` | `id`, `choice` |
-| `mode` | `mode` |
-| `error` | `text` (a transport or provider failure) |
-| `done` | `interrupted`, `usage {input, output, calls, context, last_input}` |
+| `maic.input.added` | `item` (an input `message`), `queued` when it went in mid-turn, `by {client, name, origin}` |
+| `response.created`, `response.in_progress`, `response.completed`, `response.failed`, `maic.response.cancelled` | `response` (OpenAI's `response`, with `maic {turn, origin, final}`) |
+| `response.output_item.added`, `.done` | `output_index`, `item`: a `message`, `reasoning`, `function_call` or `shell_call` (`maic.summary`), or its `function_call_output` or `shell_call_output` (`maic {ok, full_output}`) |
+| `response.output_text.delta`, `response.reasoning_text.delta` | `item_id`, `delta` |
+| `response.shell_call_output_content.delta`, `maic.tool.output.delta` | a running command's output (`maic.offset`, `maic.skipped`) |
+| `maic.approval.requested`, `maic.approval.answered` | `id`, `tool`, `summary`, `reason`, `origin`, `always_covers`, `preview`; then `choice`, `by` |
+| `maic.notice`, `maic.session.settings`, `maic.usage.updated`, `maic.session.state` | `text`; `mode`, `by`; `usage`, `calls`, `context`, `last_input`, `total`; `state`, `activity` (`idle` when the turn is over) |
 
-`always` remembers the approval for the session only, per file or per program, the same as at the terminal; nothing outlives the session. A denied call with `feedback` reaches the model as "DENIED by the user, who says: ...".
+A remote client answers yes, no or trip: a remote request is asked every time, so `always` would never be remembered and is refused ([harness.md](harness.md) rule 5; before v0.3.1 it was remembered for the session). A denied call with `feedback` reaches the model as "DENIED by the user, who says: ...".
 
 Reading the stream from a browser: `fetch` with the bearer header, then `response.body.getReader()`, split on blank lines, parse the `data:` lines. `EventSource` cannot send a header, which is why the client does not use it.
 
@@ -217,7 +218,7 @@ The web client is enough to start. A native Android or iOS app would add:
 
 * **Notifications** when an approval is waiting or a turn finishes, so the phone need not stay on the page. The server would gain a long-lived event channel per device for this (the relay tunnel itself is one), never a third-party push service carrying the content; the notification says only "MAIC is asking", the content stays on the workstation until the app fetches it.
 * **Its own code**, so the page served by the relay stops mattering, and **certificate pinning** in the app rather than in the browser's exception list; the pairing flow as it is, with a QR code in place of the pasted string.
-* **Background reattach**: keep `seq` per session and resume streams when the app returns, without the page-reload dance.
+* **Background reattach**: keep `sequence_number` per session and resume streams with `starting_after` when the app returns, without the page-reload dance.
 * **Voice input**, which the browser has too but a native app can wire to a hardware button.
 * **A denser conversation view** with folding, search, and the transcript export the CLI has.
 
@@ -225,6 +226,6 @@ The API would not change for any of this; it is the same one the browser uses.
 
 ## Tests
 
-`build/server/server_test` (`ctest --test-dir build -R server`) starts the server on a random port against a fake OpenAI-compatible server and covers: token creation, verification, revocation and file permissions; the rate limit; 401 with no token and with a wrong one; the audit line for both; 403 for a workspace outside the roots; session creation, streaming, the folded transcript and replay from any `seq`; an approval round trip in auto mode where the call is still asked about because the origin is remote; a denial with feedback reaching the model; interrupt of a running turn and of a pending approval; per-session mode changes; the self-signed certificate and a pinned HTTPS client; and that no reset route exists.
+`build/server/server_test` (`ctest --test-dir build -R server`) starts the server on a random port against a fake OpenAI-compatible server and covers: token creation, verification, revocation and file permissions; the rate limit; 401 with no token and with a wrong one; the audit line for both; 403 for a workspace outside the roots; session creation, streaming in the engine's event names with contiguous `sequence_number`s, the folded transcript and replay from any `starting_after` (and the older `after`); `always` refused from a remote client; an approval round trip in auto mode where the call is still asked about because the origin is remote; a denial with feedback reaching the model; interrupt of a running turn and of a pending approval; per-session mode changes; the self-signed certificate and a pinned HTTPS client; and that no reset route exists.
 
 `build/server/relay_test` (`ctest -R relay`) covers the relay and the tunnel: frames forwarded whole and in order between two sides, a frame split across posts reassembled, keepalives dropped, both sides ended when one leaves and the pair forgotten, the log holding ids and counts and no content; the idle expiry, the pair cap and the throughput cap; the crypto against known answers (HKDF-SHA256 from RFC 5869, the session keys and two sealed frames from fixed X25519 keys, replay, reorder and a flipped byte refused, the other direction's key not opening); the pairing store and the offer (wrong code, three wrong codes, expiry); and end to end, a `maic-server` with `server.relay` pointing at a loopback relay, a fake phone pairing over the LAN through `/api/pair` then asking `/api/status` through the relay and getting the real answer, a token-less request still a 401, the audit line naming the phone, the relay log free of anything but the id, `POST /api/unlock` a 404 through the tunnel and at the relay, the home reconnecting after the phone leaves, and an unpaired phone refused. `tunnel_js` runs the web client's copy of the crypto under node against the same vectors.

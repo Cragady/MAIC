@@ -1,0 +1,15 @@
+: llama-server b11284 (25747b08e) in router mode: the model was unloaded (POST /models/unload) while it streamed.
+: The router's proxy ends the stream with a bare "proxy error: ..." line, no data: prefix, no newline, no [DONE].
+: Captured 2026-10-02 with curl; the middle 224 content chunks are cut, the first four and the last are kept as sent.
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"role":"assistant","content":null}}],"created":1790937373,"id":"chatcmpl-ckgdxtRq0aDzqEGoH4d7yZgquG12Gq1D","model":"Qwen3.5-9B-Q4_K_M-text","system_fingerprint":"b11284-25747b08e","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":"In"}}],"created":1790937373,"id":"chatcmpl-ckgdxtRq0aDzqEGoH4d7yZgquG12Gq1D","model":"Qwen3.5-9B-Q4_K_M-text","system_fingerprint":"b11284-25747b08e","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":" the"}}],"created":1790937373,"id":"chatcmpl-ckgdxtRq0aDzqEGoH4d7yZgquG12Gq1D","model":"Qwen3.5-9B-Q4_K_M-text","system_fingerprint":"b11284-25747b08e","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":" vast"}}],"created":1790937373,"id":"chatcmpl-ckgdxtRq0aDzqEGoH4d7yZgquG12Gq1D","model":"Qwen3.5-9B-Q4_K_M-text","system_fingerprint":"b11284-25747b08e","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":"aby"}}],"created":1790937377,"id":"chatcmpl-ckgdxtRq0aDzqEGoH4d7yZgquG12Gq1D","model":"Qwen3.5-9B-Q4_K_M-text","system_fingerprint":"b11284-25747b08e","object":"chat.completion.chunk"}
+
+proxy error: Failed to read connection

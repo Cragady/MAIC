@@ -76,7 +76,7 @@ The input starts in normal mode, like opening vim: `i` to type. Cursor: a bar in
 | clipboard | `"+y` / `"*y` before any yank sends it to the system clipboard; `"+p` pastes from it; the **leader** (Space by default, `leader` in settings) then `y` yanks the line (normal) or the selection (visual) to the clipboard, leader then `p`/`P` pastes from it. In the conversation window every yank reaches the clipboard; `yiw`, `yw`, `y$`, `Y`, `yy` work there |
 | normal (input empty) | `j k` Ctrl-D/U Ctrl-F/B `G` scroll the conversation without leaving the input; `v` / `V` jump into the conversation window selecting |
 | conversation window | **Ctrl-W k** enters, **Ctrl-W j** (or Esc, `i`, Enter) returns; `j k h l w b e 0 $ gg G` Ctrl-D/U/F/B move, `H M L` to the top / middle / bottom of the window; `f t F T ; ,` on the line; `}` / `{` next / previous message, `]]` / `[[` your messages only; `v` / `V` select; `y` yanks (to the register **and** the system clipboard); `yy` a line; `/pattern` then `n` / `N` search (smart case), `*` / `#` for the word under the cursor; `o` swaps selection ends; a left click folds or unfolds a tool result |
-| anywhere | **Shift-Tab** cycles the mode; **Ctrl-Z** suspends to the shell (`fg` resumes, like vim); **Ctrl-C** interrupts the agent, else stops a `!command`, else clears the input, else (twice) quits; scroll wheel scrolls the conversation (in insert mode: prompt history) |
+| anywhere | **Shift-Tab** cycles the mode; **Ctrl-Z** suspends to the shell (`fg` resumes, like vim); **Ctrl-C** interrupts the agent, else stops a `!command`, else clears the input, else (twice) quits; **Ctrl-S** pauses a running turn (the `interrupt` steer: the reply so far is kept and the turn waits), then **Ctrl-Q** resumes it and the pause menu offers `s` steer, `d` drop, `f` further (what is in the input goes with them as the note), `k` keep and `h` halt, Esc to type a message that resumes it instead; a message typed while the agent works reaches it at its next step (`response.steer`); scroll wheel scrolls the conversation (in insert mode: prompt history) |
 | approval prompt | **y** yes · **n** no · **N** no, then type a sentence the model receives as the reason · **a** always allow this file / program for the session · **t** trip the harness · **e** open the file asked about (in the host nvim when connected, else `$EDITOR`) · **d** the proposed change as a diff in a new tab of the host nvim. Edits show the lines that would change, removed in red and added in green (`:h diff`) |
 
 Ctrl-W in insert mode deletes a word, as in vim; the window chord works from insert mode only when the input is empty, otherwise press Esc first.
@@ -135,10 +135,12 @@ The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"
 | `:copy` / `:export [FILE]` | copy the last reply to the clipboard; write the transcript as markdown |
 | `:stash` / `:pop` | park the input draft and bring it back (survives restarts). `:q` with an unsent draft stashes it for you |
 | `:wq` | send, then quit when the reply is in (Ctrl-C while waiting stays) |
+| `:steer ACTION [NOTE]` | steer the running (or paused) turn: `steer` and `drop` stop the reply now and go on with the note (drop trims the reply being written), `further` asks for more at the next step, `interrupt` pauses, `keep` ends the turn with the reply so far, `halt` discards it ([design, section 11](../docs/design/engine-protocol.md#11-steering)) |
+| `:steering` | the steering settings in force and which file set each |
 | `:rename TITLE` | title the session (`maic sessions` shows it); `small_model` in settings (older name: `title_model`) auto-titles after the first turn |
 | `:ban add TEXT` / `:ban pattern REGEX` / `:ban token ID` / `:ban list` | phrases and regexes the model must not say (cut before they show, re-asked, then replaced) and token bans (`logit_bias` on OpenAI-compatible providers). `--ban`, `--ban-pattern`, `bans` in settings. See docs/bans.md |
 | `:sampling [KEY VALUE\|xtc P T]` | temperature, top_k, min_p, seed, ... for this session; `xtc` (exclude top choices) on llama.cpp-style servers. See `:h sampling` |
-| `:harness [smart\|dumb]` | the model reviewer on (default) or off. Auto under a dumb harness warns once and asks; see `:h harness` |
+| `:harness [smart\|dumb]` | the model reviewer on or off (default). With `dumb_auto_ok = false`, auto under a dumb harness warns once and asks; see `:h harness` |
 | `:budget [N\|off]` | tokens used; a per-session budget that stops the agent when reached |
 | `:set timestamps on` | a time beside each message (also `timestamps` in settings) |
 | `:lua [CODE]` / `:luafile PATH` / `:chat` | run Lua (vendored LuaJIT) in the workspace; an expression shows its value. `:lua` alone enters **Lua mode**: the input becomes a REPL (`lua❯`) until `:chat`. Globals persist; output goes to the conversation and to the model as context. Outside a session `maic lua` is a REPL, `maic lua FILE [args]` runs a file. See `:h lua` |
@@ -150,7 +152,7 @@ The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"
 
 ### After every turn
 
-A footer line shows the model, how long the turn took and how many tools ran (`▣ qwen3.5:4b · 12.3s · 3 tool calls`, `· interrupted` when you stopped it). `run_shell` takes a `workdir` argument, so the approval prompt shows `pytest` in `services/api` rather than a `cd` chain; a workdir outside the workspace is asked about. Reading a file under a directory with its own `AGENTS.md` (or any name in `instruction_files`) attaches those instructions to the result once.
+A footer line shows the model, how long the turn took and how many tools ran (`▣ qwen3.5:4b · 12.3s · 3 tool calls`, `· interrupted` when you stopped it). `run_shell` takes a `workdir` argument, so the approval prompt shows `pytest` in `services/api` rather than a `cd` chain; a workdir outside the workspace is asked about. Reading a file under a directory with its own `AGENTS.md` (or any name in `instructions.files`) attaches those instructions to the result once, when a trusted directory covers them ([docs/instructions.md](../docs/instructions.md)).
 
 ### Messages while the agent works
 
@@ -160,13 +162,15 @@ Typing and sending while the agent is busy queues the message; it reaches the mo
 
 | Mode | Reads in workspace | Read-only commands | Edits in workspace | Other commands | Outside workspace |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **manual** (default) | yes | ask | ask | ask | ask |
+| **manual** | yes | ask | ask | ask | ask |
 | **auto-read** | yes | yes (read-only sandbox) | ask | ask | reads yes, writes ask |
 | **edit** | yes | ask | yes | ask | ask |
-| **auto** | yes | yes | yes | yes (sandboxed) | reads yes, writes ask |
+| **auto** (default) | yes | yes | yes | yes (sandboxed) | reads yes, writes ask |
 | **plan** | yes | yes (read-only sandbox) | no | no | reads ask |
 
 "Read-only commands" are ones MAIC recognises as only looking (`ls`, `cat`, `grep`, `git log`, `find` without `-delete`/`-exec`, ...) with no redirection or substitution. They run with the workspace mounted read-only as well, so a wrong guess still cannot change anything.
+
+A session starts in **auto** only where every project directory from the project root down is trusted fully (trusted, with full Lua), and at least one is; anywhere else, a directory with no `.maic/` or instruction file included, it starts in **manual**, says so once, and `:mode auto` turns auto on. `--mode auto` starts in auto anywhere.
 
 Whatever the mode: secrets are never read, system paths are never written, startup files and MAIC's own harness are always asked about, dangerous commands trip the harness, and a request that did not come from this terminal is always asked. See [docs/harness.md](../docs/harness.md).
 
@@ -184,9 +188,13 @@ Where the continuation is written depends on `--append` / `--no-append`:
 
 **Import and redact.** `maic sessions import FILE` turns a claude.ai export (JSON; `--conversation UUID` picks one out of a full export) or a Claude Code transcript (JSONL from `~/.claude/projects/`) into a session here and prints its id; the format is detected from the content, `--as claude-ai|claude-code` overrides it, `--home general|project|NAME` says where it goes. `maic sessions redact ID` writes `./<id>.redacted.jsonl` with credential material replaced by `[REDACTED:kind]` and reports the count per kind; `-o FILE` and `--in-place` choose the destination (`--in-place` first copies the original to `sessions/.backups/<id>/`, where `cai trans-fairy-write restore` finds it), and an existing file is never overwritten. The record types, the import rules and every redaction kind: [docs/sessions.md](../docs/sessions.md).
 
-**Looking at and building on a session.** `maic sessions read ID [--range A-B] [--tools]` prints the conversation as text; `state ID` is a one-screen summary (turns, tool calls per tool, files touched, tokens against the budget, compactions, forks, subagents); `time ID` shows how long each turn took and the slowest tool calls; `name ID` titles it with the title model. Three commands make a new session without changing any existing one: `inject ID --text T [--at N] [--role user|system]` forks at N and adds one note marked as injected; `graft ID --onto TARGET [--at N]` forks TARGET at N and copies ID's conversation in after a note saying where it came from; `compose ID --from N [--root FILE]` copies ID's records from N on, after an optional root text and a note that the earlier part is missing, which is a cheap re-root of a long session. Details and the record types: [docs/sessions.md](../docs/sessions.md#building-sessions-from-sessions).
+**Looking at and building on a session.** `maic sessions read ID [--range A-B] [--tools]` prints the conversation as text; `state ID` is a one-screen summary (turns, tool calls per tool, files touched, tokens against the budget, compactions, forks, subagents); `time ID` shows how long each turn took and the slowest tool calls; `name ID` titles it with the title model; `output ID [CALL] [--replay]` lists, prints or replays a command's whole output where the model got it capped, labelled display only ([docs/sessions.md](../docs/sessions.md#full-output)). Three commands make a new session without changing any existing one: `inject ID --text T [--at N] [--role user|system]` forks at N and adds one note marked as injected; `graft ID --onto TARGET [--at N]` forks TARGET at N and copies ID's conversation in after a note saying where it came from; `compose ID --from N [--root FILE]` copies ID's records from N on, after an optional root text and a note that the earlier part is missing, which is a cheap re-root of a long session. Details and the record types: [docs/sessions.md](../docs/sessions.md#building-sessions-from-sessions).
 
 **cai.** `maic cai TOOL ...` (the same as `cai TOOL ...` on PATH) runs Micaiah's cai-tools, every tool with its own command line: `cai read SESSION.jsonl` prints what was said, `maic trans-fairy` cuts, composes, grafts and installs transcripts, `maic trans-fairy-write` overwrites one after copying it to `sessions/.backups/`, and `maic help cai TOOL` prints a tool's help. They take a MAIC session or a Claude Code transcript, told apart by content. See [docs/cai.md](../docs/cai.md).
+
+**Leak audit.** `maic-leak-audit` reads every transcript for tool calls that reached for a host socket from the sandbox (the hole v0.3.1 closed), has a local model judge each one (`qwen-9b` by default; a model off this machine is refused), writes the findings to a private file under `~/.local/state/maic/audits/` and prints one line: whether something was reached for. See [docs/leak-audit.md](../docs/leak-audit.md).
+
+**Audit trail.** Off by default. With `enabled = true` in `~/.config/maic/audit.lua` (`maic audit-trail init`), every tool call of every session, recorded or not, leaves one entry for the leak audit: the call and the harness's decisions, never text or output. `maic audit-trail status`, `purge`, `offsite DEST` (prints, never runs, the commands that move old archive chunks on) and `schedule install|remove`. See [docs/audit-trail.md](../docs/audit-trail.md).
 
 **Context for a turn.** `--context FILE` (`-C`) attaches a text file to the conversation before the prompt, labelled with its path; repeat it for several files, and `-C -` reads stdin (then the prompt itself has to be an argument). It combines with `-c`/`-r`: `maic -p "compare these" -c -C new-draft.md` puts the file in front of an old conversation. Binary files are refused. The same flag works for the interactive `maic`.
 

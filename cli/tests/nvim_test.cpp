@@ -35,19 +35,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-bool on_path(const std::string& program) {
-    const char* path = std::getenv("PATH");
-    std::string dirs = path ? path : "";
-    for (size_t start = 0; start <= dirs.size();) {
-        size_t colon = dirs.find(':', start);
-        std::string dir = dirs.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
-        if (!dir.empty() && access((fs::path(dir) / program).c_str(), X_OK) == 0) return true;
-        if (colon == std::string::npos) break;
-        start = colon + 1;
-    }
-    return false;
-}
-
 pid_t spawn(const std::vector<std::string>& argv) {
     pid_t pid = fork();
     if (pid == 0) {
@@ -505,7 +492,7 @@ int main() {
         other->exec_lua("vim.fn.jobstop(vim.g.maic_job)", json::array());
         expect(eventually([&] { return !client(); }, 10000), "and disconnects when it exits");
 
-        // --bare and MAIC_BARE=1: the same maic, the same host, no connection. Ready is the welcome on its screen.
+        // --bare and MAIC_BARE=1: the same maic, the same host, no connection. Ready is the smart harness's status on its screen.
         auto bare = [&](const json& argv, const json& env) {
             pid = other->exec_lua("local argv, env = ... vim.cmd('enew!') local job = vim.fn.jobstart(argv, { term = true, env = env }) vim.g.maic_job = job vim.g.maic_buf = vim.api.nvim_get_current_buf() "
                                   "return vim.fn.jobpid(job)",
@@ -517,8 +504,8 @@ int main() {
             other->exec_lua("vim.fn.jobstop(vim.g.maic_job) vim.cmd('enew!')", json::array());
             return ready && !connected;
         };
-        expect(bare(json::array({MAIC_BINARY, "--no-record", "--no-instructions", "--bare"}), json::object()), "maic --bare inside the host does not connect");
-        expect(bare(json::array({MAIC_BINARY, "--no-record", "--no-instructions"}), json{{"MAIC_BARE", "1"}}), "nor does maic with MAIC_BARE=1");
+        expect(bare(json::array({MAIC_BINARY, "--no-record", "--no-instructions", "--harness", "smart", "--bare"}), json::object()), "maic --bare inside the host does not connect");
+        expect(bare(json::array({MAIC_BINARY, "--no-record", "--no-instructions", "--harness", "smart"}), json{{"MAIC_BARE", "1"}}), "nor does maic with MAIC_BARE=1");
     }
 
     section("Esc in MAIC's terminal");
@@ -528,7 +515,7 @@ int main() {
         fs::path typed = tmp / "typed";
         auto mode = [&] { return other->exec_lua("return vim.api.nvim_get_mode().mode", json::array()); };
         other->exec_lua("local out = ... vim.keymap.set('t', '<Esc>', '<C-\\\\><C-n>') "
-                        "require('maic').setup({ keymaps = false, open = 'split', cmd = { 'sh', '-c', 'stty raw -echo; exec cat > ' .. out } }) "
+                        "require('maic').setup({ keymaps = false, ui = 'terminal', open = 'split', cmd = { 'sh', '-c', 'stty raw -echo; exec cat > ' .. out } }) "
                         "vim.cmd('tabnew') vim.cmd('Maic')",
                         json::array({typed.string()}));
         expect(eventually([&] { return fs::exists(typed) && mode() == "t"; }), "MAIC's terminal starts in terminal mode");
@@ -718,6 +705,19 @@ end
         expect(rc == 1 && has(out, "MAIC did not write it") && read_file(ours) == "return {}\n", "a file of that name MAIC did not write: refused, left alone: " + out);
         rc = setup("", {"--remove", "--yes"}, out);
         expect(rc == 1 && has(out, "will not remove it") && fs::exists(ours), "and --remove refuses it too: " + out);
+        fs::remove(ours);
+
+        // A mention that is not a spec: a comment in init.lua, and a note in a plugin file lazy.nvim loads.
+        std::ofstream(cfg / "init.lua") << "-- llama.vim: set up with maic nvim setup llama-vim\n";
+        std::ofstream(plugins / "notes.lua") << "-- see llama.vim's README\nreturn { 'folke/which-key.nvim' }\n";
+        rc = setup("import.lua", {"--yes"}, out);
+        expect(rc == 0 && has(out, "init.lua mentions llama.vim; it is not loaded as a plugin, continuing") &&
+                   has(out, "lua/plugins/notes.lua mentions llama.vim; it is not loaded as a plugin, continuing") && has(out, "wrote " + ours.string()) && fs::exists(ours),
+               "a file that only mentions llama.vim is a warning, and the setup writes its file: " + out);
+        rc = setup("import.lua", {"--yes"}, out);
+        expect(rc == 0 && has(out, "init.lua mentions llama.vim") && has(out, "already holds this spec"), "with MAIC's spec loaded, the mention still only warns: " + out);
+        fs::remove(cfg / "init.lua");
+        fs::remove(plugins / "notes.lua");
         fs::remove(ours);
 
         std::ofstream(plugins / "mine.lua") << "return { { 'ggml-org/llama.vim' } }\n";

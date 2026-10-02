@@ -1,0 +1,629 @@
+{
+  "$comment": "The state machines of docs/design/engine-protocol.md section 10 as data: the engine's runtime ordering checks and the conformance checker (maic protocol check, ctest protocol_conformance) both load this file. A machine has states, an initial and terminal states, and transitions {from, on (event types), when (JSON pointer into the event: allowed values), key (JSON pointers naming the instance; the machine's key by default), to}. An event concerns a machine when one of its transitions lists the event's type and its `when` holds and its key is present; it must then be legal from the instance's state. `openai: true` machines also run over the OpenAI-only view (rule openai.view); `scope: response` instances live inside the open response; `one_open` and `closes` are the response machine's rules response.one_open and response.items_done. The rules that are not a single machine (sequence numbers, turns, schemas) are listed with their ids and implemented in core/src/protocol.cpp. `filter` lists the event types a connection may be spared (`filterable`, named in maic.hello's `exclude`) and the types a capability covers (sent only to a connection that announces it); rule seq.filtered. The machine for reviews joins with step 10.",
+  "version": 1,
+  "rules": [
+    {
+      "id": "seq.start",
+      "text": "The first event of an epoch has sequence_number 0, and the first event of every load of a session is maic.session.state carrying the epoch and the protocol hash; a load that continues an epoch goes on from the number the last one closed at."
+    },
+    {
+      "id": "seq.next",
+      "text": "Each event's sequence_number, or else its maic.filtered_from or maic.merged_from (in that order) when it carries one, is one more than the last event's: a larger number is a gap."
+    },
+    {
+      "id": "seq.repeat",
+      "text": "A sequence_number smaller than or equal to the last one within an epoch is a protocol violation."
+    },
+    {
+      "id": "seq.filtered",
+      "text": "A connection is sent no event of a type its maic.hello answer lists in `exclude`. The first event sent after filtered ones carries maic.filtered_from, the first number filtered out; a connection that excludes nothing never gets it."
+    },
+    {
+      "id": "skeleton.hash",
+      "text": "A skeleton line in a recording (or a skeleton record in a transcript) hashes to its own `hash`: sha256 over the skeleton in RFC 8785 form."
+    },
+    {
+      "id": "skeleton.undeclared",
+      "text": "Once a file declares skeletons, every event has the shape of a skeleton of its type declared before it."
+    },
+    {
+      "id": "skeleton.must_understand",
+      "text": "An event or record of a type the reader does not know is read by its skeleton alone and left alone, unless its skeleton says must_understand: then the reader refuses it."
+    },
+    {
+      "id": "stream.id",
+      "text": "Every event carries stream_id, the id of the session whose stream it is on."
+    },
+    {
+      "id": "schema.event",
+      "text": "Every event fits event.schema.json: OpenAI's shape for OpenAI's types, MAIC's for maic.* types."
+    },
+    {
+      "id": "schema.extra",
+      "text": "An OpenAI-shaped object carries no field beyond OpenAI's but `maic` (and `stream_id` on an event): MAIC's own fields go in one maic object."
+    },
+    {
+      "id": "schema.message",
+      "text": "Every request's params, result and notification fits maic.openrpc.json."
+    },
+    {
+      "id": "machine",
+      "text": "Every event is a legal transition of each state machine it belongs to; a terminal state takes no further event."
+    },
+    {
+      "id": "response.one_open",
+      "text": "At most one response is open on a session at a time."
+    },
+    {
+      "id": "response.items_done",
+      "text": "A response's terminal event comes after every item and content part it opened is done."
+    },
+    {
+      "id": "item.in_response",
+      "text": "Items, content parts, their deltas and actions occur only inside an open response."
+    },
+    {
+      "id": "item.index",
+      "text": "output_index is 0-based within the response, in `added` order, never reused."
+    },
+    {
+      "id": "turn.number",
+      "text": "A response that opens a turn carries maic.turn one more than the previous turn; a later response of the same turn carries the same number and names the previous response in previous_response_id."
+    },
+    {
+      "id": "turn.final",
+      "text": "A turn closes at the terminal event that carries maic.final: true; a new turn opens only after that."
+    },
+    {
+      "id": "turn.paused",
+      "text": "maic.turn.paused comes only while a turn is open and none of its responses is: right after a maic.response.cancelled with maic.final: false."
+    },
+    {
+      "id": "steer.in_turn",
+      "text": "response.steer.accepted, response.steer.failed and maic.steer.applied are legal only while a response of the turn is open or the turn is paused, and so before the events they cause."
+    },
+    {
+      "id": "request.answered",
+      "text": "Every request is answered exactly once, on the connection it came from."
+    },
+    {
+      "id": "openai.view",
+      "text": "With every maic.* event and every maic object removed, each event still fits OpenAI's ResponseStreamEvent and the response, item and content part machines still hold."
+    }
+  ],
+  "filter": {
+    "filterable": ["response.output_text.delta", "response.reasoning_text.delta", "response.shell_call_output_content.delta", "maic.tool.output.delta"],
+    "capabilities": {"tool_output": ["response.shell_call_output_content.delta", "maic.tool.output.delta"]}
+  },
+  "machines": [
+    {
+      "name": "session",
+      "description": "One per load of a session (maic.session.state). activity moves without changing the state.",
+      "key": "stream",
+      "initial": "-",
+      "terminal": [
+        "parked",
+        "stopped"
+      ],
+      "transitions": [
+        {
+          "from": [
+            "-",
+            "live",
+            "background"
+          ],
+          "on": [
+            "maic.session.state"
+          ],
+          "when": {
+            "/state": [
+              "live"
+            ]
+          },
+          "to": "live"
+        },
+        {
+          "from": [
+            "-",
+            "live",
+            "background"
+          ],
+          "on": [
+            "maic.session.state"
+          ],
+          "when": {
+            "/state": [
+              "background"
+            ]
+          },
+          "to": "background"
+        },
+        {
+          "from": [
+            "live",
+            "background"
+          ],
+          "on": [
+            "maic.session.state"
+          ],
+          "when": {
+            "/state": [
+              "parked"
+            ]
+          },
+          "to": "parked"
+        },
+        {
+          "from": [
+            "live",
+            "background"
+          ],
+          "on": [
+            "maic.session.state"
+          ],
+          "when": {
+            "/state": [
+              "stopped"
+            ]
+          },
+          "to": "stopped"
+        }
+      ]
+    },
+    {
+      "name": "response",
+      "description": "One run of the agent loop. At most one is open per session.",
+      "openai": true,
+      "key": [
+        "/response/id"
+      ],
+      "initial": "-",
+      "terminal": [
+        "completed",
+        "incomplete",
+        "failed",
+        "cancelled"
+      ],
+      "one_open": true,
+      "closes": [
+        "item",
+        "part"
+      ],
+      "transitions": [
+        {
+          "from": [
+            "-"
+          ],
+          "on": [
+            "response.created"
+          ],
+          "to": "created"
+        },
+        {
+          "from": [
+            "created"
+          ],
+          "on": [
+            "response.queued"
+          ],
+          "to": "queued"
+        },
+        {
+          "from": [
+            "created",
+            "queued"
+          ],
+          "on": [
+            "response.in_progress"
+          ],
+          "to": "in_progress"
+        },
+        {
+          "from": [
+            "in_progress"
+          ],
+          "on": [
+            "response.completed"
+          ],
+          "to": "completed"
+        },
+        {
+          "from": [
+            "in_progress"
+          ],
+          "on": [
+            "response.incomplete"
+          ],
+          "to": "incomplete"
+        },
+        {
+          "from": [
+            "created",
+            "queued",
+            "in_progress"
+          ],
+          "on": [
+            "response.failed"
+          ],
+          "to": "failed"
+        },
+        {
+          "from": [
+            "created",
+            "queued",
+            "in_progress"
+          ],
+          "on": [
+            "maic.response.cancelled"
+          ],
+          "to": "cancelled"
+        }
+      ]
+    },
+    {
+      "name": "item",
+      "description": "One output item, addressed by output_index within its response: announced before its deltas, closed after them.",
+      "openai": true,
+      "scope": "response",
+      "key": [
+        "/output_index"
+      ],
+      "initial": "-",
+      "terminal": [
+        "done"
+      ],
+      "transitions": [
+        {
+          "from": [
+            "-"
+          ],
+          "on": [
+            "response.output_item.added"
+          ],
+          "to": "open"
+        },
+        {
+          "from": [
+            "open"
+          ],
+          "on": [
+            "response.content_part.added",
+            "response.content_part.done",
+            "response.output_text.delta",
+            "response.output_text.done",
+            "response.reasoning_text.delta",
+            "response.reasoning_text.done",
+            "response.function_call_arguments.done",
+            "response.shell_call_command.added",
+            "response.shell_call_command.done",
+            "response.shell_call_output_content.delta",
+            "response.shell_call_output_content.done",
+            "maic.tool.output.delta"
+          ],
+          "to": "open"
+        },
+        {
+          "from": [
+            "open"
+          ],
+          "on": [
+            "response.output_item.done"
+          ],
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "name": "part",
+      "description": "One content part of a message or reasoning item: added, its text deltas, the text's done, then the part's done.",
+      "openai": true,
+      "scope": "response",
+      "key": [
+        "/output_index",
+        "/content_index"
+      ],
+      "initial": "-",
+      "terminal": [
+        "done"
+      ],
+      "transitions": [
+        {
+          "from": [
+            "-"
+          ],
+          "on": [
+            "response.content_part.added"
+          ],
+          "to": "open"
+        },
+        {
+          "from": [
+            "open"
+          ],
+          "on": [
+            "response.output_text.delta",
+            "response.reasoning_text.delta"
+          ],
+          "to": "open"
+        },
+        {
+          "from": [
+            "open"
+          ],
+          "on": [
+            "response.output_text.done",
+            "response.reasoning_text.done"
+          ],
+          "to": "text_done"
+        },
+        {
+          "from": [
+            "text_done"
+          ],
+          "on": [
+            "response.content_part.done"
+          ],
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "name": "action",
+      "description": "A tool call, from its call item's done to its output item's done. A subagent's approvals carry `thread` and no call_id: they belong to the subagent's own stream.",
+      "scope": "response",
+      "initial": "-",
+      "terminal": [
+        "done"
+      ],
+      "transitions": [
+        {
+          "from": [
+            "-"
+          ],
+          "on": [
+            "response.output_item.done"
+          ],
+          "when": {
+            "/item/type": [
+              "function_call",
+              "shell_call"
+            ]
+          },
+          "key": [
+            "/item/call_id"
+          ],
+          "to": "proposed"
+        },
+        {
+          "from": [
+            "proposed"
+          ],
+          "on": [
+            "maic.approval.requested"
+          ],
+          "key": [
+            "/call_id"
+          ],
+          "to": "asking"
+        },
+        {
+          "from": [
+            "asking"
+          ],
+          "on": [
+            "maic.approval.answered"
+          ],
+          "when": {
+            "/choice": [
+              "yes",
+              "always"
+            ]
+          },
+          "key": [
+            "/call_id"
+          ],
+          "to": "allowed"
+        },
+        {
+          "from": [
+            "asking"
+          ],
+          "on": [
+            "maic.approval.answered"
+          ],
+          "when": {
+            "/choice": [
+              "no",
+              "trip"
+            ]
+          },
+          "key": [
+            "/call_id"
+          ],
+          "to": "denied"
+        },
+        {
+          "from": [
+            "asking"
+          ],
+          "on": [
+            "maic.approval.answered"
+          ],
+          "when": {
+            "/choice": [
+              "withdrawn"
+            ]
+          },
+          "key": [
+            "/call_id"
+          ],
+          "to": "withdrawn"
+        },
+        {
+          "from": [
+            "proposed",
+            "allowed"
+          ],
+          "on": [
+            "response.output_item.added"
+          ],
+          "when": {
+            "/item/type": [
+              "function_call_output",
+              "shell_call_output"
+            ]
+          },
+          "key": [
+            "/item/call_id"
+          ],
+          "to": "running"
+        },
+        {
+          "from": [
+            "denied",
+            "withdrawn"
+          ],
+          "on": [
+            "response.output_item.added"
+          ],
+          "when": {
+            "/item/type": [
+              "function_call_output",
+              "shell_call_output"
+            ]
+          },
+          "key": [
+            "/item/call_id"
+          ],
+          "to": "closing"
+        },
+        {
+          "from": [
+            "running",
+            "closing"
+          ],
+          "on": [
+            "response.output_item.done"
+          ],
+          "when": {
+            "/item/type": [
+              "function_call_output",
+              "shell_call_output"
+            ]
+          },
+          "key": [
+            "/item/call_id"
+          ],
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "name": "approval",
+      "description": "Requested, then answered once. A late answer is a request error (maic_already_answered), never an event.",
+      "key": [
+        "/id"
+      ],
+      "initial": "-",
+      "terminal": [
+        "answered"
+      ],
+      "transitions": [
+        {
+          "from": [
+            "-"
+          ],
+          "on": [
+            "maic.approval.requested"
+          ],
+          "to": "requested"
+        },
+        {
+          "from": [
+            "requested"
+          ],
+          "on": [
+            "maic.approval.answered"
+          ],
+          "to": "answered"
+        }
+      ]
+    },
+    {
+      "name": "question",
+      "description": "Asked, then answered once (withdrawn: true when a steer took its place).",
+      "key": [
+        "/id"
+      ],
+      "initial": "-",
+      "terminal": [
+        "answered"
+      ],
+      "transitions": [
+        {
+          "from": [
+            "-"
+          ],
+          "on": [
+            "maic.question.asked"
+          ],
+          "to": "asked"
+        },
+        {
+          "from": [
+            "asked"
+          ],
+          "on": [
+            "maic.question.answered"
+          ],
+          "to": "answered"
+        }
+      ]
+    },
+    {
+      "name": "steer",
+      "description": "One steer, by its id: accepted (response.steer, and maic.steer's steer, drop and further), applied (the six actions), or failed when a keep or halt ends the turn before its successor commits it. Its commit is the successor's response.created, which names no steer.",
+      "key": [
+        "/steer/id"
+      ],
+      "initial": "-",
+      "terminal": [
+        "failed"
+      ],
+      "transitions": [
+        {
+          "from": [
+            "-"
+          ],
+          "on": [
+            "response.steer.accepted"
+          ],
+          "to": "accepted"
+        },
+        {
+          "from": [
+            "-",
+            "accepted"
+          ],
+          "on": [
+            "maic.steer.applied"
+          ],
+          "key": [
+            "/steer"
+          ],
+          "to": "applied"
+        },
+        {
+          "from": [
+            "accepted",
+            "applied"
+          ],
+          "on": [
+            "response.steer.failed"
+          ],
+          "to": "failed"
+        }
+      ]
+    }
+  ]
+}

@@ -276,14 +276,18 @@ Harness::Harness(fs::path workspace) : workspace_(fs::weakly_canonical(workspace
     sensitive_paths_.push_back(maic / "core" / "src" / "sandbox.cpp");
 }
 
-fs::path Harness::resolve(const std::string& path) const {
+fs::path resolve_path(const fs::path& workspace, const std::string& path) {
     fs::path p = path;
     if (!path.empty() && path[0] == '~') {
         p = fs::path(std::getenv("HOME")) / path.substr(path.size() > 1 && path[1] == '/' ? 2 : 1);
     } else if (p.is_relative()) {
-        p = workspace_ / p;
+        p = workspace / p;
     }
     return fs::weakly_canonical(p);
+}
+
+fs::path Harness::resolve(const std::string& path) const {
+    return resolve_path(workspace_, path);
 }
 
 void Harness::set_workspace(const fs::path& dir) {

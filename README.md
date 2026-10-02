@@ -90,8 +90,10 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 
 * [tools.md](docs/tools.md): the model's tools, and writing your own, in Lua or any language, behind the harness.
 * [settings.md](docs/settings.md) — the settings file: model providers (local and remote), styles, instruction files.
+* [instructions.md](docs/instructions.md): instruction files: where MAIC looks and in what order, the classes, local files, imports and on-demand loading, how trust covers them, and how this compares with Claude Code and opencode.
 * [themes.md](docs/themes.md): themes (default, gruvbox dark and light, mono), writing one, importing a neovim colorscheme, colour depth.
 * [nvim.md](docs/nvim.md): maic.nvim, MAIC inside nvim: the plugin's commands, how MAIC finds and trusts its host, what the host gives (files, diffs, User autocmds, the live theme, `maic.nvim` in your Lua) and what the model never gets.
+* [audit-trail.md](docs/audit-trail.md): the audit trail, off by default: one entry per tool call of every session, recorded or not, for the leak audit; who needs it, what it records and never records, its costs, the rolling states, the archive and the off-site commands it only recommends.
 * [sessions.md](docs/sessions.md): the session file format, every record type, homes, forks and `--fork-at`, `maic sessions import` (claude.ai exports, Claude Code transcripts), `redact`, `export`.
 * [cai.md](docs/cai.md): cai-tools, all of it, as `cai TOOL` and `maic cai TOOL`: trans-fairy, redact, read, fabricate and the rest, on MAIC sessions as on Claude Code transcripts; `trans-fairy-write`'s backups.
 * [llamacpp.md](docs/llamacpp.md): llama.cpp, the local server: every sampler (XTC, DRY, top-n-sigma), logit bias, grammars, the models directory and `maic vendor model`.
@@ -102,6 +104,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.
 * [opencode-quick-wins.md](docs/opencode-quick-wins.md) — 23 small, ranked improvements to take from opencode, with file pointers.
 * [cleanroom.md](docs/cleanroom.md) — what may go into MAIC, where the design came from, third-party licenses.
+* [standards.md](docs/standards.md): every specification and standard MAIC follows or borrows from, with its version, where MAIC uses it, how closely, and the known deviations.
 * [remote.md](docs/remote.md): remote access: `maic-server`, the phone web client, tokens and TLS, the API, `maic-relay` and the end-to-end tunnel for the phone away from home, why the tripwire cannot be reset remotely.
 * [roadmap.md](docs/roadmap.md): everything MAIC should still become: accounts and a native phone client, the harness layers, cai-tools, tools, editor, services.
 * [testing.md](docs/testing.md): how to run every suite, the build gate (`scripts/check.sh`, the pre-push hook), the flake rules, the pty harness for the TUI, the fuzzer, the asan preset.

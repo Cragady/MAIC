@@ -122,7 +122,6 @@
       <pre id="approvalPreview" hidden></pre>
       <div class="row" style="margin-top:8px">
         <button class="ok" data-choice="yes">Yes</button>
-        <button data-choice="always" id="alwaysBtn">Always</button>
         <button data-choice="no">No</button>
       </div>
       <div class="row" style="margin-top:8px"><input id="feedback" placeholder="no, and tell the model why">
@@ -463,7 +462,7 @@ class RelayTunnel {
 
 (() => {
   const $ = (id) => document.getElementById(id);
-  const state = { token: '', session: null, seq: 0, running: false, reading: false, approval: null, status: null, relay: null, tunnel: null, relayState: '' };
+  const state = { token: '', session: null, seq: -1, running: false, reading: false, approval: null, status: null, relay: null, tunnel: null, relayState: '' };
   // Arriving from the LAN page's "Open the relay" link: the pairing bundle rides in the fragment, which the
   // relay never receives. It goes into this origin's storage and out of the address bar.
   if (location.hash.startsWith('#pair=')) {
@@ -579,36 +578,99 @@ class RelayTunnel {
     lastText.el.textContent += text;
     scrollDown();
   }
+  // A running command's output under its tool call: the last 12 lines, until the result takes their place.
+  // A skip (the session's output budget) shows how much was left out.
+  function liveOutput(text) {
+    const last = $('entries').lastElementChild;
+    if (!last || last.tagName !== 'DETAILS') return;
+    let pre = last.querySelector('pre.live');
+    if (!pre) {
+      if (last.querySelector('pre')) return;
+      pre = document.createElement('pre');
+      pre.className = 'live';
+      last.appendChild(pre);
+      last.open = true;
+    }
+    pre.textContent = (pre.textContent + text).split('\n').slice(-12).join('\n');
+    scrollDown();
+  }
+  // A result whose whole output was kept: a button under it fetches that output, labelled as what it is.
+  function keptOutput(k) {
+    const last = $('entries').lastElementChild;
+    if (!last || last.tagName !== 'DETAILS') return;
+    const b = document.createElement('button');
+    b.textContent = k.label + ' (' + k.bytes + ' bytes): show';
+    b.onclick = async () => {
+      const r = await json('/api/sessions/' + state.session.id + '/output/' + encodeURIComponent(k.call) + '?session=' + encodeURIComponent(k.session));
+      const p = document.createElement('pre');
+      p.textContent = '[' + r.label + ']\n' + r.data + (r.done ? '' : '\n[' + (r.bytes - r.data.length) + ' more bytes: maic sessions output ' + k.session + ' ' + k.call + ']');
+      b.replaceWith(p);
+    };
+    last.appendChild(b);
+  }
   function scrollDown() {
     const m = document.querySelector('main');
     if (m.scrollHeight - m.scrollTop - m.clientHeight < 200) m.scrollTop = m.scrollHeight;
   }
 
+  // A tool's result under its call: the live output gives way to it.
+  function toolResult(text, ok, full) {
+    const last = $('entries').lastElementChild;
+    const live = last && last.tagName === 'DETAILS' ? last.querySelector('pre.live') : null;
+    if (live) { live.remove(); last.open = false; }
+    if (last && last.tagName === 'DETAILS' && !last.querySelector('pre')) {
+      const p = document.createElement('pre'); p.textContent = text; last.appendChild(p);
+      if (!ok) last.classList.add('bad');
+    } else addTool(ok ? 'result' : 'failed', text, ok);
+    if (full) keptOutput(full);
+  }
+  function showUsage(u) {
+    $('usage').textContent = u.calls ? 'tokens: ' + u.input + ' in, ' + u.output + ' out over ' + u.calls + ' calls' +
+      (u.context ? ' (context ' + u.last_input + '/' + u.context + ')' : '') : '';
+  }
+
+  // The engine's events (OpenAI's Responses names, MAIC's under maic.), and the history entries GET /api/sessions/ID gives.
   function handle(e) {
-    if (typeof e.seq === 'number') state.seq = e.seq + 1;
+    if (typeof e.sequence_number === 'number') state.seq = e.sequence_number;
     switch (e.type) {
       case 'user': addEntry('user', e.text); break;
       case 'text': appendText(e.text, e.thinking); break;
       case 'tool_call': addTool(e.summary, '', true); break;
-      case 'tool_result': {
-        const last = $('entries').lastElementChild;
-        if (last && last.tagName === 'DETAILS' && !last.querySelector('pre')) {
-          const p = document.createElement('pre'); p.textContent = e.text; last.appendChild(p);
-          if (!e.ok) last.classList.add('bad');
-        } else addTool(e.ok ? 'result' : 'failed', e.text, e.ok);
-        break;
-      }
+      case 'tool_result': toolResult(e.text, e.ok, null); break;
       case 'notice': addEntry('notice', e.text); break;
-      case 'error': addEntry('error', e.text); break;
-      case 'approval': showApproval(e); break;
-      case 'approval_answered': hideApproval(); addEntry('notice', 'approval: ' + e.choice); break;
-      case 'mode': if (state.session) state.session.mode = e.mode; statusLine(); break;
-      case 'done':
-        state.running = false;
-        $('stop').hidden = true;
-        $('usage').textContent = e.usage.calls ? 'tokens: ' + e.usage.input + ' in, ' + e.usage.output + ' out over ' + e.usage.calls + ' calls' +
-          (e.usage.context ? ' (context ' + e.usage.last_input + '/' + e.usage.context + ')' : '') : '';
-        if (e.interrupted) addEntry('notice', 'interrupted');
+      case 'maic.input.added':
+        addEntry('user', e.item.content.map((c) => c.text || '').join('\n') + (e.queued ? '  (delivered at the next step)' : ''));
+        break;
+      case 'response.output_text.delta': appendText(e.delta, false); break;
+      case 'response.reasoning_text.delta': appendText(e.delta, true); break;
+      case 'response.output_item.added':
+        if (e.item.type === 'function_call' || e.item.type === 'shell_call') addTool((e.item.maic && e.item.maic.summary) || e.item.name || 'run_shell', '', true);
+        break;
+      case 'response.output_item.done':
+        if (e.item.type === 'function_call_output') toolResult(e.item.output, !e.item.maic || e.item.maic.ok !== false, e.item.maic && e.item.maic.full_output);
+        else if (e.item.type === 'shell_call_output') {
+          toolResult(e.item.output.map((o) => o.stdout + o.stderr).join(''), !e.item.maic || e.item.maic.ok !== false, e.item.maic && e.item.maic.full_output);
+        }
+        break;
+      case 'response.shell_call_output_content.delta':
+        liveOutput(e.maic.skipped ? '\n[' + e.maic.skipped + ' bytes not sent]\n' : e.delta.stdout + e.delta.stderr);
+        break;
+      case 'maic.tool.output.delta':
+        liveOutput(e.skipped ? '\n[' + e.skipped + ' bytes not sent]\n' : e.data);
+        break;
+      case 'maic.notice': addEntry('notice', e.text); break;
+      case 'error': addEntry('error', e.message); break;
+      case 'response.failed': addEntry('error', e.response.error ? e.response.error.message : 'the response failed'); break;
+      case 'maic.response.cancelled': addEntry('notice', e.response.maic && e.response.maic.final === false ? 'paused' : 'interrupted'); break;
+      case 'maic.steer.applied': addEntry('notice', 'steered: ' + e.action + (e.note ? ': ' + e.note : '')); break;
+      case 'error': addEntry('notice', 'halted: ' + e.message); break;
+      case 'maic.approval.requested': showApproval(e); break;
+      case 'maic.approval.answered': hideApproval(); addEntry('notice', 'approval: ' + e.choice + (e.by && e.by.name ? ' (' + e.by.name + ')' : '')); break;
+      case 'maic.session.settings': if (state.session && e.mode) state.session.mode = e.mode; statusLine(); break;
+      case 'maic.usage.updated': showUsage({ calls: e.calls, input: e.total ? e.total.input : 0, output: e.total ? e.total.output : 0, context: e.context, last_input: e.last_input }); break;
+      case 'maic.session.state':
+        state.running = e.activity !== 'idle';
+        $('stop').hidden = !state.running;
         statusLine();
         break;
     }
@@ -644,7 +706,8 @@ class RelayTunnel {
   async function attach() {
     if (state.reading || !state.session) return;
     try {
-      const res = await api('/api/sessions/' + state.session.id + '/events?after=' + state.seq);
+      const res = await api('/api/sessions/' + state.session.id + '/events?starting_after=' + state.seq);
+      if (res.status === 409) return openSession(state.session.id);  // what was missed left the ring: load again
       if (res.ok) await readStream(res);
     } catch (e) { console.error(e); }
   }
@@ -652,15 +715,15 @@ class RelayTunnel {
   async function openSession(id) {
     const s = await json('/api/sessions/' + id);
     state.session = s;
-    state.seq = 0;
+    state.seq = -1;
     state.running = s.running;
     $('entries').innerHTML = '';
     $('usage').textContent = '';
     lastText = null;
     hideApproval();
     for (const e of s.entries) handle(e);
-    state.seq = s.seq;
-    if (s.usage && s.usage.calls) handle({ type: 'done', usage: s.usage });
+    state.seq = s.sequence_number;
+    if (s.usage && s.usage.calls) showUsage(s.usage);
     state.running = s.running;
     $('stop').hidden = !s.running;
     if (s.pending_approval) showApproval(s.pending_approval);
@@ -690,7 +753,6 @@ class RelayTunnel {
     $('approvalReason').textContent = a.reason;
     $('approvalPreview').hidden = !a.preview;
     $('approvalPreview').textContent = a.preview || '';
-    $('alwaysBtn').textContent = 'Always: ' + (a.always_covers || 'this');
     $('feedback').value = '';
     $('approval').hidden = false;
     scrollDown();
@@ -718,7 +780,7 @@ class RelayTunnel {
   $('tokenInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('tokenSave').onclick(); });
   $('sessionsBtn').onclick = () => { loadStatus().catch(() => {}); loadSessions().catch((e) => $('sessionList').textContent = e.message); };
   $('newSession').onclick = async () => {
-    const body = { mode: $('mode').value };
+    const body = $('mode').value === 'auto' ? {} : { mode: $('mode').value };  // auto from a remote client needs a step-up: start as the server's settings say
     const ws = $('newWorkspace').value.trim();
     if (ws) body.workspace = ws;
     try { const s = await json('/api/sessions', { method: 'POST', body }); await openSession(s.id); }

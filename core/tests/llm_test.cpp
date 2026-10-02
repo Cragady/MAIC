@@ -14,6 +14,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <map>
+#include <sstream>
 #include <thread>
 
 using namespace maic;
@@ -80,6 +83,21 @@ int main() {
     expect(p2.name == "llamacpp" && m2 == "hf.co/org/some-model:Q4", "an unknown prefix stays a whole model name on the first provider");
     auto by_name = [&](const std::string& n) { return *std::find_if(provs.begin(), provs.end(), [&](const Provider& p) { return p.name == n; }); };
     expect(!by_name("llamacpp").remote() && by_name("anthropic").remote(), "llamacpp is local, anthropic is remote");
+    {
+        // Local means the URL's host, parsed, is loopback; text that only looks local anywhere else is remote.
+        auto remote = [](const std::string& url) { return Provider{"p", "openai", url, "", "", json::object()}.remote(); };
+        for (const char* url : {"http://127.0.0.1:8081/v1", "http://localhost:8082", "http://[::1]:8081/v1", "http://127.1.2.3/v1", "HTTP://LocalHost:9/x",
+                                "http://user@127.0.0.1:8081/v1", "unix:/run/user/1000/llama.sock"}) {
+            expect(!remote(url), std::string("local: ") + url);
+        }
+        for (const char* url : {"https://api.anthropic.com", "https://example.com/x?y=://127.0.0.1", "http://127.0.0.1.attacker.example/",
+                                "http://127.0.0.1@evil.example/", "http://localhost.evil.example/", "http://evil.example/://localhost", "http://evil.example#://[::1]",
+                                "http://0177.0.0.1/", "http://2130706433/", "http://127.0.0.1\\@evil.example/", "ftp://127.0.0.1/", "http://[::1]evil/", ""}) {
+            expect(remote(url), std::string("remote: ") + url);
+        }
+        expect(loopback_host("127.0.0.1") && loopback_host("[::1]") && !loopback_host("127.0.0.1.attacker.example") && !loopback_host("128.0.0.1"),
+               "loopback_host: a dotted quad in 127.0.0.0/8, ::1 or localhost only");
+    }
     {
         const Provider& side = by_name("llamacpp-2");
         expect(side.kind == "openai" && side.base_url == "http://127.0.0.1:8082/v1" && !side.remote() && side.options.value("thinking_controls", false) && side.options.value("context_window", 0) == 8192,
@@ -223,6 +241,111 @@ int main() {
         const auto& msgs = b["messages"];
         expect(msgs[2]["tool_calls"][0]["function"]["arguments"].is_string() && msgs[3]["tool_call_id"] == "call_9",
                "replay sends arguments as a JSON string and results by tool_call_id");
+    }
+    {
+        // llama-server b11284's stream as written in the fixture (jsonschema_test checks each chunk against OpenAI's
+        // schema): the opening role chunk with null content, reasoning_content, content, a tool call in two pieces,
+        // finish_reason tool_calls, then usage and timings on a chunk with no choices.
+        std::ifstream in(std::string(MAIC_FIXTURES) + "/llamacpp-b11284-chat.sse");
+        std::stringstream stream;
+        stream << in.rdbuf();
+        Fake f;
+        f.serve("/v1/chat/completions", {stream.str()});
+        f.start();
+        Provider llama{"llamacpp", "openai", f.url() + "/v1", "", "", json::object()};
+        std::string streamed;
+        auto m = run(llama, hello, &streamed, no_cancel, kTools);
+        expect(m.content == "Her ears stay a third of her height." && streamed == "The user wants the fennec ear sizing note." + m.content,
+               "llama.cpp's recorded stream: reasoning and content");
+        expect(m.tool_calls.size() == 1 && m.tool_calls[0].name == "read_file" && m.tool_calls[0].arguments.value("path", "") == "docs/mascot.md",
+               "llama.cpp's recorded stream: the tool call");
+        expect(m.usage.input == 412 && m.usage.output == 38, "llama.cpp's recorded stream: usage from the empty-choices chunk");
+    }
+    {
+        // The shapes llama.cpp sends that OpenAI's do not allow: the adapter rules rewrite them and the caller hears
+        // each rule once per call, also when the call ends in the error.
+        std::ifstream in(std::string(MAIC_FIXTURES) + "/llamacpp-b11284-oddities.sse");
+        std::stringstream stream;
+        stream << in.rdbuf();
+        Fake f;
+        f.serve("/v1/chat/completions", {stream.str()});
+        f.serve("/v2/chat/completions", {R"({"error":{"code":400,"message":"the request exceeds the available context size","type":"exceed_context_size_error","n_prompt_tokens":20000,"n_ctx":16384}})"}, 400);
+        f.start();
+        std::map<std::string, int> heard;
+        ChatOptions opt{"test-model"};
+        opt.normalized = [&](const std::string& rule, int n) { heard[rule] += n; };
+        std::string streamed, what;
+        try {
+            chat({"llamacpp", "openai", f.url() + "/v1", "", "", json::object()}, opt, hello, json::array(), [&](std::string_view d, bool) { streamed += d; }, no_cancel);
+        } catch (const std::runtime_error& e) {
+            what = e.what();
+        }
+        expect(streamed == "Her" && what == "llamacpp: the model crashed", "llama.cpp's logprobs chunk is read and its mid-stream error reported: " + what);
+        expect(heard == std::map<std::string, int>{{"error_code_string", 1}, {"error_param_null", 1}, {"logprobs_refusal_null", 1}}, "each adapter rule is heard, with its count");
+        heard.clear();
+        opt.retries = 0;
+        int status = 0;
+        try {
+            chat({"llamacpp", "openai", f.url() + "/v2", "", "", json::object()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+        } catch (const ApiError& e) {
+            status = e.status;
+            what = e.what();
+        }
+        expect(status == 400 && what.find("exceeds the available context size") != std::string::npos, "an error status still reads as before: " + what);
+        expect(heard == std::map<std::string, int>{{"error_code_string", 1}, {"error_param_null", 1}}, "the error body of a failed request goes through the rules too");
+    }
+    {
+        // The same server captured live (2026-10-02): a tool call with thinking, a logprobs chunk, and the router's
+        // proxy error when the model went away mid-stream, which must end the call as an error, not a short reply.
+        auto fixture = [](const std::string& name) {
+            std::ifstream in(std::string(MAIC_FIXTURES) + "/" + name);
+            std::stringstream stream;
+            stream << in.rdbuf();
+            return stream.str();
+        };
+        Fake f;
+        f.serve("/a/chat/completions", {fixture("llamacpp-b11284-captured-chat.sse")});
+        f.serve("/b/chat/completions", {fixture("llamacpp-b11284-captured-logprobs.sse")});
+        f.serve("/c/chat/completions", {fixture("llamacpp-b11284-captured-proxy-error.sse")});
+        f.start();
+        std::map<std::string, int> heard;
+        ChatOptions opt{"test-model"};
+        opt.normalized = [&](const std::string& rule, int n) { heard[rule] += n; };
+        opt.retries = 0;
+        std::string streamed;
+        auto m = chat({"llamacpp", "openai", f.url() + "/a", "", "", json::object()}, opt, hello, kTools, [&](std::string_view d, bool) { streamed += d; }, no_cancel);
+        expect(m.content.empty() && streamed.rfind("The user wants me to list the files", 0) == 0 && m.tool_calls.size() == 1 &&
+                   m.tool_calls[0].name == "list_dir" && m.tool_calls[0].arguments == json{{"path", "src"}} && m.usage.input == 293 && m.usage.output == 63,
+               "the captured stream: thinking, then the tool call, and usage");
+        expect(heard.empty(), "no adapter rule touches the captured tool-call stream");
+        m = chat({"llamacpp", "openai", f.url() + "/b", "", "", json::object()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+        expect(m.content == "Red" && heard == std::map<std::string, int>{{"logprobs_refusal_null", 1}}, "the captured logprobs chunk is read and normalized once");
+        heard.clear();
+        streamed.clear();
+        std::string what;
+        try {
+            chat({"llamacpp", "openai", f.url() + "/c", "", "", json::object()}, opt, hello, json::array(), [&](std::string_view d, bool) { streamed += d; }, no_cancel);
+        } catch (const std::runtime_error& e) {
+            what = e.what();
+        }
+        expect(!streamed.empty() && what == "llamacpp: proxy error: Failed to read connection", "the router's proxy error ends the call as an error: " + what);
+    }
+    {
+        // The code names the software behind the provider, not what it is called here: both shipped llama servers
+        // say maic_llamacpp_500; a provider without `upstream` falls back to its own name.
+        auto code_for = [](const Provider& p) {
+            json body = {{"error", {{"code", 500}, {"message", "the model crashed"}, {"type", "server_error"}}}};
+            normalize_openai(body, p.upstream_name());
+            return body["error"]["code"].get<std::string>() + " " + body["error"]["maic"]["upstream"]["provider"].get<std::string>();
+        };
+        std::map<std::string, std::string> shipped;
+        for (const auto& p : default_providers()) shipped[p.name] = code_for(p);
+        expect(shipped["llamacpp"] == "maic_llamacpp_500 llamacpp" && shipped["llamacpp-2"] == "maic_llamacpp_500 llamacpp",
+               "llamacpp and llamacpp-2 both give maic_llamacpp_500, upstream llamacpp: " + shipped["llamacpp-2"]);
+        Provider lab{"lab", "openai", "http://127.0.0.1:9/v1", "", "", json::object()};
+        expect(code_for(lab) == "maic_lab_500 lab", "a provider without upstream falls back to its name");
+        lab.upstream = "vllm";
+        expect(code_for(lab) == "maic_vllm_500 vllm", "a provider with upstream names that instead");
     }
     {
         Fake f;

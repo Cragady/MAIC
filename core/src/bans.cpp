@@ -23,21 +23,62 @@ std::vector<std::string> expand_ban_entry(const std::string& value) {
     return out;
 }
 
+namespace {
+
+// One `strings` or `patterns` list as written: plain entries, and tables naming a steer (Lua's `{ "text", steer = ...}`
+// arrives with the text under "1"; JSON writes it as "text").
+void read_entries(const nlohmann::json& list, std::vector<std::string>& into, std::vector<BanSteer>& steers) {
+    for (const auto& e : list) {
+        std::string text;
+        BanSteer steer;
+        if (e.is_string()) {
+            text = e;
+        } else if (e.is_object()) {
+            text = e.contains("1") ? e.value("1", "") : e.value("text", "");
+            steer = {e.value("steer", ""), e.value("note", "")};
+        }
+        if (text.empty()) continue;
+        for (const auto& x : expand_ban_entry(text)) {
+            into.push_back(x);
+            if (!steer.action.empty()) {
+                steers.resize(into.size());
+                steers.back() = steer;
+            }
+        }
+    }
+}
+
+nlohmann::json write_entries(const std::vector<std::string>& list, const std::vector<BanSteer>& steers) {
+    nlohmann::json out = nlohmann::json::array();
+    for (size_t i = 0; i < list.size(); ++i) {
+        if (i < steers.size() && !steers[i].action.empty()) out.push_back({{"text", list[i]}, {"steer", steers[i].action}, {"note", steers[i].note}});
+        else out.push_back(list[i]);
+    }
+    return out;
+}
+
+}  // namespace
+
 nlohmann::json Bans::to_json() const {
-    return {{"strings", strings}, {"patterns", patterns}, {"tokens", tokens}, {"retries", retries}, {"replacement", replacement}, {"ignore_case", ignore_case}, {"window", window}};
+    return {{"strings", write_entries(strings, string_steers)}, {"patterns", write_entries(patterns, pattern_steers)}, {"tokens", tokens}, {"retries", retries},
+            {"replacement", replacement}, {"ignore_case", ignore_case}, {"window", window}};
+}
+
+void Bans::add(const Bans& more) {
+    if (!more.string_steers.empty()) string_steers.resize(strings.size());
+    strings.insert(strings.end(), more.strings.begin(), more.strings.end());
+    string_steers.insert(string_steers.end(), more.string_steers.begin(), more.string_steers.end());
+    if (!more.pattern_steers.empty()) pattern_steers.resize(patterns.size());
+    patterns.insert(patterns.end(), more.patterns.begin(), more.patterns.end());
+    pattern_steers.insert(pattern_steers.end(), more.pattern_steers.begin(), more.pattern_steers.end());
+    tokens.insert(tokens.end(), more.tokens.begin(), more.tokens.end());
 }
 
 Bans Bans::from_json(const nlohmann::json& j) {
     Bans b;
     if (!j.is_object()) return b;
-    for (const auto& s : j.value("strings", nlohmann::json::array())) {
-        if (!s.is_string() || s.get<std::string>().empty()) continue;
-        for (const auto& e : expand_ban_entry(s.get<std::string>())) b.strings.push_back(e);
-    }
-    for (const auto& p : j.value("patterns", nlohmann::json::array())) {
-        if (!p.is_string() || p.get<std::string>().empty()) continue;
-        for (const auto& e : expand_ban_entry(p.get<std::string>())) b.patterns.push_back(e);
-    }
+    read_entries(j.value("strings", nlohmann::json::array()), b.strings, b.string_steers);
+    read_entries(j.value("patterns", nlohmann::json::array()), b.patterns, b.pattern_steers);
     for (const auto& t : j.value("tokens", nlohmann::json::array())) {
         if (t.is_number_integer()) b.tokens.push_back(t);
         else if (t.is_string() && !t.get<std::string>().empty()) {
@@ -60,7 +101,8 @@ BanFilter::BanFilter(const Bans& bans, bool replace_mode) : bans_(bans), replace
         if (t.is_string()) bans_.strings.push_back(t.get<std::string>());
     }
     for (const auto& s : bans_.strings) longest_ = std::max(longest_, s.size());
-    for (const auto& p : bans_.patterns) {
+    for (size_t i = 0; i < bans_.patterns.size(); ++i) {
+        const std::string& p = bans_.patterns[i];
         regex_t re;
         int rc = regcomp(&re, p.c_str(), REG_EXTENDED | (bans_.ignore_case ? REG_ICASE : 0));
         if (rc != 0) {
@@ -70,7 +112,20 @@ BanFilter::BanFilter(const Bans& bans, bool replace_mode) : bans_(bans), replace
             continue;
         }
         res_.push_back(re);
+        re_index_.push_back(i);
     }
+}
+
+const BanSteer* BanFilter::steer_of(const std::string& list, size_t index) const {
+    const auto& steers = list == "strings" ? bans_.string_steers : bans_.pattern_steers;
+    return index < steers.size() && !steers[index].action.empty() ? &steers[index] : nullptr;
+}
+
+std::optional<BanHit> BanFilter::hit_steer() const {
+    if (hit_.empty()) return std::nullopt;
+    const BanSteer* s = steer_of(hit_list_, hit_index_);
+    if (!s) return std::nullopt;
+    return BanHit{s->action, s->note, hit_list_, hit_index_};
 }
 
 BanFilter::~BanFilter() {
@@ -92,21 +147,24 @@ std::string BanFilter::through_patterns(std::string text, bool release_all, bool
     int anchors = (rfront_ ? 0 : REG_NOTBOL) | (at_end ? 0 : REG_NOTEOL);
     for (;;) {
         bool found = false;
-        size_t best_s = 0, best_e = 0;
-        for (auto& re : res_) {
+        size_t best_s = 0, best_e = 0, best_i = 0;
+        for (size_t r = 0; r < res_.size(); ++r) {
+            auto& re = res_[r];
             regmatch_t m[1];
             m[0].rm_so = static_cast<regoff_t>(rscan_);
             m[0].rm_eo = static_cast<regoff_t>(rtext_.size());
             if (regexec(&re, rtext_.c_str(), 1, m, REG_STARTEND | anchors) != 0) continue;
             size_t s = static_cast<size_t>(m[0].rm_so), e = static_cast<size_t>(m[0].rm_eo);
             if (e == s) continue;  // an empty match bans nothing
-            if (!found || s < best_s) found = true, best_s = s, best_e = e;
+            if (!found || s < best_s) found = true, best_s = s, best_e = e, best_i = re_index_[r];
         }
         if (!found) break;
-        if (!replace_) {
+        if (!replace_ || steer_of("patterns", best_i)) {
             out += rtext_.substr(0, best_s);
             clean_ += rtext_.substr(0, best_s);
             hit_ = rtext_.substr(best_s, best_e - best_s);
+            hit_list_ = "patterns";
+            hit_index_ = best_i;
             rtext_.clear();
             rscan_ = 0;
             return out;
@@ -149,13 +207,18 @@ std::string BanFilter::feed(std::string_view delta) {
     while (at < held_.size()) {
         bool could_start = false;
         bool replaced = false;
-        for (const auto& ban : bans_.strings) {
+        for (size_t i = 0; i < bans_.strings.size(); ++i) {
+            const std::string& ban = bans_.strings[i];
             if (matches(held_, at, ban)) {
-                if (!replace_) {
+                if (!replace_ || steer_of("strings", i)) {
                     out += release(at);
                     held_.clear();
                     std::string shown = through_patterns(out, true, false);
-                    if (hit_.empty()) hit_ = ban;  // a regex cut inside the released text comes first and is the one reported
+                    if (hit_.empty()) {  // a regex cut inside the released text comes first and is the one reported
+                        hit_ = ban;
+                        hit_list_ = "strings";
+                        hit_index_ = i;
+                    }
                     return shown;
                 }
                 out += release(at);

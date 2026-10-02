@@ -10,6 +10,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,11 @@ std::string project_home_name(const std::filesystem::path& workspace);  // "/hom
 
 // Append-only transcript of one agent session: what was said, every tool call, and the harness's decision on it.
 // Files are created 0600 in a 0700 directory, since transcripts can hold anything the agent read.
+//
+// A transcript describes itself (docs/sessions.md, Self-describing files): before the first record of each type and
+// shape, write() puts a `skeleton` record {of, hash, canonical, skeleton[, must_understand]}, so the file can be read
+// with nothing but itself. A reader that meets a type it does not know skips it, unless the file marked it
+// must_understand: then walk_records refuses the file rather than rebuild a conversation without it.
 class SessionLog {
 public:
     // kind: "tui", "headless". home: a directory under sessions_dir() (see sessions_home()).
@@ -46,6 +52,8 @@ public:
         std::lock_guard lock(mu_);
         return path_;
     }
+    // False for a session kept in the runtime directory (--no-record, maic -p without --record).
+    bool recorded() const;
     // Stamps `type` and, unless the record already carries one (a record copied from another session), `time`.
     void write(const std::string& type, nlohmann::json data);
 
@@ -73,6 +81,7 @@ private:
     mutable std::mutex mu_;
     std::ofstream out_;
     int pending_fd_ = -1;  // while relocating: where write() puts records
+    std::set<std::string> described_;  // "<type>\x1f<skeleton hash>" already declared in the file
     std::vector<std::string> recovered_;
 };
 
@@ -127,6 +136,10 @@ std::vector<RehomeMove> plan_rehome(const std::vector<RehomeTarget>& targets, co
 // reason: "rehome"} to it. Forks keep working: they find their parent by id.
 void rehome_session(const RehomeMove& move);
 
+// Where a session's kept outputs live, beside its file: <dir>/<id>.d (docs/sessions.md, Full output). Moving a
+// session moves it too.
+std::filesystem::path side_dir(const std::filesystem::path& session_file);
+
 // The `sub` sessions `path` started (they live in its home and name it as their parent).
 std::vector<std::filesystem::path> sub_sessions_of(const std::filesystem::path& path);
 
@@ -154,6 +167,7 @@ struct TranscriptEntry {
     std::string type;  // user, assistant, tool_call, tool_result, notice
     std::string text;
     bool ok = true;
+    nlohmann::json full_output;  // tool_result: the record's `full_output` when the whole output was kept (null otherwise)
 };
 
 struct LoadedSession {
@@ -163,6 +177,24 @@ struct LoadedSession {
     std::string mode;
     size_t records = 0;  // lines in this file (what a fork of it would point at)
 };
+
+// The record types this build writes or knows; and of those, the ones a reader must not skip because skipping them
+// changes the conversation it rebuilds or the stream's identity (`msg`, `compact`, `reset`, `clear`, `undo`,
+// `resumed_from`, `epoch`). Their skeletons say must_understand.
+bool known_record_type(const std::string& type);
+bool record_must_understand(const std::string& type);
+
+// Where the next load of a session's stream starts (docs/design/engine-protocol.md, Event identity), from the
+// file's own `epoch` and `stream` records. A load that the last one closed cleanly continues its epoch and numbers;
+// an epoch a tool declared and nobody loaded yet is taken as it is, from 0; anything else (a new file, one from
+// before epochs, a load that never closed) starts a new epoch from 0, naming the one it replaces.
+struct StreamStart {
+    std::string epoch;           // "" when a new one is needed: the caller mints it and writes the `epoch` record
+    long next = 0;               // the load's first sequence_number
+    nlohmann::json previous;     // a new epoch's predecessor {epoch, reason}, or null
+    nlohmann::json forked_from;  // a new fork's first epoch: {session, epoch, records}, or null
+};
+StreamStart stream_start(const std::filesystem::path& path);
 
 // Every record of a session in order: the parent a `resumed_from` pointer names first (its first `records`
 // lines, recursively), then the file's own lines up to `limit`. Returns how many lines of the file itself were
@@ -186,6 +218,7 @@ struct SessionStats {
     long output_tokens = 0;
     int context = 0;  // the last window the provider reported
     std::map<std::string, size_t> compactions;  // by stage
+    std::map<std::string, size_t> normalized;   // adapter rules applied, by "<provider> <rule>" (`normalized` records)
     size_t clears = 0;
     size_t undos = 0;
     std::string first_time;  // of the first and the last record
@@ -248,7 +281,8 @@ bool is_maic_session(const std::filesystem::path& path);
 std::string export_markdown(const SessionInfo& info, const LoadedSession& session, bool tool_details = true);
 
 // The transcript as plain text for reading or piping: `[user]` and `[assistant]` blocks for user turns `from` to
-// `to` (1-based, inclusive; 0 means no bound), notices, and tool calls and results as `[tool]` / `[result]` when `tools`.
+// `to` (1-based, inclusive; 0 means no bound), notices, and tool calls and results as `[tool]` / `[result]` when `tools`,
+// a result whose whole output was kept followed by a labelled line saying where (`maic sessions output`).
 std::string render_text(const LoadedSession& session, size_t from = 0, size_t to = 0, bool tools = false);
 
 }  // namespace maic

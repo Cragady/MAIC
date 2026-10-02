@@ -27,6 +27,8 @@ Not allowed:
 | A generated "cleanroom harness spec" (Google) | design | Two ideas kept for the plan: per-role permission profiles (sandbox paths, network, budgets per agent role), and a forkable transcript tree. Its SQL and JSON schema were not adopted; see below. |
 | Anthropic and OpenAI API references | public docs | The provider clients in `core/src/anthropic.cpp` and `openai.cpp`. |
 | RFC 7748 (X25519), RFC 5869 (HKDF), RFC 8439 (ChaCha20-Poly1305) and the IETF XChaCha draft | public specs | The relay tunnel in `server/src/tunnel.cpp` (through libsodium) and the web client's copy of ChaCha20, Poly1305 and HChaCha20, written from the RFC text and checked against the RFCs' own vectors. |
+| OpenAI's API description, [openai/openai-openapi](https://github.com/openai/openai-openapi) (MIT, commit `de3a025`) | open source, read only | The engine protocol's names, objects, event order and lifecycle ([design/engine-protocol.md](design/engine-protocol.md) sections 10 to 12). The protocol adopts its names and shapes exactly. The description itself is copied whole into `protocol/openai/` as data, with its license; see the table below. |
+| llama.cpp's server (MIT, `vendor/llama.cpp` at `b11284`) | open source, read only | The chunk shapes in `core/tests/fixtures/llamacpp-b11284-chat.sse` and the error and logprobs shapes in `jsonschema_test`, written by hand from `tools/server/server-task.cpp` and `server-common.cpp`. No code copied. |
 | nvim's API documentation (`:h api`, `:h treesitter`) and the msgpack format specification | public docs | The optional input highlighter (`cli/src/highlight.cpp`) runs the user's own nvim as `nvim --embed --headless` and talks msgpack-rpc to it; `cli/src/msgpack.cpp` is MAIC's own small codec written from the format description. nvim is executed as a program, never linked; no code was copied from it. |
 
 ### How the spec's ideas map onto MAIC
@@ -52,5 +54,6 @@ Where an outside approach and MAIC's rules cannot both hold, MAIC's rules win an
 | nvim (the user's own install, optional, called as a program) | Apache-2.0 and the Vim license | `highlight = "nvim"`, the input highlighter, `:e`, and maic.nvim's host connection (msgpack-rpc over its `$NVIM` socket, from `:h api`); not linked, only executed or talked to |
 | glibc regex (`regcomp`) | LGPL, system library | `search_files` |
 | pyte (fetched by `uv run --with pyte`, tests only) | LGPL-3.0 | the terminal emulator behind `tests/tui_driver.py`; not linked, not shipped |
+| OpenAI's API description, [openai/openai-openapi](https://github.com/openai/openai-openapi) commit `de3a025` (`protocol/openai/openapi.json`, and `subset.json` extracted from it) | MIT, Copyright (c) OpenAI; the license is copied beside it as `protocol/openai/LICENSE` | the shapes MAIC's messages are validated against; data read by the tests, not code, nothing links it ([protocol/openai/README.md](../protocol/openai/README.md)) |
 
-No code has been copied from another project into MAIC's sources.
+No code has been copied from another project into MAIC's sources. OpenAI's description in `protocol/openai/` is copied whole, as data, under its MIT license.
