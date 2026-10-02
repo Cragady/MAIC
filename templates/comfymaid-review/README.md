@@ -34,6 +34,16 @@ python3 -c "import sys; p=open('page.html').read(); d=open('review.json').read()
 * The user's prompts and the agent's messages are told apart by card color and label.
 * `improvements` and `todo` in the data render on the page itself, so each artifact carries its own improvement list.
 
+## Splitting a page
+
+The user ticks Pick for split on cards, chooses a relationship and requests the split; the request lands in the saved state's `splits` with `status: "requested"`. The agent then:
+
+1. Builds a new page from the picked cards (same template, a new `id`), with `lineage.parent` set to this page and the relationship.
+2. Republishes this page with `lineage.children` gaining the new page and `moved` mapping each moved card to the new page's URL, and sets that split's status to `done` in the store.
+3. Records task and topic changes across the two in `lineage.deltas` whenever it syncs them; a page cannot read another page's store, so the agent keeps the deltas.
+
+Relationships: `tight` (resolving the topics there resolves them here), `linked` (the parent cannot be resolved until the child is), `loose` (related only; each resolves on its own).
+
 ## Future
 
 * Adding textareas (more boxes than the blocks give).

@@ -106,6 +106,9 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
 .hist .lbl { font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; font-weight: 700; color: var(--muted); }
 .hist p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .hist .reply { border-left: 3px solid var(--addr); padding-left: 8px; }
+.splitbox { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+.rel { border: 0; padding: 0; margin: 0; display: grid; gap: 4px; }
+.moved { font-size: .78rem; color: var(--accent); }
 .recent { background: var(--addr-soft); border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; }
 .recent p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .recent a { color: var(--accent); }
@@ -150,6 +153,18 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     <div class="row"><button class="primary" id="confirm-yes" type="button">Submit anyway</button><button id="confirm-no" type="button">Keep answering</button></div>
   </div>
   <div class="docstate" id="docstate"></div>
+  <section aria-labelledby="h-split" class="splitbox"><h2 id="h-split">Split and lineage</h2>
+    <div id="lineage" class="list"></div>
+    <p class="note">Tick Pick for split on any cards, choose how tightly the new page stays tied to this one, and request the split. Claude makes the new page, links both ways, and marks the moved topics here.</p>
+    <fieldset class="rel" id="rel"><legend class="fl">Relationship</legend>
+      <label class="check"><input type="radio" name="rel" value="tight" id="rel-tight"> Tight: resolving them there resolves them here</label>
+      <label class="check"><input type="radio" name="rel" value="linked" id="rel-linked" checked> Linked: this page can't be resolved until that one is</label>
+      <label class="check"><input type="radio" name="rel" value="loose" id="rel-loose"> Loose: related only; each resolves on its own</label>
+    </fieldset>
+    <div id="split-note"></div>
+    <div class="row"><button id="split-go" type="button">Request split</button><span class="fb" id="split-msg" aria-live="polite"></span></div>
+    <div id="split-list" class="list"></div>
+  </section>
   <div class="legend" aria-label="Status colors"><span class="chip open">open: needs attention</span><span class="chip addressed">addressed: answered, not closed</span><span class="chip resolved">resolved: closed</span><span class="note">Micaiah's prompts are on warm cards with a solid label; Claude's on plain cards.</span></div>
   <section aria-labelledby="h-issues"><h2 id="h-issues">Decisions waiting on you</h2><div id="issues" class="list"></div></section>
   <section aria-labelledby="h-msgs"><h2 id="h-msgs">The conversation since you stopped reading</h2><div id="messages" class="list"></div></section>
@@ -191,8 +206,8 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   var DOC = "review/" + DATA.id;
   var LOCAL = "review-draft:" + DATA.id;
   var STATES = ["open", "addressed", "resolved"];
-  var state = { answers: {}, status: {}, doc_status: "open", folded: {}, merges: {}, kept: {}, side_prompts: [], flags: { ctrl_g_bridge: false }, resolve_requested: false, submitted: false, submittedAt: null, savedAt: null };
-  var VERSION = 12;
+  var state = { answers: {}, status: {}, doc_status: "open", folded: {}, merges: {}, kept: {}, side_prompts: [], splits: [], picked: {}, flags: { ctrl_g_bridge: false }, resolve_requested: false, submitted: false, submittedAt: null, savedAt: null };
+  var VERSION = 13;
   var QUIET = {}; // field ids under text that needs no reply: folded until opened or written in
   DATA.messages.concat(DATA.misc || []).forEach(function (m) { m.blocks.forEach(function (b) {
     if (b.type === "list") { if (b.header && b.header.respond === false) QUIET[b.header.id] = 1; b.items.forEach(function (it) { if (it.respond === false) QUIET[it.id] = 1; }); }
@@ -211,7 +226,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   window.addEventListener("error", function (e) { showError((e.message || "error") + (e.lineno ? " (line " + e.lineno + ")" : "")); });
   window.addEventListener("unhandledrejection", function (e) { showError("unhandled: " + (e.reason && (e.reason.code || e.reason.message) || e.reason)); });
   var KEY = {
-    version: 5,
+    version: 6,
     note: "One-off definition: this key describes how this submission's data is laid out. It holds until the next submit from this page; that submit carries its own key, the same one if nothing is applied differently, a changed one if it is.",
     answers: "Reply text by field id.",
     ids: {
@@ -235,6 +250,9 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     kept: "Field id to combined text kept beside that box after a back-to-default whose marker lines were damaged.",
     side_prompts: "Sent side prompts in order: { text, at, with ('own' or 'document'), refs (field ids referenced as [[field id]] in the text), after_reply (id of the most recent reply when it was sent, or null) }. A side prompt's reply is the item in review-replies whose side_prompt is its 1-based position.",
     flags: "Feature switches the viewer set: ctrl_g_bridge (true or false) records the choice for the Ctrl+G bridge, which is not built; the switch changes nothing else yet.",
+    splits: "Split requests in order: { id, cards (card ids to move), relation (tight: resolving there resolves here; linked: this page waits for that one; loose: related only), note, at, status (requested, then done once Claude made the new page) }.",
+    picked: "Card ids ticked for the next split (view state).",
+    lineage: "In the page data, not the saved state: lineage.parent { url, id }, lineage.children [{ url, id, cards, relation, at }], lineage.deltas [{ at, text }] (task and topic changes Claude recorded across the linked pages), and moved { card id: child url } for topics now handled elsewhere.",
     events: "The last 30 page events { at, what, ok, detail }: references, sends, failed saves and page errors, for diagnosis.",
     submitted: "true after the overall Submit; editing afterwards sets it back to false.",
     times: "submittedAt, savedAt and side prompt at are ISO 8601 UTC."
@@ -356,6 +374,8 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     s.appendChild(el("span", "who " + kind, kind === "issue" ? "Decision" : kind === "you" ? "Micaiah" : "Claude"));
     s.appendChild(inline(headText, el("span", "ttl")));
     s.appendChild(el("span", "chip " + st, st));
+    var moved = DATA.moved && DATA.moved[item.id];
+    if (moved) { var ma = el("a", "moved", "moved to a split page"); ma.href = moved; ma.target = "_blank"; ma.rel = "noopener"; s.appendChild(ma); }
     d.appendChild(s);
     var body = el("div", "body"); d.appendChild(body);
     var tools = el("div", "row");
@@ -367,6 +387,9 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     if (r.disabled && st !== "resolved") rk.title = st === "open" ? "Mark it addressed first" : "Mark the document addressed first";
     r.addEventListener("change", function () { setCardState(item.id, r.checked ? "resolved" : "addressed"); });
     rk.appendChild(r); rk.appendChild(document.createTextNode("Resolved")); tools.appendChild(rk);
+    var pk = el("label", "check"); var pc = el("input"); pc.type = "checkbox"; pc.id = "s-" + item.id; pc.checked = !!state.picked[item.id];
+    pc.addEventListener("change", function () { if (pc.checked) state.picked[item.id] = true; else delete state.picked[item.id]; touch(); renderSplit(); });
+    pk.appendChild(pc); pk.appendChild(document.createTextNode("Pick for split")); tools.appendChild(pk);
     var fb = btn("Collapse boxes"); fb.addEventListener("click", function () { foldIn(d, true); });
     var ub = btn("Expand boxes"); ub.addEventListener("click", function () { foldIn(d, false); });
     var comb = btn("Combine boxes"), go = btn("Combine selected"); go.hidden = true;
@@ -520,6 +543,8 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     $("side-ver").textContent = "Page version " + VERSION + ".";
     $("side-dot").hidden = !/\S/.test(state.answers["side-prompt"] || "");
     var af = $("after"); af.textContent = ""; af.appendChild(field("after-prompt", "After Prompt", 6));
+    var sn = $("split-note"); sn.textContent = ""; sn.appendChild(field("split-note", "Note for the split (optional)"));
+    if (typeof renderSplit === "function") renderSplit();
     document.querySelectorAll("details.card").forEach(function (d) { if (d.id in openNow) d.open = openNow[d.id]; });
     if (focusId && $(focusId)) { $(focusId).focus(); try { if (sel != null) $(focusId).selectionStart = $(focusId).selectionEnd = sel; } catch (e) {} }
     counts();
@@ -664,6 +689,31 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     state.flags = Object.assign({}, state.flags, { ctrl_g_bridge: flag.checked });
     logEvent("flag ctrl_g_bridge", true, String(flag.checked)); showFlag(); touch();
   });
+  function relName(v) { return v === "tight" ? "tight" : v === "loose" ? "loose" : "linked"; }
+  function renderSplit() {
+    var lin = DATA.lineage || {}, box = $("lineage"); box.textContent = "";
+    if (lin.parent) { var p = el("p", "note"); p.appendChild(document.createTextNode("Split from ")); var a = el("a", null, lin.parent.id || lin.parent.url); a.href = lin.parent.url; a.target = "_blank"; a.rel = "noopener"; p.appendChild(a); box.appendChild(p); }
+    (lin.children || []).forEach(function (c) { var p = el("p", "note"); p.appendChild(document.createTextNode("Split into ")); var a = el("a", null, c.id || c.url); a.href = c.url; a.target = "_blank"; a.rel = "noopener"; p.appendChild(a); p.appendChild(document.createTextNode(" · " + relName(c.relation) + " · " + (c.cards || []).length + " topics")); box.appendChild(p); });
+    if (lin.deltas && lin.deltas.length) { var g = el("div", "group"); g.appendChild(el("span", "fl", "Changes across linked pages")); lin.deltas.forEach(function (d) { g.appendChild(inline((d.at ? new Date(d.at).toLocaleString() + ": " : "") + d.text, el("p", "note"))); }); box.appendChild(g); }
+    if (!lin.parent && !(lin.children || []).length) box.appendChild(el("p", "note", "No splits yet; this page has no parent."));
+    var n = Object.keys(state.picked).length;
+    $("split-go").textContent = "Request split" + (n ? " (" + n + " topic" + (n === 1 ? "" : "s") + ")" : "");
+    var sl = $("split-list"); sl.textContent = "";
+    state.splits.forEach(function (sp) { sl.appendChild(el("p", "note", "Split " + sp.id + " · " + sp.cards.length + " topics · " + relName(sp.relation) + " · " + sp.status + " · " + new Date(sp.at).toLocaleString())); });
+  }
+  $("split-go").addEventListener("click", function () {
+    var cards = Object.keys(state.picked), m = $("split-msg");
+    if (!cards.length) { m.textContent = "Pick at least one card first (Pick for split, at the bottom of each card)."; m.className = "fb err"; return; }
+    var rel = (document.querySelector('input[name="rel"]:checked') || {}).value || "linked";
+    var sp = { id: "s" + (state.splits.length + 1), cards: cards, relation: rel, note: (state.answers["split-note"] || "").trim(), at: new Date().toISOString(), status: "requested" };
+    state.splits.push(sp); state.picked = {}; delete state.answers["split-note"];
+    logEvent("split requested", true, sp.id); render(); renderSplit();
+    enqueue().then(function (r) {
+      m.className = "fb " + (r && r.ok ? "ok" : "err");
+      m.textContent = r && r.ok ? "Split " + sp.id + " requested and saved." + (notifyState === "available" ? " Notifying Claude…" : " Tell Claude in the terminal.") : "Saved in this browser only; Claude can't see the request yet.";
+      if (r && r.ok && notifyState === "available") comments.anchorFor($("split-go")).then(function (a) { return comments.sendToClaude({ anchor: a, text: "Split " + sp.id + " requested: " + cards.length + " topics, " + rel + (sp.note ? ". Note: " + sp.note : "") }); }).then(function () { m.textContent = "Split " + sp.id + " requested; Claude has been notified."; }, function (e) { m.textContent = "Split saved, but Claude couldn't be notified (" + (e && e.code || "error") + ")."; m.className = "fb err"; });
+    });
+  });
   function pull() {
     if (!db) { setStatus("No shared store in this view: reloading the whole page…", true); setTimeout(function () { location.reload(); }, 300); return; }
     setStatus("Saving, then pulling in the latest data…");
@@ -696,6 +746,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     }
     delete state.addressed;
     state.flags = state.flags || { ctrl_g_bridge: false };
+    state.splits = state.splits || []; state.picked = state.picked || {};
     state.status = state.status || {}; state.folded = state.folded || {}; state.side_prompts = state.side_prompts || []; state.doc_status = state.doc_status || "open";
   }
   function rescue() {
