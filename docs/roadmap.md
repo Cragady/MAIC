@@ -116,6 +116,8 @@ Everything below is covered by tests against fake servers; these runs confirm it
 
 ## Marked for review
 
+* **A bans regex failure under fuzzing** (2026-10-03): the `fuzz` test failed once in the bans regex check (`/e*\b/` matched longer than the window) with `FUZZ_SEED=1606250349`; it predates the leave work. Reproduce with that seed and fix.
+* **A pty test that timed out once under load** (2026-10-03): `test_pause_menu_keeps_and_steer_drops` passed 3 of 3 alone; watch for it under parallel builds.
 * **Task token accounting against local and remote limits** (2026-10-03): the approach chosen for counting a running task's tokens against its parent's budget should be reviewed once real use shows whether it keeps cards and vendor quotas from a hard stop or a surprise bill.
 
 ## Parked
