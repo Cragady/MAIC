@@ -1,5 +1,5 @@
 {
-  "$comment": "The state machines of docs/design/engine-protocol.md section 10 as data: the engine's runtime ordering checks and the conformance checker (maic protocol check, ctest protocol_conformance) both load this file. A machine has states, an initial and terminal states, and transitions {from, on (event types), when (JSON pointer into the event: allowed values), key (JSON pointers naming the instance; the machine's key by default), to}. An event concerns a machine when one of its transitions lists the event's type and its `when` holds and its key is present; it must then be legal from the instance's state. `openai: true` machines also run over the OpenAI-only view (rule openai.view); `scope: response` instances live inside the open response; `one_open` and `closes` are the response machine's rules response.one_open and response.items_done. The rules that are not a single machine (sequence numbers, turns, schemas) are listed with their ids and implemented in core/src/protocol.cpp. Machines for reviews and steering join with steps 7 and 10.",
+  "$comment": "The state machines of docs/design/engine-protocol.md section 10 as data: the engine's runtime ordering checks and the conformance checker (maic protocol check, ctest protocol_conformance) both load this file. A machine has states, an initial and terminal states, and transitions {from, on (event types), when (JSON pointer into the event: allowed values), key (JSON pointers naming the instance; the machine's key by default), to}. An event concerns a machine when one of its transitions lists the event's type and its `when` holds and its key is present; it must then be legal from the instance's state. `openai: true` machines also run over the OpenAI-only view (rule openai.view); `scope: response` instances live inside the open response; `one_open` and `closes` are the response machine's rules response.one_open and response.items_done. The rules that are not a single machine (sequence numbers, turns, schemas) are listed with their ids and implemented in core/src/protocol.cpp. The machine for reviews joins with step 10.",
   "version": 1,
   "rules": [
     {
@@ -57,6 +57,14 @@
     {
       "id": "turn.final",
       "text": "A turn closes at the terminal event that carries maic.final: true; a new turn opens only after that."
+    },
+    {
+      "id": "turn.paused",
+      "text": "maic.turn.paused comes only while a turn is open and none of its responses is: right after a maic.response.cancelled with maic.final: false."
+    },
+    {
+      "id": "steer.in_turn",
+      "text": "response.steer.accepted, response.steer.failed and maic.steer.applied are legal only while a response of the turn is open or the turn is paused, and so before the events they cause."
     },
     {
       "id": "request.answered",
@@ -549,6 +557,51 @@
             "maic.question.answered"
           ],
           "to": "answered"
+        }
+      ]
+    },
+    {
+      "name": "steer",
+      "description": "One steer, by its id: accepted (response.steer, and maic.steer's steer, drop and further), applied (the six actions), or failed when a keep or halt ends the turn before its successor commits it. Its commit is the successor's response.created, which names no steer.",
+      "key": [
+        "/steer/id"
+      ],
+      "initial": "-",
+      "terminal": [
+        "failed"
+      ],
+      "transitions": [
+        {
+          "from": [
+            "-"
+          ],
+          "on": [
+            "response.steer.accepted"
+          ],
+          "to": "accepted"
+        },
+        {
+          "from": [
+            "-",
+            "accepted"
+          ],
+          "on": [
+            "maic.steer.applied"
+          ],
+          "key": [
+            "/steer"
+          ],
+          "to": "applied"
+        },
+        {
+          "from": [
+            "accepted",
+            "applied"
+          ],
+          "on": [
+            "response.steer.failed"
+          ],
+          "to": "failed"
         }
       ]
     }

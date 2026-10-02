@@ -185,6 +185,7 @@ int main() {
     o.settings.mode = "manual";
     o.settings.harness = "dumb";  // the rules alone judge: no reviewer calls reach the fake
     o.settings.dumb_auto_ok = true;
+    o.settings.steering.clients_remote = {"steer", "drop", "further", "interrupt", "keep"};  // a remote client may not halt here
     o.settings.providers = {fake.provider()};
     o.workspaces = {ws};
     o.index_file = root / "state" / "engine" / "index.json";
@@ -192,9 +193,10 @@ int main() {
     auto engine = std::make_unique<Engine>(o);
     std::mutex calls_mu;
     std::vector<json> script;  // tool calls the fake answers with, in order; then echoes
-    fake.tool_call_for = [&](const json&) -> json {
+    fake.tool_call_for = [&](const json& body) -> json {
         std::lock_guard lock(calls_mu);
-        if (script.empty()) return nullptr;
+        // A compaction's summary is asked with no tools: the script is for the agent's own calls.
+        if (script.empty() || !body.contains("tools") || body["tools"].empty()) return nullptr;
         json c = script.front();
         script.erase(script.begin());
         return c;
@@ -468,24 +470,200 @@ int main() {
         a.ok("response.create", {{"conversation", sid}, {"input", "check the build"}});
         long call = a.until([](const json& e) { return e["type"] == "response.output_item.done" && e["item"]["type"] == "shell_call"; }, mark);
         expect(call > 0 && !a.find("maic.approval.requested", mark), "auto mode runs the local turn's first command unasked");
-        json q = b.ok("response.create", {{"conversation", sid}, {"input", "also run the tests"}});
-        expect(q["maic"]["queued"] == true, "a message on a busy session is delivered into the running response");
+        json first = a.find("response.created", mark) ? *a.find("response.created", mark) : json{{"response", {{"id", ""}, {"maic", {{"turn", 0}}}}}};
+        std::string rid = first["response"]["id"];
+        json q = b.ok("response.steer", {{"previous_response_id", rid}, {"input", "also run the tests"}});
+        expect(q["steer"]["previous_response_id"] == rid, "response.steer on a busy session is accepted for the running response");
         long at = a.until_type("maic.approval.requested", call);
         expect(at > 0 && a.events[at]["origin"] == "remote" && a.events[at]["summary"].get<std::string>().find("echo after") != std::string::npos,
                "the command after the remote message is asked, as remote");
         a.ok("maic.approval.answer", {{"session", sid}, {"approval", a.events[at]["id"]}, {"choice", "yes"}});
         a.until_idle(at);
         const json* input = a.find("maic.input.added", call);
-        const json* created = a.find("response.created", mark);
+        const json* accepted = a.find("response.steer.accepted", call);
+        const json* steered = a.find("response.incomplete", mark);
+        const json* next = a.find("response.created", call);
         const json* done = a.find("response.completed", mark);
         expect(input && (*input)["queued"] == true && (*input)["by"]["origin"] == "remote", "the remote input is announced, queued, by the phone");
-        expect(created && done && (*created)["response"]["maic"]["origin"] == "local" && (*done)["response"]["maic"]["origin"] == "remote",
-               "the response opened local and closed remote: the origin only rises");
+        expect(accepted && (*accepted)["steer"]["id"] == q["steer"]["id"], "response.steer.accepted says the engine owns it");
+        expect(steered && (*steered)["response"]["id"] == rid && (*steered)["response"]["incomplete_details"]["reason"] == "steered" &&
+                   (*steered)["response"]["maic"]["final"] == false && (*steered)["response"]["maic"]["origin"] == "local",
+               "at the next boundary the response ends incomplete, steered, still local");
+        expect(next && (*next)["response"]["previous_response_id"] == rid && (*next)["response"]["maic"]["turn"] == first["response"]["maic"]["turn"] &&
+                   (*next)["response"]["maic"]["origin"] == "remote" && done && (*done)["response"]["id"] == (*next)["response"]["id"],
+               "its successor carries the remote input, in the same turn, remote: the origin only rises");
         a.ok("maic.session.set", {{"session", sid}, {"mode", "manual"}});
         expect(b.error("maic.session.set", {{"session", sid}, {"mode", "auto"}}) == "maic_step_up_required", "a remote client loosens to auto only after a step-up");
         rise.finish();
     }
     recordings.push_back(&rise);
+
+    section("steering: response.steer, the lane, and the six actions");
+    Recording steering("steering");
+    {
+        TestClient a(*engine, steering, Origin::Local, "tui");
+        TestClient b(*engine, steering, Origin::Remote, "phone");
+        a.hello();
+        b.hello();
+        a.ok("maic.session.subscribe", {{"session", sid}});
+        a.pump(0ms);
+        auto running = [&](size_t from) {
+            long at = a.until_type("response.output_text.delta", from);
+            std::string rid;
+            for (size_t i = from; i < a.events.size(); ++i) {
+                if (a.events[i]["type"] == "response.created") rid = a.events[i]["response"]["id"];
+            }
+            return std::make_pair(at, rid);
+        };
+        auto last = [&](const std::string& type, size_t from) -> const json* {
+            const json* found = nullptr;
+            for (size_t i = from; i < a.events.size(); ++i) {
+                if (a.events[i]["type"] == type) found = &a.events[i];
+            }
+            return found;
+        };
+
+        // The lane: response.create on a busy session is a turn of its own, after the running one.
+        size_t mark = a.events.size();
+        fake.hold_left = 1;
+        a.ok("response.create", {{"conversation", sid}, {"input", "the first in line"}});
+        auto [at, rid] = running(mark);
+        json queued = b.ok("response.create", {{"conversation", sid}, {"input", "the second in line"}});
+        expect(queued["status"] == "queued" && queued["maic"]["queued"] == true && queued["maic"]["turn"].get<int>() == a.find("response.created", mark)->at("response")["maic"]["turn"].get<int>() + 1,
+               "response.create on a busy lane answers a queued response with the next turn's number");
+        json dropped = b.ok("response.create", {{"conversation", sid}, {"input", "never mind this one"}});
+        json gone = b.ok("cancelResponse", {{"response_id", dropped["id"]}});
+        expect(gone["status"] == "cancelled", "cancelResponse takes a queued response off the lane");
+        expect(b.error("response.steer", {{"previous_response_id", queued["id"]}, {"input", "x"}}) == "response_not_active", "a queued response takes no steer");
+        a.ok("cancelResponse", {{"response_id", rid}});
+        long queued_at = a.until([&](const json& e) { return e["type"] == "response.created" && e["response"]["id"] == queued["id"]; }, mark);
+        expect(queued_at > 0 && a.events[queued_at]["response"]["previous_response_id"].is_null(), "after the cancel the queued turn runs, as a turn of its own");
+        a.until([&](const json& e) { return e["type"] == "response.completed" && e["response"]["id"] == queued["id"]; }, mark);
+        a.until_idle(static_cast<size_t>(queued_at));
+        expect(a.text(static_cast<size_t>(queued_at)) == "echo: the second in line" && a.text(mark).find("never mind") == std::string::npos, "it answers its own input; the cancelled one never ran");
+        expect(b.error("response.steer", {{"previous_response_id", rid}, {"input", "too late"}}) == "response_already_completed", "a steer for an ended response is response_already_completed");
+        expect(b.error("response.steer", {{"previous_response_id", sid + ".r999"}, {"input", "x"}}) == "response_not_found", "one for no response is response_not_found");
+
+        // drop, stopping now: the partial reply trimmed (all of it here), the note in a successor.
+        mark = a.events.size();
+        fake.hold_left = 1;
+        a.ok("response.create", {{"conversation", sid}, {"input", "talk about the cluster"}});
+        std::tie(at, rid) = running(mark);
+        json st = a.ok("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "drop"}, {"note", "leave the cluster out"}, {"trim", "all"}});
+        a.until_idle(static_cast<size_t>(at));
+        const json* applied = a.find("maic.steer.applied", mark);
+        const json* done_text = a.find("response.output_text.done", mark);
+        const json* steered = a.find("response.incomplete", mark);
+        expect(applied && (*applied)["steer"] == st["steer"]["id"] && (*applied)["action"] == "drop" && (*applied)["trigger"] == "client" && (*applied)["trimmed"]["from"] == 0 &&
+                   a.find("response.steer.accepted", mark),
+               "maic.steer drop is accepted and applied, saying what it trimmed");
+        expect(done_text && (*done_text)["text"] == "" && (*done_text)["maic"]["trimmed"]["from"] == 0, "the reply's done event carries the trimmed text and the range");
+        expect(steered && (*steered)["response"]["maic"]["ended_by"] == "drop" && (*steered)["response"]["incomplete_details"]["reason"] == "steered",
+               "the response ends incomplete, steered by the drop");
+        std::string said = a.text(static_cast<size_t>(steered ? steered - &a.events[0] : 0));
+        expect(said.find("echo: The user dropped the topic you had started") == 0 && said.find("leave the cluster out") != std::string::npos,
+               "the successor gets drop's text and the note");
+
+        // interrupt pauses the turn; response.steer resumes it.
+        mark = a.events.size();
+        fake.hold_left = 1;
+        a.ok("response.create", {{"conversation", sid}, {"input", "a slow one"}});
+        std::tie(at, rid) = running(mark);
+        a.ok("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "interrupt"}});
+        long paused = a.until_type("maic.turn.paused", mark);
+        const json* cancelled = a.find("maic.response.cancelled", mark);
+        long waiting = a.until([](const json& e) { return e["type"] == "maic.session.state" && e["activity"] == "waiting" && e["waiting"]["kind"] == "steer"; }, mark);
+        expect(paused > 0 && cancelled && (*cancelled)["response"]["maic"]["final"] == false && (*cancelled)["response"]["maic"]["ended_by"] == "interrupt" &&
+                   a.events[paused]["response_id"] == rid && waiting > 0,
+               "interrupt cancels the response without ending the turn, and the session waits, paused");
+        expect(a.error("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "interrupt"}}) == "response_not_active", "a paused turn takes no second interrupt");
+        b.ok("response.steer", {{"previous_response_id", rid}, {"input", "carry on, gently"}});
+        long resumed = a.until([&](const json& e) { return e["type"] == "response.created" && e["response"]["previous_response_id"] == rid; }, mark);
+        a.until_idle(static_cast<size_t>(resumed > 0 ? resumed : 0));
+        expect(resumed > 0 && a.text(static_cast<size_t>(resumed)) == "echo: carry on, gently" && last("response.completed", mark) &&
+                   (*last("response.completed", mark))["response"]["maic"]["final"] == true,
+               "a message resumes it in a successor that ends the turn");
+
+        // keep and halt.
+        mark = a.events.size();
+        fake.hold_left = 1;
+        a.ok("response.create", {{"conversation", sid}, {"input", "keep what you have"}});
+        std::tie(at, rid) = running(mark);
+        a.ok("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "keep"}});
+        a.until_idle(static_cast<size_t>(at));
+        const json* kept = a.find("response.completed", mark);
+        expect(kept && (*kept)["response"]["maic"]["ended_by"] == "keep" && (*kept)["response"]["maic"]["final"] == true &&
+                   (*kept)["response"]["output"][0]["content"][0]["text"] == "echo",
+               "keep ends the turn with the partial reply as the answer");
+        mark = a.events.size();
+        fake.hold_left = 1;
+        a.ok("response.create", {{"conversation", sid}, {"input", "throw this away"}});
+        std::tie(at, rid) = running(mark);
+        json waits = a.ok("response.steer", {{"previous_response_id", rid}, {"input", "and then this"}});
+        a.ok("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "halt"}});
+        a.until_idle(static_cast<size_t>(at));
+        const json* error = a.find("error", mark);
+        const json* failed = a.find("response.steer.failed", mark);
+        const json* halted = a.find("maic.response.cancelled", mark);
+        const json* discarded = nullptr;
+        for (size_t i = mark; i < a.events.size(); ++i) {
+            if (a.events[i]["type"] == "response.output_item.done" && a.events[i]["item"]["type"] == "message") discarded = &a.events[i];
+        }
+        expect(error && (*error)["code"] == "maic_halted" && halted && (*halted)["response"]["maic"]["ended_by"] == "halt" && (*halted)["response"]["maic"]["final"] == true,
+               "halt: OpenAI's error event with maic_halted, then the response cancelled, the turn over");
+        expect(discarded && (*discarded)["item"]["status"] == "incomplete" && (*discarded)["item"]["maic"]["status"] == "discarded", "the partial reply is closed, discarded");
+        expect(failed && (*failed)["steer"]["id"] == waits["steer"]["id"] && (*failed)["error"]["code"] == "response_not_active" && (*failed)["steer"]["input"] == "and then this",
+               "a steer accepted before the halt comes back in response.steer.failed, with its input");
+        bool told = false, leaked = false;
+        mark = a.events.size();
+        a.ok("response.create", {{"conversation", sid}, {"input", "after the halt"}});
+        a.until_idle(mark);
+        {
+            std::lock_guard lock(fake.mu);
+            for (const auto& m : fake.requests.back()["messages"]) {
+                std::string t = FakeServer::text_of(m["content"]);
+                told = told || t.find("The user halted this turn") != std::string::npos;
+                leaked = leaked || (m["role"] == "user" && t.find("and then this") != std::string::npos);
+            }
+        }
+        expect(told && !leaked, "the model is told it was halted, and the failed steer never reaches it");
+
+        // A steer while an approval waits withdraws it; further waits for it.
+        mark = a.events.size();
+        plan({shell("echo withdrawn")});
+        a.ok("response.create", {{"conversation", sid}, {"input", "run something"}});
+        long ask = a.until_type("maic.approval.requested", mark);
+        rid = a.find("response.created", mark)->at("response")["id"];
+        json further = b.ok("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "further"}, {"note", "and why"}});
+        const json* waits_for = nullptr;
+        a.until_type("maic.steer.applied", mark);
+        waits_for = a.find("maic.steer.applied", mark);
+        expect(waits_for && (*waits_for)["waits_for"] == a.events[ask]["id"] && !a.find("maic.approval.answered", mark), "further leaves the approval alone and waits for it");
+        a.ok("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "steer"}, {"note", "do not run it"}});
+        a.until_idle(static_cast<size_t>(ask));
+        const json* answered = a.find("maic.approval.answered", mark);
+        const json* result = nullptr;
+        for (size_t i = mark; i < a.events.size(); ++i) {
+            if (a.events[i]["type"] == "response.output_item.done" && a.events[i]["item"]["type"] == "shell_call_output") result = &a.events[i];
+        }
+        expect(answered && (*answered)["choice"] == "withdrawn" && result && (*result)["item"]["output"][0]["stdout"] == "not run: the user redirected",
+               "steer withdraws the waiting approval: the call says it was not run");
+        std::string next_text = a.text(mark);
+        expect(next_text.find("The user asks you to go deeper") != std::string::npos || next_text.find("The user redirected you: do not run it.") != std::string::npos,
+               "and the successor carries the notes");
+
+        // Who may send what: steering.clients and steering.actions.
+        mark = a.events.size();
+        fake.hold_left = 1;
+        a.ok("response.create", {{"conversation", sid}, {"input", "one more"}});
+        std::tie(at, rid) = running(mark);
+        expect(b.error("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "halt"}}) == "maic_steer_disabled", "an action steering.clients keeps from remote clients is maic_steer_disabled");
+        a.ok("cancelResponse", {{"response_id", rid}});
+        a.until_idle(static_cast<size_t>(at));
+        b.pump(100ms);
+        steering.finish();
+    }
+    recordings.push_back(&steering);
 
     section("a slow consumer gets skips, never a gap");
     Recording slow("slow-consumer");
@@ -645,6 +823,42 @@ int main() {
         expect(now["maic"]["queued"] == true && end > 0 && a.text(mark).find("echo: and the paws") != std::string::npos,
                "maic.now delivers into the running response at once: the held call is dropped and the next one has it");
 
+        // A ban entry's steer: the filter cuts before the match, then the engine applies the action as a person's. One
+        // that keeps firing past `retries` halts the turn.
+        for (bool escalate : {false, true}) {
+            Settings bst = st;
+            bst.small_model.clear();
+            bst.bans = Bans::from_json({{"patterns", json::array({{{"1", "forbidden"}, {"steer", "drop"}, {"note", escalate ? "Still forbidden." : "Say it another way."}}})}, {"retries", 1}});
+            LocalSession bs;
+            bs.workspace = ws;
+            bs.settings = bst;
+            bs.log = std::make_unique<SessionLog>("tui", root / "state" / "local");
+            bs.setup = [&](Agent& agent, SessionLog& log) {
+                configure_agent(agent, bst);
+                agent.mode = Mode::Manual;
+                agent.set_log(&log);
+            };
+            std::string bid = local.open_local(a.id, std::move(bs));
+            a.ok("maic.session.attach", {{"session", bid}});
+            mark = a.events.size();
+            a.ok("response.create", {{"conversation", bid}, {"input", "say forbidden words"}});
+            a.until_idle(mark);
+            const json* applied = a.find("maic.steer.applied", mark);
+            expect(applied && (*applied)["trigger"] == "ban" && (*applied)["ban"]["list"] == "patterns" && (*applied)["ban"]["index"] == 0 &&
+                       (*applied)["by"]["client"] == "engine" && (*applied)["by"]["name"] == "bans" && (*applied)["action"] == "drop",
+                   "a ban's steer is applied with trigger ban, naming its entry and never the matched text");
+            expect(a.text(mark).find("forbidden") == std::string::npos, "the match never reaches a screen");
+            if (!escalate) {
+                const json* done = a.find("response.completed", mark);
+                expect(a.find("response.incomplete", mark) && done && (*done)["response"]["maic"]["final"] == true &&
+                           a.text(mark).find("echo: The user dropped the topic you had started") != std::string::npos && a.text(mark).find("Say it another way.") != std::string::npos,
+                       "drop: the response ends steered and a successor gets drop's text and the entry's note");
+            } else {
+                const json* error = a.find("error", mark);
+                expect(error && (*error)["code"] == "maic_halted" && a.count("maic.steer.applied") >= 2, "a ban that fires again past its retries halts the turn");
+            }
+        }
+
         // The remote allow-list of section 7.
         TestClient b(local, host, Origin::Remote, "phone");
         b.hello();
@@ -681,7 +895,7 @@ int main() {
         idx.finish();
     }
 
-    section("driven: a fixed-seed run of messages, approvals, answers from two clients and cancels");
+    section("driven: a fixed-seed run of messages, approvals, answers from two clients, cancels and steers");
     Recording driven("driven");
     {
         std::mt19937 rng(20261002);
@@ -691,14 +905,16 @@ int main() {
         b.hello();
         a.ok("maic.session.subscribe", {{"session", sid}});
         b.ok("maic.session.subscribe", {{"session", sid}});
+        a.ok("maic.session.set", {{"session", sid}, {"mode", "manual"}});  // every command asks: the approvals are part of the run
         int turns = 0;
-        for (int step = 0; step < 8; ++step) {
+        for (int step = 0; step < 14; ++step) {
             a.pump(0ms);
             size_t mark = a.events.size();
-            int kind = static_cast<int>(rng() % 4);
+            int kind = static_cast<int>(rng() % 6);
             TestClient& who = rng() % 2 ? a : b;
             if (kind == 1 || kind == 3) plan({shell("echo driven " + std::to_string(step))});
-            if (kind == 2) fake.hold_left = 1;
+            if (kind == 2 || kind == 4) fake.hold_left = 1;
+            if (kind == 5) plan({shell("echo steered " + std::to_string(step))});
             who.ok("response.create", {{"conversation", sid}, {"input", "step " + std::to_string(step)}});
             if (kind == 1) {
                 long at = a.until_type("maic.approval.requested", mark);
@@ -711,13 +927,40 @@ int main() {
             } else if (kind == 3) {
                 // A message while the turn waits on an approval reaches the model at the next step.
                 long at = a.until_type("maic.approval.requested", mark);
-                (rng() % 2 ? a : b).ok("response.create", {{"conversation", sid}, {"input", "and one more thing"}});
+                const json* created = a.find("response.created", mark);
+                if (created) (rng() % 2 ? a : b).ok("response.steer", {{"previous_response_id", (*created)["response"]["id"]}, {"input", "and one more thing"}});
                 if (at > 0) a.ok("maic.approval.answer", {{"session", sid}, {"approval", a.events[at]["id"]}, {"choice", "yes"}});
+            } else if (kind == 4 || kind == 5) {
+                // A steer of a random action mid-reply (4) or at an approval (5); a paused turn is resumed or ended.
+                // Mid-reply the fake holds until it is hung up on: a further (which waits for the end of the call) or a
+                // refused steer would hold it ten seconds, so those go to the approvals.
+                static const char* actions[] = {"steer", "drop", "interrupt", "keep", "halt", "further"};
+                std::string action = actions[rng() % (kind == 4 ? 5 : 6)];
+                long at = kind == 4 ? a.until_type("response.output_text.delta", mark) : a.until_type("maic.approval.requested", mark);
+                const json* created = a.find("response.created", mark);
+                if (at > 0 && created) {
+                    std::string rid = (*created)["response"]["id"];
+                    TestClient& who = kind == 4 || rng() % 2 ? a : b;
+                    json r = who.call("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", action}, {"note", "steer " + std::to_string(step)}});
+                    if (!r.contains("error") && action == "interrupt" && a.until_type("maic.turn.paused", mark) > 0) {
+                        int how = static_cast<int>(rng() % 3);
+                        if (how == 0) a.ok("response.steer", {{"previous_response_id", rid}, {"input", "go on"}});
+                        else if (how == 1) a.ok("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "keep"}});
+                        else a.ok("cancelResponse", {{"response_id", rid}});
+                    }
+                }
+                // What is still waiting (a further's approval, an approval after a steer's successor) is answered.
+                for (size_t from = mark;;) {
+                    long ask = a.until([](const json& e) { return e["type"] == "maic.approval.requested" || (e["type"] == "maic.session.state" && e["activity"] == "idle"); }, from);
+                    if (ask < 0 || a.events[ask]["type"] != "maic.approval.requested") break;
+                    a.call("maic.approval.answer", {{"session", sid}, {"approval", a.events[ask]["id"]}, {"choice", "yes"}});
+                    from = static_cast<size_t>(ask) + 1;
+                }
             }
             turns += a.until_idle(mark) > 0;
         }
         b.pump(200ms);
-        expect(turns == 8, "eight driven turns ran to their end");
+        expect(turns == 14, "fourteen driven turns, steered at random, ran to their end");
         driven.finish();
     }
     recordings.push_back(&driven);
@@ -763,6 +1006,15 @@ int main() {
             second["response"]["id"] = second["response"]["id"].get<std::string>() + "x";
             r = insert_event(r, deltas[0], second);
         }, "response.one_open");
+        mutate("a steer accepted after the turn ended", [&](std::vector<json>& r) {
+            size_t done = events_of(r, "response.completed")[0];
+            std::string rid = r[done]["msg"]["params"]["response"]["id"];
+            r = insert_event(r, done + 1, {{"type", "response.steer.accepted"}, {"steer", {{"id", "st99"}, {"previous_response_id", rid}}}});
+        }, "steer.in_turn");
+        mutate("a pause while the response is open", [&](std::vector<json>& r) {
+            std::string rid = r[events_of(r, "response.created")[0]]["msg"]["params"]["response"]["id"];
+            r = insert_event(r, deltas[1], {{"type", "maic.turn.paused"}, {"turn", 1}, {"steer", "st99"}, {"response_id", rid}});
+        }, "turn.paused");
         mutate("a delta's text changed", [&](std::vector<json>& r) { r[deltas[0]]["msg"]["params"]["delta"] = "fennec"; }, "");
         mutate("a field added inside maic", [&](std::vector<json>& r) { r[deltas[0]]["msg"]["params"]["maic"] = {{"note", "fine"}}; }, "");
         std::vector<json> r = tool.records;
@@ -777,6 +1029,16 @@ int main() {
         std::swap(r[ans]["msg"]["params"]["sequence_number"], r[first_output]["msg"]["params"]["sequence_number"]);
         got = verdict(r);
         expect(got == "machine", "output before its approval was answered is caught (" + got + ")");
+        r = steering.records;
+        size_t applied = events_of(r, "maic.steer.applied")[0];
+        r.insert(r.begin() + static_cast<long>(applied) + 1, r[applied]);
+        r[applied + 1]["msg"]["params"]["sequence_number"] = r[applied]["msg"]["params"]["sequence_number"].get<long>() + 1;
+        for (size_t i = applied + 2; i < r.size(); ++i) {
+            json& m = r[i]["msg"];
+            if (r[i]["conn"] == r[applied]["conn"] && m.value("method", "") == "maic.event") m["params"]["sequence_number"] = m["params"]["sequence_number"].get<long>() + 1;
+        }
+        got = verdict(r);
+        expect(got == "machine", "a steer applied twice is caught (" + got + ")");
     }
 
     section("the OpenAI-only view still follows a session");

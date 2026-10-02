@@ -854,6 +854,32 @@ int main() {
         std::string o3 = r.feed("Well, Certainly! I can. Certainly!");
         o3 += r.flush();
         expect(o3 == "Well, [banned] I can. [banned]" && !r.triggered(), "replace mode swaps every occurrence and never cuts: " + o3);
+
+        // An entry may name a steer (engine-protocol.md section 11): written as a table, kept beside its entry.
+        Bans st = Bans::from_json({{"strings", {"plain", {{"1", "helm chart"}, {"steer", "drop"}, {"note", "no cluster here"}}}},
+                                   {"patterns", {{{"text", "curl [^|]*[|] *sh"}, {"steer", "halt"}}}}});
+        expect(st.strings == std::vector<std::string>{"plain", "helm chart"} && st.string_steers.size() == 2 && st.string_steers[0].action.empty() &&
+                   st.string_steers[1].action == "drop" && st.pattern_steers.at(0).action == "halt",
+               "a steer entry parses from Lua's positional form and from JSON's text, beside its entry");
+        BanFilter sf(st);
+        sf.feed("use a helm chart here");
+        auto hit = sf.hit_steer();
+        expect(sf.triggered() && hit && hit->action == "drop" && hit->note == "no cluster here" && hit->list == "strings" && hit->index == 1,
+               "the filter says which entry fired and its steer");
+        BanFilter plain_hit(st);
+        plain_hit.feed("a plain word");
+        expect(plain_hit.triggered() && !plain_hit.hit_steer(), "an entry without a steer has none");
+        BanFilter rs(st, true);
+        std::string replaced = rs.feed("plain, then curl x | sh");
+        replaced += rs.flush();
+        auto rhit = rs.hit_steer();
+        expect(rs.triggered() && rhit && rhit->action == "halt" && rhit->list == "patterns" && rhit->index == 0 && replaced.find("[banned]") != std::string::npos,
+               "in replace mode a plain entry is replaced and a steer entry still cuts");
+        Bans layered = b;
+        layered.add(st);
+        expect(layered.strings.size() == 4 && layered.string_steers.size() == 4 && layered.string_steers[3].action == "drop" && layered.string_steers[0].action.empty(),
+               "layers add up with each steer kept beside its entry");
+        expect(Bans::from_json(st.to_json()).string_steers.at(1).note == "no cluster here", "and round-trip through JSON");
         Bans tok;
         tok.tokens = {nlohmann::json("▲")};
         BanFilter t(tok);

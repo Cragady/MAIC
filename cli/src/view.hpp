@@ -36,6 +36,7 @@ public:
     bool collapse_default() const { return collapse_default_; }
     void set_all_collapsed(bool on);  // zR / zM
     void append_to_last(Kind kind, std::string_view delta);  // streaming: extends the last entry if it has this kind
+    void replace_last(Kind kind, std::string text);          // the last entry of this kind says `text` instead (a drop trimmed it)
     // A running command's output: extends the live entry (made under the tool call on the first chunk), which
     // keeps only the last kLiveLines lines. finish_live appends the result and drops the live entry.
     void live_output(std::string_view text);

@@ -33,6 +33,9 @@ ROOTS = [
     "ConversationResource",                 # the conversation object: createConversation, getConversation
     "ConversationItem",                     # a conversation's items: maic.session.attach, listConversationItems
     "CreateResponse",                       # response.create's fields, the Responses WebSocket's client event
+    "ResponseSteerEvent",                   # response.steer, the WebSocket's other client event
+    "ResponseSteerAcceptedEvent",           # the WebSocket's steering events, outside ResponseStreamEvent
+    "ResponseSteerFailedEvent",
 ]
 
 PREFIX = "#/components/schemas/"

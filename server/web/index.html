@@ -661,7 +661,9 @@ class RelayTunnel {
       case 'maic.notice': addEntry('notice', e.text); break;
       case 'error': addEntry('error', e.message); break;
       case 'response.failed': addEntry('error', e.response.error ? e.response.error.message : 'the response failed'); break;
-      case 'maic.response.cancelled': addEntry('notice', 'interrupted'); break;
+      case 'maic.response.cancelled': addEntry('notice', e.response.maic && e.response.maic.final === false ? 'paused' : 'interrupted'); break;
+      case 'maic.steer.applied': addEntry('notice', 'steered: ' + e.action + (e.note ? ': ' + e.note : '')); break;
+      case 'error': addEntry('notice', 'halted: ' + e.message); break;
       case 'maic.approval.requested': showApproval(e); break;
       case 'maic.approval.answered': hideApproval(); addEntry('notice', 'approval: ' + e.choice + (e.by && e.by.name ? ' (' + e.by.name + ')' : '')); break;
       case 'maic.session.settings': if (state.session && e.mode) state.session.mode = e.mode; statusLine(); break;

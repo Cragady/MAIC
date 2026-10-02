@@ -127,6 +127,12 @@ Schemas::Schemas() {
         const json& type = schema.at("properties").at("type");
         if (type.contains("enum")) openai_events_[type["enum"][0].get<std::string>()] = ref.substr(1);
     }
+    // The WebSocket's steering events are OpenAI's too, outside ResponseStreamEvent.
+    for (const char* name : {"ResponseSteerAcceptedEvent", "ResponseSteerFailedEvent"}) {
+        std::string ref = bundle_pointer("openai/subset.json") + "/components/schemas/" + name;
+        const json& type = bundle_.at(json::json_pointer(ref)).at("properties").at("type");
+        openai_events_[type["enum"][0].get<std::string>()] = ref;
+    }
 }
 
 const json& Schemas::file(const std::string& path) const {
@@ -388,6 +394,12 @@ std::optional<Violation> StreamChecker::check(const json& event) {
         if (rid == open) open.clear();
         last_response = rid;
         if (!openai_only_) turn_open = !(at(event, "/response/maic/final") == true);
+    } else if (type == "maic.turn.paused") {
+        if (!openai_only_ && !(joined_ && seen_responses_.empty()) && (!turn_open || !open.empty())) {
+            return fail("turn.paused", open.empty() ? "no turn is open" : "response " + open + " is still open");
+        }
+    } else if (type == "response.steer.accepted" || type == "response.steer.failed" || type == "maic.steer.applied") {
+        if (!openai_only_ && !(joined_ && seen_responses_.empty()) && !turn_open) return fail("steer.in_turn", "no turn is open");
     } else if (type == "response.output_item.added" && !open.empty()) {
         long want = next_output_index_.count(open) ? next_output_index_[open] : 0;
         const json& idx = at(event, "/output_index");

@@ -80,6 +80,11 @@ public:
                     if (type == "response.failed") failure_ = e["response"]["error"].value("message", "the turn failed");
                 }
                 if (type == "maic.session.state" && e.value("activity", "") == "idle" && final) return failure_;
+                if (type == "maic.turn.paused") {
+                    // A ban's interrupt paused the turn for a person; maic -p has none, so the turn ends here.
+                    notice("paused by a ban's interrupt steer; with no one to resume it, the turn ends");
+                    call("cancelResponse", {{"response_id", e.value("response_id", response)}});
+                }
                 on_event(e);
             }
             if (!engine_.closed(client_).empty()) return failure_;
@@ -124,6 +129,10 @@ private:
             question(e);
         } else if (type == "maic.usage.updated") {
             usage = e;
+        } else if (type == "error") {
+            notice("halted: " + e.value("message", ""));
+        } else if (type == "maic.steer.applied") {
+            notice("steered: " + e.value("action", "") + (e.value("trigger", "") == "ban" ? " (a ban's steer)" : ""));
         }
     }
 

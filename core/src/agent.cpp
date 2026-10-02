@@ -576,11 +576,20 @@ std::vector<Agent::Queued> Agent::take_queued() {
     return out;
 }
 
-bool Agent::drain_mailbox() {
+bool Agent::drain_mailbox(AgentEvents& events) {
     std::deque<Queued> pending;
     {
         std::lock_guard lock(mailbox_mu_);
         pending.swap(mailbox_);
+    }
+    if (!pending.empty()) {
+        std::vector<std::string> texts;
+        bool remote = false;
+        for (const auto& q : pending) {
+            texts.push_back(q.text);
+            remote = remote || q.origin == Origin::Remote;
+        }
+        events.on_delivered(texts, remote);
     }
     for (const auto& q : pending) {
         nlohmann::json record = {{"text", q.text}, {"queued", true}};
@@ -643,7 +652,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
     int context_retries = 0;
     denials_ = 0;
     for (int step = 0; step < max_steps; ++step) {
-        if (drain_mailbox()) events.on_notice("delivered your queued message");
+        if (drain_mailbox(events)) events.on_notice("delivered your queued message");
         origin = turn_origin_;  // a remote message delivered into the turn makes the rest of it remote
         if (budget_tokens > 0) {
             UsageReport u = usage();
@@ -740,8 +749,18 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
                 abort = true;
                 watcher.join();
                 if (filter.triggered()) {
-                    // Keep the clean part, tell the model, and ask again.
                     ++ban_attempts;
+                    if (auto hit = filter.hit_steer()) {
+                        // The entry names a steer action: the front end applies it as a person's steer. One that keeps
+                        // firing past `retries` halts the turn.
+                        if (ban_attempts > bans.retries) hit->action = "halt";
+                        Redirect r = events.stopped(&*hit);
+                        if (r.then != Redirect::Then::End) {
+                            if (!redirected(r, events)) return;
+                            continue;
+                        }
+                    }
+                    // Keep the clean part, tell the model, and ask again.
                     if (!filter.clean().empty()) push({"assistant", filter.clean()});
                     push({"system", "The reply was cut off because it started the banned phrase \"" + filter.hit() + "\". Continue from exactly where it stopped, "
                                     "without that phrase or any of these: " + [&] {
@@ -766,9 +785,8 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
                 events.on_notice("delivering your message now");
                 continue;  // nothing from the aborted call was kept; the loop re-asks with the mailbox drained
             }
-            push({"user", "[interrupted by the user]"});
-            events.on_notice("interrupted");
-            return;
+            if (!redirected(events.stopped(nullptr), events)) return;
+            continue;
         } catch (const ApiError& e) {
             if (!agent_name_.empty() && is_usage_limit(e)) {
                 // A subagent continues on its preset's on_limit model, once, with the conversation so far.
@@ -815,18 +833,31 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
         if (reply.tool_calls.empty()) {
             return;
         }
+        bool stopped = false;
         for (size_t i = 0; i < reply.tool_calls.size(); ++i) {
-            push(run_tool_call(reply.tool_calls[i], origin, events, cancel));
-            if (cancel.load()) {
+            Message result = run_tool_call(reply.tool_calls[i], origin, events, cancel);
+            if (!cancel.load()) {
+                push(std::move(result));
+            } else {
+                Redirect r = events.stopped(nullptr);
+                if (r.then == Redirect::Then::Halt) result.content = r.unrun;  // a halt discards what the call printed
+                push(std::move(result));
                 // Every call in the turn needs a result, or the next request is rejected.
                 for (size_t j = i + 1; j < reply.tool_calls.size(); ++j) {
                     const auto& c = reply.tool_calls[j];
-                    push({"tool", "cancelled by the user", {}, c.name, c.id, true});
+                    push({"tool", r.unrun.empty() ? "cancelled by the user" : r.unrun, {}, c.name, c.id, true});
                 }
-                events.on_notice("interrupted");
-                return;
+                if (r.then == Redirect::Then::End) {
+                    events.on_notice("interrupted");
+                    return;
+                }
+                r.kept.reset();  // the reply went into the history with its calls
+                if (!redirected(r, events)) return;
+                stopped = true;
+                break;
             }
         }
+        if (stopped) continue;
         // A session keeps running while tripped, so the user can talk it through; a subagent has no one to talk to.
         if (!agent_name_.empty() && tripwire_state()) {
             events.on_notice("the harness is tripped; the subagent stops here");
@@ -834,6 +865,29 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
         }
     }
     events.on_notice("stopped after " + std::to_string(max_steps) + " steps" + (agent_name_.empty() ? "; send a message to continue" : " (the agent's limit)"));
+}
+
+bool Agent::redirected(const Redirect& r, AgentEvents& events) {
+    if (r.kept && !r.kept->empty()) {
+        if (log_) log_->write("assistant", {{"text", *r.kept}});
+        push({"assistant", *r.kept});
+    }
+    switch (r.then) {
+        case Redirect::Then::End:
+            push({"user", "[interrupted by the user]"});
+            events.on_notice("interrupted");
+            return false;
+        case Redirect::Then::Continue:
+            push({"user", with_operator_note(r.say)});
+            return true;
+        case Redirect::Then::Halt:
+            push({"user", r.say});
+            return false;
+        case Redirect::Then::Pause:
+        case Redirect::Then::Keep:
+            return false;
+    }
+    return false;
 }
 
 // One audit trail entry: the call as given and what the harness, the reviewer and the user made of it. Never the
@@ -1211,6 +1265,10 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
                              : key.rfind("write:", 0) == 0 ? "writes to this file"
                              : "reads of this file";
         ApprovalAnswer answer = events.ask({tool, summary, d.reason, origin, covers, preview, action.path, std::move(proposed)});
+        if (answer.withdrawn) {
+            record["approval"] = "withdrawn";
+            return {Verdict::Deny, answer.feedback};
+        }
         record["approval"] = approval_name(answer.choice);
         if (!answer.feedback.empty()) record["feedback"] = answer.feedback;
         switch (answer.choice) {

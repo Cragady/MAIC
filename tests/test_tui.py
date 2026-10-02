@@ -155,6 +155,36 @@ class TuiTest(unittest.TestCase):
         self.assertEqual(r.stdout, "".join("%d\n" % i for i in range(1, 20001)))
         self.assertIn("full output, display only: the model saw the capped result", r.stderr)
 
+    def test_ctrl_s_pauses_and_ctrl_q_resumes(self):
+        tui = self.start()
+        tui.send("ihold on<m-cr>", settle=False)
+        tui.wait_for("working… ctrl-c interrupts, ctrl-s pauses")
+        tui.send("<c-s>", settle=False)
+        text = tui.wait_for("PAUSED: ctrl-q resumes")
+        self.assertIn("[Ctrl-Q] resume", text, "the pause menu is up")
+        self.assertIn("↯ interrupt", text)
+        self.assertNotIn("▣ ", text, "a pause is not the end of the turn: no footer yet")
+        tui.send("<c-q>", settle=False)
+        text = tui.wait_for("echo: Continue from where you stopped.")
+        tui.wait_for("▣ ")
+        self.assertNotIn("PAUSED", tui.text())
+
+    def test_pause_menu_keeps_and_steer_drops(self):
+        tui = self.start()
+        tui.send("ihold on<m-cr>", settle=False)
+        tui.wait_for("working… ctrl-c interrupts")
+        tui.send("<c-s>", settle=False)
+        tui.wait_for("[Ctrl-Q] resume")
+        tui.send("k", settle=False)
+        text = tui.wait_for("▣ ")
+        self.assertIn("↯ keep", text)
+        self.assertIn("holding", text, "keep leaves the partial reply as the answer")
+        tui.send("ihold again<m-cr>", settle=False)
+        tui.wait_for("working… ctrl-c interrupts")
+        tui.send("<esc>:steer drop leave it out<cr>", settle=False)
+        text = tui.wait_for("echo: The user dropped the topic")
+        self.assertIn("↯ drop: leave it out", text)
+
     def test_help_opens(self):
         tui = self.start()
         tui.send(":help<cr>")

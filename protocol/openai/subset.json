@@ -13,7 +13,10 @@
       "CreateChatCompletionStreamResponse",
       "ConversationResource",
       "ConversationItem",
-      "CreateResponse"
+      "CreateResponse",
+      "ResponseSteerEvent",
+      "ResponseSteerAcceptedEvent",
+      "ResponseSteerFailedEvent"
     ],
     "generated_by": "protocol/openai/extract.py"
   },
@@ -11224,6 +11227,229 @@
         "title": "Response shell call output content done event",
         "description": "A streaming event that indicated shell call output was completed."
       },
+      "ResponseSteerAcceptedEvent": {
+        "type": "object",
+        "title": "ResponseSteerAcceptedEvent",
+        "description": "Emitted when steering input has been validated and queued. Acceptance means\nthe server owns the input, not that it has been applied. The successor's\n`response.created` event is the commit point. If accepted input cannot be\ncommitted, `response.steer.failed` returns it with the same steering ID.\n\nWhen the response stops for client-owned tool output or approval, the input\nremains queued and `response.steer.pending` is emitted after\n`response.completed`. Fill the pending event's `required_input` stubs with\nsaved results and send one matching explicit `response.create` per parent.\nDo not resend accepted input while it is still queued.\n",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "response.steer.accepted"
+            ],
+            "description": "The event discriminator. Always `response.steer.accepted`.",
+            "x-stainless-const": true
+          },
+          "sequence_number": {
+            "type": "integer",
+            "description": "The sequence number for this event."
+          },
+          "steer": {
+            "type": "object",
+            "description": "The accepted steering submission.",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "The ID assigned to the steering submission."
+              },
+              "previous_response_id": {
+                "type": "string",
+                "description": "The ID of the response being steered."
+              }
+            },
+            "required": [
+              "id",
+              "previous_response_id"
+            ]
+          },
+          "stream_id": {
+            "type": "string",
+            "description": "The WebSocket lane that emitted this event. This field is present when\nthe target response's `response.create` event supplied a `stream_id`.\n"
+          }
+        },
+        "required": [
+          "type",
+          "sequence_number",
+          "steer"
+        ],
+        "x-oaiMeta": {
+          "name": "response.steer.accepted",
+          "group": "responses",
+          "example": "{\n  \"type\": \"response.steer.accepted\",\n  \"sequence_number\": 2,\n  \"steer\": {\n    \"id\": \"steer_456\",\n    \"previous_response_id\": \"resp_123\"\n  }\n}\n"
+        }
+      },
+      "ResponseSteerErrorCode": {
+        "title": "ResponseSteerErrorCode",
+        "description": "A machine-readable steering error code. Clients should handle unknown\nvalues because additional codes may be introduced. Known values include:\n- `response_not_found`: The target response is not available on this connection.\n- `invalid_input`: The event or input failed validation.\n- `steering_not_supported`: The model or response execution mode does not support steering.\n- `too_many_pending_steers`: Too much steering input is pending for the response.\n- `response_already_completed`: The response completed and is no longer accepting steering input.\n- `response_not_active`: The response is no longer accepting steering input.\n- `successor_creation_failed`: The successor response could not be created.\n",
+        "anyOf": [
+          {
+            "type": "string",
+            "enum": [
+              "response_not_found",
+              "invalid_input",
+              "steering_not_supported",
+              "too_many_pending_steers",
+              "response_already_completed",
+              "response_not_active",
+              "successor_creation_failed"
+            ]
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "ResponseSteerEvent": {
+        "type": "object",
+        "title": "ResponseSteerEvent",
+        "additionalProperties": false,
+        "description": "Queues user input to steer a response on this WebSocket connection. Input\ncan contain text, images, and files. Steering is supported only for\nsingle-agent responses on models and execution modes that support steering.\nResponses bound to a conversation or using automatic compaction do not\nsupport steering.\n\nA `response.steer.accepted` event acknowledges that the server owns the\nqueued input, not that it has been applied. The successor's `response.created`\nevent is the commit point. Input that cannot be committed is returned in\n`response.steer.failed`.\n\nSteering may cause the active response to finish at a safe output boundary\nwith `response.incomplete` and `incomplete_details.reason` set to `steered`,\nfollowed automatically by a successor `response.created`. Normal completion\ncan also be followed by an automatic successor. Automatic successors inherit\nthe previous response's settings and continue from it with the queued input.\n\nIf the response stops for client-owned tool output or approval, accepted\nsteering input remains queued and `response.steer.pending` is emitted after\n`response.completed`. Fill the `required_input` stubs from that event with\nsaved tool results or approval decisions, and send one explicit\n`response.create` per parent with the same `previous_response_id` and\nWebSocket lane. Do not rerun tools or resend accepted steering input. The\nqueued input is prepended in submission order to that request's input, and\nthe explicit request retains its own settings.\n\nThis event accepts only `type`, `previous_response_id`, and `input`. Do not\nsend `stream_id`; the target response determines the WebSocket lane.\n",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "response.steer"
+            ],
+            "description": "The event discriminator. Always `response.steer`.",
+            "x-stainless-const": true
+          },
+          "previous_response_id": {
+            "type": "string",
+            "description": "The ID of the response to steer on this WebSocket connection."
+          },
+          "input": {
+            "$ref": "#/components/schemas/ResponseSteerInput"
+          }
+        },
+        "required": [
+          "type",
+          "previous_response_id",
+          "input"
+        ],
+        "x-oaiMeta": {
+          "name": "response.steer",
+          "group": "responses",
+          "example": "{\n  \"type\": \"response.steer\",\n  \"previous_response_id\": \"resp_123\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Prioritize the database rollout.\"\n        }\n      ]\n    }\n  ]\n}\n"
+        }
+      },
+      "ResponseSteerFailedEvent": {
+        "type": "object",
+        "title": "ResponseSteerFailedEvent",
+        "description": "Emitted when steering input is rejected or cannot be committed to a\nsuccessor response. Returns the original, uncommitted input so the client\ncan carry it into `response.create` when appropriate. Invalid input must\nbe corrected before retrying.\n\nFailures after acceptance include the same steering ID. Failures before an\nID is allocated omit `steer.id`. A lost connection or missing acknowledgement\nleaves the outcome unknown; it is not proof that the input was rejected.\n",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "response.steer.failed"
+            ],
+            "description": "The event discriminator. Always `response.steer.failed`.",
+            "x-stainless-const": true
+          },
+          "sequence_number": {
+            "type": "integer",
+            "description": "The sequence number for this event."
+          },
+          "steer": {
+            "type": "object",
+            "description": "The steering submission that could not be committed.",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "The ID assigned to the steering submission, if one was allocated.\n"
+              },
+              "previous_response_id": {
+                "type": "string",
+                "description": "The ID of the response that was targeted for steering."
+              },
+              "input": {
+                "$ref": "#/components/schemas/ResponseSteerInput"
+              }
+            },
+            "required": [
+              "previous_response_id",
+              "input"
+            ]
+          },
+          "error": {
+            "type": "object",
+            "description": "Information about why the input could not be committed.",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "invalid_request_error"
+                ],
+                "description": "The error type. Always `invalid_request_error`.",
+                "x-stainless-const": true
+              },
+              "code": {
+                "$ref": "#/components/schemas/ResponseSteerErrorCode"
+              },
+              "message": {
+                "type": "string",
+                "description": "A human-readable description of the error."
+              }
+            },
+            "required": [
+              "type",
+              "code",
+              "message"
+            ]
+          },
+          "stream_id": {
+            "type": "string",
+            "description": "The WebSocket lane that emitted this event, when the target response is\navailable and its `response.create` event supplied a `stream_id`.\n"
+          }
+        },
+        "required": [
+          "type",
+          "sequence_number",
+          "steer",
+          "error"
+        ],
+        "x-oaiMeta": {
+          "name": "response.steer.failed",
+          "group": "responses",
+          "example": "{\n  \"type\": \"response.steer.failed\",\n  \"sequence_number\": 5,\n  \"steer\": {\n    \"id\": \"steer_456\",\n    \"previous_response_id\": \"resp_123\",\n    \"input\": [\n      {\n        \"type\": \"message\",\n        \"role\": \"user\",\n        \"content\": [\n          {\n            \"type\": \"input_text\",\n            \"text\": \"Prioritize the database rollout.\"\n          }\n        ]\n      }\n    ]\n  },\n  \"error\": {\n    \"type\": \"invalid_request_error\",\n    \"code\": \"successor_creation_failed\",\n    \"message\": \"We couldn't start the next response. Send this steering input again with response.create.\"\n  }\n}\n"
+        }
+      },
+      "ResponseSteerInput": {
+        "title": "ResponseSteerInput",
+        "description": "Input to queue for a continuation of the response. Uses the same string or\ninput-item shape as `response.create.input`, with a non-empty array when\nsupplying input items.\n\nSteering accepts only messages with the `user` role. Each message may\ncontain only `type`, `role`, and `content`, with `content` as a string or an\narray of `input_text`, `input_image`, and `input_file` parts. The optional\n`type` must be `message`. Other roles, tool outputs, and item types are not\nsupported for steering.\n",
+        "oneOf": [
+          {
+            "type": "string",
+            "title": "Text input",
+            "description": "A text input, equivalent to a message with the `user` role."
+          },
+          {
+            "$ref": "#/components/schemas/ResponseSteerInputItemList"
+          }
+        ]
+      },
+      "ResponseSteerInputItem": {
+        "title": "Response steer input item",
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/UserMessageItemParam"
+          },
+          {
+            "$ref": "#/components/schemas/FunctionCallOutputItemParam"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
+      "ResponseSteerInputItemList": {
+        "type": "array",
+        "title": "Response steer input item list",
+        "description": "A non-empty list of message inputs to queue for the response.",
+        "minItems": 1,
+        "items": {
+          "$ref": "#/components/schemas/ResponseSteerInputItem"
+        }
+      },
       "ResponseStreamEvent": {
         "description": "Event emitted while a response is streamed.",
         "anyOf": [
@@ -12698,6 +12924,87 @@
         ],
         "title": "URL citation",
         "description": "A citation for a web resource used to generate a model response."
+      },
+      "UserMessageItemParam": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "description": "The unique ID of this message item.",
+                "example": "msg_123"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "message"
+            ],
+            "description": "The item type. Always `message`.",
+            "default": "message",
+            "x-stainless-const": true
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "user"
+            ],
+            "description": "The message role. Always `user`.",
+            "default": "user",
+            "x-stainless-const": true
+          },
+          "content": {
+            "oneOf": [
+              {
+                "items": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/InputTextContentParam"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InputImageContentParamAutoParam"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InputFileContentParam"
+                    }
+                  ],
+                  "description": "A piece of message content, such as text, an image, or a file.",
+                  "discriminator": {
+                    "propertyName": "type"
+                  }
+                },
+                "type": "array"
+              },
+              {
+                "type": "string",
+                "maxLength": 10485760,
+                "description": "The message content, as a single string."
+              }
+            ],
+            "description": "The message content, as an array of content parts."
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "description": "The status of the message item."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "role",
+          "content"
+        ]
       },
       "VectorStoreFileAttributes": {
         "anyOf": [

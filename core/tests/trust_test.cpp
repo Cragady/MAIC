@@ -377,6 +377,47 @@ int main() {
         expect(trust_status(project_dir(dir)).level == "standard", "the directory's tier is still the global default");
     }
 
+    section("steering: a project only narrows, and never sets clients");
+    {
+        fs::path dir = g_home / "dev" / "steady";
+        write_file(dir / ".maic" / "settings.lua", "return { steering = { actions = { 'interrupt', 'keep', 'halt' }, drop_trim = 'all', clients = { remote = 'none' } } }\n");
+        trust_dir(project_dir(dir), Origin::Local, "", "sandbox");
+        Settings s = load_settings(dir);
+        expect(s.steering.actions == std::vector<std::string>{"interrupt", "keep", "halt"} && s.steering.drop_trim == "all" && s.steering.clients_remote.size() == 6 &&
+                   s.steering.from["actions"].find("steady") != std::string::npos,
+               "the project removes actions and sets drop's trim; clients stays the global file's");
+        expect(contains(joined(s.warnings), "steering.clients is ignored"), "clients in a project is a warning naming the file");
+        expect(!s.steering.allows("drop", false) && s.steering.allows("halt", true), "allows: in actions and the client side's list");
+
+        fs::path wide = g_home / "dev" / "widening";
+        write_file(wide / ".maic" / "settings.lua", "return { steering = { actions = { 'steer' } }, agents = { explore = { steering = { actions = { 'interrupt' } } } } }\n");
+        trust_dir(project_dir(wide), Origin::Local, "", "sandbox");
+        write_file(g_home / ".config" / "maic" / "settings.lua", "return { steering = { actions = { 'interrupt', 'keep' } } }\n");
+        std::string why;
+        try {
+            load_settings(wide);
+        } catch (const std::exception& e) {
+            why = e.what();
+        }
+        expect(contains(why, "steer is not allowed above; this layer can only remove actions"), "a project cannot add an action the global file took away: " + why);
+        write_file(g_home / ".config" / "maic" / "settings.lua", "return { bans = { patterns = { { 'kubernetes', steer = 'further' } } } }\n");
+        why.clear();
+        try {
+            load_settings(g_home);
+        } catch (const std::exception& e) {
+            why = e.what();
+        }
+        expect(contains(why, "further never is"), "a ban never names further: " + why);
+        fs::remove(g_home / ".config" / "maic" / "settings.lua");
+        fs::path scout = g_home / "dev" / "scouting";
+        write_file(scout / ".maic" / "settings.lua", "return { agents = { explore = { steering = { actions = { 'interrupt', 'keep', 'halt' }, clients = { remote = 'none' } } } } }\n");
+        trust_dir(project_dir(scout), Origin::Local, "", "sandbox");
+        Settings a = load_settings(scout);
+        const AgentDef* explore = find_agent_def(a.agents, "explore");
+        expect(explore && explore->steering["actions"].size() == 3 && !explore->steering.contains("clients") && contains(joined(a.warnings), "explore.steering.clients is ignored"),
+               "an agent's steering narrows the same keys; clients in a project's agent is dropped with a warning");
+    }
+
     section("audit.lua is the user's alone: a project can never set any of it");
     {
         fs::path audit = g_home / ".config" / "maic" / "audit.lua";

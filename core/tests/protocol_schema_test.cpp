@@ -124,6 +124,10 @@ int main() {
         for (const auto& [name, s] : openai_schemas.items()) {
             if (name.rfind("ResponsesClientEvent", 0) != 0) continue;
             std::string dump = s.dump();
+            for (const auto& branch : s.value("anyOf", json::array())) {  // response.steer is ResponseSteerEvent, by $ref
+                std::string ref = branch.value("$ref", "");
+                if (!ref.empty()) dump += openai_schemas.at(ref.substr(ref.rfind('/') + 1)).dump();
+            }
             for (const char* t : {"response.create", "response.steer"}) {
                 if (dump.find(std::string("\"") + t + "\"") != std::string::npos) client_events.insert(t);
             }
@@ -334,7 +338,7 @@ int main() {
                 ++checked;
             }
         }
-        expect(checked >= 12 && skipped == 1, std::to_string(checked) + " examples checked, " + std::to_string(skipped) + " block marked as an excerpt (maic.steer, step 7)");
+        expect(checked >= 15 && skipped == 0, std::to_string(checked) + " examples checked, " + std::to_string(skipped) + " blocks marked as excerpts");
     }
 
     return finish();
