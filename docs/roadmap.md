@@ -86,11 +86,11 @@ Read opencode's `.opencode/agent/*.md` files (frontmatter plus a prompt) as agen
 
 Everything below is covered by tests against fake servers; these runs confirm it against real models on the card, in a window Micaiah offers. Each takes minutes. Tick them off here as they are run.
 
-* [ ] The audit trail's enforcement with the real judge: judge-and-hold at a `maic` start, the scheduled run, `judge_thinking` on and off on the 9B, and the fallback when the judge cannot start.
-* [ ] `maic-leak-audit` with thinking on, compared with the thinking-off run of 2026-10-02 (the result line only).
-* [ ] The adapter normalizations against a real llama-server: provoke a mid-stream error and request logprobs once, and keep the real streams as fixtures next to the hand-written ones.
-* [ ] Streamed tool output and the full-output replay with a real model driving a long command.
-* [ ] The system-prompt experiment from the prompt-placement measurements: a replacement Qwen3.5 chat template (`--chat-template-file`) without the tool-call reminder, with MAIC's system text before the tools, and with fewer tool schemas, to see which brings a system-prompt rule back with tools attached.
+* [x] The audit trail's enforcement with the real judge: judge-and-hold at a `maic` start, the scheduled run, `judge_thinking` on and off on the 9B, and the fallback when the judge cannot start. *2026-10-02, synthetic trail in a temporary home: the hold judged 6 candidates in about 40 s with thinking on, 7 s with thinking off, the same verdicts; the scheduled run's command works; with no judge the scan stood in and the next start retried. Fixed: the hold now says why before starting the judge, ends its "starting..." line, and leaves a port another server holds to the audit.*
+* [x] `maic-leak-audit` with thinking on, compared with the thinking-off run of 2026-10-02 (the result line only). *2026-10-02: "Something was reached for: NO", the same as thinking off. It finished in about a second, so phase 1 likely left the judge nothing to look at.*
+* [x] The adapter normalizations against a real llama-server: provoke a mid-stream error and request logprobs once, and keep the real streams as fixtures next to the hand-written ones. *2026-10-02: the tool-call and logprobs streams match the hand-written ones (only `logprobs_refusal_null` applies). The mid-stream failure the router really sends is a bare `proxy error: ...` line, not SSE, and MAIC read it as a short, complete reply; it is now an error. Fixtures `llamacpp-b11284-captured-*.sse`.*
+* [x] Streamed tool output and the full-output replay with a real model driving a long command. *2026-10-02: in the TUI, lines 300, 1500 and 2700 of a 3000-line, 5 s command showed at 2.4, 4.5 and 6.5 s, before it ended at 7.4 s; all 310,893 bytes were kept and `--replay` played them back at the original pace.*
+* [x] The system-prompt experiment from the prompt-placement measurements: a replacement Qwen3.5 chat template (`--chat-template-file`) without the tool-call reminder, with MAIC's system text before the tools, and with fewer tool schemas, to see which brings a system-prompt rule back with tools attached. *2026-10-02 ([prompt-placement.md](references/prompt-placement.md)): on a task turn, only both template changes together helped (4 of 6); either alone, or four tools, 0 of 6. The per-turn note stays the default (6 of 6).*
 * [ ] `claude-cli` as the reviewer and title model in a real session (the provider was checked live once with `--setting-sources ""`).
 
 ## Parked
@@ -102,7 +102,7 @@ Everything below is covered by tests against fake servers; these runs confirm it
 * Restrictiveness tiers for settings Lua, configurable: more tiers and their definitions (Micaiah, 2026-10-01).
 * Audit the Lua sandbox and the `maic` API by trust level (Micaiah, 2026-10-01): list everything each Lua runtime can reach (settings, themes, diction.lua, Lua tools, hooks) and give the `maic` API tiers: the whole API only for fully trusted code, a defined subset for sandboxed and restricted code, and refusal with no trust. Fold in docs/limits.md's Lua tools entry.
 * Text to speech (Micaiah, 2026-10-01): MAIC speaking replies aloud, the counterpart to diction; local first, as a service beside whisper. To be discussed.
-* Ask llama.cpp upstream to emit `param: null` in errors and `refusal: null` in logprobs (and a string error `code`), or revisit if the standards change; forking llama.cpp is an option held back for now (Micaiah, 2026-10-02).
+* Ask llama.cpp upstream to emit `param: null` in errors and `refusal: null` in logprobs (and a string error `code`), or revisit if the standards change; forking llama.cpp is an option held back for now (Micaiah, 2026-10-02). Also: the router's proxy ends a stream it lost with a bare `proxy error: ...` line (`server-models.cpp`), where an SSE `data: {"error": ...}` event would let clients read it as the error it is.
 
 ## Done
 
