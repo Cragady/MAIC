@@ -25,6 +25,16 @@ bool is_old(const fs::directory_entry& e, std::optional<std::chrono::hours> olde
     return !ec && fs::file_time_type::clock::now() - mtime > *older_than;
 }
 
+// A session's kept outputs (<id>.d beside <id>.jsonl, side_dir) go with their session, never by their own age.
+bool is_old_or_its_session(const fs::directory_entry& e, std::optional<std::chrono::hours> older_than) {
+    fs::path dir = e.path().parent_path();
+    std::error_code ec;
+    if (fs::path session = dir.parent_path() / (dir.stem().string() + ".jsonl"); dir.extension() == ".d" && fs::is_regular_file(session, ec)) {
+        return is_old(fs::directory_entry(session), older_than);
+    }
+    return is_old(e, older_than);
+}
+
 // Visits every file (and symlink, as itself) under an artifact without following links.
 void each_file(const fs::path& root, const std::function<void(const fs::directory_entry&)>& fn) {
     std::error_code ec;
@@ -112,7 +122,7 @@ std::vector<Artifact> list_artifacts(const std::vector<ServiceDef>& services) {
 ArtifactUsage measure(const Artifact& artifact, std::optional<std::chrono::hours> older_than) {
     ArtifactUsage u;
     each_file(artifact.path, [&](const fs::directory_entry& e) {
-        if (!is_old(e, older_than)) return;
+        if (!is_old_or_its_session(e, older_than)) return;
         std::error_code ec;
         if (e.symlink_status(ec).type() == fs::file_type::regular) u.bytes += e.file_size(ec);
         ++u.files;
@@ -125,7 +135,7 @@ ArtifactUsage clean(const Artifact& artifact, std::optional<std::chrono::hours> 
     ArtifactUsage removed;
     std::vector<fs::path> victims;
     each_file(artifact.path, [&](const fs::directory_entry& e) {
-        if (!is_old(e, older_than)) return;
+        if (!is_old_or_its_session(e, older_than)) return;
         std::error_code ec;
         if (e.symlink_status(ec).type() == fs::file_type::regular) removed.bytes += e.file_size(ec);
         victims.push_back(e.path());

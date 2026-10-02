@@ -20,12 +20,14 @@ struct RedactReport {
 std::string redact_text(const std::string& text, std::map<std::string, size_t>& counts);
 
 // Reads a session file and writes a copy with every string value redacted (record-threading fields such as
-// tool call ids aside). `in` is never modified; `out` must not exist yet and is created 0600.
+// tool call ids aside). `in` is never modified; `out` must not exist yet and is created 0600. The kept outputs its
+// records name are copied redacted beside it (side_dir(out)), and the records point at the copies.
 RedactReport redact_session(const std::filesystem::path& in, const std::filesystem::path& out);
 
 // `maic sessions redact --in-place`: copies the file with backup_session first, then rewrites it through a
 // temporary file and a rename; a MAIC session then gets a `rewritten` record naming the copy and `invocation`,
-// as cai's trans-fairy-write appends one. Returns the copy's path.
+// as cai's trans-fairy-write appends one. Its kept outputs move beside the copy (side_dir of it) and redacted ones
+// take their place. Returns the copy's path.
 std::filesystem::path redact_session_in_place(const std::filesystem::path& path, const std::string& invocation, RedactReport& report);
 
 }  // namespace maic

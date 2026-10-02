@@ -195,6 +195,26 @@ struct Recorder : AgentEvents {
     }
     std::vector<std::vector<TodoItem>> todos;
     void on_todo(const std::vector<TodoItem>& items) override { todos.push_back(items); }
+    struct Output {
+        std::string call;
+        OutputStream stream;
+        std::string chunk;
+        size_t offset;
+        size_t results_before;  // tool results already in when it came
+    };
+    std::vector<Output> outputs;
+    void on_tool_output(const std::string& call, OutputStream stream, std::string_view chunk, size_t offset) override {
+        outputs.push_back({call, stream, std::string(chunk), offset, results.size()});
+    }
+    std::vector<fs::path> kept;
+    void on_tool_full_output(const fs::path& file) override { kept.push_back(file); }
+    std::string streamed(OutputStream s) const {
+        std::string all;
+        for (const auto& o : outputs) {
+            if (o.stream == s) all += o.chunk;
+        }
+        return all;
+    }
 };
 
 std::error_code& ec_ignore() {
@@ -1091,6 +1111,123 @@ int main() {
         fs::remove_all(ws / ".maic");
         fs::remove_all(ws / "out");
         unsetenv("XDG_CONFIG_HOME");
+    }
+
+    section("a running command's output reaches the front end");
+    {
+        fs::path cfg = ws / "cfg";
+        fs::create_directories(cfg);
+        setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
+        fs::create_directories(ws / ".maic" / "tools" / "noisy");
+        std::ofstream(ws / ".maic" / "tools" / "noisy" / "tool.json")
+            << R"({"name": "noisy", "description": "says how it is going", "parameters": {"type": "object", "properties": {}}, "run": ["sh", "main.sh"]})";
+        std::ofstream(ws / ".maic" / "tools" / "noisy" / "main.sh") << "#!/bin/sh\necho the result\necho working on it >&2\n";
+        std::ofstream(ws / ".maic" / "tools" / "shells.lua") << "return {\n"
+                                                                 "  name = 'shells', description = 'runs two commands',\n"
+                                                                 "  parameters = { type = 'object', properties = {} },\n"
+                                                                 "  run = function() return maic.shell('echo first') .. maic.shell('echo second') end,\n"
+                                                                 "}\n";
+        FakeServer fake;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        agent.review_with_model = false;
+        agent.agents.push_back({"fast", Mode::Auto});
+        auto all_before_result = [](const Recorder& r, const std::string& call) {
+            return std::all_of(r.outputs.begin(), r.outputs.end(), [&](const Recorder::Output& o) { return o.results_before == 0 && o.call == call; });
+        };
+
+        Recorder r;
+        r.reply = {Approval::Yes, ""};
+        fake.tool_call = json{{"name", "run_shell"}, {"arguments", {{"command", "echo out; echo err >&2"}}}};
+        fake.calls_left = 1;
+        agent.submit("run it", Origin::Local, r, no_cancel);
+        expect(!r.outputs.empty() && all_before_result(r, "call_1") && r.streamed(OutputStream::Stdout) == "out\nerr\n" && r.outputs[0].offset == 0,
+               "run_shell's output, stderr interleaved as stdout, arrives under its call id before the result");
+        expect(r.results.size() == 1 && r.results[0] == "exit code 0\nout\nerr", "the result is what it always was: " + (r.results.empty() ? "" : r.results[0]));
+
+        Recorder s;
+        fake.tool_call = json{{"name", "noisy"}, {"arguments", json::object()}};
+        fake.calls_left = 1;
+        agent.submit("noisy", Origin::Local, s, no_cancel);
+        expect(all_before_result(s, "call_1") && s.streamed(OutputStream::Stderr) == "working on it\n" && s.streamed(OutputStream::Stdout).empty(),
+               "a script tool streams its stderr only");
+        expect(s.results.size() == 1 && s.results[0] == "the result", "its stdout is still the result");
+
+        Recorder l;
+        l.reply = {Approval::Yes, ""};
+        fake.tool_call = json{{"name", "shells"}, {"arguments", json::object()}};
+        fake.calls_left = 1;
+        agent.submit("shells", Origin::Local, l, no_cancel);
+        expect(all_before_result(l, "call_1") && l.streamed(OutputStream::Stdout) == "first\nsecond\n" && l.outputs.size() == 2 && l.outputs[1].offset == 6,
+               "a Lua tool's maic.shell commands stream as one stream, the second continuing the first's offsets");
+
+        Recorder c;
+        c.reply = {Approval::Yes, ""};
+        int parent_calls = 0, child_calls = 0;
+        fake.tool_call_for = [&](const json& b) -> json {
+            if (!from_child(b)) return ++parent_calls == 1 ? json{{"name", "task"}, {"arguments", {{"agent", "fast"}, {"prompt", "say hi"}}}} : json();
+            return ++child_calls == 1 ? json{{"name", "run_shell"}, {"arguments", {{"command", "echo from the child"}}}} : json();
+        };
+        agent.submit("delegate", Origin::Local, c, no_cancel);
+        fake.tool_call_for = nullptr;
+        expect(!c.outputs.empty() && all_before_result(c, "fast:call_1") && c.streamed(OutputStream::Stdout) == "from the child\n",
+               "a subagent's command streams to the parent's front end, labelled with the agent: " + (c.outputs.empty() ? "" : c.outputs[0].call));
+        for (const auto& sub : list_sessions(ws)) {
+            if (sub.kind == "sub") fs::remove(sub.path);
+        }
+        fs::remove_all(ws / ".maic");
+        unsetenv("XDG_CONFIG_HOME");
+    }
+
+    section("a command's whole output is kept beside the session, the model's result unchanged");
+    {
+        FakeServer fake;
+        SessionLog log("agent-test");
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        agent.review_with_model = false;
+        agent.set_log(&log);
+        std::string full;
+        for (int i = 1; full.size() < 2 * 1024 * 1024; ++i) full += std::to_string(i) + "\n";
+        full.resize(2 * 1024 * 1024);
+        Recorder r;
+        r.reply = {Approval::Yes, ""};
+        fake.tool_call = json{{"name", "run_shell"}, {"arguments", {{"command", "seq 1 400000 | head -c 2097152"}}}};
+        fake.calls_left = 1;
+        agent.submit("run it", Origin::Local, r, no_cancel);
+        std::string model = full.substr(0, 24 * 1024) + "\n... [" + std::to_string(full.size() - 32 * 1024) + " bytes omitted] ...\n" + full.substr(full.size() - 8 * 1024);
+        while (!model.empty() && model.back() == '\n') model.pop_back();
+        expect(r.results.size() == 1 && r.results[0] == "exit code 0\n" + model, "the model's result is the capped one it always was: " + (r.results.empty() ? "" : r.results[0].substr(0, 60) + " ... " + std::to_string(r.results[0].size()) + " bytes"));
+        json rec;
+        std::ifstream in(log.path());
+        for (std::string line; std::getline(in, line);) {
+            json j = json::parse(line, nullptr, false);
+            if (j.is_object() && j.value("type", "") == "tool") rec = j;
+        }
+        fs::path file = log.path().parent_path() / rec["full_output"].value("path", "");
+        std::ifstream kept_in(file, std::ios::binary);
+        std::string kept((std::istreambuf_iterator<char>(kept_in)), std::istreambuf_iterator<char>());
+        expect(rec["full_output"]["path"] == log.path().stem().string() + ".d/call_1.out" && rec["full_output"]["bytes"] == full.size() &&
+                   rec["full_output"]["delivered_to_model"] == false && kept == full,
+               "the tool record names the kept file, beside the session, and it holds all 2 MiB: " + rec.dump().substr(0, 300));
+        expect(r.kept.size() == 1 && r.kept[0] == file, "the front end is told where, before the result");
+        std::string read = render_text(load_session(log.path()), 0, 0, true);
+        expect(read.find("[full output, display only: the model saw the capped result] 2097152 bytes: maic sessions output " + log.path().stem().string() + " call_1") != std::string::npos,
+               "maic sessions read labels it display only");
+        bool in_history = false;
+        for (const auto& m : agent.messages()) in_history = in_history || m.content.find("full output") != std::string::npos;
+        expect(!in_history, "and nothing of it reaches the model");
+
+        agent.full_output = false;
+        Recorder off;
+        off.reply = {Approval::Yes, ""};
+        fake.calls_left = 1;
+        agent.submit("again", Origin::Local, off, no_cancel);
+        expect(off.kept.empty() && !fs::exists(file.parent_path() / "call_1-2.out"), "full_output = false keeps nothing");
+        fs::remove_all(file.parent_path());
+        fs::remove(log.path());
     }
 
     section("operator instructions set mid-conversation");

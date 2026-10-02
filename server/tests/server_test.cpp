@@ -349,6 +349,67 @@ int main() {
         expect(fed_back, "the next model call carries it");
     }
 
+    section("tool output reaches the client while it runs, at most 64 KiB/s");
+    {
+        {
+            std::lock_guard lock(fake.mu);
+            fake.tool_call = json{{"name", "run_shell"}, {"arguments", {{"command", "for i in 1 2 3; do echo tick$i; sleep 0.2; done; head -c 1048576 /dev/zero | tr '\\0' x"}}}};
+            fake.calls_left = 1;
+        }
+        json s = api.post("/api/sessions", json::object());
+        std::string sid = s["id"];
+        std::vector<json> events;
+        std::thread streaming([&] { events = api.stream("POST", "/api/sessions/" + sid + "/messages", {{"text", "run it"}}); });
+        json approval = wait_for_approval(api, sid);
+        auto t0 = std::chrono::steady_clock::now();
+        api.post("/api/sessions/" + sid + "/approvals/" + approval["id"].get<std::string>(), {{"choice", "yes"}});
+        streaming.join();
+        double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        std::string data;
+        size_t skipped = 0, next = 0, result_at = 0, last_delta = 0;
+        bool shaped = true, ordered = true;
+        for (size_t i = 0; i < events.size(); ++i) {
+            const json& e = events[i];
+            if (e["type"] == "tool_result") result_at = i;
+            if (e["type"] != "response.shell_call_output_content.delta") continue;
+            last_delta = i;
+            shaped = shaped && e["item_id"] == "call_1" && e["delta"]["stdout"].is_string() && e["delta"]["stderr"] == "" && e["maic"]["offset"].is_number();
+            size_t offset = e["maic"]["offset"];
+            ordered = ordered && offset >= next;
+            if (e["maic"].contains("skipped")) {
+                skipped += e["maic"]["skipped"].get<size_t>();
+                next = offset + e["maic"]["skipped"].get<size_t>();
+                shaped = shaped && e["delta"]["stdout"] == "";
+            } else {
+                data += e["delta"]["stdout"].get<std::string>();
+                next = offset + e["delta"]["stdout"].get<std::string>().size();
+            }
+        }
+        expect(shaped && ordered, "each chunk is a response.shell_call_output_content.delta with item_id, delta {stdout, stderr} and maic.offset, in order");
+        expect(data.rfind("tick1\ntick2\ntick3\n", 0) == 0, "the ticks arrive as the command prints them");
+        expect(data.size() + skipped == 18 + 1048576, "sent and skipped bytes add up to the whole output: " + std::to_string(data.size()) + " + " + std::to_string(skipped));
+        expect(skipped > 0 && data.size() <= 64 * 1024 * (1 + seconds) + 16 * 1024,
+               "the session's budget held: " + std::to_string(data.size()) + " bytes sent in " + std::to_string(seconds) + " s, the rest as skips");
+        expect(result_at > last_delta && events[result_at]["text"].get<std::string>().rfind("exit code 0\ntick1", 0) == 0, "the result follows the output, as before");
+        json entries = api.get("/api/sessions/" + sid)["entries"];
+        bool folded = true;
+        for (const auto& e : entries) folded = folded && e["type"] != "response.shell_call_output_content.delta";
+        expect(folded, "the folded transcript leaves the deltas out");
+        const json& kept = events[result_at];
+        expect(kept.contains("full_output") && kept["full_output"]["session"] == sid && kept["full_output"]["call"] == "call_1" &&
+                   kept["full_output"]["bytes"] == 18 + 1048576 && kept["full_output"]["label"] == "full output, display only: the model saw the capped result",
+               "the result says the whole output was kept, labelled display only");
+        int status = 0;
+        json page = api.get("/api/sessions/" + sid + "/output/call_1?session=" + sid, &status);
+        expect(status == 200 && page["label"] == kept["full_output"]["label"] && page["bytes"] == 18 + 1048576 && page["data"].get<std::string>().size() == 256 * 1024 &&
+                   page["data"].get<std::string>().rfind("tick1\ntick2\ntick3\nxxx", 0) == 0 && page["done"] == false,
+               "a client fetches it 256 KiB at a time, with the label");
+        page = api.get("/api/sessions/" + sid + "/output/call_1?offset=1048576", &status);
+        expect(status == 200 && page["data"] == std::string(18, 'x') && page["done"] == true, "to the end");
+        api.get("/api/sessions/" + sid + "/output/call_1?session=elsewhere", &status);
+        expect(status == 404, "only from the session itself or its subagents");
+    }
+
     section("interrupt");
     {
         {
@@ -398,7 +459,7 @@ int main() {
         api.post("/api/sessions/" + id + "/mode", {{"mode", "root"}}, &status);
         expect(status == 400, "an unknown mode is refused");
         json st = api.get("/api/status");
-        expect(st["sessions"] == 4 && st["workspaces"][0] == fs::weakly_canonical(root / "ws").string() && st["listen"] == "127.0.0.1:" + std::to_string(port),
+        expect(st["sessions"] == 5 && st["workspaces"][0] == fs::weakly_canonical(root / "ws").string() && st["listen"] == "127.0.0.1:" + std::to_string(port),
                "status counts sessions and shows the roots");
         expect(st["remote_model"] == false && st["harness"].contains("tripped"), "status says whether the model is remote and the harness state");
     }

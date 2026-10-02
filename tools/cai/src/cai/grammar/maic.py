@@ -274,6 +274,24 @@ def utc(local_iso, default=None):
     return d.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
+FULL_OUTPUT_LABEL = "full output, display only: the model saw the capped result"
+
+
+def kept_note(r):
+    """For a `tool` record whose whole output MAIC kept beside the session (`full_output`,
+    docs/sessions.md): the labelled line every reader shows after the result, else ""."""
+    kept = r.get("full_output")
+    if not isinstance(kept, dict) or not isinstance(kept.get("path"), str):
+        return ""
+    parts = kept["path"].split("/")
+    sid = parts[0][:-2] if parts[0].endswith(".d") else parts[0]
+    call = parts[-1][:-4] if parts[-1].endswith(".out") else parts[-1]
+    note = "[%s] %d bytes" % (FULL_OUTPUT_LABEL, kept.get("bytes", 0))
+    if kept.get("dropped"):
+        note += " (%d more dropped over full_output_max_mb)" % kept["dropped"]
+    return note + ": maic sessions output %s %s" % (sid, call)
+
+
 def to_claude(records, sid="maic", resumable=False):
     """A MAIC session as Claude Code grammar. **Lossless by position**: every output
     record carries `maic.index`, the input line it came from (0-based), unless `resumable`.
@@ -328,7 +346,11 @@ def to_claude(records, sid="maic", resumable=False):
         elif t == "tool":
             call = "maic-tool-%d" % i
             use = {"type": "tool_use", "id": call, "name": r.get("tool", ""), "input": r.get("arguments", {})}
-            result = {"type": "tool_result", "tool_use_id": call, "content": r.get("result", ""),
+            content = r.get("result", "")
+            if not resumable and kept_note(r):
+                # Read only: a resumed transcript gets exactly what the model got.
+                content += "\n\n" + kept_note(r)
+            result = {"type": "tool_result", "tool_use_id": call, "content": content,
                       "is_error": not r.get("ok", True)}
             if resumable:
                 out.append(message(i, r, "assistant", [use], "maic-%d" % i))

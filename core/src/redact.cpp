@@ -3,7 +3,10 @@
 // Replacement happens inside JSON string values, never in the serialised line, so the copy stays valid JSON.
 #include "maic/redact.hpp"
 
+#include "maic/full_output.hpp"
 #include "maic/session.hpp"
+#include "maic/tools.hpp"
+#include "maic/vendor.hpp"
 
 #include <fcntl.h>
 #include <regex.h>
@@ -147,7 +150,56 @@ std::string redact_text(const std::string& text, std::map<std::string, size_t>& 
     return s;
 }
 
-RedactReport redact_session(const fs::path& in, const fs::path& out) {
+namespace {
+
+// A kept output (docs/sessions.md, Full output) redacted into `dest`, with its index. Each run of one stream's
+// chunks is redacted as one text, so a secret split across two reads is still found; the run becomes one chunk at
+// its first chunk's time. Returns the record's new `full_output`, naming the file `named`.
+json redact_kept_output(const fs::path& src, const fs::path& dest, const fs::path& named, json full_output, std::map<std::string, size_t>& counts) {
+    std::ifstream in(src, std::ios::binary);
+    std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::vector<OutputChunk> chunks = read_output_index(src);
+    std::error_code ec;
+    fs::create_directories(dest.parent_path(), ec);
+    fs::permissions(dest.parent_path(), fs::perms::owner_all, fs::perm_options::replace, ec);
+    fs::path idx = dest;
+    idx.replace_extension(".idx");
+    int out_fd = open(dest.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    int idx_fd = out_fd < 0 ? -1 : open(idx.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (out_fd < 0 || idx_fd < 0) {
+        int err = errno;
+        if (out_fd >= 0) close(out_fd);
+        throw std::runtime_error("can't create " + (out_fd < 0 ? dest : idx).string() + ": " + std::strerror(err));
+    }
+    std::string out_text, idx_text;
+    for (size_t i = 0; i < chunks.size();) {
+        size_t j = i;
+        std::string run;
+        while (j < chunks.size() && chunks[j].stream == chunks[i].stream && chunks[j].offset <= data.size()) {
+            run += data.substr(chunks[j].offset, chunks[j].length);
+            ++j;
+        }
+        if (j == i) break;
+        std::string red = chunks[i].stream == 'm' ? run : redact_text(run, counts);
+        idx_text += std::string(1, chunks[i].stream) + " " + std::to_string(out_text.size()) + " " + std::to_string(red.size()) + " " + std::to_string(chunks[i].ms) + "\n";
+        out_text += red;
+        i = j;
+    }
+    bool ok = ::write(out_fd, out_text.data(), out_text.size()) == static_cast<ssize_t>(out_text.size()) &&
+              ::write(idx_fd, idx_text.data(), idx_text.size()) == static_cast<ssize_t>(idx_text.size());
+    close(out_fd);
+    close(idx_fd);
+    if (!ok) throw std::runtime_error("can't write " + dest.string());
+    full_output["path"] = named.string();
+    full_output["bytes"] = out_text.size();
+    full_output["sha256"] = file_sha256(dest);
+    full_output["redacted"] = true;
+    return full_output;
+}
+
+// redact_session, with the kept outputs the records name written redacted into `side_out`, which the records then
+// call `side_name` (the side directory's name once it is in place).
+RedactReport redact_records(const fs::path& in, const fs::path& out, const fs::path& side_out, const fs::path& side_name) {
     std::ifstream src(in);
     if (!src) throw std::runtime_error("can't read " + in.string());
     int fd = open(out.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
@@ -165,7 +217,14 @@ RedactReport redact_session(const fs::path& in, const fs::path& out) {
         }
         auto j = json::parse(line, nullptr, false);
         if (j.is_object()) {
+            json kept = j.contains("full_output") ? j["full_output"] : json();
+            if (!kept.is_null()) j.erase("full_output");
             redact_json(j, report.counts);
+            if (fs::path from = resolve_full_output(in, kept); !from.empty()) {
+                j["full_output"] = redact_kept_output(from, side_out / from.filename(), side_name / from.filename(), kept, report.counts);
+            } else if (!kept.is_null()) {
+                j["full_output"] = kept;  // its file is gone: the record still says what was there
+            }
             dst << j.dump(-1, ' ', false, json::error_handler_t::replace) << '\n';
         } else {
             ++report.malformed;
@@ -176,10 +235,23 @@ RedactReport redact_session(const fs::path& in, const fs::path& out) {
     return report;
 }
 
+}  // namespace
+
+RedactReport redact_session(const fs::path& in, const fs::path& out) {
+    return redact_records(in, out, side_dir(out), side_dir(out).filename());
+}
+
 fs::path redact_session_in_place(const fs::path& path, const std::string& invocation, RedactReport& report) {
     bool maic_session = is_maic_session(path);
     fs::path backup = backup_session(path), tmp = path.string() + ".redacting";
-    report = redact_session(path, tmp);
+    fs::path side = side_dir(path), side_tmp = side.string() + ".redacting";
+    report = redact_records(path, tmp, side_tmp, side.filename());
+    // The kept outputs go beside the backup as they were, and their redacted copies take their place.
+    std::error_code ec;
+    if (fs::is_directory(side, ec)) {
+        if (auto err = move_path(side, side_dir(backup))) throw std::runtime_error("can't keep " + side.string() + " beside the backup: " + err.message());
+    }
+    if (fs::is_directory(side_tmp, ec)) fs::rename(side_tmp, side);
     fs::rename(tmp, path);
     if (maic_session) {
         std::time_t t = std::time(nullptr);

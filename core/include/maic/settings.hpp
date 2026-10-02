@@ -111,6 +111,8 @@ struct Settings {
     // "project", or a name under sessions/.
     std::string sessions_home = "auto";
     int init_move_outside_reads = 3;  // :init moves a session into the project home without asking when it read at most this many files outside
+    bool full_output = true;          // keep a command's whole output beside the session when the model gets it capped (Agent::full_output)
+    int full_output_max_mb = 64;      // at most this much of it per call; past that its head and tail
     std::string leader = " ";
     std::string highlight = "builtin";  // the input's highlighter: "builtin", or "nvim" (an embedded nvim --embed, when it is installed)
     bool enter_sends = false;           // Enter sends a one-line input in insert mode (Shift+Enter / Alt+Enter then insert a newline)
