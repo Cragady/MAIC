@@ -1,3 +1,4 @@
+#include "audit_trail.hpp"
 #include "commands.hpp"
 #include "headless.hpp"
 
@@ -120,6 +121,7 @@ int run_headless(const HeadlessOptions& options) {
     for (const auto& n : settle_trust(std::filesystem::current_path())) fprintf(stderr, "※ %s\n", n.c_str());
     Settings settings = load_settings();
     for (const auto& w : settings.warnings) fprintf(stderr, "※ %s\n", w.c_str());
+    audit_gate(settings);  // a due audit holds here, before the session opens (docs/audit-trail.md)
     if (options.model) settings.model = *options.model;
     apply_preset(settings, settings.model);
     settings.model = resolve_model_alias(settings.model);
@@ -176,6 +178,7 @@ int run_headless(const HeadlessOptions& options) {
     }
     agent.mode = *mode;
     agent.review_with_model = settings.harness != "dumb";
+    agent.audit = settings.audit;
     agent.reviewer_model = settings.reviewer_model;
     agent.small_model = settings.small_model;
     agent.reviewer_budget_tokens = settings.reviewer_budget_tokens;

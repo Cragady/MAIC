@@ -214,8 +214,9 @@ def main():
     print(("ok" if read_ok else "FAIL") + ": maic settings read diction" + ("" if read_ok else "\n" + r.stdout[-1500:] + r.stderr[-1500:]))
     models_ok = models_smoke(maic, port)
     trust_ok = trust_smoke(maic, port)
+    trail_ok = audit_trail_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if ok and trust_ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and rehome_ok and read_ok and models_ok else 1)
+    sys.exit(0 if ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and rehome_ok and read_ok and models_ok else 1)
 
 
 def rehome_smoke(maic, env, home):
@@ -350,6 +351,242 @@ def models_smoke(maic, port):
     report(r.returncode == 0 and not os.path.exists(os.path.join(mdir, "llamacpp", "Qwen3.5-4B-Q4_K_M")), "with --yes it removes the files and the folder", r)
     r = run("help", "models")
     report(r.returncode == 0 and "*models*" in r.stdout and "llama.vim" in r.stdout, "maic help models is the catalog page", r)
+    return all(results)
+
+
+def audit_trail_smoke(maic, port):
+    """The audit trail through the binary (docs/audit-trail.md), over a synthetic trail in a throwaway HOME: init,
+    status (counts, never contents; --json kept from maic's own parser), purge after a yes, offsite printing and
+    never running anything, the systemd schedule, and the start-up check at maic -p, maic status and the TUI with a
+    fake maic-leak-audit. start_services stays off: no real service is ever started."""
+    import pty, select, signal
+    home, env = make_home(port)
+    env["HOME"] = os.path.join(home, "h")
+    os.makedirs(env["HOME"])
+    work = os.path.join(home, "work")  # no project marker: no trust prompt
+    os.makedirs(work)
+    fakebin = os.path.join(home, "fakebin")
+    os.makedirs(fakebin)
+    ran = os.path.join(home, "ran.log")  # every fake tool appends its name and arguments: nothing may be run that should not
+    env["PATH"] = fakebin + ":/usr/bin:/bin"
+    results = []
+    audit_lua = os.path.join(home, "config", "maic", "audit.lua")
+    trail = os.path.join(env["XDG_STATE_HOME"], "maic", "audit-trail")
+
+    def run(*args, stdin=subprocess.DEVNULL, path=None, extra=None):
+        e = dict(env, **(extra or {}))
+        if path is not None:
+            e["PATH"] = path
+        return subprocess.run([maic, *args], capture_output=True, text=True, env=e, cwd=work, timeout=60, stdin=stdin)
+
+    def report(ok, what, r):
+        print(("ok" if ok else "FAIL") + ": " + what + ("" if ok else "\n" + r.stdout[-2500:] + r.stderr[-2500:]))
+        results.append(ok)
+
+    def fake(name, body=""):
+        p = os.path.join(fakebin, name)
+        with open(p, "w") as f:
+            f.write("#!/bin/sh\necho \"%s $*\" >> '%s'\n%s" % (name, ran, body))
+        os.chmod(p, 0o755)
+        return p
+
+    def ran_lines():
+        if not os.path.exists(ran):
+            return []
+        with open(ran) as f:
+            return f.read().splitlines()
+
+    def audit_settings(text):
+        with open(audit_lua, "w") as f:
+            f.write("return { " + text + " }\n")
+
+    r = run("audit-trail")
+    report(r.returncode == 0 and "audit trail: off" in r.stdout and "not written yet: maic audit-trail init" in r.stdout and "0 files" in r.stdout,
+           "maic audit-trail: off by default, no trail", r)
+    r = run("audit-trail", "status", "--json")
+    j = json.loads(r.stdout) if r.returncode == 0 and r.stdout.startswith("{") else {}
+    report(j.get("on") is False and j.get("every_seconds") == 86400 and j.get("archive") == "off" and j.get("judge_thinking") is True,
+           "status --json reaches the command (not maic's own --json)", r)
+    r = run("audit-trail", "init")
+    mode = oct(os.stat(audit_lua).st_mode & 0o777) if os.path.exists(audit_lua) else ""
+    report(r.returncode == 0 and "wrote " + audit_lua in r.stdout and mode == "0o600", "init writes audit.lua, 0600", r)
+    r = run("audit-trail", "init")
+    report(r.returncode == 0 and "already there, left as it is" in r.stdout, "init never overwrites it", r)
+
+    # A synthetic trail: the containers hold markers that must never be shown.
+    os.makedirs(trail, mode=0o700)
+    for name, ids in (("20200101.jsonl", (1, 2, 3)), ("20200102.jsonl", (4, 5))):
+        with open(os.path.join(trail, name), "w") as f:
+            for i in ids:
+                f.write(json.dumps({"id": i, "time": "2020-01-01T00:00:00Z", "tool": "run_shell", "arguments": {"command": "cat trail-marker-9931"},
+                                    "session": "trail-session-4417"}) + "\n")
+    with open(os.path.join(trail, "seq"), "w") as f:
+        f.write("5\n")
+    with open(os.path.join(trail, "index.json"), "w") as f:
+        json.dump({"version": 1, "last_id": 3, "archived": [], "ranges": [
+            {"first": 1, "last": 2, "count": 2, "state": "live", "verdicts": {"2": "reached"}, "signature": "trail-signature-2290"},
+            {"first": 3, "last": 3, "count": 1, "state": "stale live", "verdicts": {}, "signature": "x"}]}, f)
+    audit_settings("enabled = true, enforce = 'notify', every = '6h'")
+    r = run("audit-trail", "status")
+    secret = any(m in r.stdout + r.stderr for m in ("trail-marker-9931", "trail-session-4417", "trail-signature-2290", "run_shell"))
+    report(r.returncode == 0 and "audit trail: on" in r.stdout and "2 files" in r.stdout and "2 live, 1 stale live, 0 archival; 2 not yet audited (last id 5)" in r.stdout
+           and "(every 6h)" in r.stdout and "schedule: none" in r.stdout and "archive: off (an entry that gets the retirement signal is deleted)" in r.stdout
+           and "the next start holds for an audit (notify)" in r.stdout and not secret,
+           "status: on, counts by state, the schedule and the archive, nothing of what the entries hold", r)
+
+    # off-site: printed, never run.
+    archive = os.path.join(home, "archive")
+    os.makedirs(archive)
+    old, new = "audit-chunk-20200301T000000Z-1.tar.gz", "audit-chunk-%s-1.tar.gz" % time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    for name, size in ((old, 2048), ("audit-chunk-20200301T000000Z-2.tar.gz", 1024), (new, 512)):
+        with open(os.path.join(archive, name), "wb") as f:
+            f.write(b"x" * size)
+        with open(os.path.join(archive, name + ".sha256"), "w") as f:
+            f.write("0" * 64 + "  " + name + "\n")
+    audit_settings("enabled = true, enforce = 'notify', archive = '%s'" % archive)
+    empty = os.path.join(home, "empty")
+    os.makedirs(empty)
+    r = run("audit-trail", "offsite", "/mnt/cold", path=empty)
+    report(r.returncode == 0 and "off-site: 2 chunks older than 90d in %s, 3.0 KB in all" % archive in r.stdout and old in r.stdout and new not in r.stdout
+           and "by hand, if none of these fits" in r.stdout and "rsync -a" not in r.stdout and "cp -a" not in r.stdout, "offsite with nothing on PATH: the chunks, their size and plain steps", r)
+    tools = os.path.join(home, "tools")
+    os.makedirs(tools)
+    for name in ("rsync", "rclone", "restic", "kopia", "syncthing", "cp", "sha256sum", "rm"):
+        p = os.path.join(tools, name)
+        with open(p, "w") as f:
+            f.write("#!/bin/sh\necho \"%s $*\" >> '%s'\n" % (name, ran))
+        os.chmod(p, 0o755)
+    r = run("audit-trail", "offsite", "/mnt/cold", path=tools)
+    q = "'%s/%s'" % (archive, old)
+    report(r.returncode == 0 and "rsync -a --checksum --remove-source-files " + q in r.stdout and "'/mnt/cold/'" in r.stdout
+           and "rclone move --checksum --include '%s'" % old in r.stdout and "restic -r '/mnt/cold' backup " + q in r.stdout
+           and "kopia snapshot create '%s'" % archive in r.stdout and "ignoreDelete" in r.stdout
+           and "cp -a " + q in r.stdout and "sha256sum -c '%s.sha256'" % old in r.stdout and "MAIC runs none of this" in r.stdout
+           and new not in r.stdout and ran_lines() == [], "offsite with rsync, rclone, restic, kopia, syncthing and coreutils: a command for each, none run", r)
+    for keep in ("rsync", "rclone", "restic", "kopia", "syncthing"):
+        os.remove(os.path.join(tools, keep))
+    r = run("audit-trail", "offsite", "/mnt/cold", path=tools)
+    report(r.returncode == 0 and "coreutils (cp, sha256sum, rm" in r.stdout and "rsync" not in r.stdout and ran_lines() == [],
+           "offsite with coreutils only: the cp, sha256sum -c, rm fallback", r)
+    r = run("audit-trail", "offsite", "/mnt/cold", "--older-than", "10000d", path=tools)
+    report(r.returncode == 0 and "nothing to move" in r.stdout, "offsite --older-than past every chunk: nothing to move", r)
+    audit_settings("enabled = true, enforce = 'notify'")
+    r = run("audit-trail", "offsite", "/mnt/cold")
+    report(r.returncode == 1 and "there are no chunks to move" in r.stderr, "offsite with archive off: refused", r)
+
+    # The schedule: units from contrib/systemd/ in $XDG_CONFIG_HOME/systemd/user, systemctl a fake on PATH.
+    units = os.path.join(home, "config", "systemd", "user")
+    leak = fake("maic-leak-audit", "exit 0\n")
+    audit_settings("enabled = true, every = '6h'")
+    r = run("audit-trail", "schedule", "install", path=fakebin)
+    report(r.returncode == 0 and "no systemctl here" in r.stdout and os.path.exists(os.path.join(units, "maic-leak-audit.timer")),
+           "schedule install with no systemctl: written, the due check stands in", r)
+    fake("systemctl")
+    r = run("audit-trail", "schedule", "install")
+    with open(os.path.join(units, "maic-leak-audit.service")) as f:
+        service = f.read()
+    with open(os.path.join(units, "maic-leak-audit.timer")) as f:
+        timer = f.read()
+    report(r.returncode == 0 and "\nExecStart=%s\n" % leak in service and "\nEnvironment=MAIC_BIN=%s\n" % os.path.realpath(maic) in service
+           and "\nOnUnitActiveSec=6h\n" in timer and "systemctl --user daemon-reload" in ran_lines()
+           and "systemctl --user enable --now maic-leak-audit.timer" in ran_lines(), "schedule install: ExecStart, OnUnitActiveSec, enabled", r)
+    r = run("audit-trail", "status")
+    report("schedule: the systemd timer" in r.stdout, "status sees the timer", r)
+    r = run("audit-trail", "schedule", "remove")
+    report(r.returncode == 0 and not os.path.exists(os.path.join(units, "maic-leak-audit.timer")) and "systemctl --user disable --now maic-leak-audit.timer" in ran_lines(),
+           "schedule remove: disabled and gone", r)
+    os.remove(os.path.join(fakebin, "systemctl"))
+    os.remove(ran)
+
+    # The start-up check. The fake audit records the transcripts that exist while it runs: the session's comes after.
+    fake("maic-leak-audit",
+         "find \"$XDG_RUNTIME_DIR\" -name '*.jsonl' | sed 's/^/during: /' >> '%s'\n" % ran +
+         "sleep 1\n"
+         "if [ \"$1\" = --scan ]; then echo 'leak audit complete (phase 1 only): report at /fake/r.md. Something was reached for: UNCLEAR'; exit 0; fi\n"
+         "if [ \"$FAKE_AUDIT\" = fail ]; then echo 'maic-leak-audit: the local model server llamacpp is not answering' >&2; "
+         "echo 'leak audit not completed: see standard error. Something was reached for: UNKNOWN'; exit 2; fi\n"
+         "echo 'leak audit complete: report at /fake/r.md. Something was reached for: NO'\n")
+
+    def transcripts():
+        return {os.path.join(d, f) for d, _, fs in os.walk(env["XDG_RUNTIME_DIR"]) for f in fs if f.endswith(".jsonl")}
+
+    audit_settings("enabled = true, start_services = false")
+    before = transcripts()
+    r = run("-p", "ping")
+    during = [line[len("during: "):] for line in ran_lines() if line.startswith("during: ")]
+    hold = r.stderr.find("auditing with the local judge (qwen-9b) before the session opens, everything else on hold")
+    done = r.stderr.find("audit trail: leak audit complete: report at /fake/r.md. Something was reached for: NO")
+    report(r.returncode == 0 and "echo: ping" in r.stdout and 0 <= hold < done and "maic-leak-audit --model qwen-9b" in ran_lines()
+           and "has never been audited" in r.stderr and set(during) <= before and transcripts() - before,
+           "maic -p, judge-and-hold: the audit runs and ends before the session opens", r)
+    os.remove(ran)
+    r = run("-p", "ping", extra={"FAKE_AUDIT": "fail"})
+    report(r.returncode == 0 and "echo: ping" in r.stdout and "the judge could not run, so the phase-1 scan stands in" in r.stderr
+           and "maic-leak-audit: the local model server llamacpp is not answering" in r.stderr and "Something was reached for: UNCLEAR" in r.stderr
+           and [l for l in ran_lines() if l.startswith("maic-leak-audit")] == ["maic-leak-audit --model qwen-9b", "maic-leak-audit --scan"],
+           "judge-and-hold when the judge cannot run: the scan stands in and says so", r)
+    os.remove(ran)
+    audit_settings("enabled = true, enforce = 'scan-and-continue', start_services = false")
+    r = run("-p", "ping")
+    report(r.returncode == 0 and "scanning (phase 1) and continuing" in r.stderr and [l for l in ran_lines() if l.startswith("maic-leak-audit")] == ["maic-leak-audit --scan"],
+           "scan-and-continue: the scan only", r)
+    os.remove(ran)
+    audit_settings("enabled = true, enforce = 'notify'")
+    r = run("-p", "ping")
+    report(r.returncode == 0 and "run maic-leak-audit (maic audit-trail schedule install runs it for you)" in r.stderr and ran_lines() == [],
+           "notify: one line, nothing run", r)
+    audit_settings("enabled = true, start_services = false")
+    r = run("status")
+    report("maic-leak-audit --model qwen-9b" in ran_lines() and "audit trail: leak audit complete" in r.stderr, "maic status checks too", r)
+    os.remove(ran)
+    # The TUI: the result line comes before the screen is drawn.
+    master, slave = pty.openpty()
+    p = subprocess.Popen([maic], stdin=slave, stdout=slave, stderr=slave, env=dict(env, TERM="xterm-256color"), cwd=work, start_new_session=True)
+    os.close(slave)
+    seen, deadline = b"", time.time() + 30
+    while b"\x1b[?1049h" not in seen and time.time() < deadline:
+        if select.select([master], [], [], 0.5)[0]:
+            try:
+                seen += os.read(master, 65536)
+            except OSError:
+                break
+    os.killpg(p.pid, signal.SIGKILL)
+    p.wait()
+    os.close(master)
+    text = seen.decode(errors="replace")
+    at = text.find("Something was reached for: NO")
+    report(0 <= at < text.find("\x1b[?1049h") and "maic-leak-audit --model qwen-9b" in ran_lines(), "the TUI holds until the audit is done, then opens",
+           subprocess.CompletedProcess([], 0, text[-1500:], ""))
+    os.remove(ran)
+    # Nothing happens when a scheduler ran it, when the trail is off, and the size cap triggers by itself.
+    with open(os.path.join(trail, "index.json"), "w") as f:
+        json.dump({"last_audit": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "next_audit_due": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600))}, f)
+    r = run("-p", "ping")
+    report(r.returncode == 0 and "audit trail:" not in r.stderr and ran_lines() == [], "a recent audit (a scheduler ran it): nothing happens", r)
+    audit_settings("enabled = false, start_services = false")
+    with open(os.path.join(trail, "20200101.jsonl"), "w") as f:
+        f.write("x" * (2 << 20))
+    r = run("-p", "ping")
+    report(r.returncode == 0 and "audit trail:" not in r.stderr and ran_lines() == [], "off: never a hold, whatever the trail", r)
+    audit_settings("enabled = true, start_services = false, live_mb = 1")
+    r = run("-p", "ping")
+    report(r.returncode == 0 and "past live_mb (1 MB)" in r.stderr and "maic-leak-audit --model qwen-9b" in ran_lines(), "past live_mb the next start holds", r)
+
+    # purge: only after a yes at a terminal; the ids go on.
+    r = run("audit-trail", "purge")
+    report(r.returncode == 2 and "asks at a terminal" in r.stderr and os.path.exists(os.path.join(trail, "20200102.jsonl")), "purge off a terminal deletes nothing", r)
+    master, slave = pty.openpty()
+    os.write(master, b"n\n")
+    r = run("audit-trail", "purge", stdin=slave)
+    report(r.returncode == 0 and "nothing was deleted" in r.stdout and os.path.exists(os.path.join(trail, "20200102.jsonl")), "purge answered no deletes nothing", r)
+    os.write(master, b"y\n")
+    r = run("audit-trail", "purge", stdin=slave)
+    os.close(master)
+    os.close(slave)
+    left = sorted(os.listdir(trail))
+    report(r.returncode == 0 and "deleted 2 files of audit trail and its index (ids go on from 5)" in r.stdout and ".jsonl" not in "".join(left) and "seq" in left
+           and "index.json" not in left and os.path.exists(os.path.join(archive, old)), "purge answered yes: the containers and the index go, seq and the archive stay", r)
+    shutil.rmtree(home, ignore_errors=True)
     return all(results)
 
 

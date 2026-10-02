@@ -1,3 +1,4 @@
+#include "audit_trail.hpp"
 #include "commands.hpp"
 #include "doctor.hpp"
 #include "headless.hpp"
@@ -172,6 +173,10 @@ void usage(std::ostream& out = std::cerr) {
                  "  trans-fairy-write [args...]   maic cai trans-fairy-write ...: overwrite one, with a backup first\n"
                  "                             (both take a MAIC session or a Claude Code transcript, told apart by content)\n"
                  "  settings init [--json]|path  write the global settings file (Lua; --json for JSON), or show where it goes\n"
+                 "  audit-trail [init|status [--json]|purge|offsite DEST [--older-than 90d]|schedule install|remove]\n"
+                 "                             the audit trail, off by default (docs/audit-trail.md): init writes audit.lua;\n"
+                 "                             status counts, never contents; purge asks first; offsite prints, never runs,\n"
+                 "                             the commands that move old archive chunks on; schedule a systemd timer\n"
                  "  settings read diction      diction.lua beside settings.lua, evaluated in a restricted Lua state, as JSON\n"
                  "                             ({} when it does not exist); diction reads its config through this\n"
                  "  init                       scaffold this project: MAIC.md and .maic/settings.lua (transcripts then\n"
@@ -1211,6 +1216,15 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    // audit-trail keeps its own flags (--json), so it is handed off before maic's are read.
+    if (argc >= 2 && std::string(argv[1]) == "audit-trail") {
+        try {
+            return maic::cmd_audit_trail(std::vector<std::string>(argv + 2, argv + argc));
+        } catch (const std::exception& e) {
+            std::cerr << "maic: " << e.what() << "\n";
+            return 1;
+        }
+    }
     std::vector<std::string> args;
     // Clustered short flags: -pi is -p -i. A flag that takes a value (-m, -C) must come last in a cluster.
     for (int i = 1; i < argc; ++i) {
@@ -1741,6 +1755,11 @@ int main(int argc, char** argv) {
 
         auto services = maic::load_services(maic::root_dir() / "services");
         if (cmd == "status") {
+            try {
+                maic::audit_gate(maic::load_settings());
+            } catch (const std::exception&) {
+                // a broken settings file must not hide the services; the commands that need settings report it
+            }
             maic::StatusReport report = maic::status_report(services);
             try {
                 report.lazy_lock = maic::lazy_lock_summary(maic::lazy_lock_state(maic::lazy_lock_path(maic::load_settings().lazy_lock)));

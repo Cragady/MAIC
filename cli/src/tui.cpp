@@ -1,5 +1,6 @@
 #include "tui.hpp"
 
+#include "audit_trail.hpp"
 #include "commands.hpp"
 #include "editor.hpp"
 #include "highlight.hpp"
@@ -216,6 +217,7 @@ public:
         set_context(agent_.providers, settings_.context_2, "llamacpp-2");
         agent_.think = settings_.think;
         agent_.review_with_model = settings_.harness != "dumb";
+        agent_.audit = settings_.audit;
         agent_.reviewer_model = settings_.reviewer_model;
         agent_.small_model = settings_.small_model;
         agent_.reviewer_budget_tokens = settings_.reviewer_budget_tokens;
@@ -2692,6 +2694,8 @@ int run_tui(const TuiOptions& options) {
         fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
         return 2;
     }
+    // An audit that is due holds here, before the screen is drawn (docs/audit-trail.md).
+    audit_gate(settings);
     set_color_depth(settings.colors);
     auto screen = ScreenInteractive::Fullscreen();
     screen.TrackMouse(settings.mouse);
