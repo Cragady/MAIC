@@ -563,6 +563,7 @@ int main() {
         setenv("WAYLAND_DISPLAY", "wayland-99", 1);
         setenv("MAIC_TEST_TOKEN", "t", 1);
         setenv("MAIC_TEST_API_KEY", "k", 1);
+        setenv("DEEPSEEK_API_KEY", "sk-deepseek-never-in-a-command", 1);
         setenv("MAIC_TEST_SECRET", "s", 1);
         setenv("MAIC_TEST_OTHER", "o", 1);
         setenv("LANG", "C.UTF-8", 1);
@@ -575,13 +576,14 @@ int main() {
         r = run_sandboxed("env", sws, false, std::chrono::seconds(20), no);
         std::string env = "\n" + r.output;
         for (const char* v : {"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "SSH_AUTH_SOCK", "GPG_AGENT_INFO", "NVIM", "DISPLAY", "WAYLAND_DISPLAY",
-                              "MAIC_TEST_TOKEN", "MAIC_TEST_API_KEY", "MAIC_TEST_SECRET", "MAIC_TEST_OTHER", "MAIC_TRIPWIRE_FILE"}) {
+                              "MAIC_TEST_TOKEN", "MAIC_TEST_API_KEY", "MAIC_TEST_SECRET", "MAIC_TEST_OTHER", "MAIC_TRIPWIRE_FILE", "DEEPSEEK_API_KEY"}) {
             expect(env.find(std::string("\n") + v + "=") == std::string::npos, std::string("env inside the sandbox has no ") + v);
         }
         for (const char* v : {"PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_TIME", "TZ", "TERM", "SHELL"}) {
             expect(env.find(std::string("\n") + v + "=" + std::getenv(v) + "\n") != std::string::npos, std::string("env inside the sandbox keeps ") + v);
         }
         r = run_sandboxed_argv({"/usr/bin/env"}, "", sws, true, std::chrono::seconds(20), no);
+        expect(env.find("sk-deepseek-never-in-a-command") == std::string::npos, "a provider's key (DEEPSEEK_API_KEY) is nowhere in a command's environment");
         expect(r.exit_code == 0 && r.output.find("SSH_AUTH_SOCK=") == std::string::npos && r.output.find("MAIC_TEST_TOKEN=") == std::string::npos &&
                    r.output.find("PATH=") != std::string::npos,
                "a script tool (run_sandboxed_argv) gets the same environment");
@@ -592,7 +594,7 @@ int main() {
         expect(r.exit_code != 0 && !fs::exists(sws / "ro.txt"), "and still read-only when the mode says so");
 
         for (const char* v : {"XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "GPG_AGENT_INFO", "NVIM", "DISPLAY", "WAYLAND_DISPLAY",
-                              "MAIC_TEST_TOKEN", "MAIC_TEST_API_KEY", "MAIC_TEST_SECRET", "MAIC_TEST_OTHER"}) {
+                              "MAIC_TEST_TOKEN", "MAIC_TEST_API_KEY", "MAIC_TEST_SECRET", "MAIC_TEST_OTHER", "DEEPSEEK_API_KEY"}) {
             unsetenv(v);
         }
         for (int fd : fds) {

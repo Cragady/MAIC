@@ -2,6 +2,7 @@
 // as server-sent events. Tool call arguments arrive as JSON text in pieces.
 #include "llm_http.hpp"
 
+#include <algorithm>
 #include <deque>
 #include <map>
 
@@ -9,14 +10,44 @@ namespace maic::detail {
 
 namespace {
 
+using nlohmann::json;
+
 // DeepSeek's thinking models need every earlier assistant turn's reasoning_content replayed while the
 // request carries tools, or they answer 400 (api-docs.deepseek.com/guides/thinking_mode). Other servers
-// ignore the field or reject it, so it is kept and sent only for them.
-bool replays_reasoning(const std::string& model) {
-    return model.find("deepseek") != std::string::npos;
+// ignore the field or reject it, so it is kept and sent only where `replay_reasoning` says, by default to a
+// model whose name says deepseek.
+bool replays_reasoning(const Provider& provider, const std::string& model) {
+    return provider.options.value("replay_reasoning", model.find("deepseek") != std::string::npos);
 }
 
-using nlohmann::json;
+// `vision`: true (the default) or false for the provider, or the list of its models that take pictures.
+bool takes_images(const Provider& provider, const std::string& model) {
+    const json v = provider.options.value("vision", json(true));
+    if (v.is_array()) return std::find(v.begin(), v.end(), json(model)) != v.end();
+    return !v.is_boolean() || v.get<bool>();
+}
+
+// `think_sampling` while thinking is on, `nothink_sampling` while it is off: a key set to false is not sent, one set to
+// [low, high] only within it.
+void drop_sampling(json& body, const json& rules) {
+    if (!rules.is_object()) return;
+    for (const auto& [k, rule] : rules.items()) {
+        if (!body.contains(k)) continue;
+        bool out_of_range = rule.is_array() && rule.size() == 2 && body[k].is_number() && (body[k] < rule[0] || body[k] > rule[1]);
+        if ((rule.is_boolean() && !rule.get<bool>()) || out_of_range) body.erase(k);
+    }
+}
+
+// A word on what an error status means for the user, after the provider's own message.
+std::string status_hint(const Provider& provider, int status) {
+    if (status == 401 || status == 403) {
+        return provider.api_key_env.empty() ? " (the key was refused)" : " (the key in $" + provider.api_key_env + " was refused; check it, or set the right one)";
+    }
+    if (status == 402) return " (the account's balance is used up; nothing was retried. Top it up with the provider, or switch models)";
+    if (status == 429) return " (rate limited)";
+    if (status >= 500) return " (the provider's server failed)";
+    return "";
+}
 
 // error.maic.upstream: the software that sent the error, what each rule replaced, and the rules' names.
 json& upstream(json& error, const std::string& provider, const char* rule) {
@@ -76,12 +107,16 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
     std::deque<std::string> pending_ids;
     int generated = 0;
     bool mid_system = provider.options.value("mid_system", false);  // true: send later system messages as system
+    bool replay = replays_reasoning(provider, options.model);
+    bool vision = takes_images(provider, options.model);
     for (const auto& m : messages) {
         if (m.role == "assistant") {
             if (m.content.empty() && m.tool_calls.empty()) continue;
             nlohmann::json j = {{"role", "assistant"}, {"content", m.content}};
-            if (replays_reasoning(options.model) && m.raw_kind == "openai" && m.raw.is_object() && m.raw.contains("reasoning_content")) {
-                j["reasoning_content"] = m.raw["reasoning_content"];
+            if (replay) {
+                // A turn with none kept (thinking was off, another model wrote it) goes with an empty one.
+                bool kept = m.raw_kind == "openai" && m.raw.is_object() && m.raw.contains("reasoning_content");
+                j["reasoning_content"] = kept ? m.raw["reasoning_content"] : json("");
             }
             if (!m.tool_calls.empty()) {
                 j["tool_calls"] = nlohmann::json::array();
@@ -102,6 +137,10 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
             // A system message after the first: most local chat templates (Qwen's among them) reject or
             // mishandle one, so it goes as a user-role note unless the provider says otherwise.
             msgs.push_back({{"role", "user"}, {"content", "[system note] " + m.content}});
+        } else if (m.role == "user" && !m.images.empty() && !vision) {
+            std::string text = m.content;
+            for (const auto& im : m.images) text += "\n[image " + im.name + " not sent: " + options.model + " does not take pictures]";
+            msgs.push_back({{"role", "user"}, {"content", text}});
         } else if (m.role == "user" && !m.images.empty()) {
             // Pictures ride as image_url parts beside the text (llama-server with --mmproj, and the OpenAI shape).
             nlohmann::json parts = nlohmann::json::array();
@@ -124,21 +163,33 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
         body["chat_template_kwargs"] = {{"enable_thinking", options.think}};
         if (!options.think) body["reasoning_effort"] = "none";
     }
+    // An API that switches thinking with a request field of its own (DeepSeek's "thinking": {"type": ...}).
+    const json think_fields = provider.options.value(options.think ? "think_on" : "think_off", json::object());  // named: iterating a temporary dangles
+    for (const auto& [k, v] : think_fields.items()) body[k] = v;
+    if (provider.options.contains("max_tokens") && !body.contains("max_tokens")) body["max_tokens"] = provider.options["max_tokens"];
     if (!tools.empty()) body["tools"] = tools;
     nlohmann::json extra = provider.options.value("extra_body", nlohmann::json::object());
     for (const auto& [k, v] : extra.items()) body[k] = v;
+    drop_sampling(body, provider.options.value(options.think ? "think_sampling" : "nothink_sampling", json::object()));
 
     std::vector<std::pair<std::string, std::string>> headers;
+    std::string key;
     if (!provider.api_key_env.empty() || !provider.api_key_command.empty()) {
-        headers.push_back({"Authorization", "Bearer " + provider.api_key()});
+        key = provider.api_key();
+        headers.push_back({"Authorization", "Bearer " + key});
     }
+    // Whatever an error echoes back, the key never reaches a message, a log or a transcript.
+    auto redact = [&](std::string text) {
+        for (size_t at; key.size() >= 8 && (at = text.find(key)) != std::string::npos;) text.replace(at, key.size(), "[key]");
+        return text;
+    };
 
     Message reply{"assistant", "", {}, "", "", false, "", nullptr};
     struct PartialCall {
         std::string id, name, args;
     };
     std::map<int, PartialCall> calls;
-    std::string finish, error, reasoning, stray;
+    std::string finish, error, reasoning, stray, served, fingerprint;
     std::map<std::string, int> normalized;
     auto normalize = [&](nlohmann::json& j) {
         for (const auto& rule : normalize_openai(j, provider.upstream_name())) ++normalized[rule];
@@ -165,9 +216,14 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
                 error = e.is_object() ? e.value("message", e.dump()) : e.dump();
                 return;
             }
+            if (j.contains("model") && j["model"].is_string()) served = j["model"];
+            if (j.contains("system_fingerprint") && j["system_fingerprint"].is_string()) fingerprint = j["system_fingerprint"];
             if (j.contains("usage") && j["usage"].is_object()) {
-                reply.usage.input = j["usage"].value("prompt_tokens", reply.usage.input);
-                reply.usage.output = j["usage"].value("completion_tokens", reply.usage.output);
+                const auto& u = j["usage"];
+                reply.usage.input = u.value("prompt_tokens", reply.usage.input);
+                reply.usage.output = u.value("completion_tokens", reply.usage.output);
+                if (u.contains("prompt_cache_hit_tokens") && u["prompt_cache_hit_tokens"].is_number_integer()) reply.usage.cached = u["prompt_cache_hit_tokens"];
+                else if (u.contains("prompt_tokens_details") && u["prompt_tokens_details"].is_object()) reply.usage.cached = u["prompt_tokens_details"].value("cached_tokens", 0);
             }
             for (const auto& choice : j.value("choices", nlohmann::json::array())) {
                 const auto& d = choice.value("delta", nlohmann::json::object());
@@ -207,14 +263,31 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
     if (options.normalized) {
         for (const auto& [rule, n] : normalized) options.normalized(rule, n);
     }
-    if (r.status != 200) throw_api_error(provider.name, r);
+    if (r.status != 200) {
+        r.error_body = redact(r.error_body);
+        throw_api_error(provider.name, r, status_hint(provider, r.status));
+    }
     if (error.empty()) error = stray;
-    if (!error.empty()) throw std::runtime_error(provider.name + ": " + error);
+    if (!error.empty()) throw std::runtime_error(provider.name + ": " + redact(error));
+
+    // finish_reason values beyond OpenAI's set (DeepSeek's): the reply did not end normally.
+    if (finish == "insufficient_system_resource") throw std::runtime_error(provider.name + ": the provider dropped the request for lack of capacity (insufficient_system_resource); send it again");
+    if (finish == "aborted") throw std::runtime_error(provider.name + ": the provider aborted the reply before it was complete");
+    if (finish == "content_filter") reply.content += "\n[The provider's content filter stopped the reply here.]";
+    if (finish == "stop" && reply.content.empty() && reasoning.empty() && calls.empty() && provider.options.value("retry_empty", false)) {
+        throw TransportError(provider.name + " sent an empty reply (no text, reasoning or tool call)");
+    }
 
     reply.usage.context = provider.options.value("context_window", 0);
-    if (!reasoning.empty() && replays_reasoning(options.model)) {
-        reply.raw_kind = "openai";
-        reply.raw = {{"reasoning_content", reasoning}};
+    if (replay || provider.metered()) {
+        // Kept with the turn in the transcript: the reasoning to replay, and which model answered (a provider may route
+        // a request to another model; the notice makes that visible as it happens).
+        nlohmann::json raw = nlohmann::json::object();
+        if (!reasoning.empty()) raw["reasoning_content"] = reasoning;
+        if (!served.empty()) raw["model"] = served;
+        if (!fingerprint.empty()) raw["system_fingerprint"] = fingerprint;
+        if (!raw.empty()) reply.raw_kind = "openai", reply.raw = raw;
+        if (!served.empty() && served != options.model && options.notice) options.notice(provider.name + ": asked for " + options.model + ", answered by " + served);
     }
     if (finish == "length" && !calls.empty()) {
         reply.content += "\n[Output hit the length limit before the tool call was complete.]";

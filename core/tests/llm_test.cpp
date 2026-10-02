@@ -6,8 +6,12 @@
 #include "maic/http.hpp"
 
 #include "fake_claude.hpp"
+#include "fake_deepseek.hpp"
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <signal.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -405,6 +409,204 @@ int main() {
         expect(other.raw_kind.empty() && other.raw.is_null(), "other models' reasoning is streamed, not stored");
     }
 
+    section("deepseek: the shipped provider against a fake DeepSeek API");
+    {
+        FakeDeepSeek ds;
+        Provider p = by_name("deepseek");
+        expect(p.kind == "openai" && p.base_url == "https://api.deepseek.com" && p.api_key_env == "DEEPSEEK_API_KEY" && p.remote() && p.metered(),
+               "deepseek ships: OpenAI-compatible, https://api.deepseek.com, the key from DEEPSEEK_API_KEY, remote and metered");
+        p.base_url = ds.url();
+        setenv("DEEPSEEK_API_KEY", ds.key.c_str(), 1);
+        auto sink_into = [](std::string* text, std::string* thought) {
+            return [=](std::string_view d, bool thinking) { *(thinking ? thought : text) += d; };
+        };
+        auto ask = [&](const std::string& model, bool think, const std::vector<Message>& msgs, const json& tools = json::array(), json sampling = nullptr) {
+            ChatOptions o{model, think};
+            o.sampling = sampling;
+            o.retries = 0;
+            return chat(p, o, msgs, tools, [](std::string_view, bool) {}, no_cancel);
+        };
+
+        std::string text, thought;
+        ChatOptions o{"deepseek-flash", true};
+        o.sampling = {{"temperature", 0.7}, {"top_p", 0.5}, {"presence_penalty", 0.2}, {"frequency_penalty", 0.1}, {"max_tokens", 4096}};
+        Message m = chat(p, o, hello, json::array(), sink_into(&text, &thought), no_cancel);
+        json b = ds.last();
+        expect(m.content == "done" && text == "done" && thought == "thought 1" && m.usage.input == 120 && m.usage.output == 30 && m.usage.cached == 64 && m.usage.context == 1000000,
+               "thinking on: reasoning streams as thinking, the answer as text, usage from the final chunk with its cache hits, the 1M window: " + text + " / " + thought);
+        expect(m.raw.value("model", "") == "deepseek-flash" && m.raw.value("system_fingerprint", "") == "fp_fake", "the model that answered and its fingerprint are kept with the turn");
+        expect(b["thinking"] == json{{"type", "enabled"}} && b["stream"] == true, "thinking on is asked for with DeepSeek's own field: " + b.dump());
+        expect(!b.contains("temperature") && !b.contains("presence_penalty") && !b.contains("frequency_penalty") && !b.contains("top_p") && b["max_tokens"] == 4096,
+               "while thinking, temperature and the penalties are not sent, nor a top_p below 0.95; the rest of sampling is");
+        ask("deepseek-flash", true, hello, json::array(), {{"top_p", 0.97}});
+        expect(ds.last()["top_p"] == 0.97, "a top_p within 0.95 to 1.0 is sent while thinking");
+        expect(m.raw_kind == "openai" && m.raw.value("reasoning_content", "") == "thought 1", "the reasoning is kept with the turn, to replay");
+
+        text.clear(), thought.clear();
+        o = ChatOptions{"deepseek-v4-pro", false};
+        o.sampling = {{"temperature", 0.7}, {"top_p", 0.5}};
+        m = chat(p, o, hello, json::array(), sink_into(&text, &thought), no_cancel);
+        b = ds.last();
+        expect(m.content == "done" && thought.empty() && !m.raw.contains("reasoning_content") && b["thinking"] == json{{"type", "disabled"}} && b["temperature"] == 0.7 && !b.contains("top_p") &&
+                   b["max_tokens"] == 65536,
+               "thinking off: DeepSeek is told so, nothing is thought, temperature goes, top_p (fixed at 1.0 there) does not, max_tokens is the provider's");
+
+        // Tool use over several turns: the fake refuses, as DeepSeek does, a request with tools whose earlier assistant
+        // turns lack their reasoning_content.
+        int turn = 0;
+        ds.tool_call_for = [&](const json&) { return ++turn <= 2 ? json{{"name", "read_file"}, {"arguments", {{"path", "a" + std::to_string(turn)}}}} : json(); };
+        std::vector<Message> hist = hello;
+        size_t refused = ds.refused.size();
+        bool ok = true;
+        for (int i = 0; i < 3; ++i) {
+            Message r = ask("deepseek-v4-pro", true, hist, kTools);
+            hist.push_back(r);
+            if (!r.tool_calls.empty()) hist.push_back({"tool", "contents", {}, "read_file", r.tool_calls[0].id});
+        }
+        b = ds.last();
+        expect(ds.refused.size() == refused && hist.back().content == "done" && hist[2].tool_calls.size() == 1 && hist[2].tool_calls[0].id.rfind("call_ds_", 0) == 0,
+               "two tool calls and an answer in thinking mode: nothing refused");
+        expect(b["messages"][2]["reasoning_content"] == hist[2].raw["reasoning_content"] && b["messages"][4]["reasoning_content"] == hist[4].raw["reasoning_content"] &&
+                   b["messages"][2]["reasoning_content"] != b["messages"][4]["reasoning_content"],
+               "each earlier assistant turn goes back with its own reasoning_content: " + b["messages"].dump());
+        // A session resumed from its transcript replays the same reasoning.
+        std::vector<Message> resumed;
+        for (const auto& msg : hist) resumed.push_back(message_from_json(json::parse(message_to_json(msg).dump())));
+        resumed.push_back({"user", "after a resume"});
+        ok = true;
+        try { ask("deepseek-v4-pro", true, resumed, kTools); } catch (const std::exception&) { ok = false; }
+        expect(ok && ds.last()["messages"][2]["reasoning_content"] == hist[2].raw["reasoning_content"], "after a resume the transcript's reasoning goes back as it was received");
+        ds.tool_call_for = nullptr;
+        hist.push_back({"assistant", "a turn another model wrote"});
+        hist.push_back({"user", "and now?"});
+        ok = true;
+        try { ask("deepseek-flash", true, hist, kTools); } catch (const std::exception&) { ok = false; }
+        expect(ok && ds.last()["messages"][7]["reasoning_content"] == "", "a turn with no reasoning kept (another model's) goes with an empty one");
+        Provider no_replay = p;
+        no_replay.options["replay_reasoning"] = false;
+        std::string why;
+        try { chat(no_replay, {"deepseek-flash", true}, hist, kTools, [](std::string_view, bool) {}, no_cancel); } catch (const std::exception& e) { why = e.what(); }
+        expect(why.find("HTTP 400") != std::string::npos && why.find("reasoning_content") != std::string::npos,
+               "the control: without the replay the fake refuses as DeepSeek does, and the error says why: " + why);
+
+        ImageData pic{"image/png", "iVBORw0KGgo=", "panel.png"};
+        Message with_pic{"user", "what is this?"};
+        with_pic.images.push_back(pic);
+        ask("deepseek-flash", false, {with_pic});
+        expect(ds.last()["messages"][0]["content"][1]["type"] == "image_url", "deepseek-flash gets the picture");
+        ok = true;
+        try { ask("deepseek-v4-pro", false, {with_pic}); } catch (const std::exception&) { ok = false; }
+        std::string sent = ds.last()["messages"][0]["content"].dump();
+        expect(ok && sent.find("[image panel.png not sent: deepseek-v4-pro does not take pictures]") != std::string::npos, "deepseek-v4-pro gets a note in its place: " + sent);
+
+        auto error_of = [&](int status, const std::string& body, int retries = 0, std::vector<std::string>* notices = nullptr) {
+            if (status) ds.failures.push_back({status, body});
+            ChatOptions eo{"deepseek-flash", false};
+            eo.retries = retries;
+            eo.retry_base_ms = 1;
+            if (notices) eo.notice = [=](const std::string& n) { notices->push_back(n); };
+            try { chat(p, eo, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError& e) { return std::make_pair(e.status, std::string(e.what())); }
+            return std::make_pair(0, std::string());
+        };
+        setenv("DEEPSEEK_API_KEY", "sk-wrong-key-that-must-not-leak", 1);
+        auto [s401, m401] = error_of(0, "");
+        expect(s401 == 401 && m401.find("$DEEPSEEK_API_KEY was refused") != std::string::npos && m401.find("sk-wrong-key-that-must-not-leak") == std::string::npos && m401.find("[key]") != std::string::npos,
+               "401: the message names the variable, and the key the server echoed is not in it: " + m401);
+        setenv("DEEPSEEK_API_KEY", ds.key.c_str(), 1);
+        size_t before = ds.requests.size();
+        std::vector<std::string> notices;
+        auto [s402, m402] = error_of(402, R"({"error":{"message":"Insufficient Balance","type":"unknown_error","param":null,"code":"invalid_request_error"}})", 3);
+        expect(s402 == 402 && m402.find("Insufficient Balance") != std::string::npos && m402.find("balance is used up; nothing was retried") != std::string::npos && ds.requests.size() == before + 1,
+               "402: a usage limit, said plainly, and never retried: " + m402);
+        before = ds.requests.size();
+        ds.failures.push_back({429, R"({"error":{"message":"Rate limit reached","type":"rate_limit_error","param":null,"code":"rate_limit_exceeded"}})"});
+        auto [s429, m429] = error_of(429, R"({"error":{"message":"Rate limit reached","type":"rate_limit_error","param":null,"code":"rate_limit_exceeded"}})", 1, &notices);
+        expect(s429 == 429 && m429.find("(rate limited)") != std::string::npos && ds.requests.size() == before + 2 && notices.size() == 1 && notices[0].find("HTTP 429; retrying") != std::string::npos,
+               "429: retried within `retries` (nothing ran, so nothing was billed), each wait told: " + m429);
+        auto [s500, m500] = error_of(500, R"({"error":{"message":"Internal error","type":"server_error"}})");
+        expect(s500 == 500 && m500.find("the provider's server failed") != std::string::npos, "5xx: " + m500);
+        ds.break_mid_stream = true;
+        why.clear();
+        try { ask("deepseek-flash", false, hello); } catch (const std::exception& e) { why = e.what(); }
+        expect(why == "deepseek: Service is too busy", "an error in the middle of the stream ends the call with the provider's message: " + why);
+
+        // finish_reason: a tool call cut off by the length limit is not run; DeepSeek's own two end the call clearly.
+        ds.tool_call_for = [](const json&) { return json{{"name", "read_file"}, {"arguments", {{"path", "a-long-file-name.txt"}}}}; };
+        ds.finish = "length";
+        m = ask("deepseek-flash", false, hello, kTools);
+        expect(m.tool_calls.empty() && m.content.find("length limit before the tool call was complete") != std::string::npos, "a half-written tool call at the length limit is dropped, not run");
+        ds.tool_call_for = nullptr;
+        for (const auto& [reason, says] : {std::pair<std::string, std::string>{"insufficient_system_resource", "lack of capacity"}, {"aborted", "aborted the reply"}}) {
+            ds.finish = reason;
+            why.clear();
+            try { ask("deepseek-flash", false, hello); } catch (const std::exception& e) { why = e.what(); }
+            expect(why.find(says) != std::string::npos, "finish_reason " + reason + " is an error saying so: " + why);
+        }
+        ds.finish = "content_filter";
+        m = ask("deepseek-flash", false, hello);
+        expect(m.content.find("content filter stopped the reply") != std::string::npos, "content_filter keeps the text with a note");
+        // An empty `stop` reply is sent again (within retries); a silent re-route is told.
+        ds.empty_left = 1;
+        ds.served_as = "deepseek-flash";
+        notices.clear();
+        ChatOptions eo{"deepseek-v4-pro", false};
+        eo.retries = 1;
+        eo.retry_base_ms = 1;
+        eo.notice = [&](const std::string& n) { notices.push_back(n); };
+        m = chat(p, eo, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+        ds.served_as.clear();
+        expect(m.content == "done" && notices.size() == 2 && notices[0].find("empty reply") != std::string::npos && notices[1] == "deepseek: asked for deepseek-v4-pro, answered by deepseek-flash" &&
+                   m.raw.value("model", "") == "deepseek-flash",
+               "an empty reply is retried with a notice, and an answer from another model than asked is told and kept: " + json(notices).dump());
+
+        // Nothing listening is safe to try again; an answer lost after the request went out may have been billed, so a
+        // metered provider never sends it again.
+        Provider gone = p;
+        gone.options["metered"] = true;  // on loopback the default would say no
+        gone.base_url = "http://127.0.0.1:9";  // the discard port: nothing listens
+        ChatOptions go{"deepseek-flash", false};
+        go.retries = 1;
+        go.retry_base_ms = 1;
+        go.notice = [&](const std::string& n) { notices.push_back(n); };
+        notices.clear();
+        bool transport = false;
+        try { chat(gone, go, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const TransportError&) { transport = true; }
+        expect(transport && notices.size() == 1, "a connection refused is retried, metered or not");
+        int listener = socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        socklen_t len = sizeof(addr);
+        bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+        listen(listener, 4);
+        getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &len);
+        std::atomic<int> accepted{0};
+        std::thread dropper([&] {
+            // Reads the request whole, then hangs up without a word: the reply is lost after it may have run.
+            for (int fd; (fd = accept(listener, nullptr, nullptr)) >= 0;) {
+                ++accepted;
+                char buf[65536];
+                for (ssize_t n; (n = recv(fd, buf, sizeof(buf), 0)) > 0 && std::string_view(buf, n).find("\"stream\"") == std::string_view::npos;) {}
+                close(fd);
+            }
+        });
+        gone.base_url = "http://127.0.0.1:" + std::to_string(ntohs(addr.sin_port));
+        notices.clear();
+        transport = false;
+        try { chat(gone, go, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const TransportError& e) { transport = !e.retry_safe; }
+        expect(transport && notices.empty() && accepted == 1, "a reply lost after the request went out is not sent again on a metered provider");
+        shutdown(listener, SHUT_RDWR);
+        close(listener);
+        dropper.join();
+
+        Provider plain = by_name("deepseek");
+        plain.base_url = "http://api.deepseek.com";
+        why.clear();
+        try { plain.api_key(); } catch (const std::exception& e) { why = e.what(); }
+        expect(why.find("not https") != std::string::npos, "a key never goes to a remote host over plain http: " + why);
+        unsetenv("DEEPSEEK_API_KEY");
+    }
+
     section("title generation");
     {
         Fake f;
@@ -676,6 +878,10 @@ int main() {
         std::string saved_path = std::getenv("PATH") ? std::getenv("PATH") : "";
         setenv("XDG_STATE_HOME", (dir / "state").c_str(), 1);  // the CLI's directory and log, never ~/.local/state/maic
         setenv("ANTHROPIC_API_KEY", "sk-not-for-the-cli", 1);
+        setenv("DEEPSEEK_API_KEY", "sk-deepseek-not-for-the-cli", 1);
+        setenv("MAIC_TEST_WORK_TOKEN", "work-key-not-for-the-cli", 1);  // a key in a variable named anyhow
+        Provider work{"work", "openai", "https://llm.example.com/v1", "MAIC_TEST_WORK_TOKEN", "", json::object()};
+        add_key_envs({work});
         fake_claude::install(dir);
         Provider cli = by_name("claude-cli");
         expect(cli.kind == "cli" && cli.options.value("command", "") == "claude" && cli.remote(), "claude-cli is shipped: kind cli, command claude, remote");
@@ -710,6 +916,8 @@ int main() {
                "headless, stream-json both ways, no session persistence, the system prompt and --model from the model name");
         expect(!starts.empty() && !starts[0].value("api_key", true) && starts[0].value("cwd", "") == fs::weakly_canonical(dir / "state" / "maic" / "cli" / "claude-cli").string(),
                "the user's plan, not the API: ANTHROPIC_API_KEY is kept from it, and it runs in a directory of its own");
+        expect(!starts.empty() && !starts[0].value("other_key", true) && !starts[0].value("work_key", true),
+               "no other provider's key reaches it either: DEEPSEEK_API_KEY, nor a configured api_key_env without _API_KEY in its name");
 
         Message b = ask(cli, "haiku", "be brief", "again");
         expect(pid_of(b) == pid && b.content.find("call 2: again") != std::string::npos && fake_claude::spawns(dir).size() == 1, "the next request reuses the process: " + b.content);
@@ -901,6 +1109,8 @@ int main() {
                "no claude on PATH: the error names the preset and the API alternative: " + missing);
         setenv("PATH", saved_path.c_str(), 1);
         unsetenv("ANTHROPIC_API_KEY");
+        unsetenv("DEEPSEEK_API_KEY");
+        unsetenv("MAIC_TEST_WORK_TOKEN");
     }
 
     return finish();

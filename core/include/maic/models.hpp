@@ -39,6 +39,24 @@ struct CatalogEntry {
     std::string notes;
 };
 
+// A model behind a metered API (the catalog's api_models): its limits and prices, kept per model so usage can be
+// costed per model. `pricing` is {currency, per, periods: [{name, input_cache_hit, input_cache_miss, output,
+// days?, utc?}]}: the period without days and utc is the default.
+struct ApiModel {
+    std::string id;
+    std::string provider;  // a provider name in settings
+    std::string model;     // the provider's own name for it
+    std::string name;
+    std::string brief;
+    std::string source;    // where the figures were read
+    std::string checked;   // when, YYYY-MM-DD
+    long context = 0;
+    long output = 0;
+    nlohmann::json capabilities;
+    nlohmann::json pricing;
+    std::vector<std::string> presets;
+};
+
 // models/catalog.json under the MAIC root, and the user's own file ($XDG_CONFIG_HOME/maic/models.json).
 std::filesystem::path catalog_path();
 std::filesystem::path user_catalog_path();
@@ -47,12 +65,14 @@ std::filesystem::path user_catalog_path();
 // unknown id is added. Pure, for load_catalog and its test.
 nlohmann::json merge_catalog(const nlohmann::json& shipped, const nlohmann::json& user);
 std::vector<CatalogEntry> parse_catalog(const nlohmann::json& j);
+std::vector<ApiModel> parse_api_models(const nlohmann::json& j);
 std::vector<CatalogEntry> load_catalog();
 const CatalogEntry* find_entry(const std::vector<CatalogEntry>& all, const std::string& id);
 
 // Problems with the catalog, offline: missing url, sha256 or size, duplicate ids, a share that does not resolve,
 // an unknown role, kind or root, a Hugging Face url not pinned to the revision, a vram figure that disagrees
-// with the arithmetic. Empty when it is sound.
+// with the arithmetic; an API model without its provider, model, limits, source and date, or with prices that
+// are not one default period plus well-formed timed ones. Empty when it is sound.
 std::vector<std::string> check_catalog(const nlohmann::json& shipped, const nlohmann::json& user);
 
 // <models_dir>/<root>, and where an entry's files go.

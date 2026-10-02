@@ -1,5 +1,7 @@
 #include "nvim_run.hpp"
 
+#include "maic/llm.hpp"
+
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/wait.h>
@@ -19,7 +21,7 @@ NvimRun run_nvim_child(const std::vector<std::string>& args, const std::vector<s
     for (char** e = environ; *e; ++e) {
         std::string kv = *e;
         std::string name = kv.substr(0, kv.find('='));
-        bool dropped = false;
+        bool dropped = is_key_env(name);
         for (const auto& d : drop) dropped = dropped || name == d || (d.back() == '_' && name.rfind(d, 0) == 0);
         if (!dropped) env.push_back(kv);
     }

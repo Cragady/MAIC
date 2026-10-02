@@ -51,6 +51,17 @@ bool on_claude(const std::vector<Provider>& providers, const std::string& model)
     }
 }
 
+// Whether `to` is billed per token to an account other than the one `from` already runs on.
+bool on_other_meter(const std::vector<Provider>& providers, const std::vector<ModelPreset>& presets, const std::string& from, const std::string& to) {
+    try {
+        auto target = resolve_model(providers, to).first;
+        auto preset = preset_for_model(presets, to);
+        return (target.metered() || (preset && preset->metered)) && target.name != resolve_model(providers, from).first.name;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 const char* verdict_name(Verdict v) {
     switch (v) {
         case Verdict::Allow: return "allow";
@@ -963,7 +974,11 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
             usage_.total_input += reply.usage.input;
             usage_.total_output += reply.usage.output;
             ++usage_.calls;
-            if (log_) log_->write("usage", {{"input", reply.usage.input}, {"output", reply.usage.output}, {"context", reply.usage.context}});
+            if (log_) {
+                nlohmann::json u = {{"input", reply.usage.input}, {"output", reply.usage.output}, {"context", reply.usage.context}};
+                if (reply.usage.cached) u["cached"] = reply.usage.cached;
+                log_->write("usage", u);
+            }
         }
         push(reply);
         if (reply.tool_calls.empty()) {
@@ -1499,6 +1514,17 @@ ToolResult Agent::run_task(const nlohmann::json& args, const std::string& call_i
         pick = {own ? own->name : "", model, (pick.preset.empty() ? pick.model : pick.preset) +
                                                  " runs through Claude Code on your plan, which a subagent takes only when asked for or under a Claude model; the same model"};
     }
+    // A metered model on another provider's account bills the user per token: the parent model asking for one is
+    // not her asking, so she is asked (Micaiah's rule). No answer, or no, keeps the subagent on this model.
+    if (!asked.empty() && pick.model != model && on_other_meter(providers, presets, model, pick.model)) {
+        std::string on = pick.preset.empty() ? pick.model : pick.preset;
+        std::string provider = resolve_model(providers, pick.model).first.name;
+        std::string answer = events.question("The " + def.name + " subagent asks to run on " + on + ", which is billed per token to your " + provider +
+                                                 " account. Run it there?",
+                                             {"yes", "no"});
+        if (answer == "yes") pick.reason = "asked for by the parent; you approved " + provider + "'s metered billing";
+        else pick = {own ? own->name : "", model, on + " is billed per token to your " + provider + " account and you did not approve it; the same model"};
+    }
     record["model"] = pick.model;
     record["model_reason"] = pick.reason;
 
@@ -1735,7 +1761,9 @@ std::string Agent::task_models_text() const {
     auto own = preset_for_model(presets, model);
     if (!own) return "";
     ModelPick pick = subagent_pick(presets, *own);
-    auto tier = [](const ModelPreset& p) { return "tier " + std::to_string(p.tier) + (p.limited ? ", limited" : ""); };
+    auto tier = [&](const ModelPreset& p) {
+        return "tier " + std::to_string(p.tier) + (p.limited ? ", limited" : "") + (on_other_meter(providers, presets, model, p.model) ? ", metered: the user is asked first" : "");
+    };
     std::string list;
     for (const auto& p : subagent_presets(presets, *own)) {
         if (p.name == pick.preset) list = p.name + " (" + tier(p) + "; the default: " + (p.name == own->name ? "your own model" : pick.reason) + ")" + list;

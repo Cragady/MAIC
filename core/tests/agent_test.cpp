@@ -17,6 +17,7 @@
 #include "maic/http.hpp"
 
 #include "fake_claude.hpp"
+#include "fake_deepseek.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -968,6 +969,113 @@ int main() {
         }
         fa.tool_call_for = fb.tool_call_for = nullptr;
         reset();
+    }
+
+    section("deepseek: the agent, a subagent and a metered pick");
+    {
+        FakeDeepSeek ds;
+        Provider dsp;
+        for (const auto& p : default_providers()) if (p.name == "deepseek") dsp = p;
+        dsp.base_url = ds.url();
+        setenv("DEEPSEEK_API_KEY", ds.key.c_str(), 1);
+        FakeServer lab;
+        Provider labp = lab.provider();
+        labp.name = "lab";
+        std::vector<ModelPreset> presets = default_presets();
+        ModelPreset local{"lab-model", "lab/m", 16384, "same", 0, 10, false, {"deepseek-flash"}};
+        presets.push_back(local);
+        auto make = [&](const std::string& preset) {
+            auto a = std::make_unique<Agent>(ws, find_preset(presets, preset)->model);
+            a->providers = {dsp, labp};
+            a->presets = presets;
+            a->think = find_preset(presets, preset)->think == 1;
+            set_preset_window(a->providers, *find_preset(presets, preset));
+            a->mode = Mode::Auto;
+            a->review_with_model = false;
+            return a;
+        };
+        auto task_call = [](const char* model) { return json{{"name", "task"}, {"arguments", {{"agent", "explore"}, {"prompt", "look"}, {"model", model}}}}; };
+        bool bwrap = false;
+        for (const auto& d : {"/usr/bin/bwrap", "/usr/local/bin/bwrap", "/run/current-system/sw/bin/bwrap"}) bwrap = bwrap || fs::exists(d);
+
+        // The main agent on deepseek-pro, thinking, over two turns of tool use: every request carries the earlier
+        // turns' reasoning (the fake refuses one without), and the key reaches neither a command nor the transcript.
+        {
+            SessionLog log("agent-test-deepseek");
+            auto a = make("deepseek-pro");
+            a->set_log(&log);
+            int n = 0;
+            ds.tool_call_for = [&](const json&) -> json {
+                ++n;
+                if (n == 1) return bwrap ? json{{"name", "run_shell"}, {"arguments", {{"command", "env; echo key=$DEEPSEEK_API_KEY"}}}} : json{{"name", "list_dir"}, {"arguments", {{"path", "."}}}};
+                if (n == 3) return json{{"name", "list_dir"}, {"arguments", {{"path", "."}}}};
+                return json();
+            };
+            Recorder r;
+            a->submit("look at the environment", Origin::Local, r, no_cancel);
+            a->submit("and once more", Origin::Local, r, no_cancel);
+            expect(ds.refused.empty() && ds.served == 4 && ds.last()["model"] == "deepseek-v4-pro" && ds.last()["thinking"] == json{{"type", "enabled"}},
+                   "two turns with tool calls on deepseek-pro, thinking on, nothing refused: " + (ds.refused.empty() ? std::string() : ds.refused[0]));
+            int replayed = 0;
+            const json last = ds.last();
+            for (const auto& m : last["messages"]) if (m["role"] == "assistant" && m.value("reasoning_content", "").rfind("thought ", 0) == 0) ++replayed;
+            expect(replayed == 3, "the last request replays all three earlier assistant turns' reasoning");
+            if (bwrap) expect(has_result(r, "key="), "the command ran");
+            bool leaked = false;
+            for (const auto& t : r.results) leaked = leaked || t.find(ds.key) != std::string::npos;
+            std::ifstream in(log.path());
+            std::string transcript((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            expect(!leaked && transcript.find(ds.key) == std::string::npos && transcript.find("thought 1") != std::string::npos,
+                   "the key is in no tool result and not in the transcript, which keeps the reasoning to replay on resume");
+            fs::remove(log.path());
+        }
+        // A subagent from deepseek-pro on deepseek-flash: the same account, so no question.
+        {
+            ds.requests.clear();
+            int parent = 0;
+            ds.tool_call_for = [&](const json& b) -> json { return !from_child(b) && ++parent == 1 ? task_call("deepseek-flash") : json(); };
+            auto a = make("deepseek-pro");
+            Recorder r;
+            a->submit("delegate", Origin::Local, r, no_cancel);
+            std::vector<std::string> child;
+            for (const auto& q : ds.requests) if (from_child(q)) child.push_back(q.value("model", ""));
+            expect(child == std::vector<std::string>{"deepseek-flash"} && r.questions.empty() && has_call(r, "explore on deepseek-flash (asked for by the parent)"),
+                   "the parent may hand a task to deepseek-flash on its own account without a question");
+            std::string desc;
+            for (const auto& t : ds.requests[0]["tools"]) if (t["function"]["name"] == "task") desc = t["function"]["description"];
+            expect(desc.find("deepseek-flash (tier 25)") != std::string::npos && desc.find("metered") == std::string::npos, "and the list shows no meter for its own account: " + desc);
+        }
+        // From a local session the parent model asking for deepseek-flash is not Micaiah asking: she is asked.
+        {
+            ds.requests.clear();
+            ds.tool_call_for = nullptr;
+            int parent = 0;
+            lab.tool_call_for = [&](const json& b) -> json { return !from_child(b) && ++parent == 1 ? task_call("deepseek-flash") : json(); };
+            auto a = make("lab-model");
+            Recorder r;
+            a->submit("delegate", Origin::Local, r, no_cancel);
+            expect(r.questions.size() == 1 && r.questions[0].first.find("billed per token to your deepseek account") != std::string::npos && ds.requests.empty() &&
+                       has_call(r, "the same model"),
+                   "unanswered, the subagent stays on the local model and nothing reaches DeepSeek");
+            std::string desc;
+            for (const auto& t : lab.requests[0]["tools"]) if (t["function"]["name"] == "task") desc = t["function"]["description"];
+            expect(desc.find("deepseek-flash (tier 25, metered: the user is asked first)") != std::string::npos, "the task tool says a metered model asks first: " + desc);
+            parent = 0;
+            Recorder yes;
+            yes.answer = "yes";
+            a->submit("delegate again", Origin::Local, yes, no_cancel);
+            expect(yes.questions.size() == 1 && ds.requests.size() == 1 && ds.requests[0]["model"] == "deepseek-flash", "approved, it runs there");
+            lab.tool_call_for = nullptr;
+        }
+        // No rule steps onto a metered model of another provider: a limited local preset with only DeepSeek on its list stays.
+        {
+            ModelPreset limited = local;
+            limited.limited = true;
+            ModelPick pick = subagent_pick(presets, limited);
+            expect(pick.model == "lab/m" && !on_limit_pick(presets, limited) && default_small_model(presets, default_providers(), find_preset(presets, "deepseek-pro").value()).model == "deepseek/deepseek-flash",
+                   "the step-aside and on_limit rules skip a metered preset on another account; within DeepSeek's own list they pick freely");
+        }
+        unsetenv("DEEPSEEK_API_KEY");
     }
 
     section("lua tools through the agent");

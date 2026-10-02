@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <regex>
 #include <set>
 #include <stdexcept>
 
@@ -140,6 +141,33 @@ std::vector<CatalogEntry> parse_catalog(const json& j) {
     return out;
 }
 
+std::vector<ApiModel> parse_api_models(const json& j) {
+    std::vector<ApiModel> out;
+    for (const auto& m : j.value("api_models", json::array())) {
+        if (!m.is_object()) continue;
+        ApiModel a;
+        a.id = m.value("id", "");
+        try {
+            a.provider = m.value("provider", "");
+            a.model = m.value("model", "");
+            a.name = m.value("name", "");
+            a.brief = m.value("brief", "");
+            a.source = m.value("source", "");
+            a.checked = m.value("checked", "");
+            json limits = m.value("limits", json::object());
+            a.context = limits.value("context", 0L);
+            a.output = limits.value("output", 0L);
+            a.capabilities = m.value("capabilities", json::object());
+            a.pricing = m.value("pricing", json::object());
+            a.presets = m.value("presets", std::vector<std::string>{});
+        } catch (const json::exception& ex) {
+            throw std::runtime_error("model catalog api_models entry '" + a.id + "': " + ex.what());
+        }
+        out.push_back(a);
+    }
+    return out;
+}
+
 std::vector<CatalogEntry> load_catalog() {
     fs::path shipped = catalog_path(), user = user_catalog_path();
     std::error_code ec;
@@ -215,6 +243,49 @@ std::vector<std::string> check_catalog(const json& shipped, const json& user) {
                 snprintf(b, sizeof(b), "vram at %d tokens says %.1f GB; the files and context give %.1f GB", context, figure, want);
                 bad(b);
             }
+        }
+    }
+    for (const auto& [where, j] : {std::pair<std::string, json>{"catalog", shipped}, {"models.json", user}}) {
+        std::vector<ApiModel> apis;
+        try {
+            apis = parse_api_models(j);
+        } catch (const std::exception& ex) {
+            problems.push_back(where + ": " + ex.what());
+            continue;
+        }
+        std::set<std::string> seen;
+        for (const auto& a : apis) {
+            auto bad = [&](const std::string& what) { problems.push_back(where + ": api_models " + (a.id.empty() ? std::string("(no id)") : a.id) + ": " + what); };
+            if (!seen.insert(a.id).second) bad("the id appears twice");
+            if (a.id.empty() || a.provider.empty() || a.model.empty()) bad("id, provider and model are required");
+            if (a.brief.empty() || a.source.empty()) bad("brief and source are required");
+            static const std::regex date(R"(\d{4}-\d{2}-\d{2})"), hours(R"(([01]\d|2[0-4]):[0-5]\d-([01]\d|2[0-4]):[0-5]\d)");
+            if (!std::regex_match(a.checked, date)) bad("checked must be the date the figures were read, YYYY-MM-DD");
+            if (a.context <= 0 || a.output <= 0) bad("limits.context and limits.output are required");
+            const json periods = a.pricing.value("periods", json::array());
+            if (!a.pricing.value("currency", json()).is_string() || !a.pricing.value("per", json()).is_number_integer() || !periods.is_array() || periods.empty()) {
+                bad("pricing needs currency, per (tokens) and periods");
+                continue;
+            }
+            int defaults = 0;
+            for (const auto& p : periods) {
+                std::string name = p.is_object() ? p.value("name", "") : "";
+                for (const char* k : {"input_cache_hit", "input_cache_miss", "output"}) {
+                    if (!p.is_object() || !p.value(k, json()).is_number() || p[k].get<double>() < 0) bad("period '" + name + "': " + k + " must be a price, 0 or more");
+                }
+                if (!p.is_object() || (!p.contains("days") && !p.contains("utc"))) {
+                    ++defaults;
+                    continue;
+                }
+                for (const auto& d : p.value("days", json::array())) {
+                    static const std::set<std::string> days = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"};
+                    if (!d.is_string() || !days.count(d.get<std::string>())) bad("period '" + name + "': days are mon to sun, not " + d.dump());
+                }
+                for (const auto& h : p.value("utc", json::array())) {
+                    if (!h.is_string() || !std::regex_match(h.get<std::string>(), hours)) bad("period '" + name + "': utc ranges are HH:MM-HH:MM, not " + h.dump());
+                }
+            }
+            if (defaults != 1) bad("pricing needs exactly one period without days and utc, the default");
         }
     }
     return problems;

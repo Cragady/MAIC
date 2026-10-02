@@ -100,6 +100,84 @@ Pairs that fit, by these figures: the 4B at 16k with the 3B coder (7.8 GB, tight
 
 Take the hash and size from `https://huggingface.co/api/models/<repo>/tree/<revision>?blobs=true` (`lfs.oid` is the SHA-256, `lfs.size` the size) and the commit from `https://huggingface.co/api/models/<repo>` (`sha`), then run `maic models check`. `vram` is optional; when given it has to agree with the arithmetic.
 
+## API models
+
+Some models are not installed but reached over an API that bills per token. Their limits and prices sit in the catalog's `api_models`, one entry per model, so usage can be costed per model: `provider` and `model` (what a preset names as `provider/model`), `limits` (`context`, `output`), `capabilities`, and `pricing` with `currency`, `per` (tokens) and `periods`. A period holds `input_cache_hit`, `input_cache_miss` and `output`; the one without `days` and `utc` is the default, and one with them applies on those UTC weekdays and hours. `source` and `checked` say where and when the figures were read. `maic models check` validates them; `models.json` may carry `api_models` of its own.
+
+| Id | Model | Context | Output | Pictures | Per 1M tokens, off-peak (peak) |
+| :--- | :--- | ---: | ---: | :--- | :--- |
+| `deepseek-flash` | DeepSeek-V4.1-Flash | 1M | 384K | yes | cache hit 0.003 (0.006), miss 0.15 (0.3), output 0.6 (1.2) USD |
+| `deepseek-v4-pro` | DeepSeek-V4-Pro | 1M | 384K | no | cache hit 0.022 (0.044), miss 0.66 (1.32), output 1.98 (3.96) USD |
+
+Peak is 01:00 to 04:00 and 06:00 to 10:00 UTC, Monday to Friday. Figures from [DeepSeek's pricing page](https://api-docs.deepseek.com/quick_start/pricing/), checked 2026-10-02.
+
+### Adding an OpenAI-compatible API
+
+Any service that speaks OpenAI's `/chat/completions` takes a provider entry and a preset or two in `settings.lua`. The key stays in the environment: the entry names the variable, never the key.
+
+```lua
+providers = {
+  acme = {
+    kind = "openai",
+    base_url = "https://api.acme.example/v1",  -- https; plain http only to loopback
+    api_key_env = "ACME_API_KEY",
+    options = { context_window = 200000, max_tokens = 32000 },
+  },
+},
+models = {
+  ["acme-large"] = { model = "acme/acme-large-2", context = 200000, tier = 30, subagents = { "acme-large" } },
+},
+```
+
+Then `export ACME_API_KEY=...` and `maic --model acme-large`, or `:model acme-large` in a session. A remote provider with a key is metered unless it says `options.metered = false`: no automatic pick moves onto it from another provider ([settings.md](settings.md#model-presets-and-tiers)). The other options describe what the API can do, all optional: `think_on` and `think_off` (request fields for thinking on and off), `think_sampling` (sampler keys the API refuses or ignores while thinking), `replay_reasoning`, `vision`, `extra_body` ([settings.md, Providers](settings.md#providers)).
+
+### DeepSeek, the worked example
+
+DeepSeek ships built in, so all it needs is its key:
+
+```sh
+export DEEPSEEK_API_KEY=sk-...
+maic --model deepseek-flash
+```
+
+What ships is the example above filled in from DeepSeek's documentation ([standards.md](standards.md#model-apis-and-protocol-prior-art)):
+
+```lua
+providers = {
+  deepseek = {
+    kind = "openai",
+    base_url = "https://api.deepseek.com",
+    api_key_env = "DEEPSEEK_API_KEY",
+    options = {
+      context_window = 1000000,
+      max_tokens = 65536,  -- the API allows 384K; a lower cap bounds what one runaway reply costs
+      think_on = { thinking = { type = "enabled" } },
+      think_off = { thinking = { type = "disabled" } },
+      -- while thinking, these do nothing, and top_p must be 0.95 to 1.0: a value outside is not sent
+      think_sampling = { temperature = false, presence_penalty = false, frequency_penalty = false, top_p = { 0.95, 1.0 } },
+      -- without thinking top_p is fixed at 1.0 and the penalties are ignored
+      nothink_sampling = { top_p = false, presence_penalty = false, frequency_penalty = false },
+      retry_empty = true,            -- a `stop` with nothing in it is sent again, within `retries`
+      replay_reasoning = true,       -- every earlier turn's reasoning_content goes back with a request that carries tools
+      vision = { "deepseek-flash" }, -- Pro takes no pictures: one sent to it becomes a note saying so
+    },
+  },
+},
+```
+
+| Preset | Model | Thinking | Tier |
+| :--- | :--- | :--- | ---: |
+| `deepseek-pro` | `deepseek/deepseek-v4-pro` | on | 35 |
+| `deepseek-pro-nothink` | `deepseek/deepseek-v4-pro` | off | 35 |
+| `deepseek-flash` | `deepseek/deepseek-flash` | on | 25 |
+| `deepseek-flash-nothink` | `deepseek/deepseek-flash` | off | 25 |
+
+Thinking depth is DeepSeek's top-level `reasoning_effort` (`low`, `high`, the default, or `max`): `think_on = { thinking = { type = "enabled" }, reasoning_effort = "max" }` under `providers.deepseek.options` asks for the most. Titles and other calls MAIC makes with thinking off send `thinking = { type = "disabled" }`, since DeepSeek thinks unless told not to. MAIC never sends `tool_choice` (DeepSeek refuses a forced one while thinking), `user_id`, or any field DeepSeek does not document: no session ids, no telemetry.
+
+Each has a 1M context, the four as its `subagents` list, and `deepseek-flash-nothink` as its reviewer. They work as the session's model, as a `task` subagent's, and with `:model`, which also says METERED. A thinking turn's `reasoning_content` is kept in the transcript with the turn, as received, and replayed on every assistant turn while tools are in the request, so tool use over many turns works, after a resume too; a turn without one (another model wrote it, or thinking was off) goes back with an empty one, which DeepSeek's documentation does not settle (the live check below covers it). Each `usage` record in the transcript carries `cached`, the prompt tokens DeepSeek served from its cache. A tool call cut off by `max_tokens` (`finish_reason: length`) is dropped, never run; `insufficient_system_resource` and `aborted` end the call with an error saying so, and `content_filter` keeps the text with a note.
+
+**The live check** (needs a real key; MAIC's tests never call the API): `DEEPSEEK_API_KEY=sk-... maic --model deepseek-pro`, ask for something that reads two files, send a second message, quit, `maic -r` and send a third; then `:model deepseek-flash-nothink` and once more. Every turn should succeed, and `cached` in the transcript's usage records should rise.
+
 ## Code completion
 
 Copilot-style suggestions in neovim come from [llama.vim](https://github.com/ggml-org/llama.vim) talking to `services/llamacpp-fim.json`: llama-server on `127.0.0.1:8084` serving a Qwen2.5-Coder **base** model (Instruct models are worse at fill-in-the-middle) through `/infill`. It is not a chat model, so there is no chat provider for it.

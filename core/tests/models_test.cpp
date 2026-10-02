@@ -118,6 +118,33 @@ int main() {
     expect(seven && seven->files[0].size < (5L << 30) && seven->vram.front().second < 6.0, "the 7B coder is a quantisation that fits an 8 GB card");
     expect(seven && vram_line(*seven).find("5.4 GB at 8k") == 0 && vram_line(*seven).find("estimates") != std::string::npos, "its VRAM line is labelled an estimate: " + vram_line(*seven));
 
+    section("API models: limits and prices per model");
+    {
+        auto apis = parse_api_models(shipped);
+        auto find = [&](const std::string& id) -> const ApiModel* {
+            for (const auto& a : apis) if (a.id == id) return &a;
+            return nullptr;
+        };
+        const ApiModel* flash = find("deepseek-flash");
+        const ApiModel* pro = find("deepseek-v4-pro");
+        expect(flash && pro && flash->provider == "deepseek" && pro->model == "deepseek-v4-pro" && flash->context == 1000000 && pro->output == 384000,
+               "the catalog holds DeepSeek's two API models with their 1M context and 384K output");
+        expect(flash && pro && flash->capabilities.value("vision", false) && !pro->capabilities.value("vision", true), "Flash reads pictures, Pro does not");
+        auto price = [](const ApiModel* a, size_t period, const char* k) { return a ? a->pricing["periods"][period].value(k, -1.0) : -1.0; };
+        expect(price(flash, 0, "input_cache_miss") == 0.15 && price(flash, 1, "output") == 1.2 && price(pro, 0, "input_cache_hit") == 0.022 && price(pro, 1, "input_cache_miss") == 1.32,
+               "off-peak and peak prices per 1M tokens, per model");
+        expect(pro && pro->pricing["periods"][1]["utc"] == json::array({"01:00-04:00", "06:00-10:00"}) && pro->pricing["periods"][1]["days"].size() == 5 && pro->checked == "2026-10-02",
+               "peak is 01:00-04:00 and 06:00-10:00 UTC on weekdays, with the day the figures were read");
+        json broken = {{"api_models", json::array({{{"id", "x"}, {"provider", "p"}, {"model", "m"}, {"brief", "b"}, {"source", "s"}, {"checked", "soon"},
+                                                    {"limits", {{"context", 1000}}},
+                                                    {"pricing", {{"currency", "USD"}, {"per", 1000000}, {"periods", json::array({{{"name", "a"}, {"input_cache_hit", 1}, {"input_cache_miss", -1}, {"output", 1}},
+                                                                                                                       {{"name", "b"}, {"utc", {"1-2"}}, {"input_cache_hit", 1}, {"input_cache_miss", 1}, {"output", 1}}})}}}}})}};
+        auto p = joined(check_catalog(shipped, broken));
+        expect(p.find("api_models x: checked must be") != std::string::npos && p.find("limits.context and limits.output") != std::string::npos &&
+                   p.find("input_cache_miss must be a price") != std::string::npos && p.find("utc ranges are HH:MM-HH:MM") != std::string::npos,
+               "check names a bad date, a missing limit, a negative price and a malformed hour range: " + p);
+    }
+
     section("check catches a broken catalog");
     {
         json bad = {{"models", json::array({entry_json("a", "agent", "llamacpp", "A", json::array({file_json("a.gguf", "https://huggingface.co/x/y/resolve/main/a.gguf", "abc", 0)})),
