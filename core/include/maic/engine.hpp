@@ -24,6 +24,7 @@ struct EngineOptions {
     std::string kind = "engine";                    // the transcripts' kind ("server" for maic-server's sessions)
     bool titles = false;                            // small_model titles each session it opens after its first turn
     std::filesystem::path index_file;               // the session index, <state>/engine/index.json for the daemon; "" keeps none
+    bool keeps_sessions = false;                    // sessions outlive their clients (the daemon, maic-server): a quit can leave one working
     std::filesystem::path protocol_log;             // where the guarded tier writes what it finds; "" is <state>/engine/protocol.log
     std::string tier = "guarded";                   // for what names no session (protocol_tier); each session resolves its own
     size_t ring_events = 10000;                     // each session's event ring, in memory only (section 5)
@@ -69,10 +70,11 @@ public:
     // it must not call into the engine.
     std::string connect(Origin origin, std::string name, std::string via, std::function<void()> wake = {});
     void disconnect(const std::string& client);
-    // What a client that goes away does to the session in its focus, as the default leaving verb does: an idle
-    // one no other client has in focus is parked, a working one keeps on in the background. The daemon's
-    // connections end this way, so an interface that closes leaves nothing idle loaded.
-    void leave(const std::string& client);
+    // What a client that goes away does to the session in its focus (`:q`, maic.session.leave): `as` (bg, park or
+    // stop), else the session's leave.quit for an idle or a working one, unless another client has it in focus.
+    // Without `keeps_sessions`, what would stay running does what leave.no_daemon says, as does every session in
+    // the background. The daemon's connections and `maic --rpc` end this way.
+    void leave(const std::string& client, const std::string& as = "");
 
     // In-process only: opens a session its host set up, `setup` running on the new session's Agent before any
     // client can reach it. The session opens with maic.session.state by `client` (a local connection); the host

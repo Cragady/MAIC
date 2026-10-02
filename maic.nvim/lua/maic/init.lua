@@ -30,9 +30,6 @@ M.defaults = {
   -- pause and resume in the conversation and the input (insert mode too in the input), send in the input
   buffer_keymaps = { interrupt = "<C-c>", pause = "<C-s>", resume = "<C-q>", send = "<CR>", send_insert = "<M-CR>" },
   input_height = 6, -- the input's rows under the conversation
-  -- What :MaicNew, :MaicSwitch and :MaicFork do with the session left: "default" (a working one goes to the
-  -- background, an idle one is parked), "ask", "bg", "park" or "stop"; --bg, --park or --stop decides once
-  session_leave = "default",
   fold_output = 4, -- a tool's output of at least this many lines is folded (closed) once it is done; false: never
   -- Leaves terminal mode in MAIC's terminal. nvim's own <C-\><C-n> needs no mapping; another key is mapped there.
   terminal_escape = "<C-\\><C-n>",

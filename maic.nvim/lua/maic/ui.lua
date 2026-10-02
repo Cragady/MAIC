@@ -1106,7 +1106,7 @@ end
 local function session_line(e)
   -- `waiting` on a parent also covers its tasks: one of them waits for an approval.
   local waiting = type(e.waiting) == "table" and e.waiting or nil
-  local doing = e.state == "parked" and "parked" or (e.activity == "waiting" or waiting) and "waiting" or (e.activity and e.activity ~= "idle") and "working"
+  local doing = e.state == "parked" and (e.unseen and "finished, parked" or "parked") or (e.activity == "waiting" or waiting) and "waiting" or (e.activity and e.activity ~= "idle") and "working"
     or e.unseen and "finished" or "idle"
   if doing == "waiting" and waiting then doing = doing .. ": " .. (waiting.summary or waiting.kind or "") .. (waiting.session and " (in a task)" or "") end
   local ws = vim.fn.fnamemodify(e.workspace or "", ":~")
@@ -1125,15 +1125,11 @@ local function resolve(ui, given)
 end
 
 -- Moves this tab's focus: to a new session ("new"), a fork of this one ("fork"), or session `target` ("to"),
--- loaded or parked. `as` says what happens to the one left (session_leave when nil); parking or stopping it
--- mid-turn interrupts the turn, so that is asked first. `after` runs on the view it lands in.
+-- loaded or parked. `as` says what happens to the one left (the leave.switch setting when nil, which may be to ask:
+-- the engine answers maic_leave_ask); parking or stopping it mid-turn interrupts the turn, so that is asked first.
+-- `after` runs on the view it lands in.
 function U.go(ui, how, target, as, sure, after)
-  as = as or maic().config.session_leave
-  if as == "ask" then
-    return vim.ui.select({ "bg", "park", "stop" }, { prompt = "leave this session (bg: it keeps working, park: it stops for now, stop: it ends)" }, function(pick)
-      if pick then U.go(ui, how, target, pick, sure, after) end
-    end)
-  end
+  as = as or "default"
   if not sure and ui.response and (as == "park" or as == "stop") then
     return vim.ui.select({ "yes", "no" }, { prompt = as .. " a working session? Its turn is interrupted." }, function(pick)
       if pick == "yes" then U.go(ui, how, target, as, true, after) end
@@ -1141,6 +1137,11 @@ function U.go(ui, how, target, as, sure, after)
   end
   local conn, leave = ui.conn, { as = as }
   local function done(r, err)
+    if err and err.data and err.data.code == "maic_leave_ask" then
+      return vim.ui.select({ "bg", "park", "stop" }, { prompt = "leave this session (bg: it keeps working, park: it stops for now, stop: it ends)" }, function(pick)
+        if pick then U.go(ui, how, target, pick, sure, after) end
+      end)
+    end
     if err then return notice(ui, "✗ " .. err_text(err), "MaicError") end
     local view = conn.views[r.id]
     local function land()

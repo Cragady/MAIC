@@ -1,7 +1,8 @@
 // Directory trust and the restricted settings Lua (docs/harness.md, Trust): the 2026-10-01 exploit (a project's
 // settings.lua that ran a shell command and pre-approved every command) as a regression, the restricted state,
 // the trust record and its prompt, the strict / standard / relaxed tiers over real git repositories, the remote
-// step-up hook, and the agent's inability to touch any of it. Everything lives under a throwaway HOME.
+// step-up hook, the agent's inability to touch any of it, and the `leave` table's layering and errors. Everything
+// lives under a throwaway HOME.
 #include "check.hpp"
 
 #include "maic/agent.hpp"
@@ -840,6 +841,41 @@ int main() {
         expect(auto_held(sub).empty() && auto_held(proj).empty(), "trusted fully: auto starts");
         write_file(sub / "AGENTS.md", "nested\n");
         expect(contains(auto_held(sub), " is not trusted"), "a new instruction file below holds auto again until it is trusted");
+    }
+
+    section("the leave table: a default for every case, each file naming only the cases it changes, errors that name the case");
+    {
+        fs::path cfg = g_home / ".config" / "maic" / "settings.lua";
+        fs::path dir = g_home / "dev" / "leave";
+        fs::remove(cfg);
+        write_file(dir / ".maic" / "settings.lua", "return { leave = { quit = { idle = 'park' } } }\n");
+        trust_dir(project_dir(dir), Origin::Local);
+        const LeaveSettings d;
+        expect(d.switching.idle == "park" && d.switching.working == "bg" && d.switching.after == "park" && d.quitting.idle == "stop" && d.quitting.working == "bg" &&
+                   d.quitting.after == "park" && d.no_daemon == "park",
+               "the defaults fill every case");
+        write_file(cfg, "return { leave = { switch = { idle = 'ask' }, no_daemon = 'stop' } }\n");
+        LeaveSettings l = load_settings(dir).leave;
+        expect(l.switching.idle == "ask" && l.no_daemon == "stop" && l.quitting.idle == "park" && l.switching.working == "bg" && l.switching.after == "park" &&
+                   l.quitting.working == "bg" && l.quitting.after == "park",
+               "each file replaces only the cases it names, a trusted project's after yours");
+        auto refused = [&](const std::string& lua) {
+            write_file(cfg, "return { leave = " + lua + " }\n");
+            std::string err;
+            try {
+                load_settings(dir);
+            } catch (const std::exception& e) {
+                err = e.what();
+            }
+            return err;
+        };
+        expect(contains(refused("{ away = { idle = 'park' } }"), "leave.away is not a case (switch, quit, no_daemon)"), "an unknown case is an error naming it");
+        expect(contains(refused("{ quit = { busy = 'bg' } }"), "leave.quit.busy is not a case (idle, working, after)"), "so is an unknown case under quit");
+        expect(contains(refused("{ switch = { after = 'later' } }"), "leave.switch.after must be \"bg\", \"park\" or \"stop\", not \"later\""), "an unknown verb is an error naming it");
+        expect(contains(refused("{ quit = { idle = 'ask' } }"), "leave.quit.idle must be \"bg\", \"park\" or \"stop\", not \"ask\""), "ask is a switch's only");
+        expect(contains(refused("{ no_daemon = 'bg' }"), "leave.no_daemon must be \"park\" or \"stop\", not \"bg\""), "no_daemon cannot keep a session running");
+        expect(contains(refused("'park'"), "leave must be a table of cases"), "leave itself is a table");
+        fs::remove(cfg);
     }
 
     section("the agent can't reach any of it");

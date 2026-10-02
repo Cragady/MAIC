@@ -207,7 +207,7 @@ const std::vector<Topic>& topics() {
          "`--ui nvim` (nvim as MAIC's interface, `:h ui`) is refused together with `--bare`, since one is all nvim and the other none."},
         {"daemon", {"maic-daemon", "maic daemon", "background-sessions"}, "the daemon: sessions that outlive the window they started in",
          "*daemon* *maic daemon*\n"
-         "`maic daemon start` runs one engine in the background (its log in `~/.local/state/maic/engine/daemon.log`), listening on a socket only you can reach (`$XDG_RUNTIME_DIR/maic/engine.sock`). While it runs, `maic` and maic.nvim open their sessions in it rather than in their own process: quitting leaves a working session working (an idle one is parked), `:switch` reaches every session the daemon holds, and the next `maic` or `:Maic` picks them up. `maic daemon status` lists them, `maic daemon stop` parks them all (asking first when a turn is running; `--yes` does not ask). `daemon = \"off\"` in settings keeps every session in its own process.\n\n"
+         "`maic daemon start` runs one engine in the background (its log in `~/.local/state/maic/engine/daemon.log`), listening on a socket only you can reach (`$XDG_RUNTIME_DIR/maic/engine.sock`). While it runs, `maic` and maic.nvim open their sessions in it rather than in their own process: quitting leaves a working session working (parked once it is done; an idle one is stopped; `leave.quit` in settings, `:h leave`), `:switch` reaches every session the daemon holds, and the next `maic` or `:Maic` picks them up. `maic daemon status` lists them, `maic daemon stop` parks them all (asking first when a turn is running; `--yes` does not ask). `daemon = \"off\"` in settings keeps every session in its own process.\n\n"
          "A command line with a flag only this process's engine can honour (`--system`, `--context`, `--rule`, `--no-record`, `--trust`, ...) runs its session here and says so. The daemon has no nvim host (`:drop` of written files, nvim diffs), and `!cmd` runs in the daemon's environment, not this terminal's.\n\n"
          "`maic daemon unit` prints a systemd user unit, `maic daemon unit install` writes it (enable it yourself: `systemctl --user enable --now maic-daemon.service` starts it now and at each login), `maic daemon unit remove` takes it away. See docs/daemon.md."},
         {"ui", {"--ui", "interface", "maic.nvim-ui"}, "nvim as MAIC's interface: --ui nvim, ui = \"nvim\"",
@@ -257,6 +257,14 @@ const std::vector<Topic>& topics() {
         {">", {"<", "shift", "shiftwidth", "indent"}, "> and < shift lines", "*>* *<*\n"
          "`>{motion}` indents the lines the motion covers by four spaces (`shiftwidth`), `<{motion}` removes up to four; `>>` and `<<` do the line, `3>>` three lines, `>ip` the paragraph. In visual mode `>` and `<` shift the selection, and a count shifts that many times (`2>`). Empty lines are left alone."},
         {"!", {"shell", "bang"}, "run a command in your shell", "*!* *:!*\n`!cmd` as a message, or `:!cmd`, runs cmd in your own shell (not the sandbox) in the workspace. The output shows in the conversation and is handed to the model as context. Ctrl-C stops it."},
+        {"leave", {"leaving", "leave.switch", "leave.quit", "leave.no_daemon"}, "what becomes of a session you leave: the leave setting",
+         "*leave* *leave.switch* *leave.quit* *leave.no_daemon*\n"
+         "`leave` in settings says, case by case, what becomes of a session you leave: `bg` (it stays loaded and keeps working), `park` (it stops for now and resumes where it was) or `stop` (it ends; its transcript stays, `maic -r`). The defaults:\n\n"
+         "- `leave.switch` (`:new`, `:switch`, `:fork`): `idle = \"park\"`, `working = \"bg\"`, `after = \"park\"`. `ask` is allowed for `idle` and `working`: MAIC asks each time.\n"
+         "- `leave.quit` (`:q`): `idle = \"stop\"`, `working = \"bg\"`, `after = \"park\"`. A quit mid-turn is a switch to the void: with the daemon the session keeps working.\n"
+         "- `after`: what a session left working becomes once its work ends with no window on it. A background task's session follows `leave.switch.after`.\n"
+         "- `leave.no_daemon = \"park\"`: what a quit does (`park` or `stop`) to a session it would leave running where no daemon can keep it, and to the other sessions in this MAIC's background.\n\n"
+         "`--bg`, `--park` or `--stop` on `:q`, `:new`, `:switch` or `:fork` decides for that one leave. See docs/settings.md."},
     };
     return t;
 }
@@ -370,7 +378,7 @@ const std::vector<CommandInfo>& commands() {
          "*:untrust* *maic untrust*\n`:untrust` forgets the trust of every project directory of this workspace, `:untrust PATH` of one. Its instructions stop from the next turn; settings and tools already loaded stay until MAIC restarts, when it is asked about again. See `:h trust`."},
         {"session", {}, "", "where this transcript is", "*:session*\nThis session's file and the sessions directory. See `:h sessions`."},
         {"new", {}, "[--bg|--park|--stop] [DIR]", "start another session in this MAIC and go to it",
-         "*:new*\n`:new` starts another session here (in DIR with `:new DIR`, as `:cd DIR` would move it) and puts it in focus. The one you leave goes to the background when it is working and is parked when it is idle, unless `--bg`, `--park` or `--stop` says otherwise or `session_leave` in settings does (`\"ask\"` asks each time). See `:h switch`."},
+         "*:new*\n`:new` starts another session here (in DIR with `:new DIR`, as `:cd DIR` would move it) and puts it in focus. The one you leave goes to the background when it is working (and is parked once its work is done) and is parked when it is idle, unless `--bg`, `--park` or `--stop` says otherwise or `leave.switch` in settings does (`\"ask\"` asks each time). See `:h switch` and `:h leave`."},
         {"switch", {"sessions-menu", "switcher"}, "[--bg|--park|--stop] [ID|TITLE]", "go to another session; alone, the switcher",
          "*:switch* *:bg* *:park* *:stop* *:fork* *switcher*\n"
          "One MAIC holds several sessions at once, each with its own model, mode and workspace; their turns run in parallel (a single-slot local server still takes them one at a time). The top strip counts the others and says when one is waiting for you or has finished.\n\n"
@@ -378,8 +386,8 @@ const std::vector<CommandInfo>& commands() {
          "- `:fork` forks this session into a second one (both stay open; the fork points at this transcript as it stands) and goes to the fork.\n"
          "- `:bg` sends this session to the background, where it keeps working, and opens the switcher to pick where to go.\n"
          "- `:park` ends this session for now (it leaves memory, stays in the switcher and resumes where it was, messages that waited to run included); `:stop` ends it outright (it leaves the switcher and stays an ordinary transcript, `maic -r ID`). On this session both open the switcher first; `:park ID` and `:stop ID` end another one. A working session is asked about first, since its turn is interrupted.\n"
-         "- Leaving a session through `:new`, `:switch` or `:fork`: `--bg`, `--park` or `--stop` says what happens to it; without one a working session goes to the background and an idle one is parked, or as `session_leave` says.\n\n"
-         "Until the daemon arrives, background sessions live in this MAIC: `:q` with one still working says so first, and quitting parks them all (their turns interrupted, each resumes where it stopped)."},
+         "- Leaving a session through `:new`, `:switch` or `:fork`: `--bg`, `--park` or `--stop` says what happens to it; without one, `leave.switch` in settings does (`:h leave`).\n\n"
+         "Without the daemon, background sessions live in this MAIC: `:q` with one still working says so first, and quitting parks them all (their turns interrupted, each resumes where it stopped; `leave.no_daemon`)."},
         {"fork", {}, "[--bg|--park|--stop]", "fork this session into a second one and go to it", "*:fork*\nSee `:h switch`."},
         {"bg", {"background"}, "", "send this session to the background and pick another", "*:bg*\nSee `:h switch`."},
         {"park", {}, "[ID]", "end this session (or ID) for now; it resumes where it was", "*:park*\nSee `:h switch`."},
@@ -438,8 +446,8 @@ const std::vector<CommandInfo>& commands() {
         {"trip", {}, "[reason]", "trip the harness now", "*:trip*\nSets the tripwire immediately with no password; nothing runs until `:unlock`. See `:h harness`."},
         {"unlock", {}, "", "reset the harness (sudo password)", "*:unlock*\nResets the tripwire without leaving the session; asks for your sudo password every time."},
         {"!", {}, "cmd", "run cmd in your shell", "*:!*\nSee `:h !`."},
-        {"q", {"quit", "exit"}, "", "quit (an unsent draft is stashed)",
-         "*:q* *:quit*\nQuits. A running turn is interrupted. The session file is complete at every moment, and an unsent draft in the input is stashed (`:pop` in the next session brings it back), so nothing is lost. On exit the transcript path and its `maic -r` command are printed."},
+        {"q", {"quit", "exit"}, "[--bg|--park|--stop]", "quit (an unsent draft is stashed)",
+         "*:q* *:quit*\nQuits. The session becomes what `leave.quit` in settings says (an idle one is stopped; a working one keeps working in the daemon and is parked once it is done, and without the daemon its turn is interrupted and it is parked), or what `--bg`, `--park` or `--stop` says (`:h leave`). The session file is complete at every moment, and an unsent draft in the input is stashed (`:pop` in the next session brings it back), so nothing is lost. On exit the transcript path and its `maic -r` command are printed."},
         {"wq", {}, "", "send, then quit when the reply is in",
          "*:wq*\nSends the input like `:w` and quits once the reply has arrived, as vim's write-and-quit would. Ctrl-C while waiting keeps the session open. With an empty input it is `:q`."},
     };

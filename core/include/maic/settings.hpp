@@ -122,6 +122,17 @@ void read_steering(SteeringSettings& into, const nlohmann::json& table, const st
 // `session`, the lists only losing entries.
 SteeringSettings agent_steering(const SteeringSettings& session, const nlohmann::json& agent, const std::string& name);
 
+// What becomes of a session you leave (docs/settings.md, `leave`): bg, park or stop for each case, and for a switch
+// "ask" (the client asks). `after` is what a session left working becomes once its work ends with no client in focus.
+struct LeaveCase {
+    std::string idle, working, after;
+};
+struct LeaveSettings {
+    LeaveCase switching{"park", "bg", "park"};  // leave.switch: :new, :switch and :fork; its `after` also ends a background task
+    LeaveCase quitting{"stop", "bg", "park"};   // leave.quit: :q, or a client that goes
+    std::string no_daemon = "park";             // what a quit does, park or stop, to a session it would leave running where no daemon can
+};
+
 struct Settings {
     std::string model = "llamacpp/current";  // the vendored llama-server serves the linked GGUF as `current`
     std::string mode = "auto";  // held at manual at start where auto_held says so (an untrusted workspace)
@@ -138,7 +149,7 @@ struct Settings {
     std::string leader = " ";
     std::string highlight = "builtin";  // the input's highlighter: "builtin", or "nvim" (an embedded nvim --embed, when it is installed)
     bool enter_sends = false;           // Enter sends a one-line input in insert mode (Shift+Enter / Alt+Enter then insert a newline)
-    std::string session_leave = "default";  // what :new, :switch and :fork do with the session left: default, ask, bg, park, stop
+    LeaveSettings leave;                // what becomes of a session you leave, case by case; nearer files replace the cases they name
     int max_tasks = 4;  // background tasks (task with background = true) one session may have running at once; a project layer only lowers it
     std::string models_dir;
     int context = 16384;       // the local server's context window in tokens (--ctx-size for llama.cpp) and the readout

@@ -100,9 +100,12 @@ before what is shown, above it.
 A tab's engine holds every session opened in it, each with a conversation
 buffer of its own under the tab's one input. |:MaicNew|, |:MaicSwitch|,
 |:MaicFork|, |:MaicBg|, |:MaicPark| and |:MaicStop| move between them; the
-session left goes to the background when it is working and is parked when
-idle, unless --bg, --park or --stop, or |maic-session_leave|, says
-otherwise. A background session keeps writing its buffer; its approvals and
+session left becomes what `leave.switch` in MAIC's settings says (by
+default a working one goes to the background, and is parked once its work
+ends, and an idle one is parked), unless --bg, --park or --stop says
+otherwise; a case set to "ask" asks with |vim.ui.select()|. Quitting nvim
+ends the tab's engine as MAIC's `:q` does (`leave.quit`). A background
+session keeps writing its buffer; its approvals and
 questions wait until you switch to it, with one notification naming it. The
 winbar counts the other sessions. A parked or stopped session's buffer goes
 once no window shows it.
@@ -285,13 +288,6 @@ keymaps     A table of name = key (|maic-keymaps|); merged over the
                                                          *maic-input_height*
 input_height
             The interface's input: rows under the conversation.
-
-                                                       *maic-session_leave*
-session_leave
-            What |:MaicNew|, |:MaicSwitch| and |:MaicFork| do with the
-            session left: "default" (a working one goes to the background,
-            an idle one is parked), "ask", "bg", "park" or "stop". --bg,
-            --park or --stop on the command decides once.
 
                                                           *maic-fold_output*
 fold_output

@@ -479,7 +479,8 @@ def rpc_smoke(maic, port):
 
 def daemon_smoke(maic, port):
     """`maic daemon`: start, status, a second start, `maic --rpc` carried to its socket, a session the closing
-    client leaves (an idle one parked, a working one finishing in the background and resumed by the next client), a
+    client leaves (an idle one stopped, or parked when it says so first; a working one finishing in the background,
+    parked then, and resumed by the next client), a
     daemon killed outright and started again over its stale socket, stop asking before it interrupts a turn, the
     systemd unit. The daemon's recorded connections pass `maic protocol check`. Every daemon started here is stopped."""
     import signal
@@ -537,8 +538,16 @@ def daemon_smoke(maic, port):
         text = "".join(e["delta"] for e in c.events(sid) if e["type"] == "response.output_text.delta")
         report(h.get("path") == {"via": "socket"} and sid.split("-")[2:3] == ["daemon"] and done and "echo: ping" in text,
                "takes maic --rpc as a client over its socket and runs a turn", json.dumps([h, sid, text]))
+        left = (c.call("maic.session.leave", {"as": "park"}) or {}).get("result", {}).get("left") or {}
         code = c.close()
-        report(code == 0 and until(lambda: entry(sid).get("state") == "parked"), "parks an idle session its client left", json.dumps(entry(sid)))
+        report(code == 0 and left.get("state") == "parked" and entry(sid).get("state") == "parked",
+               "parks an idle session its client quits with --park (maic.session.leave)", json.dumps([left, entry(sid)]))
+        c = RpcClient(maic, env, home)
+        c.call("maic.hello", {"protocol": 1, "client": {"name": "daemon-smoke", "version": "0"}})
+        idle = (c.call("createConversation", {"maic": {"workspace": home}}) or {}).get("result", {}).get("id", "")
+        listed = bool(entry(idle))
+        code = c.close()
+        report(code == 0 and listed and until(lambda: not entry(idle)), "stops an idle session its client left (leave.quit.idle)", json.dumps(entry(idle)))
 
         # A working session outlives its client: the turn ends in the background, and the next client resumes it.
         c = RpcClient(maic, env, home)
@@ -548,14 +557,15 @@ def daemon_smoke(maic, port):
         working = until(lambda: entry(sid2).get("activity") == "working", 10)
         c.close()
         left = entry(sid2)
-        finished = until(lambda: entry(sid2).get("activity") == "idle" and entry(sid2).get("unseen"), 30)
+        finished = until(lambda: entry(sid2).get("state") == "parked" and entry(sid2).get("unseen"), 30)
         c = RpcClient(maic, env, home)
         c.call("maic.hello", {"protocol": 1, "client": {"name": "daemon-smoke", "version": "0"}})
-        c.call("maic.session.focus", {"session": sid2})
+        c.call("maic.session.resume", {"session": sid2})
         snap = (c.call("maic.session.attach", {"session": sid2}) or {}).get("result", {})
         said = json.dumps(snap.get("items", []))
         report(working and left.get("state") == "background" and finished and "echo: slow: still here" in said,
-               "lets a working session finish after its client left, and the next client sees the reply", json.dumps([left, entry(sid2), snap])[-2500:])
+               "lets a working session finish after its client left, parked then (leave.quit.after), and the next client sees the reply",
+               json.dumps([left, entry(sid2), snap])[-2500:])
 
         # stop asks before it interrupts a turn: refused without a terminal unless --yes.
         c.call("response.create", {"conversation": sid2, "input": "hold on"})
@@ -632,7 +642,7 @@ def nvim_ui_smoke(maic, port):
     r = subprocess.run(["nvim", "--headless", "-u", "NONE", "-i", "NONE", "-n", "-l", test], capture_output=True, text=True, cwd=home, timeout=300,
                        env=dict(env, MAIC_UI_TEST_BIN=maic, MAIC_PROTOCOL_RECORD=rec))
     chk = subprocess.run([maic, "protocol", "check", rec], capture_output=True, text=True, env=env, cwd=home, timeout=60)
-    ok = r.returncode == 0 and chk.returncode == 0 and "2 streams, 0 with a violation" in chk.stdout
+    ok = r.returncode == 0 and chk.returncode == 0 and "3 streams, 0 with a violation" in chk.stdout  # the first engine, the resumed one, the one that asks
     print(("ok" if ok else "FAIL") + ": the nvim interface (maic.nvim/tests/ui_test.lua), exit %d; its stream checked" % r.returncode
           + ("" if ok else "\n" + r.stdout[-6000:] + r.stderr[-2000:] + chk.stdout[-1500:]))
 

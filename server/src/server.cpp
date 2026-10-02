@@ -492,6 +492,7 @@ int Server::bind() {
     eo.tier = o.settings.protocol_tier;
     eo.workspaces = im.roots;
     eo.kind = "server";
+    eo.keeps_sessions = true;
     im.engine = std::make_unique<Engine>(std::move(eo));
 
     bool loopback = loopback_host(im.host);

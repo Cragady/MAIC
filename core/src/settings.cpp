@@ -370,6 +370,36 @@ SteeringSettings agent_steering(const SteeringSettings& session, const json& age
 
 namespace {
 
+// `leave`: a verb for each case it names, over what earlier files said. An unknown case or verb is an error naming it.
+void read_leave(LeaveSettings& into, const json& t, const std::string& where) {
+    auto verb = [&](const std::string& name, const json& v, std::vector<std::string> allowed, std::string& out) {
+        std::string got = v.is_string() ? v.get<std::string>() : v.dump();
+        if (v.is_string() && std::find(allowed.begin(), allowed.end(), got) != allowed.end()) {
+            out = got;
+            return;
+        }
+        std::string list;
+        for (size_t i = 0; i < allowed.size(); ++i) list += (i == 0 ? "\"" : i + 1 == allowed.size() ? " or \"" : ", \"") + allowed[i] + "\"";
+        throw std::runtime_error(where + ": leave." + name + " must be " + list + ", not " + (v.is_string() ? "\"" + got + "\"" : got));
+    };
+    if (!t.is_object()) throw std::runtime_error(where + ": leave must be a table of cases: switch, quit, no_daemon");
+    for (const auto& [key, v] : t.items()) {
+        if (key == "no_daemon") {
+            verb(key, v, {"park", "stop"}, into.no_daemon);
+            continue;
+        }
+        if (key != "switch" && key != "quit") throw std::runtime_error(where + ": leave." + key + " is not a case (switch, quit, no_daemon)");
+        if (!v.is_object()) throw std::runtime_error(where + ": leave." + key + " must be a table of cases: idle, working, after");
+        LeaveCase& c = key == "switch" ? into.switching : into.quitting;
+        for (const auto& [k, x] : v.items()) {
+            std::string name = key + "." + k;
+            if (k == "after") verb(name, x, {"bg", "park", "stop"}, c.after);
+            else if (k == "idle" || k == "working") verb(name, x, key == "switch" ? std::vector<std::string>{"bg", "park", "stop", "ask"} : std::vector<std::string>{"bg", "park", "stop"}, k == "idle" ? c.idle : c.working);
+            else throw std::runtime_error(where + ": leave." + name + " is not a case (idle, working, after)");
+        }
+    }
+}
+
 // Applies one settings location over `s`: `<stem>.lua` when it exists (a chunk returning a table), else
 // `<stem>.json`. Scalars replace, providers merge by name, styles merge by role. `global` is the user's own
 // file: its Lua runs at the tier it names literally (full by default), and only it sets global_lua,
@@ -484,10 +514,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.colors = j.value("colors", s.colors);
         if (s.colors != "auto" && s.colors != "truecolor" && s.colors != "256" && s.colors != "16") throw std::runtime_error(path.string() + ": colors must be \"auto\", \"truecolor\", \"256\" or \"16\", not \"" + s.colors + "\"");
         s.enter_sends = j.value("enter_sends", s.enter_sends);
-        s.session_leave = j.value("session_leave", s.session_leave);
-        if (s.session_leave != "default" && s.session_leave != "ask" && s.session_leave != "bg" && s.session_leave != "park" && s.session_leave != "stop") {
-            throw std::runtime_error(path.string() + ": session_leave must be \"default\", \"ask\", \"bg\", \"park\" or \"stop\", not \"" + s.session_leave + "\"");
-        }
+        if (j.is_object() && j.contains("leave")) read_leave(s.leave, j["leave"], path.string());
         if (j.contains("max_tasks")) {
             int n = j["max_tasks"].is_number_integer() ? j["max_tasks"].get<int>() : -1;
             if (n < 0) throw std::runtime_error(path.string() + ": max_tasks must be a whole number, 0 or more");
@@ -847,8 +874,10 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"//highlight", "builtin, or nvim: an embedded nvim --embed highlights the input (markdown with treesitter); falls back to builtin when nvim is missing"},
         {"enter_sends", d.enter_sends},
         {"//enter_sends", "true: Enter sends a one-line input in insert mode, Shift+Enter or Alt+Enter insert a newline; false (vim-like): Enter is always a newline, Alt+Enter or :w sends"},
-        {"session_leave", d.session_leave},
-        {"//session_leave", "what :new, :switch and :fork do with the session you leave: default (a working one goes to the background, an idle one is parked), ask, bg, park or stop; --bg, --park or --stop on the command decides once"},
+        {"leave", {{"switch", {{"idle", d.leave.switching.idle}, {"working", d.leave.switching.working}, {"after", d.leave.switching.after}}},
+                   {"quit", {{"idle", d.leave.quitting.idle}, {"working", d.leave.quitting.working}, {"after", d.leave.quitting.after}}},
+                   {"no_daemon", d.leave.no_daemon}}},
+        {"//leave", "what becomes of a session you leave: switch (:new, :switch, :fork) and quit (:q), each with idle, working and after (what a session left working becomes when its work ends; a background task's end follows switch.after), as bg, park or stop (switch.idle and switch.working may also be ask); no_daemon, park or stop, is what a quit does to a session it would leave running where no daemon can keep it. --bg, --park or --stop on the command decides once. docs/settings.md"},
         {"max_tasks", d.max_tasks},
         {"//max_tasks", "background tasks (the task tool's background = true) one session may have running at once; past it the call is refused. 0 turns them off; a project's settings can only lower it"},
         {"record", d.record},
