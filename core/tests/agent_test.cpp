@@ -4,6 +4,7 @@
 #include "check.hpp"
 
 #include "maic/agent.hpp"
+#include "maic/jsonschema.hpp"
 #include "maic/settings.hpp"
 #include "maic/tripwire.hpp"
 #include "maic/trust.hpp"
@@ -16,7 +17,9 @@
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
+#include <set>
 #include <thread>
 
 using namespace maic;
@@ -61,7 +64,23 @@ struct FakeServer {
         }
         return out;
     }
-    static std::string event(const json& j) { return "data: " + j.dump() + "\n\n"; }
+    // One chunk as OpenAI's CreateChatCompletionStreamResponse shapes it, and as llama-server sends it: id, object,
+    // created and model on every chunk, finish_reason null until the last. Every distinct chunk any FakeServer sends
+    // is kept in `sent`, and the suite checks them against the pinned schema at the end.
+    static inline std::mutex sent_mu;
+    static inline std::set<std::string> sent;
+    static std::string event(const std::string& model, const json& delta, const json& finish = nullptr, const json& usage = nullptr) {
+        json c = {{"id", "chatcmpl-fake"}, {"object", "chat.completion.chunk"}, {"created", 1767225600}, {"model", model},
+                  {"choices", json::array({{{"index", 0}, {"delta", delta}, {"finish_reason", finish}}})}};
+        if (!usage.is_null()) c["usage"] = usage;
+        std::string line = c.dump();
+        {
+            std::lock_guard lock(sent_mu);
+            sent.insert(line);
+        }
+        return "data: " + line + "\n\n";
+    }
+    static json usage_of(int input) { return {{"prompt_tokens", input}, {"completion_tokens", 5}, {"total_tokens", input + 5}}; }
 
     void wait_streaming(int n) {
         std::unique_lock lock(mu);
@@ -105,7 +124,8 @@ struct FakeServer {
                 --calls_left;
                 call = tool_call;
             }
-            res.set_chunked_content_provider("text/event-stream", [this, echo, hold, usage, call, call_usage](size_t, httplib::DataSink& sink) {
+            std::string model = body.value("model", "");
+            res.set_chunked_content_provider("text/event-stream", [this, echo, hold, usage, call, call_usage, model](size_t, httplib::DataSink& sink) {
                 auto write = [&](const std::string& s) { return sink.write(s.data(), s.size()); };
                 // The first chunk is out: tell a waiting test, and idle here while held.
                 auto started = [&] {
@@ -116,29 +136,25 @@ struct FakeServer {
                     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
                     while (std::chrono::steady_clock::now() < deadline) {
                         cv.wait_for(lock, std::chrono::milliseconds(20));
-                        if (!write(event({{"choices", {{{"index", 0}, {"delta", json::object()}}}}}))) return false;
+                        if (!write(event(model, json::object()))) return false;
                     }
                     return true;
                 };
                 if (!call.is_null()) {
                     json tc = {{"index", 0}, {"id", "call_1"}, {"type", "function"},
                                {"function", {{"name", call["name"]}, {"arguments", call["arguments"].dump()}}}};
-                    write(event({{"choices", {{{"index", 0}, {"delta", {{"content", ""}, {"tool_calls", {tc}}}}}}}}));
+                    write(event(model, {{"content", ""}, {"tool_calls", {tc}}}));
                     if (!started()) return false;
-                    json done = {{"choices", {{{"index", 0}, {"delta", json::object()}, {"finish_reason", "tool_calls"}}}}};
-                    if (usage && call_usage) done["usage"] = {{"prompt_tokens", usage}, {"completion_tokens", 5}};
-                    write(event(done));
+                    write(event(model, json::object(), "tool_calls", usage && call_usage ? usage_of(usage) : json()));
                     write("data: [DONE]\n\n");
                     sink.done();
                     return true;
                 }
                 for (size_t i = 0; i < echo.size(); i += 4) {
-                    if (!write(event({{"choices", {{{"index", 0}, {"delta", {{"content", echo.substr(i, 4)}}}}}}}))) return false;
+                    if (!write(event(model, {{"content", echo.substr(i, 4)}}))) return false;
                     if (i == 0 && !started()) return false;
                 }
-                json done = {{"choices", {{{"index", 0}, {"delta", json::object()}, {"finish_reason", "stop"}}}}};
-                if (usage) done["usage"] = {{"prompt_tokens", usage}, {"completion_tokens", 5}};
-                write(event(done));
+                write(event(model, json::object(), "stop", usage ? usage_of(usage) : json()));
                 write("data: [DONE]\n\n");
                 sink.done();
                 return true;
@@ -1901,6 +1917,29 @@ int main() {
             if (j.is_object() && j.value("type", "") == "workspace") rec = j;
         }
         expect(rec.value("from", "") == fs::weakly_canonical(a).string() && rec.value("to", "") == fs::weakly_canonical(b).string(), "the transcript gets a workspace record {from, to}");
+    }
+
+    section("FakeServer's chunks against OpenAI's pinned CreateChatCompletionStreamResponse");
+    {
+        std::ifstream in(std::string(MAIC_PROTOCOL) + "/openai/subset.json");
+        json subset = json::parse(in);
+        const json chunk = {{"$ref", "#/components/schemas/CreateChatCompletionStreamResponse"}};
+        std::string first;
+        int bad = 0;
+        std::set<std::string> kinds;
+        std::lock_guard lock(FakeServer::sent_mu);
+        for (const auto& line : FakeServer::sent) {
+            json c = json::parse(line);
+            if (std::string e = schema_error(subset, chunk, c); !e.empty() && bad++ == 0) first = e + " in " + line;
+            const json& choice = c["choices"][0];
+            if (c.contains("usage")) kinds.insert("usage");
+            if (choice["finish_reason"].is_string()) kinds.insert("finish " + choice["finish_reason"].get<std::string>());
+            for (const auto& [k, v] : choice["delta"].items()) kinds.insert(k);
+            if (choice["delta"].empty()) kinds.insert("empty");
+        }
+        expect(kinds == std::set<std::string>{"content", "empty", "finish stop", "finish tool_calls", "tool_calls", "usage"},
+               "the suite sent every kind of chunk: text, a tool call, an empty keepalive, both finishes, usage (" + std::to_string(FakeServer::sent.size()) + " distinct)");
+        expect(bad == 0, "every chunk FakeServer sent fits the schema" + (first.empty() ? "" : ": " + std::to_string(bad) + " do not, first " + first));
     }
 
     fs::remove_all(ws);

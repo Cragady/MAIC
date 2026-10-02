@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <thread>
 
 using namespace maic;
@@ -232,6 +234,25 @@ int main() {
         const auto& msgs = b["messages"];
         expect(msgs[2]["tool_calls"][0]["function"]["arguments"].is_string() && msgs[3]["tool_call_id"] == "call_9",
                "replay sends arguments as a JSON string and results by tool_call_id");
+    }
+    {
+        // llama-server b11284's stream as written in the fixture (jsonschema_test checks each chunk against OpenAI's
+        // schema): the opening role chunk with null content, reasoning_content, content, a tool call in two pieces,
+        // finish_reason tool_calls, then usage and timings on a chunk with no choices.
+        std::ifstream in(std::string(MAIC_FIXTURES) + "/llamacpp-b11284-chat.sse");
+        std::stringstream stream;
+        stream << in.rdbuf();
+        Fake f;
+        f.serve("/v1/chat/completions", {stream.str()});
+        f.start();
+        Provider llama{"llamacpp", "openai", f.url() + "/v1", "", "", json::object()};
+        std::string streamed;
+        auto m = run(llama, hello, &streamed, no_cancel, kTools);
+        expect(m.content == "Her ears stay a third of her height." && streamed == "The user wants the fennec ear sizing note." + m.content,
+               "llama.cpp's recorded stream: reasoning and content");
+        expect(m.tool_calls.size() == 1 && m.tool_calls[0].name == "read_file" && m.tool_calls[0].arguments.value("path", "") == "docs/mascot.md",
+               "llama.cpp's recorded stream: the tool call");
+        expect(m.usage.input == 412 && m.usage.output == 38, "llama.cpp's recorded stream: usage from the empty-choices chunk");
     }
     {
         Fake f;

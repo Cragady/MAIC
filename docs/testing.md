@@ -28,7 +28,9 @@ git config core.hooksPath .githooks         # .githooks/pre-push runs scripts/ch
 | `harness` | policy, sandbox, tripwire, classifier | `core/tests/harness_test.cpp` |
 | `robustness` | settings, places, tools, the ban filter, services, vendoring | `core/tests/robustness_test.cpp` |
 | `llm` | the provider clients against fake servers | `core/tests/llm_test.cpp` |
-| `agent` | the agent loop against `FakeServer`: turns, tools, approvals, compaction, subagents, cancel, resume | `core/tests/agent_test.cpp` |
+| `agent` | the agent loop against `FakeServer`: turns, tools, approvals, compaction, subagents, cancel, resume; then every chunk `FakeServer` sent against OpenAI's pinned `CreateChatCompletionStreamResponse` | `core/tests/agent_test.cpp` |
+| `jsonschema` | the JSON Schema validator's keywords with known answers; OpenAI's pinned subset against a Responses stream and a llama-server chat stream (`core/tests/fixtures/`) | `core/tests/jsonschema_test.cpp` |
+| `openai_subset` | `protocol/openai/openapi.json` is the pinned file and `subset.json` is what `extract.py` makes of it | `protocol/openai/extract.py --check` |
 | `session` | session files, homes, forks, import | `core/tests/session_test.cpp` |
 | `lua_tools` | user-defined Lua tools | `core/tests/lua_tools_test.cpp` |
 | `fuzz` | the parser fuzzer, 2 s per target by default | `core/tests/fuzz_parsers.cpp` |
