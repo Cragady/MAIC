@@ -18,7 +18,7 @@ bool replays_reasoning(const std::string& model) {
 
 using nlohmann::json;
 
-// error.maic.upstream: who sent the error, what each rule replaced, and the rules' names.
+// error.maic.upstream: the software that sent the error, what each rule replaced, and the rules' names.
 json& upstream(json& error, const std::string& provider, const char* rule) {
     json& u = error["maic"]["upstream"];
     u["provider"] = provider;
@@ -34,7 +34,7 @@ bool error_code_string(json& body, const std::string& provider) {
     json* e = error_of(body);
     if (!e || !e->contains("code") || !(*e)["code"].is_number()) return false;
     upstream(*e, provider, "error_code_string")["code"] = (*e)["code"];
-    (*e)["code"] = provider + "_" + (*e)["code"].dump();
+    (*e)["code"] = "maic_" + provider + "_" + (*e)["code"].dump();
     return true;
 }
 
@@ -63,7 +63,7 @@ struct Rule {
     bool (*apply)(json& body, const std::string& provider);
 };
 constexpr Rule kRules[] = {
-    {"error_code_string", error_code_string},          // a numeric error code becomes "<provider>_<code>" (llama.cpp's 500)
+    {"error_code_string", error_code_string},          // a numeric error code becomes "maic_<upstream>_<code>" (llama.cpp's 500)
     {"error_param_null", error_param_null},            // an error without param gets param: null (llama.cpp)
     {"logprobs_refusal_null", logprobs_refusal_null},  // choices[].logprobs without refusal gets refusal: null (llama.cpp)
 };
@@ -141,7 +141,7 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
     std::string finish, error, reasoning;
     std::map<std::string, int> normalized;
     auto normalize = [&](nlohmann::json& j) {
-        for (const auto& rule : normalize_openai(j, provider.name)) ++normalized[rule];
+        for (const auto& rule : normalize_openai(j, provider.upstream_name())) ++normalized[rule];
     };
 
     LineSplitter lines;
@@ -225,10 +225,10 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
 
 namespace maic {
 
-std::vector<std::string> normalize_openai(nlohmann::json& body, const std::string& provider) {
+std::vector<std::string> normalize_openai(nlohmann::json& body, const std::string& upstream) {
     std::vector<std::string> applied;
     for (const auto& rule : detail::kRules) {
-        if (rule.apply(body, provider)) applied.push_back(rule.name);
+        if (rule.apply(body, upstream)) applied.push_back(rule.name);
     }
     return applied;
 }

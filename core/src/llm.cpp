@@ -124,10 +124,10 @@ std::vector<Provider> default_providers() {
         // llama.cpp's OpenAI-compatible server (services/llamacpp.json): everything in `sampling` is merged into the
         // request, so logit_bias, xtc_probability, dry_multiplier, grammar and json_schema all reach it; thinking is
         // switched per request; the context matches the service; later system messages go as user notes.
-        {"llamacpp", "openai", "http://127.0.0.1:8081/v1", "", "", {{"thinking_controls", true}, {"context_window", 16384}}},
+        {"llamacpp", "openai", "http://127.0.0.1:8081/v1", "", "", {{"thinking_controls", true}, {"context_window", 16384}}, "llamacpp"},
         // The side server (services/llamacpp-2.json): the same router over the same GGUFs on port 8082, so a second
         // model can stay resident while the first does. No preset by default; `llamacpp-2/NAME` reaches it.
-        {"llamacpp-2", "openai", "http://127.0.0.1:8082/v1", "", "", {{"thinking_controls", true}, {"context_window", 8192}}},
+        {"llamacpp-2", "openai", "http://127.0.0.1:8082/v1", "", "", {{"thinking_controls", true}, {"context_window", 8192}}, "llamacpp"},
         {"anthropic", "anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "",
          {{"max_tokens", 64000}, {"effort", "high"}, {"think_effort", "xhigh"}, {"fallbacks", "default"}}},
         {"deepseek", "openai", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "", nlohmann::json::object()},

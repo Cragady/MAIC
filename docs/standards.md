@@ -51,15 +51,15 @@ The example that set the rule (Micaiah, 2026-10-02): OpenAI's API description is
 
 ### Adapter normalizations
 
-What an OpenAI-compatible server (llama.cpp `b11284` so far) sends that the pinned description does not allow is rewritten at MAIC's input boundary, `normalize_openai` in `core/src/openai.cpp`, so everything past the client sees only OpenAI's shapes. Each rule is one line of a table there. None is silent: the call's caller hears each rule and its count (`ChatOptions::normalized`), the agent counts them in its usage report (`maic -p --json` prints them) and writes a `normalized` record `{rule, provider, count}` to the session, and `maic sessions stats` sums them. An error object also keeps what was replaced and the rules' names in `error.maic.upstream`. `jsonschema_test` checks each rule on fixtures written from llama-server's source: as sent the shape fails the schema, normalized it fits, and each rule alone fixes only its own departure.
+What an OpenAI-compatible server (llama.cpp `b11284` so far) sends that the pinned description does not allow is rewritten at MAIC's input boundary, `normalize_openai` in `core/src/openai.cpp`, so everything past the client sees only OpenAI's shapes. Each rule is one line of a table there. None is silent: the call's caller hears each rule and its count (`ChatOptions::normalized`), the agent counts them in its usage report (`maic -p --json` prints them) and writes a `normalized` record `{rule, provider, upstream, count}` to the session, and `maic sessions stats` sums them. An error object also keeps what was replaced and the rules' names in `error.maic.upstream`. `jsonschema_test` checks each rule on fixtures written from llama-server's source: as sent the shape fails the schema, normalized it fits, and each rule alone fixes only its own departure.
 
 | Rule | What llama.cpp sends | What MAIC presents | Why |
 | :--- | :--- | :--- | :--- |
-| `error_code_string` | `"error": {"code": 500, ...}`, an integer | `"code": "llamacpp_500"`, the provider's name, `_`, the number; `"maic": {"upstream": {"provider": "llamacpp", "code": 500, "rules": [...]}}` | OpenAI's `Error.code` is a string or null |
+| `error_code_string` | `"error": {"code": 500, ...}`, an integer | `"code": "maic_llamacpp_500"`: `maic_`, the provider's `upstream`, `_`, the number; `"maic": {"upstream": {"provider": "llamacpp", "code": 500, "rules": [...]}}` | OpenAI's `Error.code` is a string or null |
 | `error_param_null` | an error with no `param` | `"param": null`, the rule named in `maic.upstream.rules` | OpenAI's `Error` requires `param` |
 | `logprobs_refusal_null` | `choices[].logprobs` as `{"content": [...]}` | the same with `"refusal": null` | OpenAI requires `refusal` beside `content`; MAIC requests no logprobs today, but the shape is defined and tested |
 
-The prefix is the provider's configured name (`llamacpp`, `llamacpp-2`), which is what tells servers apart; it is not prefixed `maic_`, so it reads as the server's code rather than one of MAIC's own. Asking llama.cpp upstream to send these shapes is on the roadmap's Parked list.
+The code is a value MAIC mints in an open text field, so it carries the `maic_` prefix (the design's rule 4, [design/engine-protocol.md](design/engine-protocol.md#the-convention)). Its middle part is the provider's `upstream`, the software behind it, not its configured name: the shipped `llamacpp` and `llamacpp-2` both set `upstream = "llamacpp"`, so either server's 500 is `maic_llamacpp_500`; a provider without `upstream` uses its name ([settings.md](settings.md#providers)). The original number and that source stay in `error.maic.upstream`. Asking llama.cpp upstream to send these shapes is on the roadmap's Parked list.
 
 ## Crypto and auth
 

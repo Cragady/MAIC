@@ -61,7 +61,11 @@ struct Provider {
     std::string api_key_env;      // environment variable holding the API key
     std::string api_key_command;  // or a command that prints it (a password manager); never a key in a file
     nlohmann::json options = nlohmann::json::object();  // kind-specific, see docs/settings.md
+    // The software behind it, whatever it is called here: the shipped llamacpp and llamacpp-2 are both "llamacpp".
+    // "" lets the name stand for it. Names the source in what the adapter rules rewrite (normalize_openai).
+    std::string upstream;
 
+    std::string upstream_name() const { return upstream.empty() ? name : upstream; }
     // Anything not on this machine. Prompts, files the agent reads and tool output leave the machine.
     bool remote() const;
     std::string api_key() const;  // throws with a clear message when it can't be found
@@ -130,9 +134,10 @@ bool server_answers(const Provider& provider);
 
 // The OpenAI-compatible client's adapter rules ("Adapter normalizations" in docs/standards.md): rewrites one parsed
 // chunk or error body that `provider` sent into the shape OpenAI's description (protocol/openai/) gives it, in
-// place, and returns the names of the rules that applied. An error object keeps what was replaced, and the rules'
-// names, in error.maic.upstream. chat() runs it on everything it reads from an OpenAI-compatible server.
-std::vector<std::string> normalize_openai(nlohmann::json& body, const std::string& provider);
+// place, and returns the names of the rules that applied. A numeric error code becomes "maic_<upstream>_<code>"; an
+// error object keeps what was replaced, `upstream` as its provider, and the rules' names in error.maic.upstream.
+// chat() runs it on everything it reads from an OpenAI-compatible server, with the provider's upstream_name().
+std::vector<std::string> normalize_openai(nlohmann::json& body, const std::string& upstream);
 
 // Tool schemas are given in OpenAI function format and converted per provider.
 // Throws Cancelled if `cancel` is set, std::runtime_error on transport or API errors.

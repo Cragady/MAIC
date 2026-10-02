@@ -1580,6 +1580,13 @@ int main() {
         SessionStats st = session_stats(blog.path());
         expect(st.normalized["fake error_code_string"] == static_cast<size_t>(counted["error_code_string"]) && st.normalized["fake error_param_null"] == static_cast<size_t>(counted["error_param_null"]),
                "each application is a `normalized` record naming the rule and the provider, summed by session_stats");
+        json record;
+        std::ifstream recs(blog.path());
+        for (std::string l; std::getline(recs, l) && record.is_null();) {
+            auto j = json::parse(l, nullptr, false);
+            if (j.is_object() && j.value("type", "") == "normalized") record = j;
+        }
+        expect(record.value("provider", "") == "fake" && record.value("upstream", "") == "fake", "the record names the upstream too (the provider's name when it sets none)");
     }
 
     section("string and token bans");

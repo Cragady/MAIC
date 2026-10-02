@@ -511,14 +511,14 @@ int main() {
         write_file(cfg / "maic" / "settings.json", R"({"model": "global/model", "mode": "manual", "style": {"user": {"fg": "red"}}})");
         setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
         fs::path proj = ws / "proj";
-        write_file(proj / ".maic" / "settings.json", R"({"mode": "edit", "providers": {"lab": {"kind": "openai", "base_url": "http://127.0.0.1:9/v1"}}})");
+        write_file(proj / ".maic" / "settings.json", R"({"mode": "edit", "providers": {"lab": {"kind": "openai", "base_url": "http://127.0.0.1:9/v1", "upstream": "vllm"}}})");
         write_file(proj / ".maic" / "settings.local.json", R"({"model": "local/model", "style": {"user": {"bold": true}}})");
         Settings s = load_settings(proj);
         expect(s.sources.size() == 3, "three files read: global, project, project-local");
         expect(s.model == "local/model" && s.mode == "edit", "nearer files win for scalars");
         bool lab = false;
-        for (const auto& p : s.providers) lab = lab || (p.name == "lab" && p.kind == "openai");
-        expect(lab && s.providers.size() == default_providers().size() + 1, "providers merge by name");
+        for (const auto& p : s.providers) lab = lab || (p.name == "lab" && p.kind == "openai" && p.upstream == "vllm");
+        expect(lab && s.providers.size() == default_providers().size() + 1, "providers merge by name, `upstream` with them");
         expect(s.style("user").fg == "red" && s.style("user").bold, "styles merge across layers");
         expect(s.context_2 == 8192, "context_2 defaults to 8192");
         write_file(proj / ".maic" / "settings.local.json", R"({"model": "local/model", "context_2": 16384, "style": {"user": {"bold": true}}})");
