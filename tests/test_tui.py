@@ -515,11 +515,61 @@ class TuiTest(unittest.TestCase):
         self.assertIn("events conform", r.stdout)
         with open(streams[0]) as f:
             # The recording also holds its header and skeleton lines (docs/design/engine-protocol.md section 17); those carry no msg.
-            types = [m["msg"]["params"].get("type") for m in map(json.loads, f) if "msg" in m and m["msg"].get("method") == "maic.event"]
+            events = [m["msg"]["params"] for m in map(json.loads, f) if "msg" in m and m["msg"].get("method") == "maic.event"]
+        types = [e.get("type") for e in events]
         for t in ("maic.input.added", "maic.approval.requested", "response.shell_call_output_content.delta", "maic.tool.output.delta",
                   "maic.session.title", "response.completed"):
             self.assertIn(t, types)
-        self.assertEqual(types[-1], "maic.session.state")  # the quit parks the session
+        self.assertEqual((types[-1], events[-1].get("state")), ("maic.session.state", "stopped"), "the quit stops the idle session (leave.quit.idle)")
+
+    def recorded_states(self):
+        """Each session's states in the index notifications the TUI recorded in this case ("stopped" for one removed),
+        sessions in the order they were made (their ids sort so)."""
+        states = {}
+        for f in sorted(os.listdir(self.streams)):
+            if not f.startswith("tui-"):
+                continue
+            with open(os.path.join(self.streams, f)) as fh:
+                for m in map(json.loads, fh):
+                    msg = m.get("msg", {})
+                    if msg.get("method") != "maic.index":
+                        continue
+                    p = msg["params"]
+                    if "removed" in p:
+                        states.setdefault(p["removed"], []).append("stopped")
+                    else:
+                        states.setdefault(p["entry"]["id"], []).append(p["entry"]["state"])
+        return [states[k] for k in sorted(states)]
+
+    def test_flags_on_new_and_quit_override_the_leave_setting(self):
+        tui = self.start()
+        tui.send(":new --stop<cr>", settle=False)
+        tui.wait_for("·  idle  ·")
+        self.assertNotIn("other session", tui.text(), "--stop: the idle session left is stopped, not kept")
+        tui.send(":new --bg<cr>", settle=False)
+        tui.wait_for("1 other session (:switch)")
+        tui.send(":q --park<cr>", settle=False)
+        self.assertEqual(tui.wait_exit(), 0)
+        first, second, third = self.recorded_states()
+        self.assertEqual(first[-1], "stopped", "--stop on :new")
+        self.assertIn("background", second, "--bg on :new keeps the idle session loaded")
+        self.assertEqual(second[-1], "parked", "until the quit, which parks it (leave.no_daemon: no daemon keeps it)")
+        self.assertEqual(third[-1], "parked", "--park on :q parks the idle session instead of stopping it")
+
+    def test_a_leave_case_set_to_ask_asks(self):
+        cfg = os.path.join(self.home, "config-ask")
+        os.makedirs(os.path.join(cfg, "maic"), exist_ok=True)
+        with open(os.path.join(cfg, "maic", "settings.lua"), "w") as f:
+            f.write("local s = dofile(%r)\ns.leave = { switch = { idle = 'ask' } }\nreturn s\n" % os.path.join(self.env["XDG_CONFIG_HOME"], "maic", "settings.lua"))
+        tui = self.start(env=dict(self.env, XDG_CONFIG_HOME=cfg))
+        tui.send(":new<cr>", settle=False)
+        tui.wait_for("leave this session?")
+        tui.send("s", settle=False)
+        tui.wait_for("·  idle  ·")
+        self.assertNotIn("other session", tui.text(), "the answer, stop, ended the session left")
+        tui.send(":q<cr>", settle=False)
+        self.assertEqual(tui.wait_exit(), 0)
+        self.assertEqual(self.recorded_states()[0][-1], "stopped")
 
     def test_new_parks_the_idle_session_and_switch_resumes_it(self):
         tui = self.start()
@@ -579,6 +629,7 @@ class TuiTest(unittest.TestCase):
         tui.send(":switch<cr>", settle=False)
         text = tui.wait_for("j/k move · Enter goes there · Esc stays")
         self.assertIn("↳ explore: slow: look around  ·  finished", text)
+        tui.wait_for("↳ explore: slow: look around  ·  finished, parked")  # leave.switch.after, once its job is done
         tui.send("<cr>", settle=False)  # the task is the first row after a new session
         text = tui.wait_for("echo: slow: look around")
         self.assertIn("❯ slow: look around", text, "switched into the task: its own conversation")
@@ -601,10 +652,10 @@ class TuiTest(unittest.TestCase):
         self.assertEqual(tui.wait_exit(), 0, "quitting does not wait for the turn, and nothing is asked")
         sessions = lambda: json.loads(run("daemon", "status", "--json").stdout)["sessions"]
         end = time.time() + 30
-        while time.time() < end and not any(e["activity"] == "idle" and e["unseen"] for e in sessions()):
+        while time.time() < end and not any(e["state"] == "parked" and e["unseen"] for e in sessions()):
             time.sleep(0.2)
         mine = [e for e in sessions() if e["workspace"] == self.ws]
-        self.assertTrue(mine and mine[0]["state"] == "background" and mine[0]["unseen"], json.dumps(mine))
+        self.assertTrue(mine and mine[0]["state"] == "parked" and mine[0]["unseen"], json.dumps(mine))  # leave.quit.after, once its work was done
         with open(mine[0]["transcript"]) as f:
             self.assertIn("echo: slow: still going", f.read(), "the turn finished in the daemon after the window closed")
         # The next maic in the same directory switches to it: the reply is there (wide: the strip counts the other one).

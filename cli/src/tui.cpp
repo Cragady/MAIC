@@ -134,7 +134,7 @@ struct PendingConfirm {
 // with what each is doing and where it works, and a new one; Enter goes there.
 struct Switcher {
     std::string title;
-    std::string leave;             // what happens to this session: "" for session_leave's choice
+    std::string leave;             // what happens to this session: "" for the leave.switch setting's choice
     std::vector<std::string> ids;  // "" is a new session here
     size_t sel = 0;
 };
@@ -482,7 +482,8 @@ private:
     void run_lua(const std::string& code, bool from_file);
     void set_focus(Focus f);
     void edit_externally();
-    void quit();
+    void quit(const std::string& as = "", bool sure = false);
+    std::string quit_as_;  // :q's --bg, --park or --stop, for maic.session.leave
     void shutdown();
 
     ScreenInteractive& screen_;
@@ -2084,7 +2085,12 @@ void App::run_command(const std::string& line) {
             }
         } else if (cmd == "q" || cmd == "q!" || cmd == "quit" || cmd == "exit") {
             if (cmd == "q!") quit_warned_ = true;
-            quit();
+            std::istringstream in(arg);
+            std::string as;
+            for (std::string w; in >> w;) {
+                if (w == "--bg" || w == "--park" || w == "--stop") as = w.substr(2);
+            }
+            quit(as);
         } else if (cmd == "new" || cmd == "switch" || cmd == "fork" || cmd == "bg" || cmd == "park" || cmd == "stop") {
             session_verb(cmd, arg);
         } else if (cmd == "w" || cmd == "write" || cmd == "send") {
@@ -2395,7 +2401,7 @@ std::string App::session_line(const nlohmann::json& e) const {
     std::string state = e.value("state", ""), activity = e.value("activity", "idle");
     // `waiting` on a parent also covers its tasks: one of them waits for an approval.
     const nlohmann::json waiting = e.contains("waiting") ? e["waiting"] : nlohmann::json();
-    std::string doing = state == "parked" ? "parked" : activity == "waiting" || waiting.is_object() ? "waiting" : activity != "idle" ? "working" : e.value("unseen", false) ? "finished" : "idle";
+    std::string doing = state == "parked" ? (e.value("unseen", false) ? "finished, parked" : "parked") : activity == "waiting" || waiting.is_object() ? "waiting" : activity != "idle" ? "working" : e.value("unseen", false) ? "finished" : "idle";
     if (doing == "waiting" && waiting.is_object()) doing += ": " + waiting.value("summary", waiting.value("kind", "")) + (waiting.contains("session") ? " (in a task)" : "");
     std::string ws = e.value("workspace", ""), home = std::getenv("HOME") ? std::getenv("HOME") : "";
     if (!home.empty() && ws.rfind(home + "/", 0) == 0) ws = "~" + ws.substr(home.size());
@@ -2441,18 +2447,10 @@ void App::session_verb(const std::string& cmd, const std::string& arg) {
     end_other(id, cmd);
 }
 
-// Moves this client's focus: to a new session, a fork of this one, or another session (`target`), loaded or parked. `as` says what happens to the one left: "" for session_leave's choice, which may be to
-// ask; parking or stopping one mid-turn interrupts it, so that is asked first.
+// Moves this client's focus: to a new session, a fork of this one, or another session (`target`), loaded or parked. `as` says what happens to the one left: "" for
+// the leave.switch setting's choice, which may be to ask (the engine answers maic_leave_ask); parking or stopping one mid-turn interrupts it, so that is asked first.
 void App::go(Go how, const std::string& target, std::string as, const std::string& dir, bool sure) {
-    if (as.empty()) as = settings_.session_leave;
-    if (as == "ask") {
-        confirm_ = PendingConfirm{"leave", " leave this session? ", {"[b] background: it keeps working", "[p] park: it stops for now and resumes where it was",
-                                                                   "[s] stop: it ends; its transcript stays (maic -r)", "Esc stays here"},
-                                  "bps", [this, how, target, dir](const std::string& k) {
-                                      if (k != "n") go(how, target, k == "b" ? "bg" : k == "p" ? "park" : "stop", dir);
-                                  }};
-        return;
-    }
+    if (as.empty()) as = "default";
     if (!sure && busy_ && (as == "park" || as == "stop")) {
         confirm_ = PendingConfirm{"leave", " " + as + " a working session? ", {"Its turn is interrupted (y), or it stays (n)."}, "yn",
                                   [this, how, target, as, dir](const std::string& k) {
@@ -2468,6 +2466,15 @@ void App::go(Go how, const std::string& target, std::string as, const std::strin
     else reply = call("maic.session.resume", {{"session", target}, {"leave", leave}});
     if (reply.contains("error")) {
         drain();
+        const nlohmann::json& data = reply["error"]["data"];
+        if (data.is_object() && data.value("code", "") == "maic_leave_ask") {
+            confirm_ = PendingConfirm{"leave", " leave this session? ", {"[b] background: it keeps working", "[p] park: it stops for now and resumes where it was",
+                                                                       "[s] stop: it ends; its transcript stays (maic -r)", "Esc stays here"},
+                                      "bps", [this, how, target, dir](const std::string& k) {
+                                          if (k != "n") go(how, target, k == "b" ? "bg" : k == "p" ? "park" : "stop", dir);
+                                      }};
+            return;
+        }
         show(reply);
         return;
     }
@@ -2550,17 +2557,26 @@ bool App::handle_switcher(const Event& e) {
     return true;
 }
 
-void App::quit() {
-    // Background sessions in this process's own engine end with it: quitting parks them, mid-turn too. The daemon's
-    // keep working.
+// :q, with --bg, --park or --stop for this session (`as`; else leave.quit decides), parking or stopping it mid-turn
+// asked first.
+void App::quit(const std::string& as, bool sure) {
+    if (!sure && busy_ && (as == "park" || as == "stop")) {
+        confirm_ = PendingConfirm{"leave", " " + as + " a working session? ", {"Its turn is interrupted (y), or it stays (n)."}, "yn", [this, as](const std::string& k) {
+            if (k == "y") quit(as, true);
+        }};
+        return;
+    }
+    // Background sessions in this process's own engine end with it, as leave.no_daemon says, mid-turn too. The
+    // daemon's keep working.
     size_t working = 0;
     for (const auto& [id, e] : index_) working += !daemon_ && id != session_ && e.value("state", "") != "parked" && e.value("activity", "idle") != "idle";
     if (working > 0 && !quit_warned_) {
         quit_warned_ = true;
-        post(Kind::Notice, std::to_string(working) + (working == 1 ? " other session is" : " other sessions are") +
-                               " still working: quitting parks them and interrupts their turns (each resumes where it stopped). :q again quits.");
+        post(Kind::Notice, std::to_string(working) + (working == 1 ? " other session is" : " other sessions are") + " still working: quitting " +
+                               (settings_.leave.no_daemon == "stop" ? "stops" : "parks") + " them and interrupts their turns (leave.no_daemon). :q again quits.");
         return;
     }
+    quit_as_ = as;
     // A draft that was never sent is stashed, so a reflexive :q loses nothing.
     if (!editor_.text().empty()) {
         std::ofstream f(state_dir() / "prompt-stash.jsonl", std::ios::app);
@@ -2576,8 +2592,9 @@ void App::shutdown() {
     stopped_ = true;
     if (host_) host_->set_handlers({});
     nvim_hl_.reset();
-    // Leaving the daemon lets go of the session (an idle one is parked, a working one keeps on); this process's own
-    // engine interrupts the turn, answers what waits with no, ends a `!cmd` and parks the session.
+    // The session in focus becomes what :q's flag or leave.quit says (maic.session.leave): in the daemon a working
+    // one can keep on; this process's own engine interrupts what still runs, as leave.no_daemon says, and parks the rest.
+    call("maic.session.leave", quit_as_.empty() ? nlohmann::json::object() : nlohmann::json{{"as", quit_as_}});
     if (daemon_) daemon_->close();
     else engine_->shutdown();
     if (shell_thread_.joinable()) shell_thread_.join();

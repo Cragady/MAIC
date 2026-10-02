@@ -96,7 +96,7 @@ Your global file runs with LuaJIT and the standard library; `maic.home`, `maic.h
 | `colors` | The colour depth: `"auto"` (default: truecolor when `COLORTERM` is `truecolor` or `24bit`, else 256 colours when `TERM` (or `COLORTERM`) contains `256`, else the 16 ANSI colours), `"truecolor"`, `"256"` or `"16"`. Below truecolor a `#rrggbb` becomes the nearest xterm-256 colour (the 6x6x6 cube and the grey ramp, by squared distance in sRGB) or the nearest of the 16. |
 | `enter_sends` | `true`: in insert mode Enter sends a one-line input, Shift+Enter or Alt+Enter inserts the line break, and an input that already has several lines keeps Enter as a line break. Default `false`, the vim-like behaviour: Enter is always a line break and Alt+Enter or `:w` sends. `:set enter_sends on\|off` for a session. |
 | `max_tasks` | How many background tasks (the `task` tool with `background: true`, [tools.md](tools.md)) one session may have running at once (default `4`); past it the call is refused and the model told why. `0` turns background tasks off. A project's settings can only lower it. |
-| `session_leave` | What `:new`, `:switch` and `:fork` do with the session you leave (`:h sessions`): `"default"` (a working session goes to the background and keeps working, an idle one is parked), `"ask"` (the TUI asks: background, park or stop), `"bg"`, `"park"` or `"stop"`. `--bg`, `--park` or `--stop` on the command decides for that once. |
+| `leave` | What becomes of a session you leave, one value for each case: `switch` (`:new`, `:switch`, `:fork`) and `quit` (`:q`), each with `idle`, `working` and `after`, and `no_daemon`. Every case has a default; see [Leaving a session](#leaving-a-session). `--bg`, `--park` or `--stop` on the command decides for that one leave. |
 | `server` | `maic server`: `listen` (default `127.0.0.1:7373`; any other address turns TLS on), `workspaces` (directories a remote session may open; default `~/dev2`, else the current directory), `cert` and `key` (a PEM pair; empty makes a self-signed one under `~/.local/state/maic/server/`). See [remote.md](remote.md). |
 | `global_lua` | Global file only. How your own Lua data files run: `settings.lua`, your themes and MAIC's shipped ones, `diction.lua`. `"full"` (default): the full standard library, as they always have. `"sandbox"`: a child process that cannot reach the system; `"restricted"`: the restricted state in MAIC's own process ([Lua levels](#lua-levels)). MAIC has to know before the file runs, so it reads this from the file's text: write it literally, `global_lua = "sandbox"`; a value computed in Lua is an error. |
 | `lua_memory_mb` | Global file only. The memory cap of settings Lua at the sandbox and restricted levels, in MB (default `256`): the sandbox's child process may grow by this much, and the restricted state's heap may reach it. Read literally from the global file for the global file itself, like `global_lua`. |
@@ -111,6 +111,30 @@ Your global file runs with LuaJIT and the standard library; `maic.home`, `maic.h
 | `full_output` | Keep a command's whole output beside the session when the model gets it capped (default `true`): `<id>.d/<call>.out` with a timing index, display only. See [sessions.md](sessions.md#full-output). |
 | `full_output_max_mb` | At most this many MiB of it per call (default `64`, at least `1`); past that the file keeps the head and the tail and says how much was dropped. |
 | `init_move_outside_reads` | `:init` moves the running session into the project's home without asking when it wrote nothing outside the project and read at most this many files outside it (default `3`); with more, it asks. See [sessions.md](sessions.md#homes). |
+
+## Leaving a session
+
+`leave` names what becomes of a session you leave, case by case. A value is `"bg"` (it stays loaded and keeps working), `"park"` (it stops for now, stays in the switcher and resumes where it was) or `"stop"` (it ends, leaves the switcher and stays an ordinary transcript, `maic -r`). The defaults fill every case:
+
+```lua
+leave = {
+  switch = { idle = "park", working = "bg", after = "park" },
+  quit = { idle = "stop", working = "bg", after = "park" },
+  no_daemon = "park",
+}
+```
+
+| Case | Default | What |
+| :--- | :--- | :--- |
+| `switch.idle` | `"park"` | An idle session you leave through `:new`, `:switch` or `:fork`. `"ask"` asks each time. |
+| `switch.working` | `"bg"` | A working session you leave that way (a response, a paused or queued turn, a `!cmd`). `"ask"` asks each time; `"park"` and `"stop"` interrupt its turn. |
+| `switch.after` | `"park"` | What a session left working becomes once its work ends with no window on it. A background task's session (the `task` tool's `background = true`) follows it too when its job is done. |
+| `quit.idle` | `"stop"` | The idle session in focus when you quit (`:q`, or an interface that closes). |
+| `quit.working` | `"bg"` | The working session in focus when you quit: a quit mid-turn is a switch to the void, so with the [daemon](daemon.md) it keeps working. |
+| `quit.after` | `"park"` | What a session a quit left working becomes once its work is done. |
+| `no_daemon` | `"park"` | Where no daemon can keep a session running (the TUI's or `maic --rpc`'s own engine): what a quit does, `"park"` or `"stop"`, to a session it would leave loaded, and to every session in that MAIC's background. `"park"` interrupts the turn and parks it. |
+
+`--bg`, `--park` or `--stop` on `:q`, `:new`, `:switch` or `:fork` (and maic.nvim's `:MaicNew`, `:MaicSwitch`, `:MaicFork`) decides for that one leave, whatever the case; parking or stopping a working session that way is asked first. A case leaves alone a session another window has in focus; a flag does not. Layers replace only the cases they name, so a project's file can change `quit.idle` and keep the rest. An unknown case or value is an error naming it when settings load; `"ask"` is accepted only for `switch.idle` and `switch.working`, and `no_daemon` only takes `"park"` or `"stop"`. The old `session_leave` key is an error naming this table.
 
 ## Model presets and tiers
 

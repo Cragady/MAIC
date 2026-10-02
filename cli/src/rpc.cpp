@@ -327,9 +327,12 @@ int run_rpc(const TuiOptions& options) {
     // MAIC_PROTOCOL_RECORD=DIR keeps the exchange for `maic protocol check`, as the TUI and maic -p do.
     std::filesystem::path record;
     if (const char* dir = std::getenv("MAIC_PROTOCOL_RECORD"); dir && *dir) record = std::filesystem::path(dir) / ("rpc-" + std::to_string(getpid()) + ".jsonl");
-    // Stdin closed, a signal, or the connection ended: running turns are interrupted and the sessions parked, as
-    // quitting the TUI does, then the last events go out.
-    bool faulted = serve_lines(engine, client, in, out_fd, signal_fds[0], record, [&] { engine.shutdown(); });
+    // Stdin closed, a signal, or the connection ended: the client quits as `:q` does (leave.quit, and leave.no_daemon
+    // for what would stay running), the rest is parked, then the last events go out.
+    bool faulted = serve_lines(engine, client, in, out_fd, signal_fds[0], record, [&] {
+        engine.leave(client);
+        engine.shutdown();
+    });
     set_lua_nvim_host(nullptr);
     close(in);
     close(out_fd);

@@ -239,6 +239,13 @@ idle()
 send("bg:explore:look around")
 expect(wait_for("the explore agent works in the background: look around") and wait_for("the explore task finished"),
   "a background task's start and end show in its parent's conversation")
+-- Its job done with no window on it, the task's session is parked (leave.switch.after).
+expect(vim.wait(10000, function()
+  for _, e in pairs(ui.here().conn.index) do
+    if e.kind == "sub" and e.parent == fork.session and e.state == "parked" then return true end
+  end
+  return false
+end, 20), "the finished task's session is parked (leave.switch.after)")
 local task, second_line
 vim.ui.select = function(items, _, cb)
   second_line = items[2]
@@ -300,6 +307,32 @@ idle()
 job = ui.state().job
 vim.fn.chanclose(job, "stdin")
 expect(vim.fn.jobwait({ job }, 30000)[1] == 0, "and ends cleanly")
+
+io.write("a leave that asks\n")
+-- leave.switch.idle = "ask" in a settings file of its own, read by a new engine: the engine answers maic_leave_ask
+-- and :MaicNew asks what happens to the idle session left.
+local cfg = vim.fn.tempname()
+vim.fn.mkdir(cfg .. "/maic", "p")
+vim.fn.writefile({ "local s = dofile(" .. vim.inspect(os.getenv("XDG_CONFIG_HOME") .. "/maic/settings.lua") .. ")",
+  "s.leave = { switch = { idle = 'ask' } }", "return s" }, cfg .. "/maic/settings.lua")
+vim.env.XDG_CONFIG_HOME = cfg
+vim.cmd("tabnew")
+ui.start({})
+local before = landed(nil)
+local prompt
+vim.ui.select = function(items, o, cb)
+  prompt = o.prompt
+  cb(items[3]) -- stop
+end
+vim.cmd("MaicNew")
+local after_ask = landed(before.session)
+expect(prompt and prompt:find("leave this session", 1, true) and after_ask.session ~= before.session,
+  "leave.switch.idle = \"ask\": :MaicNew asks what happens to the idle session left (" .. tostring(prompt) .. ")")
+expect(vim.wait(5000, function() return ui.here().conn.index[before.session] == nil end, 20), "and the answer, stop, ends it")
+vim.ui.select = real_select
+job = ui.state().job
+vim.fn.chanclose(job, "stdin")
+expect(vim.fn.jobwait({ job }, 30000)[1] == 0, "that engine ends cleanly too")
 
 io.write(failures == 0 and "all passed\n" or (failures .. " FAILED\n"))
 if failures > 0 then io.write("---- conversation ----\n" .. text() .. "\n") end

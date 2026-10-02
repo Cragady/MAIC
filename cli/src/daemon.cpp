@@ -160,6 +160,7 @@ int run_daemon() {
     eo.kind = "daemon";
     eo.titles = true;
     eo.index_file = state_dir() / "engine" / "index.json";
+    eo.keeps_sessions = true;
     // Each session reads the settings files of the directory it works in, as a start there would.
     eo.settings_for = [](const fs::path& ws) { return tui_settings(TuiOptions{}, ws); };
     eo.settings_at = eo.settings_for;

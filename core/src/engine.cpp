@@ -443,6 +443,7 @@ struct Session {
     json waiting;
     std::set<std::string> focused_by;  // the clients that have it in focus: live while there is one, background otherwise
     bool unseen = false;               // a turn ended while no client had it in focus (the switcher's "finished")
+    std::string after;                 // left working (leave's `after`): park or stop once its work ends with no client in focus
     std::atomic<bool> unloading{false};  // being parked or stopped: nothing new starts, the lane stays for a later load
     std::string last_activity = local_now();
     int turns = 0;  // turns so far, the transcript's included
@@ -529,6 +530,11 @@ struct Engine::Impl {
     std::string instance;
     std::atomic<long> clients_made{0}, approvals_made{0}, questions_made{0}, steers_made{0};
     std::atomic<bool> stopped{false};
+    // Sessions whose `after` is due, for the settler thread (settle_if_done); joined at shutdown.
+    std::mutex settle_mu;
+    std::condition_variable settle_cv;
+    std::deque<std::shared_ptr<Session>> to_settle;
+    std::thread settler;
 
     std::mutex mu;  // sessions and clients; never held while taking a session's lock
     std::map<std::string, std::shared_ptr<Session>> sessions;
@@ -852,18 +858,47 @@ struct Engine::Impl {
     // short. The worker titling a session after its turn is not.
     static bool busy(const Session& s) { return s.run || s.paused || !s.lane.empty() || s.shell_running; }
 
-    // `leave` ({session, as}): what happens to the session a client's focus moves away from. A call without one
-    // only lets go of it (`bg`): nothing a client did not ask for ends a session.
-    static json leave_of(const json& p) {
-        json leave = p.value("leave", json{{"as", "bg"}});
-        std::string as = leave.value("as", "default");
-        if (as != "default" && as != "bg" && as != "park" && as != "stop") throw bad_params("leave.as is one of default, bg, park, stop", "leave");
-        return leave;
+    // `leave` ({session, as}): what happens to the session a client's focus moves away from, checked before anything
+    // changes. A call without one only lets go of it (`bg`): nothing ends a session a client did not ask about.
+    // `default` follows the session's leave.switch; a case set to "ask" is the client's to ask, so it is refused
+    // (maic_leave_ask) and the client sends what the person chose.
+    struct Leaving {
+        std::string session, as = "bg";
+        bool asked = false;  // the client named it: only then does a session left working get its `after`
+    };
+    Leaving leave_of(Client& c, const json& p) {
+        Leaving l;
+        if (!p.contains("leave")) return l;
+        const json& leave = p["leave"];
+        l.asked = true;
+        l.as = leave.value("as", "default");
+        if (l.as != "default" && l.as != "bg" && l.as != "park" && l.as != "stop") throw bad_params("leave.as is one of default, bg, park, stop", "leave");
+        l.session = leave.value("session", "");
+        if (l.as != "default") return l;
+        std::string id = l.session;
+        if (id.empty()) {
+            std::lock_guard lock(c.mu);
+            id = c.focus;
+        }
+        std::shared_ptr<Session> s;
+        {
+            std::lock_guard lock(mu);
+            if (auto it = sessions.find(id); it != sessions.end()) s = it->second;
+        }
+        if (!s) return l;
+        std::lock_guard lock(s->mu);
+        if (s->focused_by.size() > s->focused_by.count(c.id)) return l;  // another client has it: default touches it not
+        bool working = busy(*s);
+        if (switch_verb(*s, working) == "ask") {
+            throw refuse("maic_leave_ask", std::string("leave.switch.") + (working ? "working" : "idle") + " says ask: name what happens to the session left (bg, park or stop)", "leave");
+        }
+        return l;
     }
+    static const std::string& switch_verb(const Session& s, bool working) { return working ? s.settings.leave.switching.working : s.settings.leave.switching.idle; }
 
-    // Moves `c`'s focus to `to`, which is loaded, and does with the session it leaves what `leave` says: by default a
-    // working session goes to the background and an idle one is parked, unless another client has it in focus.
-    void move_focus(Client& c, const std::shared_ptr<Session>& to, const json& leave) {
+    // Moves `c`'s focus to `to`, which is loaded, and does with the session it leaves what `leave` says; `default`
+    // touches neither a session another client has in focus.
+    void move_focus(Client& c, const std::shared_ptr<Session>& to, const Leaving& leave) {
         std::string old;
         {
             std::lock_guard lock(c.mu);
@@ -873,12 +908,13 @@ struct Engine::Impl {
         {
             std::lock_guard lock(to->mu);
             to->focused_by.insert(c.id);
+            to->after.clear();
             bool seen = to->unseen;
             to->unseen = false;
             restate(*to, c.by());
             if (seen) index_changed(*to);
         }
-        if (leave.contains("session")) old = leave["session"];
+        if (!leave.session.empty()) old = leave.session;
         if (old.empty() || old == to->id) return;
         std::shared_ptr<Session> s;
         {
@@ -887,20 +923,26 @@ struct Engine::Impl {
             if (it == sessions.end()) return;
             s = it->second;
         }
-        std::string as = leave.value("as", "default");
+        std::string as = leave.as;
         {
             std::lock_guard lock(s->mu);
             s->focused_by.erase(c.id);
             restate(*s, c.by());
             if (as == "default" && !s->focused_by.empty()) return;
-            if (as == "default") as = busy(*s) ? "bg" : "park";
+            bool working = busy(*s);
+            // "ask" was asked before anything changed; a session that changed state since goes to the background.
+            if (as == "default") as = switch_verb(*s, working) == "ask" ? "bg" : switch_verb(*s, working);
+            if (as == "bg" && leave.asked && working && s->focused_by.empty()) s->after = s->settings.leave.switching.after;
         }
         if (as == "park" || as == "stop") unload(s, as == "park" ? "parked" : "stopped", c.by(), true);
     }
 
-    // The client lets go of the session in its focus as the default leaving verb does (see Engine::leave).
-    void let_go(Client& c) {
-        if (stopped) return;  // shutdown parks every session itself
+    // A client that goes (`:q`, or its connection ends): the session in its focus becomes what `as` says, else what
+    // its leave.quit says for an idle or a working one unless another client has it in focus. Where sessions do not
+    // outlive their clients (no daemon), one that would stay loaded does what leave.no_daemon says, and so does every
+    // session already in the background. Returns the entry of the session left, or null.
+    json quit(Client& c, const std::string& as) {
+        if (stopped) return nullptr;  // shutdown parks every session itself
         std::string id;
         {
             std::lock_guard lock(c.mu);
@@ -910,20 +952,77 @@ struct Engine::Impl {
         std::shared_ptr<Session> s;
         {
             std::lock_guard lock(mu);
-            auto it = sessions.find(id);
-            if (it == sessions.end()) return;
-            s = it->second;
+            if (auto it = sessions.find(id); it != sessions.end()) s = it->second;
         }
-        {
+        json left = nullptr;
+        std::string verb;
+        if (s) {
             std::lock_guard lock(s->mu);
             s->focused_by.erase(c.id);
             restate(*s, c.by());
-            if (!s->focused_by.empty() || busy(*s) || s->unloading.load()) return;
+            if ((s->focused_by.empty() || !as.empty()) && !s->unloading.load()) {
+                const LeaveSettings& l = s->settings.leave;
+                bool working = busy(*s);
+                verb = !as.empty() ? as : working ? l.quitting.working : l.quitting.idle;
+                if (verb == "bg" && !options.keeps_sessions) verb = l.no_daemon;
+                if (verb == "bg" && working && s->focused_by.empty()) s->after = l.quitting.after;
+            }
+            left = entry(*s);
         }
-        try {
-            unload(s, "parked", c.by(), false);
-        } catch (const std::exception&) {
-            // it became busy, or another client is parking it: it stays as it is
+        if (verb == "park" || verb == "stop") {
+            try {
+                left = unload(s, verb == "park" ? "parked" : "stopped", c.by(), true);
+            } catch (const std::exception&) {
+                // another client is parking or stopping it
+            }
+        }
+        if (options.keeps_sessions) return left;
+        for (const auto& b : all_sessions()) {
+            std::string no_daemon;
+            {
+                std::lock_guard lock(b->mu);
+                if (!b->focused_by.empty() || b->unloading.load()) continue;
+                no_daemon = b->settings.leave.no_daemon;
+            }
+            try {
+                unload(b, no_daemon == "park" ? "parked" : "stopped", c.by(), true);
+            } catch (const std::exception&) {
+            }
+        }
+        return left;
+    }
+
+    // A session left working becomes what its `after` says (park or stop) once its work has ended with no client in
+    // focus. The worker that ends the work cannot join itself, so the settler thread does it. The caller holds s.mu.
+    void settle_if_done(const std::shared_ptr<Session>& s) {
+        if ((s->after != "park" && s->after != "stop") || !s->focused_by.empty() || busy(*s) || s->unloading.load()) return;
+        std::lock_guard lock(settle_mu);
+        if (stopped) return;
+        to_settle.push_back(s);
+        if (!settler.joinable()) settler = std::thread([this] { settle_loop(); });
+        settle_cv.notify_one();
+    }
+
+    void settle_loop() {
+        json by = {{"client", "engine"}, {"name", "leave"}, {"origin", "local"}};
+        std::unique_lock lock(settle_mu);
+        for (;;) {
+            settle_cv.wait(lock, [&] { return stopped || !to_settle.empty(); });
+            if (stopped) return;
+            auto s = std::move(to_settle.front());
+            to_settle.pop_front();
+            lock.unlock();
+            std::string after;
+            {
+                std::lock_guard sl(s->mu);
+                if (s->focused_by.empty() && !busy(*s)) after = s->after;
+            }
+            try {
+                if (after == "park" || after == "stop") unload(s, after == "park" ? "parked" : "stopped", by, false);
+            } catch (const std::exception&) {
+                // it became busy again, or a client is parking or stopping it: it stays as it is
+            }
+            lock.lock();
         }
     }
 
@@ -1163,6 +1262,7 @@ struct Engine::Impl {
         auto s = std::make_shared<Session>(ws, model);
         if (def) st.steering = agent_steering(st.steering, def->steering, def->name);
         s->settings = std::move(st);
+        s->after = s->settings.leave.switching.after;  // a task is a session left working from its start
         s->commands.dumb_auto_ok = dumb_ok;
         s->kind = "sub";
         s->parent = p.id;
@@ -1443,7 +1543,7 @@ struct Engine::Impl {
     json create_conversation(Client& c, const json& p) {
         no_isolated_remote(c);
         json m = p.value("maic", json::object());
-        json leave = leave_of(m);
+        Leaving leave = leave_of(c, m);
         bool focus = m.value("focus", true);
         std::string given = m.value("workspace", "");
         if (given.empty()) given = options.workspaces.empty() ? fs::current_path().string() : options.workspaces.front().string();
@@ -1475,7 +1575,7 @@ struct Engine::Impl {
     }
 
     // A new load opens live in the client's focus (its last focus left as `leave` says), or in the background.
-    void open_focused(const std::shared_ptr<Session>& s, Client& c, bool focus, const json& leave) {
+    void open_focused(const std::shared_ptr<Session>& s, Client& c, bool focus, const Leaving& leave) {
         if (focus) s->focused_by.insert(c.id);
         else s->state = "background";
         open_session(s, c.by());
@@ -1490,7 +1590,7 @@ struct Engine::Impl {
 
     json session_resume(Client& c, const json& p) {
         no_isolated_remote(c);
-        json leave = leave_of(p);
+        Leaving leave = leave_of(c, p);
         bool focus = p.value("focus", true);
         std::string given = p.at("session");
         if (c.origin == Origin::Remote && given.find('/') != std::string::npos) throw refuse("maic_forbidden_remote", "a remote client resumes by id, not by path", "session");
@@ -1570,7 +1670,7 @@ struct Engine::Impl {
     // It starts as any session does, auto held where the workspace is not trusted, and its epoch names its parent's.
     json session_fork(Client& c, const json& p) {
         no_isolated_remote(c);
-        json leave = leave_of(p);
+        Leaving leave = leave_of(c, p);
         bool focus = p.value("focus", true);
         auto parent = session(p.at("session"));
         fs::path from, ws;
@@ -1614,7 +1714,7 @@ struct Engine::Impl {
 
     // `:switch`: the client's focus moves to a loaded session (a parked one is resumed with maic.session.resume).
     json session_focus(Client& c, const json& p) {
-        json leave = leave_of(p);
+        Leaving leave = leave_of(c, p);
         auto s = session(p.at("session"));
         move_focus(c, s, leave);
         std::lock_guard lock(s->mu);
@@ -1632,6 +1732,14 @@ struct Engine::Impl {
         s->focused_by.erase(c.id);
         restate(*s, c.by());
         return for_client(entry(*s), c);
+    }
+
+    // `:q`: what the client's going does to the session in its focus, now, before it closes (Engine::leave).
+    json session_leave(Client& c, const json& p) {
+        std::string as = p.value("as", "default");
+        if (as != "default" && as != "bg" && as != "park" && as != "stop") throw bad_params("as is one of default, bg, park, stop", "as");
+        json left = quit(c, as == "default" ? "" : as);
+        return {{"left", left.is_null() ? json() : for_client(left, c)}};
     }
 
     json session_park(Client& c, const json& p) { return end_session(c, p, "parked"); }
@@ -2542,6 +2650,7 @@ struct Engine::Impl {
         else s->agent.add_context(context);
         s->shell_running = false;
         s->cv.notify_all();
+        settle_if_done(s);
         return {{"exit_code", rc}, {"item_id", id}};
     }
 
@@ -2633,6 +2742,7 @@ const std::map<std::string, Engine::Impl::Handler>& Engine::Impl::handlers() {
         {"maic.session.fork", &Impl::session_fork},
         {"maic.session.focus", &Impl::session_focus},
         {"maic.session.background", &Impl::session_background},
+        {"maic.session.leave", &Impl::session_leave},
         {"maic.session.park", &Impl::session_park},
         {"maic.session.stop", &Impl::session_stop},
         {"maic.session.attach", &Impl::session_attach},
@@ -3148,6 +3258,7 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
             s->running = false;
             flush_notes(*s);
             set_activity(*s, "idle");
+            settle_if_done(s);
             return;
         }
         // The next turn on the lane: what a cancel left in the mailbox joins it.
@@ -3193,11 +3304,11 @@ std::string Engine::open_local(const std::string& client, LocalSession ls) {
     s->log = std::move(ls.log);
     s->id = s->log->path().stem().string();
     if (ls.setup) ls.setup(s->agent, *s->log);
-    impl_->open_focused(s, *c, true, json{{"as", "bg"}});
+    impl_->open_focused(s, *c, true, Impl::Leaving{});
     return s->id;
 }
 
-void Engine::leave(const std::string& id) {
+void Engine::leave(const std::string& id, const std::string& as) {
     std::shared_ptr<Client> c;
     {
         std::lock_guard lock(impl_->mu);
@@ -3205,7 +3316,7 @@ void Engine::leave(const std::string& id) {
         if (it == impl_->clients.end()) return;
         c = it->second;
     }
-    impl_->let_go(*c);
+    impl_->quit(*c, as);
 }
 
 void Engine::disconnect(const std::string& id) {
@@ -3283,6 +3394,11 @@ std::string Engine::closed(const std::string& id) const {
 
 void Engine::shutdown() {
     if (impl_->stopped.exchange(true)) return;
+    {
+        std::lock_guard lock(impl_->settle_mu);  // no settler starts after this
+    }
+    impl_->settle_cv.notify_all();
+    if (impl_->settler.joinable()) impl_->settler.join();
     json engine = {{"client", "engine"}, {"name", "engine"}, {"origin", "local"}};
     auto all = impl_->all_sessions();
     for (const auto& s : all) {

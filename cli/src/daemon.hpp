@@ -50,7 +50,7 @@ public:
     // Sends one request and waits for its answer; an error answer when the daemon has gone.
     nlohmann::json call(const nlohmann::json& message);
     std::vector<nlohmann::json> take();
-    // Ends the connection: the daemon lets go of this client's focus, an idle session parked (Engine::leave).
+    // Ends the connection: the session in this client's focus becomes what leave.quit says (Engine::leave).
     void close();
     bool gone() const { return gone_; }
 
