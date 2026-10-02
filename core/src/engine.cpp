@@ -918,6 +918,16 @@ struct Engine::Impl {
         return out;
     }
 
+    // The response a turn about to start will be: its id and turn number are the next ones.
+    Run next_run(Session& s, Origin origin) {
+        Run r;
+        r.id = s.id + ".r" + std::to_string(s.turns + 1);
+        r.turn = s.turns + 1;
+        r.created_at = static_cast<long>(std::time(nullptr));
+        r.origin = origin;
+        return r;
+    }
+
     json response_create(Client& c, const json& p) {
         std::string sid;
         if (p.contains("conversation")) sid = p["conversation"].is_string() ? p["conversation"].get<std::string>() : p["conversation"].value("id", "");
@@ -938,20 +948,15 @@ struct Engine::Impl {
             s->agent.post_message(text, c.origin);
             emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", true}, {"by", c.by()}});
             index_changed(*s);
-            json r = s->run ? response_object(*s, *s->run, "in_progress") : json();
-            if (r.is_null()) throw refuse("response_not_active", "the session is finishing its turn; send again", "conversation");
+            // Between two turns (queued messages starting the next) it goes into the next one.
+            json r = response_object(*s, s->run ? *s->run : next_run(*s, c.origin), "in_progress");
             r["maic"]["queued"] = true;
             r["maic"]["sequence_number"] = before;
             return r;
         }
         emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", false}, {"by", c.by()}});
+        json r = response_object(*s, next_run(*s, c.origin), "in_progress");
         start_turn(s, text, c.origin);
-        Run preview;
-        preview.id = s->id + ".r" + std::to_string(s->turns + 1);
-        preview.turn = s->turns + 1;
-        preview.created_at = static_cast<long>(std::time(nullptr));
-        preview.origin = c.origin;
-        json r = response_object(*s, preview, "in_progress");
         r["maic"]["sequence_number"] = before;
         return r;
     }
@@ -1343,11 +1348,8 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
         TurnEvents events(*this, *s);
         {
             std::lock_guard lock(s->mu);
-            Run r;
-            r.turn = ++s->turns;
-            r.id = s->id + ".r" + std::to_string(r.turn);
-            r.created_at = static_cast<long>(std::time(nullptr));
-            r.origin = origin;
+            Run r = next_run(*s, origin);
+            ++s->turns;
             r.usage_before = s->agent.usage();
             s->run = r;
             emit(*s, {{"type", "response.created"}, {"response", response_object(*s, r, "in_progress")}});
@@ -1506,6 +1508,19 @@ void Engine::shutdown() {
         s->state = "parked";
         impl_->emit(*s, {{"type", "maic.session.state"}, {"state", "parked"}, {"activity", "idle"}, {"waiting", nullptr}, {"by", engine}});
         impl_->index_changed(*s);
+    }
+    // Every connection ends: a transport waiting in take() returns with what is left.
+    std::vector<std::shared_ptr<Client>> clients;
+    {
+        std::lock_guard lock(impl_->mu);
+        for (const auto& [id, c] : impl_->clients) clients.push_back(c);
+    }
+    for (const auto& c : clients) {
+        {
+            std::lock_guard lock(c->mu);
+            if (c->closed.empty()) c->closed = "maic_shutdown";
+        }
+        c->cv.notify_all();
     }
 }
 
