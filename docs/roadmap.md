@@ -35,8 +35,16 @@ What lands is a clearly marked note with a pointer to the side session, never a 
 ### 4. Background agents and a switcher
 
 Today a MAIC process runs one conversation in the foreground: Ctrl-Z suspends the whole process, a `task` subagent runs inside its parent's turn, and two agents mean two terminals. The plan: several agents (sessions) running at once in one MAIC, each with its own model, agent definition and workspace, and a switcher menu listing them with their state (working, idle, waiting for an approval, finished), model, and the working directory you land in by switching to each, so changing agents never surprises you with a different directory. Approvals from a background agent queue visibly and name the agent; `:btw` side threads appear in the same list. In maic.nvim each agent is a buffer. Builds on side conversations and the nvim interface's protocol; local only first, through maic-server later.
+* **Sessions inside one MAIC** (Micaiah's idea): `:new` starts another session in the same interactive MAIC, `:switch` moves between them, `:fork` forks the live session into a second one (both stay open, the fork by pointer), and `:park` ends a session for now (its process work stops, it stays in the list and resumes where it was). The switcher shows each one's workspace before you switch.
+* **`task` subagents that do not block their parent**: today the parent's turn waits for the child's answer (it uses no CPU while waiting, but it cannot do anything else). `task` gains `background = true`: it returns a handle at once, the parent keeps working, and the child's answer arrives as a message at the parent's next step (the same mailbox mid-turn messages use), or through `task_result HANDLE`. Several children can run at once. Each child can run in its own process (forked, with the parent's harness and limits) so a crash or a runaway stays contained. On a local llama.cpp server with one slot, children and parent still take turns at the model; cloud providers run them truly in parallel.
 
-### 5. Accounts on maic-server
+### 5. Layout files
+
+The screen's layout comes from a file, so it can be rearranged without code: a layout file (Lua, like settings) names MAIC's panes (conversation, input, status strips, side threads, the agent switcher, approvals) and arranges them in splits with sizes, growth and visibility rules. Resolution follows the settings flow, with one difference: a baked-in default layout, then the closest file to the working directory wins, but layouts do not merge across layers. Exactly one layout file is used, and a nearer file builds on another only by importing it explicitly (`import = "default"`, then override the parts it names). The same file drives MAIC's own interface and, where it maps, the nvim interface's windows.
+
+**Baked-in defaults as tracked files.** The defaults move out of the C++ into files in the repository (`defaults/settings.lua`, `defaults/layout.lua`, installed with MAIC), loaded as the bottom layer. `maic settings adopt FILE` takes a settings or layout file and writes only the values that differ into the tracked defaults file (showing the diff, asking first, keeping comments and order); everything the file does not define stays as it was. Run from a MAIC checkout it changes the repository's defaults, ready to commit. Depends on nothing; the panes for side threads and the switcher arrive with those items.
+
+### 6. Accounts on maic-server
 
 Micaiah's decision (2026-09-30): accounts belong to MAIC's own server, never to llama.cpp (which has API keys only, no identities). Design document first, then build; security-sensitive, so the design is reviewed before code.
 
@@ -49,19 +57,19 @@ Micaiah's decision (2026-09-30): accounts belong to MAIC's own server, never to 
 
 The relay (done) already carries the phone away from the LAN; accounts ride inside its tunnel unchanged.
 
-### 6. One remote interface: MAIC plus llama.cpp
+### 7. One remote interface: MAIC plus llama.cpp
 
 The web app and the phone apps present one clean interface that combines the MAIC server (sessions, approvals, the harness, services) and the llama.cpp server (models, loading and switching, sampling and XTC, a plain chat with the loaded model), so remote access gives both. llama.cpp stays behind MAIC's server, never exposed on its own; MAIC's server proxies what the app needs. A native client (Android first) follows the web app: notifications for pending approvals, pairing in the app, background reattach. Depends on 4 (accounts).
 
-### 7. MAIC packages, laid out like nvim's
+### 8. MAIC packages, laid out like nvim's
 
 A package is a directory holding MAIC's runtime folders: `plugin/` (Lua run at start in MAIC's settings Lua state, with the user's trust, as nvim runs `plugin/`), `tools/` (Lua and script tools), `themes/`, `agents/` (opencode's agent file format, its `mode:` read as `role`) and `prompts/` (text for `--system @`). MAIC's runtime path, in order: `~/.config/maic`, the project's `.maic/`, MAIC's own `<data>/maic/site/pack/*/start/*` (and `opt/*` with `:packadd`), then nvim-managed plugins that carry a `maic/` folder. nvim never loads a `maic/` folder (it is not a runtime folder nvim knows), so one repository can ship an nvim side and a MAIC side and one package manager installs both; MAIC loads its part itself. Package management stays nvim's: lazy.nvim fetches, updates and pins (its `lazy-lock.json`), and MAIC only reads the result. Finding them without nvim running: lazy's root (`stdpath("data")/lazy`, the plugin list from the lock file) and nvim's `site/pack/*/{start,opt}`; inside an nvim host (maic.nvim), MAIC asks the host for its runtime paths, so lazy-loaded plugins are found exactly as nvim sees them. Tools a package adds are model-callable and so judged by the harness like any other; package startup code runs with the user's trust, as in nvim. `maic packages` lists what was found and from where. Depends on nothing; uses maic.nvim's host connection when present.
 
-### 8. Windows
+### 9. Windows
 
 The tripwire design for Windows is in [harness.md](harness.md); the rest needs a port of the sandbox (AppContainer), the service manager (job objects with kill-on-close, junctions instead of symlinks, portable git on PATH, `%LOCALAPPDATA%\maic` for state and the uv cache), the runtime directory for temporary transcripts, and the terminal layer.
 
-### 9. opencode agent files
+### 10. opencode agent files
 
 Read opencode's `.opencode/agent/*.md` files (frontmatter plus a prompt) as agents, mapping their `mode:` to MAIC's `role`.
 
