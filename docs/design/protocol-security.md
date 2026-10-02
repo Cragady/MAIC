@@ -49,6 +49,8 @@ A step-up is a fresh proof from the person, not the device: the TOTP code of [ac
 
 A session's tier is fixed into its `start` record, so a resumed session reports the tier it ran at.
 
+**Built (step 13, 2026-10-03)** for `open` and `guarded`, as written above, with these details: the directory is the nearest enrolled one at or above the session's workspace; `maic trust DIR --protocol TIER` (`none` forgets it) keeps the tier under `protocol` in `trust.json`, apart from the trust entry; a resumed session takes its recorded tier raised to its directory's floor; `:tier` never loosens below the tier the session opened at; per-agent tiers are read and wait for sessions that run as an agent (step 14); `airtight` is refused with `maic_tier_unavailable` (step 18). See [engine-protocol.md](engine-protocol.md), as built (step 13).
+
 ### How a session shows its tier
 
 * `tier` in its index entry and in `maic.session.settings`; `tier` in the `maic.hello` result.
