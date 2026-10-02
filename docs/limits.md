@@ -25,6 +25,14 @@ Feature: [harness.md, Directory trust and restricted settings Lua](harness.md#di
 * **The restricted level's memory check is not a hard cap.**
  *Expected.* In MAIC's own process the count hook sees the heap only every 1000 instructions, so one allocation between two checks can pass the limit; only the sandbox's child has a kernel limit behind it. Would address it: choose `sandbox`, the default for partly trusted directories.
 
+## The command sandbox
+
+Feature: [harness.md, Layers, rule 6](harness.md#layers).
+
+* **Host sockets reached the sandbox.** *Addressed* (2026-10-01, v0.3.1): the read-only bind of `/` left `$XDG_RUNTIME_DIR` and `/run` in sight and the environment named the session D-Bus, so a sandboxed command could ask systemd to run something outside it. All of `/run`, the runtime directory and the agent socket directories are empty now, and the environment is an allow-list ([releases/v0.3.1.md](releases/v0.3.1.md)).
+* **A socket in some other directory is still reachable.** *Open.* The sandbox hides `/tmp`, `/run`, the runtime directory and the directories of the sockets `SSH_AUTH_SOCK`, `GPG_AGENT_INFO` and `NVIM` name; a path socket anywhere else that you can read stays reachable through the read-only bind, for example one in your home directory or under `/var/lib`, or an nvim started with `--listen PATH` that MAIC was not given as `$NVIM`. Why: a read-only bind does not stop `connect()`, and MAIC cannot know every socket on the machine. Would address it: a seccomp filter that refuses `connect()` on `AF_UNIX` sockets (bubblewrap's `--seccomp`), with a way to allow one a tool needs.
+* **Programs kept under `/run` are missing inside.** *Open.* All of `/run` is replaced, so a system that keeps programs there (NixOS's `/run/current-system`, `/run/wrappers`) finds them gone in the sandbox; only `/run/media` is bound back. Would address it: binding those paths back read-only when they exist.
+
 ## Sessions and the workspace
 
 * **`:cd` does not reload Lua or script tools.** *Accepted.* `:cd` moves the harness root, shell commands, the project settings layers and the instruction files; the user's Lua and script tools stay those loaded at start. A `:reload` is planned. ([cli/README.md, Commands](../cli/README.md#commands))

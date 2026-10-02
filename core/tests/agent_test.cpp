@@ -1443,6 +1443,47 @@ int main() {
         }
     }
 
+    section("a session's always never answers for a remote request");
+    {
+        FakeServer fake;
+        auto agent_in = [&](Agent& agent) {
+            agent.providers = {fake.provider()};
+            agent.mode = Mode::Manual;
+        };
+        auto run = [&](Agent& agent, const json& call, Origin origin, ApprovalAnswer reply) {
+            fake.tool_call = call;
+            fake.calls_left = 1;
+            Recorder r;
+            r.reply = reply;
+            agent.submit("run it", origin, r, no_cancel);
+            return r;
+        };
+        // A different echo each time (the session's "always" covers the program), so the repeat guard stays out of it.
+        int n = 0;
+        auto echo_call = [&] { return json{{"name", "run_shell"}, {"arguments", {{"command", "echo remote-always " + std::to_string(++n)}}}}; };
+        json write = {{"name", "write_file"}, {"arguments", {{"path", "remote-always.txt"}, {"content", "x"}}}};
+        {
+            Agent agent(ws, "test");
+            agent_in(agent);
+            expect(run(agent, echo_call(), Origin::Local, {Approval::Always, ""}).asked.size() == 1, "local: echo is asked and answered always");
+            expect(run(agent, echo_call(), Origin::Local, {Approval::No, ""}).asked.empty(), "local: the next echo runs unasked, as before");
+            Recorder r = run(agent, echo_call(), Origin::Remote, {Approval::No, ""});
+            expect(r.asked.size() == 1 && r.asked[0].origin == Origin::Remote, "but the same echo from a remote origin is still asked");
+            expect(run(agent, write, Origin::Local, {Approval::Always, ""}).asked.size() == 1, "local: a write is asked and answered always");
+            expect(run(agent, write, Origin::Remote, {Approval::No, ""}).asked.size() == 1, "the same write from a remote origin is still asked");
+        }
+        {
+            Agent agent(ws, "test");
+            agent_in(agent);
+            Recorder r = run(agent, echo_call(), Origin::Remote, {Approval::Always, ""});
+            expect(r.asked.size() == 1 && r.asked[0].always_covers.find("this call only") != std::string::npos, "remote: the prompt says always covers this call only");
+            expect(has_notice(r, "counts for this call only") && has_result(r, "remote-always"), "remote: always runs it once and says so");
+            expect(run(agent, echo_call(), Origin::Remote, {Approval::No, ""}).asked.size() == 1, "remote: a remote always did not persist, the next remote echo is asked");
+            expect(run(agent, echo_call(), Origin::Local, {Approval::No, ""}).asked.size() == 1, "and a local echo is asked too: nothing was remembered");
+        }
+        fs::remove(ws / "remote-always.txt");
+    }
+
     section("the reviewer (smart harness) and the dumb harness");
     {
         FakeServer fake;
