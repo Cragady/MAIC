@@ -140,6 +140,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   <div class="bar">
     <span class="grow"><span class="status" id="status">Loading saved answers…</span><br><span class="counts" id="counts"></span></span>
     <span class="flag"><label class="switch" for="flag-bridge"><input type="checkbox" role="switch" id="flag-bridge"><span class="slider" aria-hidden="true"></span> Ctrl+G bridge</label><span class="fb err" id="flag-bridge-msg" aria-live="polite"></span></span>
+    <button id="pull" type="button" title="Save what you have, then load the latest saved answers and replies into this page">Pull in data</button>
     <button id="fold-all" type="button">Collapse all boxes</button>
     <button id="unfold-all" type="button">Expand all boxes</button>
     <button class="primary" id="submit" type="button">Submit</button>
@@ -191,7 +192,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   var LOCAL = "review-draft:" + DATA.id;
   var STATES = ["open", "addressed", "resolved"];
   var state = { answers: {}, status: {}, doc_status: "open", folded: {}, merges: {}, kept: {}, side_prompts: [], flags: { ctrl_g_bridge: false }, resolve_requested: false, submitted: false, submittedAt: null, savedAt: null };
-  var VERSION = 11;
+  var VERSION = 12;
   var QUIET = {}; // field ids under text that needs no reply: folded until opened or written in
   DATA.messages.concat(DATA.misc || []).forEach(function (m) { m.blocks.forEach(function (b) {
     if (b.type === "list") { if (b.header && b.header.respond === false) QUIET[b.header.id] = 1; b.items.forEach(function (it) { if (it.respond === false) QUIET[it.id] = 1; }); }
@@ -509,6 +510,11 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
       var after = replies.filter(function (r) { return r.side_prompt === n; })[0];
       box.appendChild(el("span", "lbl", "Reply"));
       box.appendChild(el("p", after ? "reply" : "note", after ? after.text : "No reply yet."));
+      if (after && after.sorted_into && $("c-" + after.sorted_into)) {
+        var full = btn("Read the full reply", "small");
+        full.addEventListener("click", function () { var c = $("c-" + after.sorted_into); c.open = true; c.scrollIntoView({ block: "start" }); });
+        box.appendChild(full);
+      }
       ss.appendChild(box);
     });
     $("side-ver").textContent = "Page version " + VERSION + ".";
@@ -658,6 +664,26 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     state.flags = Object.assign({}, state.flags, { ctrl_g_bridge: flag.checked });
     logEvent("flag ctrl_g_bridge", true, String(flag.checked)); showFlag(); touch();
   });
+  function pull() {
+    if (!db) { setStatus("No shared store in this view: reloading the whole page…", true); setTimeout(function () { location.reload(); }, 300); return; }
+    setStatus("Saving, then pulling in the latest data…");
+    var p = timer ? enqueue() : queue;
+    return Promise.resolve(p).then(function () {
+      return Promise.all([db.doc(DOC).get(), db.doc("review-replies/" + DATA.id).get()]);
+    }).then(function (res) {
+      if (res[0].exists) { var remote = res[0].data(); if (!state.savedAt || (remote.savedAt && remote.savedAt >= state.savedAt)) adopt(remote); }
+      var dd = res[1].exists ? JSON.parse(JSON.stringify(res[1].data())) : {};
+      replies = Array.isArray(dd.items) ? dd.items : [];
+      render(); showFlag(); mark.checked = !!state.resolve_requested; refreshNotify();
+      if (dd.latest) { lastReply = dd.latest; showRecent(dd.latest); }
+      logEvent("pulled in data", true, ""); setStatus("Pulled in the latest data " + new Date().toLocaleTimeString());
+    }, function (e) {
+      logEvent("pull failed", false, e && e.code);
+      setStatus("Couldn't pull in data (" + (e && e.code || "error") + "): reloading the whole page…", true);
+      setTimeout(function () { location.reload(); }, 800);
+    });
+  }
+  $("pull").addEventListener("click", pull);
   $("fold-all").addEventListener("click", function () { foldIn(document, true); });
   $("unfold-all").addEventListener("click", function () { foldIn(document, false); });
 
