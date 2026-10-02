@@ -42,8 +42,21 @@ def blocks(mid, text):
         out.append(blk)
     return out
 
+def mark(m):
+    # A box needs a reply only under Claude's text that asks something; everything else starts folded.
+    ask = lambda t: m["who"] == "claude" and "?" in t
+    for blk in m["blocks"]:
+        if blk["type"] == "list":
+            if "header" in blk:
+                blk["header"]["respond"] = ask(blk["header"]["text"])
+            for it in blk["items"]:
+                it["respond"] = ask(it["text"])
+        else:
+            blk["respond"] = ask(blk["text"])
+
 src = json.load(open(sys.argv[1]))
 for m in src["messages"] + src.get("misc", []):
     m["blocks"] = blocks(m["id"], m.pop("text"))
+    mark(m)
 json.dump(src, open(sys.argv[2], "w"), indent=1, ensure_ascii=False)
 print(sum(len(m["blocks"]) for m in src["messages"]), "blocks in", len(src["messages"]), "messages,", len(src["issues"]), "issues")
