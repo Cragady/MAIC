@@ -85,6 +85,9 @@ button:disabled { opacity: .45; cursor: default; }
 .check { display: inline-flex; gap: 6px; align-items: center; font-size: .9rem; color: var(--muted); }
 .sent { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; display: grid; gap: 4px; }
 .sent p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.role { font-size: .85rem; font-weight: 700; }
+.role.viewer { color: var(--open); }
+.role.editor { color: var(--res); }
 .flag { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .switch { display: inline-flex; gap: 8px; align-items: center; font-size: .9rem; cursor: pointer; }
 .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
@@ -143,7 +146,9 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   <div class="bar">
     <span class="grow"><span class="status" id="status">Loading saved answers…</span><br><span class="counts" id="counts"></span></span>
     <span class="flag"><label class="switch" for="flag-bridge"><input type="checkbox" role="switch" id="flag-bridge"><span class="slider" aria-hidden="true"></span> Ctrl+G bridge</label><span class="fb err" id="flag-bridge-msg" aria-live="polite"></span></span>
-    <button id="pull" type="button" title="Save what you have, then load the latest saved answers and replies into this page">Pull in data</button>
+    <span class="role" id="role"></span>
+    <button id="take" type="button" hidden>Take over editing</button>
+    <button id="pull" type="button" title="Save what you have, then load the latest saved answers and replies into this page">Data Refresh</button>
     <button id="fold-all" type="button">Collapse all boxes</button>
     <button id="unfold-all" type="button">Expand all boxes</button>
     <button class="primary" id="submit" type="button">Submit</button>
@@ -207,7 +212,10 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   var LOCAL = "review-draft:" + DATA.id;
   var STATES = ["open", "addressed", "resolved"];
   var state = { answers: {}, status: {}, doc_status: "open", folded: {}, merges: {}, kept: {}, side_prompts: [], splits: [], picked: {}, flags: { ctrl_g_bridge: false }, resolve_requested: false, submitted: false, submittedAt: null, savedAt: null };
-  var VERSION = 13;
+  var VERSION = 14;
+  var VIEW = "v" + Math.random().toString(36).slice(2, 10);
+  var role = "editor"; // one view edits at a time; the others watch live and write nothing
+  var leaseTimer = null, wantTimer = null, unsubMain = null, unsubWant = null;
   var QUIET = {}; // field ids under text that needs no reply: folded until opened or written in
   DATA.messages.concat(DATA.misc || []).forEach(function (m) { m.blocks.forEach(function (b) {
     if (b.type === "list") { if (b.header && b.header.respond === false) QUIET[b.header.id] = 1; b.items.forEach(function (it) { if (it.respond === false) QUIET[it.id] = 1; }); }
@@ -226,7 +234,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   window.addEventListener("error", function (e) { showError((e.message || "error") + (e.lineno ? " (line " + e.lineno + ")" : "")); });
   window.addEventListener("unhandledrejection", function (e) { showError("unhandled: " + (e.reason && (e.reason.code || e.reason.message) || e.reason)); });
   var KEY = {
-    version: 6,
+    version: 7,
     note: "One-off definition: this key describes how this submission's data is laid out. It holds until the next submit from this page; that submit carries its own key, the same one if nothing is applied differently, a changed one if it is.",
     answers: "Reply text by field id.",
     ids: {
@@ -253,6 +261,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     splits: "Split requests in order: { id, cards (card ids to move), relation (tight: resolving there resolves here; linked: this page waits for that one; loose: related only), note, at, status (requested, then done once Claude made the new page) }.",
     picked: "Card ids ticked for the next split (view state).",
     lineage: "In the page data, not the saved state: lineage.parent { url, id }, lineage.children [{ url, id, cards, relation, at }], lineage.deltas [{ at, text }] (task and topic changes Claude recorded across the linked pages), and moved { card id: child url } for topics now handled elsewhere.",
+    roles: "One view edits at a time. Editing is a 15 s lease on review-lock/<id>, renewed while the view is visible; other views are live read-only viewers. A viewer asking to edit writes review-lock-want/<id> { view, at }; the editor saves and steps back. Only the editor ever writes this document.",
     events: "The last 30 page events { at, what, ok, detail }: references, sends, failed saves and page errors, for diagnosis.",
     submitted: "true after the overall Submit; editing afterwards sets it back to false.",
     times: "submittedAt, savedAt and side prompt at are ISO 8601 UTC."
@@ -276,11 +285,13 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   // ---- saving: each save waits in a queue for the one before it ----
   function setStatus(t, warn) { var s = $("status"); s.textContent = t; s.classList.toggle("warn", !!warn); var p = $("side-save"); if (p) { p.textContent = t; p.className = "note" + (warn ? " warn" : ""); } }
   function touch() {
+    if (role === "viewer") return;
     if (state.submitted) { state.submitted = false; state.submittedAt = null; }
     clearTimeout(timer); timer = setTimeout(enqueue, 500); setStatus("Unsaved changes…");
   }
   function enqueue() {
     clearTimeout(timer);
+    if (role === "viewer") return Promise.resolve({ ok: false, code: "viewer" });
     pending++;
     queue = queue.then(writeOnce, writeOnce);
     return queue;
@@ -546,6 +557,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     var sn = $("split-note"); sn.textContent = ""; sn.appendChild(field("split-note", "Note for the split (optional)"));
     if (typeof renderSplit === "function") renderSplit();
     document.querySelectorAll("details.card").forEach(function (d) { if (d.id in openNow) d.open = openNow[d.id]; });
+    lockdown();
     if (focusId && $(focusId)) { $(focusId).focus(); try { if (sel != null) $(focusId).selectionStart = $(focusId).selectionEnd = sel; } catch (e) {} }
     counts();
   }
@@ -714,14 +726,67 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
       if (r && r.ok && notifyState === "available") comments.anchorFor($("split-go")).then(function (a) { return comments.sendToClaude({ anchor: a, text: "Split " + sp.id + " requested: " + cards.length + " topics, " + rel + (sp.note ? ". Note: " + sp.note : "") }); }).then(function () { m.textContent = "Split " + sp.id + " requested; Claude has been notified."; }, function (e) { m.textContent = "Split saved, but Claude couldn't be notified (" + (e && e.code || "error") + ")."; m.className = "fb err"; });
     });
   });
+  // ---- one editor at a time: a short lease, handed over on request ----
+  var WRITE_BTNS = ["side-notify", "side-submit", "side-all", "submit", "submit-end", "split-go", "confirm-yes", "fold-all", "unfold-all"];
+  function lockdown() {
+    var v = role === "viewer";
+    document.querySelectorAll("textarea").forEach(function (t) { t.readOnly = v; });
+    document.querySelectorAll("input[type=checkbox], input[type=radio]").forEach(function (i) { i.disabled = v; });
+    document.querySelectorAll("details.card .body button, .fhead button.small").forEach(function (b) { b.disabled = v; });
+    WRITE_BTNS.forEach(function (id) { if ($(id)) $(id).disabled = v; });
+    var r = $("role"); r.className = "role " + role;
+    r.textContent = v ? "Viewing only: another view is editing" : db ? "Editing in this view" : "";
+    $("take").hidden = !v;
+  }
+  function setRole(next) {
+    if (next === role) { lockdown(); return; }
+    role = next; logEvent("role", true, next);
+    if (next === "viewer") { clearTimeout(timer); render(); return; }
+    // becoming the editor: start from the latest saved state, never from a stale copy
+    db.doc(DOC).get().then(function (snap) { if (snap.exists) adopt(snap.data()); render(); showFlag(); mark.checked = !!state.resolve_requested; setStatus("Editing in this view; loaded the latest data."); });
+  }
+  function holdLease() {
+    clearTimeout(leaseTimer);
+    if (!db) return;
+    if (document.hidden && role === "editor") { leaseTimer = setTimeout(holdLease, 4000); return; } // hidden: let the lease lapse so another view can take over
+    db.doc("review-lock/" + DATA.id).acquire({ holder: VIEW, ttlMs: 15000 }).then(function (r) {
+      setRole(r.acquired ? "editor" : "viewer");
+      leaseTimer = setTimeout(holdLease, r.acquired ? 6000 : 5000);
+    }, function () { leaseTimer = setTimeout(holdLease, 8000); });
+  }
+  function startRoles() {
+    unsubMain = db.doc(DOC).onSnapshot(function (snap) {
+      if (role === "viewer" && snap.exists) { adopt(snap.data()); render(); showFlag(); mark.checked = !!state.resolve_requested; setStatus("Viewing live: updated " + new Date().toLocaleTimeString()); }
+    }, function () {});
+    unsubWant = db.doc("review-lock-want/" + DATA.id).onSnapshot(function (snap) {
+      var w = snap.exists && snap.data();
+      if (w && w.view !== VIEW && role === "editor" && Date.now() - Date.parse(w.at) < 30000) {
+        // another view asked to edit: save what we have, then step back
+        enqueue().then(function () { return db.doc("review-lock/" + DATA.id).acquire({ holder: VIEW, ttlMs: 1000 }); }).then(function () { role = "viewer"; clearTimeout(leaseTimer); logEvent("handed over editing", true, w.view); render(); setStatus("Handed editing to the other view."); leaseTimer = setTimeout(holdLease, 16000); });
+      }
+    }, function () {});
+    holdLease();
+  }
+  $("take").addEventListener("click", function () {
+    $("take").disabled = true; setStatus("Asking the other view to hand over editing…");
+    db.doc("review-lock-want/" + DATA.id).set({ view: VIEW, at: new Date().toISOString() }).then(function () {
+      var tries = 0;
+      (function again() { tries++; db.doc("review-lock/" + DATA.id).acquire({ holder: VIEW, ttlMs: 15000 }).then(function (r) {
+        if (r.acquired) { setRole("editor"); holdLease(); $("take").disabled = false; }
+        else if (tries < 8) setTimeout(again, 2500);
+        else { $("take").disabled = false; setStatus("The other view still holds editing; it hands over within 15 s of going idle or hidden.", true); }
+      }); })();
+    }, function (e) { $("take").disabled = false; setStatus("Couldn't ask for editing (" + (e && e.code || "error") + ").", true); });
+  });
+  document.addEventListener("visibilitychange", function () { if (!document.hidden && db) holdLease(); });
   function pull() {
     if (!db) { setStatus("No shared store in this view: reloading the whole page…", true); setTimeout(function () { location.reload(); }, 300); return; }
     setStatus("Saving, then pulling in the latest data…");
-    var p = timer ? enqueue() : queue;
+    var p = role === "editor" && timer ? enqueue() : queue;
     return Promise.resolve(p).then(function () {
       return Promise.all([db.doc(DOC).get(), db.doc("review-replies/" + DATA.id).get()]);
     }).then(function (res) {
-      if (res[0].exists) { var remote = res[0].data(); if (!state.savedAt || (remote.savedAt && remote.savedAt >= state.savedAt)) adopt(remote); }
+      if (res[0].exists) adopt(res[0].data());
       var dd = res[1].exists ? JSON.parse(JSON.stringify(res[1].data())) : {};
       replies = Array.isArray(dd.items) ? dd.items : [];
       render(); showFlag(); mark.checked = !!state.resolve_requested; refreshNotify();
@@ -765,8 +830,10 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   use("db").then(function (x) {
     db = x;
     if (!db) { setStatus("Shared store unavailable: answers save in this browser only", true); return; }
+    role = "viewer"; lockdown(); // read-only until this view holds the editing lease
     return db.doc(DOC).get().then(function (snap) {
       if (snap.exists) { var remote = snap.data(); if (!state.savedAt || (remote.savedAt && remote.savedAt >= state.savedAt)) adopt(remote); }
+      startRoles();
       db.doc("review-replies/" + DATA.id).onSnapshot(function (snap) {
         var dd = snap.exists ? snap.data() : {};
         replies = Array.isArray(dd.items) ? JSON.parse(JSON.stringify(dd.items)) : [];
