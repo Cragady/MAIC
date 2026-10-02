@@ -207,7 +207,7 @@ Events, each with a `seq` and a `type`:
 | `error` | `text` (a transport or provider failure) |
 | `done` | `interrupted`, `usage {input, output, calls, context, last_input}` |
 
-`always` remembers the approval for the session only, per file or per program, the same as at the terminal; nothing outlives the session. A denied call with `feedback` reaches the model as "DENIED by the user, who says: ...".
+`always` from a client counts as a yes for that call only: a remote request is asked every time, so it is never remembered, and an "always" given at the terminal does not cover a remote request either (before v0.3.1 both were remembered for the session; [harness.md](harness.md) rule 5). A denied call with `feedback` reaches the model as "DENIED by the user, who says: ...".
 
 Reading the stream from a browser: `fetch` with the bearer header, then `response.body.getReader()`, split on blank lines, parse the `data:` lines. `EventSource` cannot send a header, which is why the client does not use it.
 
