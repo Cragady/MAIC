@@ -31,6 +31,9 @@ std::string tool_preview(const Harness& harness, const std::string& name, const 
 // multi_edit or apply_patch call. nullopt for any other tool, a deletion, or a call that would fail.
 std::optional<std::string> tool_proposed(const Harness& harness, const std::string& name, const nlohmann::json& args, const std::filesystem::path& path);
 
+// Removed and added lines between two texts (- / + lines), the common head and tail left out, at most `cap` lines.
+std::string change_lines(const std::string& before, const std::string& after, size_t cap);
+
 // Rename, or copy and remove when the two paths are on different filesystems. Also how undo reverses a move.
 std::error_code move_path(const std::filesystem::path& from, const std::filesystem::path& to);
 

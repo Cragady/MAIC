@@ -41,6 +41,7 @@ maic themes import habamax         # a neovim colorscheme as a theme file, from 
 maic doctor                        # the machine, the tools MAIC needs, installed models, a recommended setup
 maic lazy-lock                     # is nvim's lazy-lock.json as recorded? record / diff; exit 0 in sync (docs/lazy-lock.md)
 maic nvim keymaps                  # :checkhealth maic from the shell: maic.nvim's, MAIC's and llama.vim's keys against your nvim config
+maic nvim setup llama-vim          # llama.vim for lazy.nvim as one file MAIC owns in your spec's import directory (--dry-run, --remove)
 maic setup                         # the first run as yes/no questions: settings, llama.cpp, ComfyUI, a model, the tripwire
 maic models                        # the model catalog: what each is for, installed or not, current; maic models install ID [--link] (docs/models.md)
 maic up llamacpp-fim               # code completion for llama.vim on 8084, after maic models install qwen2.5-coder-7b --link
@@ -91,6 +92,8 @@ The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"
 `maic --bare` (also `MAIC_BARE=1`, or `bare = true` in settings) starts MAIC with nothing from nvim: no `$NVIM` host even inside nvim's terminal, the built-in highlighter, no theme from nvim (`:theme nvim:NAME` is refused and says why), no lazy-lock notice or marker, no keymap check. MAIC's own settings, themes (saved `nvim-NAME.lua` files included), Lua and script tools load as usual; the strip shows `bare`. See `:h bare`.
 
 `maic nvim keymaps [--all] [-u FILE]` runs maic.nvim's keymap check (what `:checkhealth maic` shows) in a headless nvim with your own config, after `User VeryLazy`, and prints the collisions with their fixes: keys maic.nvim had to skip, keys MAIC's own input needs in its terminal (Esc, Ctrl-W, Ctrl-P, Shift-Tab, Ctrl-Z, Ctrl-C, Alt-Enter) that a terminal-mode mapping takes, and llama.vim's keys. Exit 0 none, 1 collisions, 2 nvim could not run; `maic doctor` has a one-line summary. MAIC keeps the result under its state directory and, when `lazy-lock.json` changes, runs the check once more and says at start if a plugin update added a collision.
+
+`maic nvim setup llama-vim [--dry-run] [--remove] [--yes]` writes llama.vim's spec from docs/models.md (port 8084, `model_fim = 'current'`, `<M-f>` and `<M-]>`, normal-mode keys off) as `maic-llama-vim.lua` in the directory your lazy.nvim spec imports, after showing it and asking (`--yes` off a terminal). It edits no other file: without nvim, lazy.nvim or an import directory it explains what is missing and exits 0, and it refuses a file of that name it did not write or a llama.vim already in your spec. `--remove` deletes only MAIC's file. A user command: the agent's `run_shell` is refused it. See docs/nvim.md.
 
 ## Commands
 

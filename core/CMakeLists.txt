@@ -12,6 +12,7 @@ add_library(maic_core
     src/lazy_lock.cpp
     src/nvim_keymaps.cpp
     src/nvim_run.cpp
+    src/nvim_setup.cpp
     src/llm.cpp
     src/lua.cpp
     src/lua_tools.cpp

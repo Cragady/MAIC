@@ -109,6 +109,8 @@ maic models install qwen2.5-coder-7b --link   # once: the coder, linked as <mode
 maic up llamacpp-fim                          # the server on 8084; MAIC loads the coder once it is up
 ```
 
+**Set it up with one command.** With lazy.nvim, `maic nvim setup llama-vim` writes the spec below as one file MAIC owns, `maic-llama-vim.lua` in the directory your spec imports (`{ import = "plugins" }`: `~/.config/nvim/lua/plugins/`), after showing it and asking; `--dry-run` only shows it, `--remove` deletes it again. It never edits another file: without lazy.nvim, or with no import directory, it says what is missing and prints the spec to add by hand, and it refuses when llama.vim is already in your spec elsewhere. Details in [nvim.md](nvim.md#maic-nvim-setup-llama-vim).
+
 The llama.vim spec for lazy.nvim:
 
 ```lua

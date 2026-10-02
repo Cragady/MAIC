@@ -315,6 +315,20 @@ int main() {
         }
     }
 
+    std::cout << "maic nvim setup: a user command, never a tool call\n";
+    {
+        Harness listed(ws), plain(ws);
+        listed.set_allow({"maic *", "maic nvim setup*"});
+        for (const char* cmd : {"maic nvim setup llama-vim --yes", "maic nvim setup llama-vim --dry-run", "cd x && maic nvim setup llama-vim --remove --yes",
+                                "/usr/local/bin/maic nvim setup llama-vim --yes", "bash -c 'maic nvim setup llama-vim --yes'", "maic \"nvim\" setup llama-vim"}) {
+            for (Mode m : {Mode::Manual, Mode::AutoRead, Mode::Edit, Mode::Auto, Mode::Plan}) {
+                expect(listed.check(Action{Action::Kind::Shell, {}, cmd}, m, Origin::Local).verdict == Verdict::Deny, std::string("denied in every mode, over an allow list: ") + cmd);
+            }
+            expect(!is_read_only_command(cmd) && !plain.harmless(Action{Action::Kind::Shell, {}, cmd}), std::string("and classified as a write: ") + cmd);
+        }
+        expect(plain.check(Action{Action::Kind::Shell, {}, "maic nvim keymaps"}, Mode::Auto, Origin::Local).verdict == Verdict::Allow, "maic nvim keymaps is not caught by it");
+    }
+
     std::cout << "permission block: deny over ask over allow, after the fixed rules\n";
     {
         Harness p(ws);

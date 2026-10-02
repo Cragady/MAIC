@@ -509,6 +509,10 @@ Decision Harness::check_shell(const std::string& command, Mode mode) const {
             return {Verdict::Trip, p.why};
         }
     }
+    // `maic nvim setup` writes into the user's nvim config: the user's to run at a terminal, never a tool call, whatever
+    // the mode or an allow list says.
+    static const std::regex user_only(R"(\bmaic['"]?\s+['"]?nvim['"]?\s+['"]?setup\b)");
+    if (std::regex_search(command, user_only)) return {Verdict::Deny, "maic nvim setup writes into your nvim config: run it yourself in a terminal"};
     bool read_only = is_read_only_command(command) || helper_read_only(command);
     if (allowed_by_list(command)) {
         if (mode == Mode::Plan && !read_only) return {Verdict::Deny, "plan mode only runs read-only commands"};
