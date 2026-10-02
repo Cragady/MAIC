@@ -1422,6 +1422,8 @@ int main() {
         b.providers = {p};
         b.restore(hist);
         b.compaction.at = 0;  // no proactive compaction, so the 400 path is what saves it
+        SessionLog blog("agent-test");
+        b.set_log(&blog);
         fake.fail_left = 1;
         fake.fail_body = R"({"error":{"code":400,"message":"request (27847 tokens) exceeds the available context size (16384 tokens), try increasing it","type":"invalid_request_error"}})";
         Recorder rb;
@@ -1434,6 +1436,13 @@ int main() {
         bool threw = false;
         try { b.submit("again", Origin::Local, rc, no_cancel); } catch (const std::exception& e) { threw = std::string(e.what()).find("exceeds") != std::string::npos; }
         expect(threw, "after two compact-and-retry rounds the error is reported");
+        // llama.cpp's error has an integer code and no param: the adapter rules rewrote it, and said so.
+        auto counted = b.usage().normalized;
+        expect(counted["error_code_string"] >= 1 && counted["error_code_string"] == counted["error_param_null"],
+               "the usage report counts the adapter rules applied to llama.cpp's error bodies");
+        SessionStats st = session_stats(blog.path());
+        expect(st.normalized["fake error_code_string"] == static_cast<size_t>(counted["error_code_string"]) && st.normalized["fake error_param_null"] == static_cast<size_t>(counted["error_param_null"]),
+               "each application is a `normalized` record naming the rule and the provider, summed by session_stats");
     }
 
     section("string and token bans");

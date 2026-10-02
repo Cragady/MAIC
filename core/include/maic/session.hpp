@@ -186,6 +186,7 @@ struct SessionStats {
     long output_tokens = 0;
     int context = 0;  // the last window the provider reported
     std::map<std::string, size_t> compactions;  // by stage
+    std::map<std::string, size_t> normalized;   // adapter rules applied, by "<provider> <rule>" (`normalized` records)
     size_t clears = 0;
     size_t undos = 0;
     std::string first_time;  // of the first and the last record

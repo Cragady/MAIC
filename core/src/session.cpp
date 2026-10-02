@@ -382,7 +382,8 @@ SessionStats session_stats(const fs::path& path) {
             s.input_tokens += j.value("input", 0);
             s.output_tokens += j.value("output", 0);
             s.context = j.value("context", s.context);
-        } else if (type == "compact") ++s.compactions[j.value("stage", "?")];
+        } else if (type == "normalized") s.normalized[j.value("provider", "?") + " " + j.value("rule", "?")] += j.value("count", 1);
+        else if (type == "compact") ++s.compactions[j.value("stage", "?")];
         else if (type == "clear") ++s.clears;
         else if (type == "undo") {
             ++s.undos;

@@ -907,6 +907,11 @@ int cmd_sessions_state(const std::vector<std::string>& args) {
     }
     if (st.context) std::cout << "; context window " << st.context;
     std::cout << "\n";
+    if (!st.normalized.empty()) {
+        std::cout << "adapter normalizations (docs/standards.md):";
+        for (const auto& [rule, n] : st.normalized) std::cout << " " << rule << " " << n << ";";
+        std::cout << "\n";
+    }
     if (!st.compactions.empty() || st.clears || st.undos) {
         std::cout << "compactions:";
         for (const auto& [stage, n] : st.compactions) std::cout << " " << stage << " " << n;

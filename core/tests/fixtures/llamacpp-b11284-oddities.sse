@@ -1,0 +1,11 @@
+: llama-server b11284 (25747b0): the two shapes it streams that OpenAI's description does not allow. Written by hand
+: from tools/server/server-task.cpp (a partial chunk with logprobs, as with "logprobs": true, "top_logprobs": 2) and
+: server-context.cpp with server-common.cpp (an error after streaming began: {"error": format_error_response(...)}).
+: Not a capture. normalize_openai makes both fit (jsonschema_test); the client reads them (llm_test).
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"role":"assistant","content":null}}],"created":1790000000,"id":"chatcmpl-Xq7fN2mR8kTzP4vL0cW9bJ6hD3sY1aGe","model":"Qwen3-Coder-30B-A3B-Instruct-Q4_K_M","system_fingerprint":"b11284-25747b0","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":"Her"},"logprobs":{"content":[{"id":8160,"token":"Her","bytes":[72,101,114],"logprob":-0.0213,"top_logprobs":[{"id":8160,"token":"Her","bytes":[72,101,114],"logprob":-0.0213},{"id":785,"token":"The","bytes":[84,104,101],"logprob":-3.874}]}]}}],"created":1790000000,"id":"chatcmpl-Xq7fN2mR8kTzP4vL0cW9bJ6hD3sY1aGe","model":"Qwen3-Coder-30B-A3B-Instruct-Q4_K_M","system_fingerprint":"b11284-25747b0","object":"chat.completion.chunk"}
+
+data: {"error":{"code":500,"message":"the model crashed","type":"server_error"}}
+

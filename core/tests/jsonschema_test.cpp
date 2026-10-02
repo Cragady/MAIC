@@ -1,9 +1,11 @@
 // The JSON Schema validator (maic/jsonschema.hpp): every keyword it implements with known answers, then OpenAI's
 // pinned subset (protocol/openai/subset.json) against a Responses stream shaped as the engine will send it and a
-// llama-server b11284 chat-completions stream (fixtures, written by hand from the spec and llama.cpp's source).
+// llama-server b11284 chat-completions stream (fixtures, written by hand from the spec and llama.cpp's source), and
+// the OpenAI-compatible client's adapter rules on the shapes llama.cpp sends that the schema refuses.
 #include "check.hpp"
 
 #include "maic/jsonschema.hpp"
+#include "maic/llm.hpp"
 
 #include <fstream>
 #include <sstream>
@@ -190,14 +192,47 @@ int main() {
         json usage = chunks.back();
         usage["usage"].erase("total_tokens");
         expect(against("CreateChatCompletionStreamResponse", usage) == "/usage/total_tokens: is required", "usage without total_tokens is refused");
-        json logprobs = chunks[4];
-        json token = {{"id", 8160}, {"token", "Her"}, {"bytes", {72, 101, 114}}, {"logprob", -0.02}, {"top_logprobs", json::array()}};
-        logprobs["choices"][0]["logprobs"] = {{"content", json::array({token})}};
-        expect(against("CreateChatCompletionStreamResponse", logprobs) == "/choices/0/logprobs/refusal: is required",
-               "llama.cpp's streamed logprobs carry no refusal list, which OpenAI requires (MAIC requests no logprobs)");
-        json error = {{"error", {{"code", 500}, {"message", "the model crashed"}, {"type", "server_error"}}}};
-        expect(against("ErrorResponse", error) == "/error/code: must be string, not integer", "llama.cpp's mid-stream error has an integer code and no param: not OpenAI's ErrorResponse");
         expect(against("ErrorResponse", {{"error", {{"code", nullptr}, {"message", "m"}, {"param", nullptr}, {"type", "server_error"}}}}).empty(), "OpenAI's own error shape fits");
+        for (size_t i = 0; i < chunks.size(); ++i) {
+            json n = chunks[i];
+            expect(normalize_openai(n, "llamacpp").empty() && n == chunks[i], "chunk " + std::to_string(i) + ": no adapter rule touches a chunk that already fits");
+        }
+    }
+
+    section("the adapter normalizations (normalize_openai) on llama-server b11284's oddities");
+    {
+        // Each case: the shape as llama.cpp sends it fails OpenAI's schema with `raw_error`; normalized, it fits, and
+        // exactly `rules` applied. One case per rule alone and one with both error rules, so each is necessary and
+        // together they are sufficient.
+        auto normalized_case = [&](const json& raw, const std::vector<std::string>& rules, const std::string& raw_error, const std::string& what) {
+            const char* schema = raw.contains("error") ? "ErrorResponse" : "CreateChatCompletionStreamResponse";
+            json n = raw;
+            std::vector<std::string> applied = normalize_openai(n, "llamacpp");
+            std::string before = against(schema, raw), after = against(schema, n);
+            expect(before == raw_error, what + ": as sent, refused (" + before + ")");
+            expect(applied == rules && after.empty(), what + ": normalized, it fits" + (after.empty() ? "" : ": " + after));
+            return n;
+        };
+        auto odd = sse_data(fixtures + "/llamacpp-b11284-oddities.sse");
+        expect(odd.size() == 3, "the fixture has its opening chunk, a logprobs chunk and a mid-stream error");
+        json first = odd[0];
+        expect(normalize_openai(first, "llamacpp").empty() && against("CreateChatCompletionStreamResponse", first).empty(), "the opening chunk needs no rule");
+
+        json lp = normalized_case(odd[1], {"logprobs_refusal_null"}, "/choices/0/logprobs/refusal: is required", "logprobs without refusal");
+        expect(lp["choices"][0]["logprobs"]["refusal"].is_null() && lp["choices"][0]["logprobs"]["content"] == odd[1]["choices"][0]["logprobs"]["content"],
+               "logprobs_refusal_null adds refusal: null and leaves the tokens as they were");
+
+        json err = normalized_case(odd[2], {"error_code_string", "error_param_null"}, "/error/code: must be string, not integer", "llama.cpp's error");
+        json want = {{"error", {{"code", "llamacpp_500"}, {"message", "the model crashed"}, {"type", "server_error"}, {"param", nullptr},
+                                {"maic", {{"upstream", {{"provider", "llamacpp"}, {"code", 500}, {"rules", {"error_code_string", "error_param_null"}}}}}}}}};
+        expect(err == want, "the error keeps its original code and the rules' names under maic.upstream: " + err.dump());
+
+        json code_only = odd[2];
+        code_only["error"]["param"] = nullptr;
+        normalized_case(code_only, {"error_code_string"}, "/error/code: must be string, not integer", "an integer code alone");
+        json param_only = odd[2];
+        param_only["error"]["code"] = "server_error";
+        normalized_case(param_only, {"error_param_null"}, "/error/param: is required", "a missing param alone");
     }
 
     return finish();

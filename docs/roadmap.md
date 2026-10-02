@@ -91,6 +91,7 @@ Read opencode's `.opencode/agent/*.md` files (frontmatter plus a prompt) as agen
 * Restrictiveness tiers for settings Lua, configurable: more tiers and their definitions (Micaiah, 2026-10-01).
 * Audit the Lua sandbox and the `maic` API by trust level (Micaiah, 2026-10-01): list everything each Lua runtime can reach (settings, themes, diction.lua, Lua tools, hooks) and give the `maic` API tiers: the whole API only for fully trusted code, a defined subset for sandboxed and restricted code, and refusal with no trust. Fold in docs/limits.md's Lua tools entry.
 * Text to speech (Micaiah, 2026-10-01): MAIC speaking replies aloud, the counterpart to diction; local first, as a service beside whisper. To be discussed.
+* Ask llama.cpp upstream to emit `param: null` in errors and `refusal: null` in logprobs (and a string error `code`), or revisit if the standards change; forking llama.cpp is an option held back for now (Micaiah, 2026-10-02).
 
 ## Done
 
