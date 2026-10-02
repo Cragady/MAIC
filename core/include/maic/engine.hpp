@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -68,5 +69,9 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+// The error a failed turn shows. A transport failure to a local provider adds what to do about the service
+// behind it (start it, link a model), from the service state on that port.
+std::string failure_text(const Agent& agent, const std::exception& e);
 
 }  // namespace maic

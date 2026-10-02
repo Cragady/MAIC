@@ -3,6 +3,8 @@
 #include "headless.hpp"
 
 #include "maic/agent.hpp"
+#include "maic/engine.hpp"
+#include "maic/status.hpp"
 #include "maic/session.hpp"
 #include "maic/settings.hpp"
 #include "maic/tripwire.hpp"

@@ -2,12 +2,14 @@
 #include "maic/engine.hpp"
 
 #include "maic/full_output.hpp"
+#include "maic/llm.hpp"
 #include "maic/paths.hpp"
 #include "maic/protocol.hpp"
 #include "maic/session.hpp"
 #include "maic/status.hpp"
 #include "maic/service.hpp"
 #include "maic/tripwire.hpp"
+#include "maic/vendor.hpp"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -1530,6 +1532,61 @@ std::vector<std::string> Engine::methods() {
 
 std::vector<std::string> Engine::event_types() {
     return kEventTypes;
+}
+
+std::string failure_text(const Agent& agent, const std::exception& e) {
+    std::string text = e.what();
+    if (const auto* api = dynamic_cast<const ApiError*>(&e); api && is_usage_limit(*api)) {
+        // The session never switches by itself: say where the next tier is.
+        auto p = preset_for_model(agent.presets, agent.model);
+        auto next = p ? on_limit_pick(agent.presets, *p) : std::nullopt;
+        text += "\n" + (p ? p->name : agent.model) + " hit its usage limit; " +
+                (next ? "`:model " + next->name + "` continues on the next tier (its on_limit)" : "`:model` lists the other models");
+    } else if (dynamic_cast<const TransportError*>(&e)) {
+        std::string hint = unreachable_hint(resolve_model(agent.providers, agent.model).first, load_services(root_dir() / "services"));
+        if (!hint.empty()) text += "\n" + hint;
+    } else if (const auto* api = dynamic_cast<const ApiError*>(&e); api && api->status == 500 && text.find("failed to load") != std::string::npos) {
+        auto [provider, name] = resolve_model(agent.providers, agent.model);
+        if (is_llama_server(provider.name)) {
+            auto services = load_services(root_dir() / "services");
+            GpuReport g = gpu_report(services);
+            std::string why = "llama.cpp could not load " + name + ".";
+            bool oom = false;
+            for (const auto& def : services) {
+                if (def.name != provider.name) continue;
+                std::ifstream in(service_log_path(def));
+                std::deque<std::string> tail;
+                for (std::string line; std::getline(in, line);) {
+                    tail.push_back(line);
+                    if (tail.size() > 60) tail.pop_front();
+                }
+                for (const auto& l : tail) oom = oom || l.find("out of memory") != std::string::npos || l.find("failed to allocate") != std::string::npos;
+            }
+            if (oom) {
+                why += " The card ran out of memory while loading it";
+                if (g.comfyui_running && g.comfyui_vram_used > 0) {
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), " (ComfyUI holds %.1f GB)", static_cast<double>(g.comfyui_vram_used) / (1 << 30));
+                    why += buf;
+                }
+                for (const auto& s : g.servers) {
+                    if (s.name != provider.name && !s.models.empty()) why += " (" + s.name + " holds " + s.models.front() + ")";
+                }
+                why += ". Free it with `maic gpu free` (or stop ComfyUI), lower the context (`" + std::string(provider.name == "llamacpp" ? ":ctx 8192" : ":ctx2 4096") +
+                       "`), or use the smaller model; a model with a vision projector needs about 1 GB more. `maic gpu` says what fits.";
+            } else {
+                why += " `maic logs " + provider.name + "` has the reason.";
+            }
+            text += "\n" + why;
+        }
+    } else if (const auto* api = dynamic_cast<const ApiError*>(&e); api && api->status == 400 && text.find("not found") != std::string::npos) {
+        auto [provider, name] = resolve_model(agent.providers, agent.model);
+        if (is_llama_server(provider.name)) {
+            text += "\nllama.cpp serves the GGUFs under " + llamacpp_models_root().string() + " by file name (:models lists them, maic vendor model fetches one)";
+            if (name.find(':') != std::string::npos) text += "; a name like " + name + " is a tag, not a file name here";
+        }
+    }
+    return text;
 }
 
 }  // namespace maic

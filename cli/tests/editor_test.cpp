@@ -3,6 +3,8 @@
 
 #include "commands.hpp"
 #include "maic/agent.hpp"
+#include "maic/engine.hpp"
+#include "maic/status.hpp"
 
 #include <algorithm>
 #include <chrono>

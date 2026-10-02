@@ -6,6 +6,7 @@
 #include "highlight.hpp"
 #include "nvim_host.hpp"
 #include "maic/agent.hpp"
+#include "maic/engine.hpp"
 #include "maic/artifacts.hpp"
 #include "maic/clipboard.hpp"
 #include "maic/full_output.hpp"

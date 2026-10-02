@@ -644,4 +644,51 @@ std::string unreachable_hint(const Provider& provider, const std::vector<Service
     return "";
 }
 
+std::string apply_preset(Settings& settings, const std::string& query) {
+    auto p = find_preset(settings.presets, query);
+    if (!p) return "";
+    settings.model = p->model;
+    if (p->think >= 0) settings.think = p->think == 1;
+    set_preset_window(settings.providers, *p);
+    if (p->context > 0) {
+        std::string provider = resolve_model(settings.providers, p->model).first.name;
+        if (provider == "llamacpp") settings.context = p->context;
+        else if (provider == "llamacpp-2") settings.context_2 = p->context;
+    }
+    return p->name;
+}
+
+void set_context(std::vector<Provider>& providers, int tokens, const std::string& service) {
+    setenv(service == "llamacpp" ? "MAIC_CONTEXT" : "MAIC_CONTEXT_2", std::to_string(tokens).c_str(), 1);
+    for (auto& p : providers) {
+        if (p.name == service) p.options["context_window"] = tokens;
+    }
+}
+
+std::string restart_llamacpp_if_changed(const std::string& service) {
+    for (const auto& def : load_services(root_dir() / "services")) {
+        if (def.name != service) continue;
+        // Restart when the size differs, and also when the running server predates command recording: the
+        // user asked for this size, and an unknown one is not it.
+        if (service_status(def).state != ServiceState::Running) continue;
+        if (!recorded_command(def).empty() && !command_changed(def)) continue;
+        stop_service(def);
+        bool ready = start_service(def);
+        return service + " restarted with the new context size" + std::string(ready ? "" : " (still starting)");
+    }
+    return "";
+}
+
+std::string preset_lines(const Settings& settings) {
+    std::string out;
+    for (const auto& p : settings.presets) {
+        ModelPick sub = subagent_pick(settings.presets, p);
+        ModelPick rev = reviewer_pick(settings.presets, settings.providers, p.model, settings.reviewer_model, settings.small_model, {});
+        out += "\n  " + p.name + "  " + p.model + "  tier " + std::to_string(p.tier) + (p.limited ? ", limited" : "") + ", context " + std::to_string(p.context) +
+               ", subagents on " + (sub.preset == p.name ? "itself" : sub.preset + " (" + sub.reason + ")") +
+               ", reviewer " + (rev.model == p.model ? "itself" : rev.preset.empty() ? rev.model : rev.preset);
+    }
+    return out;
+}
+
 }  // namespace maic
