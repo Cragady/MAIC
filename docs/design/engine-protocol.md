@@ -6,6 +6,8 @@ Micaiah's decisions frame it and are not reopened: the engine speaks JSON-RPC ov
 
 opencode's split (`opencode serve`, `opencode attach URL`, one REST API plus one event stream per instance) is the model where it fits; where MAIC differs it says why.
 
+Every specification this protocol follows (JSON-RPC 2.0, OpenAI's API description, OpenRPC, JSON Schema, OpenAPI, server-sent events, JSON Lines), with its version and MAIC's known deviations, is listed in [standards.md](../standards.md).
+
 ## Decisions at a glance
 
 | Question | Decision |
@@ -13,12 +15,18 @@ opencode's split (`opencode serve`, `opencode attach URL`, one REST API plus one
 | Encoding | JSON-RPC 2.0, one message per line (JSON lines), on every transport. No msgpack on this channel. |
 | Transports | in-process (the TUI, first), stdio (`maic --rpc`), a Unix socket (the daemon), the relay tunnel (a new frame kind), and the LAN listener (two half-duplex HTTP streams, as the relay does) |
 | Origin | stamped by the transport, never sent by a client; a turn's origin only ever moves from local to remote |
-| Events | one notification method, `event`, with a per-session `seq`; a bounded in-memory ring per session for `after=N` resume |
+| Names | OpenAI's, exactly, wherever OpenAI's API description defines the concept; MAIC's own under `maic.` and in a `maic` object (section 10) |
+| Events | one notification method, `maic.event`, carrying OpenAI's Responses stream events (and MAIC's) with `sequence_number` and `stream_id`, in a fixed order (section 10); a bounded in-memory ring per session for `starting_after=N` resume |
 | History | read from the session JSONL by record; items addressed `<file id>#<line>`; tool outputs, attached files and images collapsed over a per-client size and expanded on request |
-| Tool output | streamed as `tool_output` chunks with byte offsets; a tee only: the model's capped result is unchanged and the child is never slowed by a client |
+| Tool output | streamed as `response.shell_call_output_content.delta` (and `maic.tool.output.delta` for script tools) with byte offsets; a tee only: the model's capped result is unchanged and the child is never slowed by a client |
 | Multiple clients | no input lock; every input names its client; the first valid answer to an approval wins |
 | Remote limits | an allow-list per method and per `:` command; remote answers to approvals are yes, no or trip; no unlock, no trust, no settings writes, no unsandboxed shell |
-| Versioning | an integer protocol version in `hello`, capability strings for additions, unknown fields and event types ignored |
+| Versioning | an integer protocol version in `maic.hello`, capability strings for additions, unknown fields and event types ignored |
+| Lifecycle | OpenAI's Responses and Conversations flow: sessions as conversations, background responses resumed with `starting_after`, `previous_response_id` lineage, `cancelResponse`, stable item ids; MAIC's own beside it (section 12) |
+| Steering | OpenAI's `response.steer` for a message mid-turn, and `maic.steer` on a running response: `steer`, `drop`, `further`, `interrupt`, `keep`, `halt`; bans can trigger them; configured in `steering` (section 11) |
+| Harness path | `harness = "auto"`, `"smart"`, `"dumb"` or `"external"`, per agent and per session, the fixed rules always the floor (section 13) |
+| Security tiers | `open`, `guarded` (default), `airtight`: validation, ordering, steering rights, step-up, audit and release checks ([protocol-security.md](protocol-security.md)) |
+| Schemas | OpenRPC 1.3 for methods, JSON Schema 2020-12 for payloads, OpenAPI 3.2 for the HTTP side, `ordering.json` for the state machines, a conformance checker on every build (section 15) |
 
 ## 1. Transports and encoding
 
@@ -33,7 +41,7 @@ One encoding everywhere: JSON-RPC 2.0, UTF-8, one message per line. JSON escapes
 
 MAIC's own msgpack codec (`cli/src/msgpack.cpp`) stays where it is, for the host connection.
 
-**Size.** A message is at most 1 MiB, the relay's frame cap; anything bigger is chunked by design (tool output, history pages, expansion, images). An engine that receives a longer line answers `too_large` and closes the connection. Streaming events aim at 16 KiB or less.
+**Size.** A message is at most 1 MiB, the relay's frame cap; anything bigger is chunked by design (tool output, history pages, expansion, images). An engine that receives a longer line answers `maic_too_large` and closes the connection. Streaming events aim at 16 KiB or less.
 
 ### The transports
 
@@ -58,12 +66,13 @@ MAIC's own msgpack codec (`cli/src/msgpack.cpp`) stays where it is, for the host
 ### Envelope
 
 ```json
-→ {"jsonrpc":"2.0","id":7,"method":"session.send","params":{"session":"20261001-091500-tui-4121","text":"run the tests"}}
-← {"jsonrpc":"2.0","id":7,"result":{"started":true,"seq":812}}
-← {"jsonrpc":"2.0","method":"event","params":{"session":"20261001-091500-tui-4121","seq":813,"type":"turn_start","turn":4}}
+→ {"jsonrpc":"2.0","id":7,"method":"response.create","params":{"stream_id":"20261001-091500-tui-4121","conversation":"20261001-091500-tui-4121","input":"run the tests"}}
+← {"jsonrpc":"2.0","id":7,"result":{"id":"20261001-091500-tui-4121.r9","object":"response","status":"in_progress","background":true,"maic":{"turn":4,"sequence_number":812}}}
+← {"jsonrpc":"2.0","method":"maic.event","params":{"type":"response.created","sequence_number":813,"stream_id":"20261001-091500-tui-4121",
+   "response":{"id":"20261001-091500-tui-4121.r9","object":"response","status":"in_progress","conversation":{"id":"20261001-091500-tui-4121"},"maic":{"turn":4,"origin":"local"}}}}
 ```
 
-Commands are requests with an `id`. Session events are notifications with method `event`; engine-wide notifications use method `index` (section 2). Requests are answered in any order; a client may have up to 64 in flight.
+Commands are requests with an `id`. Session events are notifications with method `maic.event`; engine-wide notifications use `maic.index` and `maic.engine` (section 2). Requests are answered in any order; a client may have up to 64 in flight.
 
 ## 2. The object model
 
@@ -71,10 +80,11 @@ Commands are requests with an `id`. Session events are notifications with method
 | :--- | :--- | :--- |
 | engine | `epoch`: random, per start | one process that owns sessions: `maic --rpc`, the TUI's in-process engine, or the daemon (`maic daemon`) |
 | client | `c1`, `c2`, ... per engine | one connection; has a name (for remote: the token's or pairing's name, never self-declared), an origin, and per-client view settings |
-| session | the transcript id, `20261001-091500-tui-4121` | one conversation with one main agent, one JSONL file; the id MAIC already uses everywhere |
+| session | the transcript id, `20261001-091500-tui-4121` | one conversation with one main agent, one JSONL file; the id MAIC already uses everywhere. On the wire it is OpenAI's `conversation` and its stream's `stream_id` |
 | side thread | a session id | a session with `parent` and `side` (`btw` or `aside`); `btw` starts as a fork pointer at the parent's current record |
 | task | the child's session id | a `task` subagent: a session of kind `sub` with `parent`, foreground (the parent waits) or background (it does not) |
-| item | `<file id>#<line>`, or `~<seq>` while in flight | one displayable record: a user turn, a reply, a tool call with its result, a notice |
+| item | `<file id>#<line>`, or `~<n>` while in flight | one displayable record: a user turn, a reply, a tool call with its result, a notice |
+| response | `<session id>.r<k>` | one run of the agent loop, OpenAI's `response` object (section 10); a turn is the chain of responses from one message to its answer |
 | approval, question | `a12`, `q3`, per engine | something waiting for a person |
 
 **Session states.** The lifecycle and the activity are separate fields:
@@ -84,14 +94,14 @@ Commands are requests with an `id`. Session events are notifications with method
 | `live` | at least one client has it in focus | yes |
 | `background` | loaded, no client has it in focus; it keeps working | yes |
 | `parked` | ended for now; in the index, resumes where it was, queued messages kept | no |
-| `stopped` | ended; not in the index; an ordinary transcript (`maic -r`, `session.resume`) | no |
+| `stopped` | ended; not in the index; an ordinary transcript (`maic -r`, `maic.session.resume`) | no |
 
 | `activity` (live and background only) | Meaning |
 | :--- | :--- |
 | `idle` | nothing running |
 | `working` | a turn is running |
 | `waiting` | an approval or question is pending; `waiting` in the entry says which |
-| `slot` | ready to call the model but waiting its turn at a single-slot local server |
+| `slot` | ready to call the model but waiting its turn at a single-slot local server (`response.queued`) |
 
 `live` and `background` are derived from focus: `:bg` takes this client's focus away, and the session is background only when no other client has it in focus. `unseen` marks a background session whose turn ended since a client last had it in focus (the switcher's "finished").
 
@@ -100,94 +110,124 @@ Commands are requests with an `id`. Session events are notifications with method
 ```json
 {"id":"20261001-091500-tui-4121","title":"fix the relay keepalive","workspace":"~/dev2/MAIC",
  "kind":"main","parent":null,"state":"background","activity":"waiting","model":"llamacpp/qwen3.5-9b","mode":"edit",
- "agent":"build","last_activity":"2026-10-01T09:42:10+02:00","unseen":false,"queued":0,
+ "agent":"build","harness":"auto","judge":"maic","tier":"guarded","last_activity":"2026-10-01T09:42:10+02:00","unseen":false,"queued":0,
  "waiting":{"kind":"approval","id":"a12","session":"20261001-094001-sub-4121","tool":"run_shell","summary":"ctest --test-dir build"}}
 ```
 
 Side threads and tasks are entries with `parent` set (`kind` `side` or `sub`), so a switcher lists them under their parent. `waiting` on a parent entry also covers its children, so a client watching only the top level still sees that something in the tree is asking. A remote client's entries omit the transcript path; accounts (item 6) add `owner` and filter by it.
 
-Engine-wide notifications: `{"method":"index","params":{"entry":{...}}}` on any change to an entry, `{"method":"index","params":{"removed":"ID"}}`, and `{"method":"engine","params":{"tripped":true,"reason":"..."}}`. They replace state rather than append to it, so a client that missed one re-reads with `index.get`; they carry no `seq`.
+Engine-wide notifications: `{"method":"maic.index","params":{"entry":{...}}}` on any change to an entry, `{"method":"maic.index","params":{"removed":"ID"}}`, and `{"method":"maic.engine","params":{"tripped":true,"reason":"..."}}`. They replace state rather than append to it, so a client that missed one re-reads with `maic.index.get`; they carry no `sequence_number`.
 
 ## 3. Commands and events
 
+Names follow section 10: OpenAI's exactly where OpenAI defines the concept, `maic.` for MAIC's own. A session is an OpenAI conversation (`conversation_id`), and its event stream is a lane (`stream_id`); both are the session id. Every method that takes a session also accepts a side thread's or a task's id.
+
 ### Commands
 
-`S` is a session id; every session command also accepts a side thread or a task id. The Remote column is the default; section 7 has the rules behind it.
+The Remote column is the default; section 7 has the rules behind it.
 
 | Method | Params | Result | Remote |
 | :--- | :--- | :--- | :--- |
-| `hello` | `protocol`, `client {name, version}`, `capabilities`, `view {collapse_over}`, `auth` (remote only) | `protocol`, `engine {version, epoch}`, `client`, `origin`, `capabilities`, `limits` | yes |
-| `engine.status` | | what `GET /api/status` returns today | yes |
-| `engine.trip` | `reason` | `{tripped: true}`; interrupts every turn | yes |
-| `index.get` / `index.subscribe` / `index.unsubscribe` | | entries / `{}` | yes |
-| `session.list` | `all`, `query`, `limit` | transcripts as `maic sessions` lists them, stopped ones included | yes |
-| `session.create` | `workspace`, `model`, `mode`, `agent`, `title`, `focus`, `leave` | the entry | yes, inside `server.workspaces` |
-| `session.fork` | `session`, `at` (a record line; default the end), `focus`, `leave` | the new entry | yes |
-| `session.side` | `session`, `kind` (`btw`, `aside`), `text`, `focus` | the side thread's entry; the text is sent in it | yes |
-| `session.merge_draft` | `side` | `{note}` drafted by `small_model` | yes |
-| `session.merge` | `side`, `how` (`summary`, `all`, `pick`), `note` or `turns` | the note's item | yes |
-| `session.focus` | `session`, `leave` | the entry (this is `:switch`) | yes |
-| `session.background` | `session` | the entry | yes |
-| `session.park` / `session.stop` | `session`, `interrupt` | the entry; `busy` when a turn runs and `interrupt` is not true | yes |
-| `session.resume` | `session` (id or unique prefix; a path only locally), `focus` | the entry | yes |
-| `session.attach` | `session`, `exchanges` (default 3) | a snapshot, and events from its `seq` on (section 5) | yes |
-| `session.subscribe` | `session`, `load`, `after` | `{}` then replay; `resync` when `after` left the ring | yes |
-| `session.unsubscribe` | `session` | `{}` | yes |
-| `session.history` | `session`, `before` (an item), `exchanges` or `limit` | `{items, more}` | yes |
-| `session.expand` | `session`, `item`, `offset`, `length` (at most 256 KiB) | `{text, offset, size, done}` or `{mime, data, ...}` | yes |
-| `session.send` | `session`, `text`, `now` | `{started}` or `{queued}`, with `seq` | yes |
-| `session.image` | `session`, `name`, `mime`, `data` (base64), `part`, `parts` | `{pending: [names]}` | yes |
-| `session.interrupt` | `session` | `{running, interrupting}` | yes |
-| `session.answer` | `session`, `approval`, `choice` (`yes`, `no`, `always`, `trip`), `feedback` | `{choice}`; `already_answered` for a late one | yes, without `always` |
-| `session.reply` | `session`, `question`, `text` | `{}` | yes |
-| `session.set` | `session`, any of `mode`, `model`, `think`, `harness`, `agent`, `title`, `confirm` | the entry; `confirm_required` with the text to show for auto under a dumb harness | partly (section 7) |
-| `session.command` | `session`, `line` (`":ban add foo"`) | `{lines, ok}`; events as the command causes them | per command (section 7) |
-| `session.shell` | `session`, `command` | `{exit_code}`; output as `tool_output` events | no: it runs unsandboxed, as the user |
+| `maic.hello` | `protocol`, `client {name, version}`, `capabilities`, `view {collapse_over}`, `auth` (remote only) | `protocol`, `engine {version, epoch}`, `client`, `origin`, `capabilities`, `limits`, `tier`, `path` | yes |
+| `maic.engine.status` | | what `GET /api/status` returns today | yes |
+| `maic.engine.trip` | `reason` | `{tripped: true}`; cancels every response | yes |
+| `maic.index.get` / `maic.index.subscribe` / `maic.index.unsubscribe` | | entries / `{}` | yes |
+| `maic.session.list` | `all`, `query`, `limit` | transcripts as `maic sessions` lists them, stopped ones included | yes |
+| `createConversation` | `metadata {title}`, `maic {workspace, model, mode, agent, focus, leave}` | the `conversation` object, `maic.entry` | yes, inside `server.workspaces` |
+| `getConversation` | `conversation_id` | the `conversation`, `maic.entry` | yes |
+| `updateConversation` | `conversation_id`, `metadata {title}` | the `conversation` (`:rename`) | yes |
+| `listConversationItems` | `conversation_id`, `after`, `limit`, `order`, `include`, `maic {exchanges}` | OpenAI's item list (`data`, `first_id`, `last_id`, `has_more`) | yes |
+| `getConversationItem` | `conversation_id`, `item_id`, `include` | the item | yes |
+| `maic.item.expand` | `session`, `item_id`, `offset`, `length` (at most 256 KiB) | `{text, offset, size, done}` or `{mime, data, ...}` | yes |
+| `response.create` | the `CreateResponse` fields MAIC reads: `stream_id`, `conversation`, `input` (`input_text`, `input_image` with a `file_id`), `previous_response_id`, `instructions` (local only), `tool_choice`, `max_tool_calls`, `truncation`, `include` | the `response` (`queued` or `in_progress`) and `maic.sequence_number`; queued FIFO behind a running response on the same lane | yes |
+| `response.steer` | `previous_response_id`, `input` | `{}`; `response.steer.accepted` follows on the stream (section 11) | yes |
+| `getResponse` | `response_id`, `stream`, `starting_after`, `include` | the `response`, or with `stream` its events after `starting_after` | yes |
+| `cancelResponse` | `response_id` | the `response`, `status: "cancelled"` | yes |
+| `listInputItems` | `response_id`, `after`, `limit`, `order`, `include` | the response's input items | yes |
+| `Compactconversation` | as the pinned spec defines (`previous_response_id`, `input`, ...) | the compacted output; `:compact` is this | yes |
+| `Getinputtokencounts` | as the pinned spec defines (`conversation`, `input`, ...) | the input token count, from MAIC's estimate | yes |
+| `maic.steer` | `session`, `response_id`, `action`, `note`, `trim`, `at`, `tool`, `step_up` | `{steer {id, previous_response_id}}` (section 11) | per tier and setting (section 11) |
+| `maic.session.fork` | `session`, `at` (a record line; default the end), `focus`, `leave` | the new entry | yes |
+| `maic.session.side` | `session`, `kind` (`btw`, `aside`), `text`, `focus` | the side thread's entry; the text is sent in it | yes |
+| `maic.session.merge_draft` | `side` | `{note}` drafted by `small_model` | yes |
+| `maic.session.merge` | `side`, `how` (`summary`, `all`, `pick`), `note` or `turns` | the note's item | yes |
+| `maic.session.focus` | `session`, `leave` | the entry (this is `:switch`) | yes |
+| `maic.session.background` | `session` | the entry | yes |
+| `maic.session.park` / `maic.session.stop` | `session`, `interrupt` | the entry; `maic_busy` when a response runs and `interrupt` is not true | yes |
+| `maic.session.resume` | `session` (id or unique prefix; a path only locally), `focus` | the entry | yes |
+| `maic.session.attach` | `session`, `exchanges` (default 3) | a snapshot, and events from its `sequence_number` on (section 5) | yes |
+| `maic.session.subscribe` | `session`, `load`, `starting_after` | `{}` then replay; `maic_resync` when `starting_after` left the ring | yes |
+| `maic.session.unsubscribe` | `session` | `{}` | yes |
+| `maic.session.image` | `session`, `name`, `mime`, `data` (base64), `part`, `parts` | `{file_id}` once every part is in, for an `input_image` | yes |
+| `maic.approval.answer` | `session`, `approval`, `choice` (`yes`, `no`, `always`, `trip`), `feedback` | `{choice}`; `maic_already_answered` for a late one | yes, without `always` |
+| `maic.question.reply` | `session`, `question`, `text` | `{}` | yes |
+| `maic.session.set` | `session`, any of `mode`, `model`, `think`, `harness`, `agent`, `tier`, `confirm` | the entry; `maic_confirm_required` with the text to show for auto under a dumb harness | partly (section 7) |
+| `maic.session.command` | `session`, `line` (`":ban add foo"`) | `{lines, ok}`; events as the command causes them | per command (section 7) |
+| `maic.session.shell` | `session`, `command` | `{exit_code}`; output as `maic.tool.output.delta` events | no: it runs unsandboxed, as the user |
+
+`deleteResponse`, `deleteConversation` and `deleteConversationItem` are not offered (`-32601`): a session file is append-only.
 
 `leave` is `{session, as}` with `as` one of `bg`, `park`, `stop`, or `default` (a working session goes to the background, an idle one is parked). The "ask instead" setting is the client's: it asks, then sends an explicit `as`. An implicit `default` never parks or stops a session another client has in focus.
 
-`session.command` exists so every `:` command the engine owns has one path, typed into any client; `session.set` is the same handlers for the ones a widget changes. Commands that are only about the view never leave the client (section 8).
+`maic.session.command` exists so every `:` command the engine owns has one path, typed into any client; `maic.session.set` is the same handlers for the ones a widget changes. Commands that are only about the view never leave the client (section 8).
 
 ### Events
 
-Every event carries `session`, `seq` and `type`; inputs and answers also carry `by {client, name, origin}`.
+Every event is one notification, `maic.event`, whose params are the event object exactly as the Responses WebSocket would send it: `type`, `sequence_number`, and `stream_id` (the session id) on every one. MAIC's own events have the same three fields; inputs, answers and steers also carry `by {client, name, origin}`.
+
+**OpenAI's events**, in OpenAI's shapes:
+
+| `type` | When |
+| :--- | :--- |
+| `response.created`, `response.in_progress` | a response starts; `response.maic {turn, origin}` |
+| `response.queued` | it waits for a single-slot local server (the session's `slot` activity) |
+| `response.output_item.added`, `response.output_item.done` | every output item: `message`, `reasoning`, `function_call`, `function_call_output`, `shell_call`, `shell_call_output`, `compaction`; on `done`, `item.maic {ref, status, judged_by}` |
+| `response.content_part.added`, `response.content_part.done` | each `output_text` part of a `message` |
+| `response.output_text.delta`, `response.output_text.done` | the reply's text (`logprobs: []`) |
+| `response.reasoning_text.delta`, `response.reasoning_text.done` | thinking (today's `text` with `thinking`) |
+| `response.function_call_arguments.delta`, `response.function_call_arguments.done` | a tool call's arguments as the model writes them; the harness judges the call only after `.done` |
+| `response.shell_call_command.added`, `.delta`, `.done` | a `run_shell` command |
+| `response.shell_call_output_content.delta`, `.done` | its output while it runs (`delta {stdout, stderr}`, `maic {offset, skipped}`; section 4) |
+| `response.compaction.compacting` | a compaction inside a response |
+| `response.steer.accepted`, `response.steer.failed` | a steer is queued, or refused with OpenAI's steering error codes |
+| `response.completed`, `response.incomplete`, `response.failed` | a response ends; `incomplete_details.reason: "steered"` when a steer ended it; `response.maic {turn, final, ended_by}` |
+| `error` | `code`, `message`, `param`: a failure outside a response, and a halt's canned message (`code: "maic_halted"`) |
+
+**MAIC's events**:
 
 | `type` | Fields |
 | :--- | :--- |
-| `turn_start` | `turn`, `origin` |
-| `turn_end` | `turn`, `interrupted`, `seconds`, `tool_calls` (today's `done` and the TUI's footer) |
-| `user` | `item`, `text`, `queued`, `images`, `by` |
-| `text` | `item`, `delta`, `thinking` |
-| `reply_end` | `item`, `ref` (the record it became) |
-| `tool_start` | `item`, `call`, `tool`, `summary`, `path` |
-| `tool_output` | `item`, `offset`, `data`, or `skipped` (a byte count) |
-| `tool_end` | `item`, `ref`, `ok`, `size`, `head`, `collapsed` |
-| `file_written` | `path`, `tool` (nvim's `:checktime`, `MaicFileWritten`) |
-| `approval` | `id`, `item`, `thread {session, agent, title}`, `tool`, `summary`, `reason`, `origin`, `always_covers`, `preview`, `path`, `proposed_size` |
-| `approval_answered` | `id`, `choice`, `by` |
-| `question` | `id`, `thread`, `text`, `options` |
-| `question_answered` | `id`, `by` |
-| `notice` | `text`, `level` (`info`, `warn`, `error`) |
-| `todo` | `items [{text, done}]` |
-| `state` | `state`, `activity`, `waiting`, `by` |
-| `settings` | whichever of `mode`, `model`, `remote_model`, `think`, `harness`, `agent` changed, `by` |
-| `usage` | `input`, `output`, `calls`, `context`, `last_input`, `budget` (after every model call) |
-| `title` | `text`, `source` (`auto`, `rename`) |
-| `compaction` | `stage`, `bytes_before`, `bytes_after`, `ref` |
-| `task_start` | `task` (the child's session id), `agent`, `model`, `model_reason`, `background`, `prompt_head` |
-| `task_end` | `task`, `ok`, `steps`, `tokens`, `answer_size`, `ref` |
-| `side` | `thread` (its id), `kind`, `event` (`opened`, `merged`), `ref` |
-| `error` | `text`, `code` (a provider or transport failure in the turn) |
+| `maic.response.cancelled` | `response` (`status: "cancelled"`); OpenAI defines no stream event for a cancelled response, so MAIC adds one |
+| `maic.turn.paused` | `turn`, `steer` (the `interrupt` that paused it) |
+| `maic.input.added` | `item` (an input `message`, role `user`), `queued`, `by` |
+| `maic.review.started`, `maic.review.delta`, `maic.review.verdict`, `maic.review.cancelled` | `item_id` and the fields of the addendum; `node` when a trusted node reviews; `by` on `cancelled` |
+| `maic.approval.requested` | `id`, `item_id`, `thread {session, agent, title}`, `tool`, `summary`, `reason`, `origin`, `always_covers`, `preview`, `path`, `proposed_size` |
+| `maic.approval.answered` | `id`, `choice` (`yes`, `no`, `always`, `trip`, or `withdrawn` by a steer), `by` |
+| `maic.question.asked` | `id`, `thread`, `text`, `options` |
+| `maic.question.answered` | `id`, `by`, `withdrawn` |
+| `maic.steer.applied` | section 11 |
+| `maic.tool.output.delta` | `item_id`, `offset`, `data` or `skipped`: a script tool's stderr, or `!cmd`, while it runs |
+| `maic.file.written` | `path`, `tool` (nvim's `:checktime`, `MaicFileWritten`) |
+| `maic.notice` | `text`, `level` (`info`, `warn`, `error`) |
+| `maic.todo.updated` | `items [{text, done}]` |
+| `maic.session.state` | `state`, `activity`, `waiting`, `by` |
+| `maic.session.settings` | whichever of `mode`, `model`, `remote_model`, `think`, `harness`, `judge`, `agent`, `tier` changed, `by` |
+| `maic.session.title` | `text`, `source` (`auto`, `rename`) |
+| `maic.session.compacted` | `bytes_before`, `bytes_after`, `ref`: a compaction between responses |
+| `maic.usage.updated` | `usage` (OpenAI's shape) for the last model call, `calls`, `context`, `last_input`, `budget` |
+| `maic.task.created` | `task` (the child's session id), `agent`, `model`, `model_reason`, `background`, `prompt_head` |
+| `maic.task.completed`, `maic.task.failed` | `task`, `steps`, `tokens`, `answer_size`, `ref` |
+| `maic.side.opened`, `maic.side.merged` | `thread` (its id), `kind`, `ref` |
 
-A child task's own text and tool events are in the child's session; a client that wants them subscribes to it. Its approvals and questions are raised on the top-level session's stream with `thread` naming the child, because that is where a person is looking, and they are answered there.
+A child task's own events are in the child's session; a client that wants them subscribes to it. Its approvals and questions are raised on the top-level session's stream with `thread` naming the child, because that is where a person is looking, and they are answered there.
 
 Several approvals can be pending in one tree at once (background children in parallel), so approvals are a set keyed by id, not today's single `pending` slot.
 
 ```json
-← {"jsonrpc":"2.0","method":"event","params":{"session":"20261001-091500-tui-4121","seq":840,"type":"approval","id":"a12",
-   "item":"~838","thread":{"session":"20261001-094001-sub-4121","agent":"explore","title":"find the flaky test"},
+← {"jsonrpc":"2.0","method":"maic.event","params":{"type":"maic.approval.requested","sequence_number":840,"stream_id":"20261001-091500-tui-4121","id":"a12",
+   "item_id":"~838","thread":{"session":"20261001-094001-sub-4121","agent":"explore","title":"find the flaky test"},
    "tool":"run_shell","summary":"ctest --test-dir build -R relay","reason":"runs a program","origin":"local","always_covers":"ctest","preview":""}}
-→ {"jsonrpc":"2.0","id":31,"method":"session.answer","params":{"session":"20261001-091500-tui-4121","approval":"a12","choice":"yes"}}
+→ {"jsonrpc":"2.0","id":31,"method":"maic.approval.answer","params":{"session":"20261001-091500-tui-4121","approval":"a12","choice":"yes"}}
 ```
 
 ## 4. Streaming tool output
@@ -198,15 +238,15 @@ Today `run_sandboxed` collects a command's output and returns it when the comman
 
 **What the model gets does not change.** The stream is a tee in front of the existing path: `absorb` keeps the head and a rolling tail in bounded memory, `trim_output` gives the model 24 KiB of head and 8 KiB of tail with the omitted count, the `msg` record holds that, the `tool` record keeps its 64 KB cap, and the timeout and cancel are as before. Nothing streamed ever reaches the model.
 
-**Events.** The engine coalesces chunks into a `tool_output` event every 100 ms or 16 KiB, whichever comes first. `offset` is the byte offset in the whole output, so a client can tell exactly what it holds and where a gap is.
+**Events.** The engine coalesces chunks into a `response.shell_call_output_content.delta` (for `run_shell`; the interleaved output is its `stdout`) or a `maic.tool.output.delta` (a script tool's stderr) every 100 ms or 16 KiB, whichever comes first. `offset` (`maic.offset` on OpenAI's event) is the byte offset in the whole output, so a client can tell exactly what it holds and where a gap is.
 
 **Back-pressure stops at the engine.** The engine reads the child's pipes at full speed whatever the clients do; a slow phone never slows or blocks a build. Each connection has an outbound queue measured in bytes:
 
-* Above 2 MiB queued, `tool_output` data for that connection is replaced by `{"skipped": N}` for the same `seq`, and consecutive queued `text` deltas of one item are merged into one event carrying the last `seq`. Nothing else is dropped or merged.
-* Above 8 MiB the connection is closed with `too_slow`; the client reconnects and resumes or resyncs (section 5).
-* Remote connections also get a per-session ceiling of 64 KiB/s of `tool_output` (the relay itself allows 4 MiB/s per pairing), so a runaway command cannot crowd approvals and replies off a phone link.
+* Above 2 MiB queued, tool output data for that connection is replaced by a skip count (`maic.skipped`, with an empty `delta`) for the same `sequence_number`, and consecutive queued `response.output_text.delta` or `response.reasoning_text.delta` events of one item are merged into one event carrying the last `sequence_number` and `maic.merged_from`, the first one it covers, so a client sees no unexplained gap (section 10). Nothing else is dropped or merged.
+* Above 8 MiB the connection is closed with `maic_too_slow`; the client reconnects and resumes or resyncs (section 5).
+* Remote connections also get a per-session ceiling of 64 KiB/s of tool output (the relay itself allows 4 MiB/s per pairing), so a runaway command cannot crowd approvals and replies off a phone link.
 
-Output beyond what the record keeps is display only and is not stored, as it is in a terminal's scrollback today. After `tool_end`, `session.expand` serves the recorded result.
+Output beyond what the record keeps is display only and is not stored, as it is in a terminal's scrollback today. After the output item's `response.output_item.done`, `maic.item.expand` serves the recorded result.
 
 opencode does this by re-sending the whole tool part with the last 30,000 characters of output as metadata on every update. Offsets and deltas cost less on a phone link and say exactly what was missed.
 
@@ -218,43 +258,44 @@ History is read from the session JSONL ([sessions.md](../sessions.md)), not from
 
 The engine builds a line-offset index of a session file when it loads it (one sequential scan) and extends it as records are appended, so any page is a seek and a short read. `reset` and `clear` records cut what the model sees, never what history shows, the same as the transcript today.
 
-Items being written have the provisional id `~<seq>` (the `seq` of the event that opened them) until `reply_end` or `tool_end` gives the `ref` they became.
+Items being written have the provisional id `~<n>` (the `sequence_number` of the `response.output_item.added` that opened them) until their `response.output_item.done` gives the `ref` they became.
 
 ### Snapshot, pages, expansion
 
 ```json
-→ {"jsonrpc":"2.0","id":3,"method":"session.attach","params":{"session":"20261001-091500-tui-4121","exchanges":3}}
-← {"jsonrpc":"2.0","id":3,"result":{"entry":{...},"load":"q7c2","seq":812,"more_before":true,
-   "items":[{"id":"20261001-091500-tui-4121#57","kind":"user","text":"run the tests","time":"2026-10-01T09:41:02+02:00"},
-            {"id":"20261001-091500-tui-4121#61","kind":"tool","tool":"run_shell","summary":"ctest --test-dir build","ok":true,
-             "size":48213,"head":"Test project ~/dev2/MAIC/build\n    Start  1: harness","collapsed":true},
-            {"id":"20261001-091500-tui-4121#62","kind":"assistant","text":"All 42 passed."}],
+→ {"jsonrpc":"2.0","id":3,"method":"maic.session.attach","params":{"session":"20261001-091500-tui-4121","exchanges":3}}
+← {"jsonrpc":"2.0","id":3,"result":{"entry":{...},"load":"q7c2","sequence_number":812,"more_before":true,
+   "items":[{"id":"20261001-091500-tui-4121#57","type":"message","role":"user","content":[{"type":"input_text","text":"run the tests"}],
+             "maic":{"time":"2026-10-01T09:41:02+02:00"}},
+            {"id":"20261001-091500-tui-4121#61","type":"shell_call_output","call_id":"c3","status":"completed","output":[],"max_output_length":null,
+             "maic":{"summary":"ctest --test-dir build","ok":true,"size":48213,"head":"Test project ~/dev2/MAIC/build\n    Start  1: harness","collapsed":true}},
+            {"id":"20261001-091500-tui-4121#62","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"All 42 passed.","annotations":[]}]}],
    "inflight":null,"pending":[],"todo":[],"usage":{...}}}
 ```
 
-* **`session.attach`** returns the entry, the last `exchanges` exchanges, `inflight` (the reply so far, or the running tool with the last 8 KiB of its output), every pending approval and question in the tree, the todo list and usage, and subscribes the client from the snapshot's `seq` in the same step, so no event falls between the two.
-* **`session.history {before, exchanges}`** pages backwards from an item. A client may drop pages it scrolled away from and fetch them again.
-* **Collapsing.** Tool results, attached files (`context`) and images larger than the client's `collapse_over` arrive as `size`, `head` (the first three lines, at most 200 bytes) and `collapsed: true`. Defaults: 2 KiB for a remote client, 64 KiB for a local one; maic.nvim may ask for 0 (never collapse) and fold with nvim's folds. User turns and replies are never collapsed: the displayable conversation is what must always be there.
-* **`session.expand {item, offset, length}`** returns up to 256 KiB of the item's text per call, with `done`; for a tool, the `tool` record's `result`; an image comes back as `mime` and base64 `data` in parts.
+* **`maic.session.attach`** returns the entry, the last `exchanges` exchanges, `inflight` (the reply so far, or the running tool with the last 8 KiB of its output), every pending approval and question in the tree, the todo list and usage, and subscribes the client from the snapshot's `sequence_number` in the same step, so no event falls between the two.
+* **`listConversationItems {conversation_id, after, order: "desc", maic: {exchanges}}`** pages backwards from an item. A client may drop pages it scrolled away from and fetch them again.
+* **Collapsing.** Tool results, attached files (`context`) and images larger than the client's `collapse_over` arrive with their content left out and `maic {size, head, collapsed: true}` (`head` the first three lines, at most 200 bytes). Defaults: 2 KiB for a remote client, 64 KiB for a local one; maic.nvim may ask for 0 (never collapse) and fold with nvim's folds. User turns and replies are never collapsed: the displayable conversation is what must always be there.
+* **`maic.item.expand {item_id, offset, length}`** returns up to 256 KiB of the item's text per call, with `done`; for a tool, the `tool` record's `result`; an image comes back as `mime` and base64 `data` in parts.
 
 ### Resume after a reconnect
 
-Each loaded session keeps a ring of its last 10,000 events or 8 MiB, whichever is smaller, in memory only. `seq` counts from 0 per load of a session, and `load` (returned by `attach`) names that load; `epoch` names the engine.
+Each loaded session keeps a ring of its last 10,000 events or 8 MiB, whichever is smaller, in memory only. `sequence_number` counts from 0 per load of a session, and `load` (returned by `attach`) names that load; `epoch` names the engine.
 
-1. Reconnect and `hello`. A different `epoch` means the engine restarted: `attach` again.
-2. Same epoch: `session.subscribe {session, load, after: last_seq}` replays what was missed and continues.
-3. A different `load` (the session was parked and resumed) or an `after` older than the ring answers `resync`: `attach` again.
+1. Reconnect and `maic.hello`. A different `epoch` means the engine restarted: `attach` again.
+2. Same epoch: `maic.session.subscribe {session, load, starting_after: last_sequence_number}` replays what was missed and continues.
+3. A different `load` (the session was parked and resumed) or a `starting_after` older than the ring answers `maic_resync`: `attach` again.
 
 This replaces maic-server's unbounded per-session `events` vector and its replay of the folded transcript as events on resume: history comes from the file, and the ring only bridges a dropped connection.
 
 ## 6. Several clients on one session
 
-The TUI at the desk and the phone on the sofa can have the same session open. One ordered event stream per session is what keeps their views consistent: every client sees the same events in the same `seq` order, and everything per client (focus, collapse sizes, drafts, scroll position) stays in the client.
+The TUI at the desk and the phone on the sofa can have the same session open. One ordered event stream per session is what keeps their views consistent: every client sees the same events in the same `sequence_number` order, and everything per client (focus, collapse sizes, drafts, scroll position) stays in the client.
 
-* **Input** has no lock and no owner. A `session.send` starts a turn when the session is idle and is queued into the mailbox when it is working, exactly as typing mid-turn does today; arrival order at the engine decides. Each `user` event names its client, so every view shows who typed what. Drafts stay in their client.
-* **Interrupt** may come from any client with the session open, local or remote: stopping only adds restriction.
-* **Approvals and questions** go to every client with the session (or its tree) open. The first valid answer wins under the session's lock; the rest get `approval_answered` with `by` and close their prompt, and a late answer gets `already_answered`. A remote client may answer an approval raised in a turn started locally (approving from the phone while away from the desk is the point); its answer is recorded with its origin, and it cannot answer `always` (section 7).
-* **Settings and lifecycle** (`session.set`, park, stop) act for everyone and are announced with `by`, so the TUI says "parked from phone" rather than going quiet.
+* **Input** has no lock and no owner. A `response.create` starts a turn when the session is idle; while it works, `response.steer` delivers into the running response at its next boundary, exactly as typing mid-turn does today (and `response.create` on the lane queues a new turn behind it); arrival order at the engine decides. Each `user` item names its client, so every view shows who typed what. Drafts stay in their client.
+* **Interrupt** (`cancelResponse`) may come from any client with the session open, local or remote: stopping only adds restriction.
+* **Approvals and questions** go to every client with the session (or its tree) open. The first valid answer wins under the session's lock; the rest get `maic.approval.answered` with `by` and close their prompt, and a late answer gets `maic_already_answered`. A remote client may answer an approval raised in a turn started locally (approving from the phone while away from the desk is the point); its answer is recorded with its origin, and it cannot answer `always` (section 7).
+* **Settings and lifecycle** (`maic.session.set`, park, stop) act for everyone and are announced with `by`, so the TUI says "parked from phone" rather than going quiet.
 * **Origin is per turn and only rises.** A turn started by a local client runs as local; once a message from a remote client is delivered into it, the rest of that turn runs as `Origin::Remote`, because what the model does next is shaped by remote input. It never goes back down within a turn. Tasks inherit their parent's current origin.
 
 ## 7. Security
@@ -279,16 +320,16 @@ The transport stamps every command's origin: in-process, stdio and the Unix sock
 
 | Never | How it is enforced |
 | :--- | :--- |
-| reset or unlock the tripwire | there is no such method at all; the session-scoped `:unlock` is a local-only command; `engine.trip` is allowed, since it only adds restriction |
+| reset or unlock the tripwire | there is no such method at all; the session-scoped `:unlock` is a local-only command; `maic.engine.trip` is allowed, since it only adds restriction |
 | grant or change trust | no trust method over the protocol; the step-up route `POST /api/trust` stays the one remote path and refuses until accounts register a verifier |
-| change global settings | no method writes a settings file; `session.set` changes one session |
+| change global settings | no method writes a settings file; `maic.session.set` changes one session |
 | loosen a session | `harness = "dumb"`, `:allow`, removing a `:forbid` term, `:rule`, `:system`, `:prefill`, `:instructions off` are local only; the dumb-plus-auto confirmation is local only |
-| run unsandboxed | `session.shell` (`!cmd`) and `:lua` are local only |
-| move or touch files outside the harness | `:cd` (already refused for `Origin::Remote`), `:init`, `:undo`, `:export`, `:image FILE` are local only; a remote picture arrives through `session.image` |
+| run unsandboxed | `maic.session.shell` (`!cmd`) and `:lua` are local only |
+| move or touch files outside the harness | `:cd` (already refused for `Origin::Remote`), `:init`, `:undo`, `:export`, `:image FILE` are local only; a remote picture arrives through `maic.session.image` |
 | reach the machine | `:up`, `:down`, `:gpu`, `:ctx`, `:ctx2`, `:trust`, `:untrust`, `:lazylock`, `:open`, `:path`, `:artifacts`, `:settings` are local only |
-| reach outside the workspaces | `session.create` and `session.resume` stay inside `server.workspaces` and use only directories already trusted here; `tripwire = "isolated"` refuses remote work, as today |
+| reach outside the workspaces | `createConversation` and `maic.session.resume` stay inside `server.workspaces` and use only directories already trusted here; `tripwire = "isolated"` refuses remote work, as today |
 
-The rule is an allow-list: each engine method and each engine `:` command carries a remote flag, and anything not marked is refused for remote with `forbidden_remote`. Marked for remote: `:mode` (tightening freely, loosening up to `edit`), `:model` (presets; a model off the machine is labelled as today), `:think`, `:compact`, `:rename`, `:todo`, `:tools`, `:status`, adding a `:forbid` term, lowering `:budget`, and `:trip`.
+The rule is an allow-list: each engine method and each engine `:` command carries a remote flag, and anything not marked is refused for remote with `maic_forbidden_remote`. Marked for remote: `:mode` (tightening freely, loosening up to `edit`), `:model` (presets; a model off the machine is labelled as today), `:think`, `:compact`, `:rename`, `:todo`, `:tools`, `:status`, adding a `:forbid` term, lowering `:budget`, and `:trip`.
 
 ## 8. How today's pieces migrate
 
@@ -299,66 +340,397 @@ The rule is an allow-list: each engine method and each engine `:` command carrie
 1. **The TUI becomes a client of an in-process engine**: the same JSON values through `Engine::call` and a sink, no socket, no change visible to Micaiah. The protocol tests run here.
 2. **`maic --rpc`**: the same engine behind stdio. maic.nvim's interface mode (item 1) is its first client.
 3. **The daemon** (`maic daemon start|stop|status`): the same engine behind the Unix socket, its PID kept with its start time as MAIC keeps its services' (MAIC owns the PID, not systemd). The TUI and maic.nvim attach to it when it answers and run in-process when it does not.
-4. **maic-server becomes an adapter, then goes.** Its HTTP routes are rewritten as calls into the daemon's engine (`POST .../messages` is `session.send` plus a subscription written out as server-sent events in today's shapes), so the web client keeps working; the LAN listener and the relay home link move into the daemon; the tunnel gains kind 6; the web client moves to the protocol; then the HTTP routes, tunnel kinds 1 to 5 and the separate `maic-server` binary are removed, leaving `/api/pair` and `/api/trust` until accounts replace them.
+4. **maic-server becomes an adapter, then goes.** Its HTTP routes are rewritten as calls into the daemon's engine (`POST .../messages` is `response.create` plus a subscription written out as server-sent events in today's shapes), so the web client keeps working; the LAN listener and the relay home link move into the daemon; the tunnel gains kind 6; the web client moves to the protocol; then the HTTP routes, tunnel kinds 1 to 5 and the separate `maic-server` binary are removed, leaving `/api/pair` and `/api/trust` until accounts replace them.
 
 **The host connection stays separate.** maic.nvim's host connection is MAIC driving nvim: MAIC connects to `$NVIM` as a msgpack-rpc client to `:drop` files, show diffs, fire `User` autocmds, follow the colorscheme and offer the `diagnostics` tool. The engine protocol is the other direction: nvim driving MAIC. In interface mode both exist: maic.nvim starts `maic --rpc` as its job, and the engine, being nvim's child, finds `$NVIM` and passes the ancestor check as it does today. Two channels, two directions, two codecs, each vetted on its own terms. When the plugin renders from protocol events it fires the `Maic*` autocmds itself and says so with the `autocmds` capability, and the engine then does not fire them over the host connection. A daemon is not nvim's descendant, so its sessions get no host connection (open question 8).
 
 ## 9. Versioning and capabilities
 
 ```json
-→ {"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":1,"client":{"name":"maic.nvim","version":"0.1"},
+→ {"jsonrpc":"2.0","id":1,"method":"maic.hello","params":{"protocol":1,"client":{"name":"maic.nvim","version":"0.1"},
    "capabilities":["tool_output","collapse","side_threads","tasks","autocmds"],"view":{"collapse_over":0}}}
 ← {"jsonrpc":"2.0","id":1,"result":{"protocol":1,"engine":{"version":"dev","epoch":"k3f9w2"},"client":"c1","origin":"local",
-   "capabilities":["tool_output","collapse","side_threads","tasks","index","images"],"limits":{"always":true,"max_message":1048576}}}
+   "capabilities":["tool_output","collapse","side_threads","tasks","index","images"],"limits":{"always":true,"max_message":1048576},"tier":"guarded","path":{"via":"stdio"}}}
 ```
 
-* `protocol` is one integer. The engine answers with the version it will speak, or `unsupported_protocol` with the range it supports. The major version changes only when a message changes meaning or a field is removed.
-* Additions (a method, an event type, a field) do not change it. A capability string announces a feature on either side; the engine sends a client only the event types its capabilities cover (no `tool_output` events to a client without `tool_output`).
+* `protocol` is one integer, MAIC's own: it versions MAIC's extensions and envelope, while OpenAI's shapes follow the pinned description (section 15). The engine answers with the version it will speak, or `maic_unsupported_protocol` with the range it supports. The major version changes only when a message changes meaning or a field is removed.
+* Additions (a method, an event type, a field) do not change it. A capability string announces a feature on either side; the engine sends a client only the event types its capabilities cover (no `tool.output.delta` events to a client without the `tool_output` capability).
 * Clients ignore unknown event types and unknown fields, as MAIC ignores unknown record types in a session file. The engine answers an unknown method with JSON-RPC's `-32601`.
-* Nothing but `hello` is accepted before `hello`.
+* Nothing but `maic.hello` is accepted before `maic.hello`.
 
-Errors use JSON-RPC's codes for protocol faults and `-32000` for the rest, with a machine `code` and a sentence:
+Errors use JSON-RPC's codes for protocol faults and `-32000` for the rest; `data` is OpenAI's error object, its `code` OpenAI's where OpenAI defines the condition and `maic_`-prefixed otherwise (section 10):
 
 ```json
-{"jsonrpc":"2.0","id":9,"error":{"code":-32000,"message":"`:allow` is not available to a remote client","data":{"code":"forbidden_remote"}}}
+{"jsonrpc":"2.0","id":9,"error":{"code":-32000,"message":"`:allow` is not available to a remote client","data":{"type":"invalid_request_error","code":"maic_forbidden_remote","message":"`:allow` is not available to a remote client","param":null}}}
 ```
 
 | `data.code` | When |
 | :--- | :--- |
-| `not_found` | no such session, item, approval or question |
-| `busy` | park or stop while a turn runs without `interrupt` |
-| `already_answered` | another client answered first |
-| `forbidden_remote` | outside the remote allow-list |
-| `confirm_required` | auto under a dumb harness; `data.text` is what to show |
-| `resync` | `after` left the ring, or the session was reloaded |
-| `too_large`, `too_slow` | the size caps of section 1, the queue cap of section 4 |
-| `tripped` | the harness is tripped |
-| `not_owner` | accounts: another user's session |
-| `unsupported_protocol` | no common version |
+| `response_not_found`, `response_not_active`, `response_already_completed`, `too_many_pending_steers`, `invalid_input`, `steering_not_supported` | OpenAI's steering codes, as OpenAI defines them (section 11) |
+| `maic_not_found` | no such session, item, approval or question |
+| `maic_busy` | park or stop while a response runs without `interrupt` |
+| `maic_already_answered` | another client answered first |
+| `maic_forbidden_remote` | outside the remote allow-list |
+| `maic_confirm_required` | auto under a dumb harness; `data.message` is what to show |
+| `maic_resync` | `starting_after` left the ring, or the session was reloaded |
+| `maic_too_large`, `maic_too_slow` | the size caps of section 1, the queue cap of section 4 |
+| `maic_tripped` | the harness is tripped |
+| `maic_not_owner` | accounts: another user's session |
+| `maic_unsupported_protocol` | no common version |
+| `maic_steer_disabled` | the action is not in `steering.actions` or not allowed for this client |
+| `maic_step_up_required`, `maic_step_up_failed` | the tier asks a remote client for a fresh step-up code, or the code was refused |
+| `maic_no_external_harness` | `harness = "external"` where no external agent judges |
+| `maic_schema` | a message failed its schema at `reject` (`param` holds the JSON pointer) |
+| `maic_protocol_violation` | the engine withheld an event that broke its own ordering or schema; the response fails with it |
+| `maic_tier_unavailable` | the session's tier cannot run here (`airtight` on an unstamped build, `open` over a remote transport) |
 
-## 10. Build order
+## 10. Names: OpenAI's, extended under `maic`
 
-Each step is one PR with its tests and is useful on its own.
+Micaiah's rule (2026-10-02): OpenAI's API description, [openai/openai-openapi](https://github.com/openai/openai-openapi) (MIT; pinned at commit `de3a025c40f84b99d1401ee1c5fe69fbf8de789b`, OpenAPI 3.1.0, API version 2.3.0), is the gold standard for LLM communication and processes. Where it defines a concept MAIC has, MAIC uses its names, field names, value enums and shapes unchanged; what is MAIC's alone is an extension. "We can extend, but we shouldn't extinguish." [standards.md](../standards.md) makes it the first principle for every standard MAIC follows.
+
+### The convention
+
+1. **OpenAI's names, exactly**: event types, objects (`response`, `conversation`, items, content parts, `usage`, errors), fields, enum values, request parameters, REST operations by their `operationId` (`getResponse`, `cancelResponse`, `listConversationItems`), and the Responses WebSocket's client events by their `type` (`response.create`, `response.steer`).
+2. **MAIC's own event types and methods start with `maic.`** (`maic.review.started`, `maic.steer`, `maic.session.park`).
+3. **MAIC's own fields on an OpenAI-shaped object go in one `maic` object on it** (`"maic": {"judged_by": "rules"}`), never beside OpenAI's fields.
+4. **A closed OpenAI enum is never extended.** A MAIC value goes in the `maic` object beside OpenAI's (`"status": "incomplete", "maic": {"status": "denied"}`). An open string or an extensible enum (error codes, `ResponseSteerErrorCode`) takes MAIC values with the prefix `maic_` (`maic_forbidden_remote`).
+5. **An extension never redefines or shadows an OpenAI name**, and an OpenAI-only client that ignores every `maic.*` event and every `maic` object still follows a session: responses created, items added, text streamed, tools run, responses completed, steered, failed.
+
+MAIC's own: the harness's review stream, approvals, questions, steering actions beyond `response.steer`, `judged_by`, trust and tiers, a session's lifecycle beyond a response's `status`, and the session index.
+
+### The channel is the Responses WebSocket's counterpart
+
+OpenAI's Responses WebSocket mode is the nearest thing to MAIC's channel: one connection, client events `response.create` (with `stream_id`, a lane whose requests run FIFO) and `response.steer`, and server events that are the `ResponseStreamEvent`s plus `stream_id` and the steering events. MAIC's JSON-RPC channel is shaped after it: one notification, `maic.event`, carries one server event exactly as the WebSocket would send it, with `stream_id` set to the session id (a session is a lane); the WebSocket's client events are methods of the same names; REST operations are methods named by `operationId`. JSON-RPC 2.0 stays the envelope (ids, answers, errors), and an error's `data` holds OpenAI's error object, `{type, code, message, param}`.
+
+### Objects
+
+| OpenAI | MAIC |
+| :--- | :--- |
+| `conversation` (`{id, object, metadata, created_at}`) | a session: `id` the session id, `metadata.title` its title, `maic.entry` the index entry |
+| `response` (`status`: `queued`, `in_progress`, `completed`, `failed`, `cancelled`, `incomplete`) | one run of the agent loop: the model, the tools it calls and their results, until it answers, is steered or stops. `id` is `<session id>.r<k>`; `background` is always `true`, because the engine owns every run whatever the clients do; `previous_response_id` links it to the response it continues; `maic {turn, origin, final, ended_by}` |
+| none | a turn: the chain of responses from one message to its answer, linked by `previous_response_id`, numbered by `maic.turn`, closed by the terminal event that carries `maic.final: true` |
+| output items `message` (`output_text`), `reasoning` (`reasoning_text`), `function_call`, `function_call_output`, `shell_call`, `shell_call_output`, `compaction` | the reply, thinking, a tool call and its result (`run_shell` as a shell call, every other tool as a function call), a compaction |
+| input items: `message`, role `user`, with `input_text` and `input_image` parts | what a person typed or attached |
+| item ids | `<file id>#<line>`, or `~<n>` (the `sequence_number` of its `added` event) until the record exists |
+| `usage` (`input_tokens`, `input_tokens_details`, `output_tokens`, `output_tokens_details`, `total_tokens`) | on every finished response; per-call figures and the budget in `maic.usage.updated` |
+
+The session file keeps its own records ([sessions.md](../sessions.md)); the engine maps records to items at the protocol boundary, so no transcript changes shape.
+
+### The order
+
+OpenAI's description gives each event's shape but not the sequence: OpenAPI 3.1 gives `text/event-stream` a `schema` for one event. The order below is that missing half, borrowed from how the Responses API streams and held to by the checker (section 15). Anthropic's Messages stream has the same shape (`message_start`, `content_block_start` with `index`, `content_block_delta`, `content_block_stop`, `message_stop`), and MAIC's provider clients read both already.
+
+1. **Every event carries `sequence_number`**, one number space per session load: 0 at each load (`load` names it), one more per event. A response's events are therefore a contiguous run of the session's numbers, and `starting_after` means the same on `getResponse` and on `maic.session.subscribe` (open question 23). A merged delta (section 4) carries `maic.merged_from`, the first number it covers. `maic.index` and `maic.engine` notifications replace state and carry no number.
+2. **Every lifecycle has an opening event and exactly one terminal event.** A response: `response.created`, then `response.queued` while it waits for a slot, then `response.in_progress`, then one of `response.completed`, `response.incomplete`, `response.failed` or `maic.response.cancelled`. Items, parts, reviews, approvals, questions and tasks likewise.
+3. **Items are announced before their deltas and closed after them**: `response.output_item.added`, then for a message `response.content_part.added`, the `response.output_text.delta`s, `response.output_text.done`, `response.content_part.done`, then `response.output_item.done`. Nothing is sent for a closed item or part.
+4. **A response ends after its items.** Its terminal event comes after every item it opened is done; an abrupt end (a halt, the tripwire, a provider failure) first closes open items with `status: "incomplete"` (and `maic.status: "discarded"` when a halt threw them away).
+
+Items are addressed by `item_id` and `output_index` (0-based within the response, in `added` order, never reused); content parts by `content_index`.
+
+### The state machines
+
+Derived from the messages of sections 2 to 6 and 11. `-` is "not yet"; a terminal state takes no further event.
+
+**Session** (`maic.session.state`; one machine per load):
+
+| From | Event | To |
+| :--- | :--- | :--- |
+| - | `maic.session.state` `live` or `background` (attach, create, resume) | `live`, `background`; `sequence_number` 0, a new `load` |
+| `live` | `maic.session.state` `background` | `background` |
+| `background` | `maic.session.state` `live` | `live` |
+| `live`, `background` | `maic.session.state` `parked` | `parked`, terminal for this load |
+| `live`, `background` | `maic.session.state` `stopped` | `stopped`, terminal |
+
+`activity` moves `idle` to `working` at a turn's first `response.created`, to `slot` at `response.queued`, to `waiting` at `maic.approval.requested`, `maic.question.asked` or `maic.turn.paused`, back to `working` when the last of those closes, and to `idle` at the terminal event with `maic.final: true`. Parking or stopping with a response running first cancels it.
+
+**Response** (at most one open per session; a response with a `previous_response_id` follows that response's terminal event):
+
+| From | Event | To |
+| :--- | :--- | :--- |
+| - | `response.created` | `created` |
+| `created` | `response.queued` | `queued` |
+| `created`, `queued` | `response.in_progress` | `in_progress` |
+| `in_progress` | `response.completed` | `completed`, terminal |
+| `in_progress` | `response.incomplete` | `incomplete`, terminal |
+| `created`, `queued`, `in_progress` | `response.failed` | `failed`, terminal |
+| `created`, `queued`, `in_progress` | `maic.response.cancelled` | `cancelled`, terminal |
+
+**Turn** (MAIC's; `maic.turn` is the previous turn plus one): opens at a `response.created` with a new `maic.turn`; each later response of the turn names the previous one in `previous_response_id`; `maic.turn.paused` may follow a `maic.response.cancelled` with `final: false`, and the next response of the turn resumes it; the turn closes at the terminal event carrying `maic.final: true`.
+
+**Item** (only inside an open response):
+
+| From | Event | To |
+| :--- | :--- | :--- |
+| - | `response.output_item.added` | `open` |
+| `open` | the item's own deltas: `response.content_part.added`, `response.output_text.delta` / `.done`, `response.content_part.done` (a `message`); `response.reasoning_text.delta` / `.done` (a `reasoning`); `response.function_call_arguments.delta` / `.done` (a `function_call`); `response.shell_call_command.*` (a `shell_call`); `response.shell_call_output_content.*` or `maic.tool.output.delta` (an output item) | `open` |
+| `open` | `response.output_item.done` | `done`, terminal |
+
+**Action** (a tool call: from its call item's `done` to its output item's `done`):
+
+| From | Event | To | Only when |
+| :--- | :--- | :--- | :--- |
+| `proposed` | `maic.review.started` | `reviewing` | the round-trip path (`smart`) and an action the reviewer reads |
+| `reviewing` | `maic.review.delta` | `reviewing` | the client subscribed to review text |
+| `reviewing` | `maic.review.verdict` `allow` | `allowed` | |
+| `reviewing` | `maic.review.verdict` `ask`, then `maic.approval.requested` | `asking` | a failed reviewer answers `ask` |
+| `reviewing` | `maic.review.verdict` `deny` | `denied` | |
+| `reviewing` | `maic.review.cancelled` | `withdrawn` | a steer or a halt |
+| `proposed` | `maic.approval.requested` | `asking` | the rules ask |
+| `proposed` | none (the rules allow, or deny) | `allowed`, `denied` | |
+| `asking` | `maic.approval.answered` `yes` or `always` | `allowed` | |
+| `asking` | `maic.approval.answered` `no` or `trip` | `denied` | |
+| `asking` | `maic.approval.answered` `withdrawn` | `withdrawn` | a steer |
+| `allowed`, or `proposed` on the external path | `response.output_item.added` (the output item) | `running` | on the external path the other agent already ran it, and no `maic.review.*` or `maic.approval.*` may appear for it |
+| `running` | output deltas | `running` | |
+| `running` | `response.output_item.done` | `done`, terminal | a cancelled run ends `status: "incomplete"` |
+| `denied`, `withdrawn` | the output item's `added` and `done`, its output saying why | `done`, terminal | `maic.status` `denied` or `withdrawn` |
+
+`maic.judged_by` on the output item must agree with the path taken: `maic` after a `maic.review.verdict`, `rules` when no review occurred on MAIC's side, the external agent's name on the external path.
+
+**Review, approval, question.** A review is `maic.review.started`, any `maic.review.delta`, then `maic.review.verdict` or `maic.review.cancelled`. An approval is requested, then answered once. A question is asked, then answered once (`withdrawn: true` when a steer took its place). A late answer is a request error (`maic_already_answered`), never an event.
+
+**Steer.** `response.steer.accepted` and `maic.steer.applied` are legal only while a response of the turn is open or the turn is paused, and come before every event they cause.
+
+**Gaps.** A client expects the next event's number (or its `maic.merged_from`) to be one more than the last it holds. A larger number is a gap: it resubscribes with `starting_after` set to the last number it holds, and the engine replays from the ring or answers `maic_resync`. A smaller or repeated number within a load is a protocol violation.
+
+### Renames to make when the protocol is built
+
+Names MAIC's code or this design's first draft use today, each replaced by the name above when its step lands:
+
+| Today | Becomes |
+| :--- | :--- |
+| maic-server's `GET /api/sessions/{id}/events?after=N` | `starting_after`, on `maic.session.subscribe` and `getResponse` |
+| the server's session field `seq` | `sequence_number` |
+| server events `text` (with `thinking`) | `response.output_text.delta`, `response.reasoning_text.delta` |
+| `tool_call`, `tool_result` | the `function_call` or `shell_call` item and its output item (`response.output_item.added` / `.done`) |
+| `user` (with `queued`) | `maic.input.added`; delivering into a running response is `response.steer` |
+| `approval`, `approval_answered` | `maic.approval.requested`, `maic.approval.answered` |
+| `notice`, `mode` | `maic.notice`, `maic.session.settings` |
+| `error {text}` | `error {code, message, param}` |
+| `done` | `response.completed` |
+| `POST .../messages`, `.../interrupt`, `.../approvals/{id}`, `.../mode` | `response.create` or `response.steer`, `cancelResponse`, `maic.approval.answer`, `maic.session.set`, through the adapter until the routes go (step 17) |
+| the first draft's `hello`, `session.*`, `event`, `turn_start`, `tool_output`, ... | the methods and events of section 3 |
+| the addendum's `review.*`, and `tool.started` / `tool.finished` with `judged_by` | `maic.review.*`, and the output item's `added` / `done` with `maic.judged_by` |
+
+The capability string `tool_output` keeps its name: capabilities are MAIC's own handshake vocabulary.
+
+## 11. Steering
+
+OpenAI defines steering, and MAIC adopts it as written: `response.steer {previous_response_id, input}` queues user input for a running response; `response.steer.accepted {steer {id, previous_response_id}}` says the engine owns it; the response then finishes at a safe boundary with `response.incomplete` and `incomplete_details.reason: "steered"`, and a successor `response.created` (its `previous_response_id` the steered response) carries the input and is the commit point; input that cannot be committed comes back in `response.steer.failed` with one of OpenAI's codes (`response_not_found`, `response_not_active`, `response_already_completed`, `too_many_pending_steers`, `invalid_input`, `steering_not_supported`, `successor_creation_failed`). In MAIC that is a message typed while a turn runs: it lands at the next boundary, after the current model call and its tools, as the mailbox does today.
+
+Micaiah's six actions extend it, through `maic.steer`, for when waiting for the boundary is not what she wants:
+
+| Action | Generation | The partial reply | A pending review or approval | A running tool | The model is told | The response, then the turn |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `steer` | stopped now | kept | withdrawn | cancelled, or waited for (`tool`) | the note: "The user redirected you: NOTE. Continue from where you stopped, following it." | `response.incomplete` (`steered`), then a successor carrying the note: the turn continues |
+| `drop` | stopped now | kept, or trimmed (`trim`, `at`) | withdrawn | cancelled, or waited for | "The user dropped the topic you had started; it was removed from your reply. Leave it and do not return to it." and the note, if any | as `steer` |
+| `further` | continues to the next boundary | kept | left alone; the note waits until it resolves | waited for | "The user asks you to go deeper on what you were just saying." and the note, if any | as `steer`, at the boundary |
+| `interrupt` | stopped now | kept | withdrawn | cancelled | nothing yet: the next steer or message says it | `maic.response.cancelled` (`final: false`), then `maic.turn.paused` |
+| `keep` | stopped now | kept as the answer | withdrawn | cancelled | nothing: the partial reply stands as the answer | `response.completed`, `maic {ended_by: "keep", final: true}` |
+| `halt` | stopped now | discarded | withdrawn | cancelled, output discarded | the canned halt message | items closed `incomplete` (`maic.status: "discarded"`), `error` with `code: "maic_halted"` and the message, then `maic.response.cancelled` (`final: true`) |
+
+`steer`, `drop` and `further` are OpenAI steers with MAIC's text as their input, so they also emit `response.steer.accepted`, and an OpenAI-only client sees exactly a steered response and its successor. `interrupt`, `keep` and `halt` stop rather than redirect, and show to such a client as a cancelled or completed response. `cancelResponse` (Ctrl-C, `:MaicInterrupt`) stays what it is in OpenAI's API: the response ends `cancelled` with its partial output kept, and the turn ends with it.
+
+**Kept** works as a ban's cut does ([bans.md](../bans.md#what-the-model-sees)): the partial reply's item closes `incomplete`, and the steered response's output is the assistant's turn so far. **Trimmed** removes the tail of the partial reply from the start of what was dropped: `trim` is `none`, `sentence`, `paragraph` (the default, `steering.drop_trim`) or `all`, and `at`, a byte offset chosen in the client, overrides it; `response.output_text.done` then carries the trimmed text and `maic.trimmed` the range removed, so a client replaces what the deltas built. **Withdrawn** means the proposed action does not run: a review in flight is cancelled (`maic.review.cancelled`), an open approval closes (`maic.approval.answered`, `choice: "withdrawn"`), and the output item says "not run: the user redirected", so the model may propose it again under the new direction. An action proposed under the old direction never runs after a redirect. **A running tool** is cancelled as `cancelResponse` cancels one (process group killed, the output so far recorded), or, for `steer` and `drop` with `tool: "wait"` (or `steering.on_running_tool = "wait"`), finishes first and the steer applies at the next boundary; `further` always waits, and `interrupt`, `keep` and `halt` always cancel.
+
+```json
+→ {"jsonrpc":"2.0","id":52,"method":"maic.steer","params":{"session":"20261001-091500-tui-4121","response_id":"20261001-091500-tui-4121.r9","action":"drop","note":"leave the CI config alone"}}
+← {"jsonrpc":"2.0","id":52,"result":{"steer":{"id":"st7","previous_response_id":"20261001-091500-tui-4121.r9"}}}
+← {"jsonrpc":"2.0","method":"maic.event","params":{"type":"response.steer.accepted","sequence_number":905,"stream_id":"20261001-091500-tui-4121",
+   "steer":{"id":"st7","previous_response_id":"20261001-091500-tui-4121.r9"}}}
+← {"jsonrpc":"2.0","method":"maic.event","params":{"type":"maic.steer.applied","sequence_number":906,"stream_id":"20261001-091500-tui-4121","steer":"st7",
+   "action":"drop","trigger":"client","by":{"client":"c2","name":"phone","origin":"remote"},
+   "trimmed":{"item_id":"~880","from":1412,"to":2210},"withdrawn":["a14"],"cancelled_tool":null}}
+```
+
+Then the trimmed `response.output_text.done`, the item and part closes, `response.incomplete` with `incomplete_details.reason: "steered"`, and the successor `response.created`. `maic.steer.applied` carries the steer's id, `action`, `trigger` (`client` or `ban`), `by` (for a ban: `{client: "engine", name: "bans"}` with the turn's origin), `ban` (which entry fired, `{list, index}`, never the matched text), `trimmed`, `withdrawn` (review and approval ids), `cancelled_tool` and, for a waiting steer, `waits_for`.
+
+**Rules.**
+
+* `response_id` must name the running response (or, for a paused turn, its last). A steer for one that has ended answers OpenAI's `response_already_completed` or `response_not_active`, and is never applied to the next turn.
+* Steers apply one at a time under the session's lock, in arrival order; after a `keep` or `halt` the rest answer `response_not_active`. A steer and an approval answer race under the same lock: if the answer won, the tool is running and the steer meets a running tool; if the steer won, the late answer gets `maic_already_answered`.
+* **A note is input.** A remote client's `response.steer`, or `maic.steer` with text, raises the turn's origin to remote (section 6), as a remote message delivered mid-turn does. `interrupt`, `keep` and `halt` carry no text and change no origin.
+* **A paused turn** has its session `waiting` (`waiting.kind: "steer"`). `steer`, `drop`, `further`, `response.steer` or `response.create` on its lane resume it with a successor response; `keep`, `halt`, `cancelResponse`, park and stop end it. A pause has no timeout (open question 14).
+* **Tasks.** Steering a parent while a foreground `task` runs treats the child as a running tool; a child is steered directly by its own session id.
+* **`cancelResponse` needs no step-up** and is open to every client with the session in every tier, because stopping only adds restriction.
+* **The transcript** gets a `steer` record (action, by, trigger, note, trimmed range, withdrawn ids), so a resumed or forked session shows what the model was told. A halt's discarded text is recorded only as a byte count.
+
+### Steers from bans
+
+A string or regex ban ([bans.md](../bans.md)) can name a steer action for its hits, instead of the cut, tell and re-ask it does today:
+
+```lua
+bans = {
+  patterns = {
+    "as an ai( language model)?",                                                  -- cut, tell, re-ask: as today
+    { "kubernetes|helm chart", steer = "drop", note = "This project has no cluster; leave deployment out." },
+    { "curl [^|]*[|] *(ba)?sh", steer = "halt" },
+  },
+}
+```
+
+On a hit the filter cuts before the match exactly as cut mode does, so the match never reaches a screen, then applies the entry's action with `trigger: "ban"` in `maic.steer.applied`: `drop` trims to before the match at least (further when `drop_trim` says so) and continues with the note; `steer` appends the note and continues; `interrupt` pauses for a person; `keep` ends the turn with the clean part; `halt` discards and sends the canned message. `further` is refused for a ban when settings load (it would go deeper into the banned topic). `retries` still bounds a turn: an entry with a steer that fires again after `retries` hits escalates to `halt`. Token bans never produce text, so they trigger nothing.
+
+### Settings
+
+In the settings files like everything else (`settings.lua`, any layer unless marked), and per agent under `agents.NAME.steering`:
+
+```lua
+steering = {
+  actions = { "steer", "drop", "further", "interrupt", "keep", "halt" },
+  halt_message = "The user halted this turn. What was in progress was discarded; do not continue it. Wait for the next message.",
+  drop_trim = "paragraph",
+  on_running_tool = "cancel",
+  clients = { ["local"] = "all", remote = "all" },
+  ban_actions = { "steer", "drop", "interrupt", "keep", "halt" },
+}
+agents = { explore = { steering = { actions = { "interrupt", "keep", "halt" } } } }
+```
+
+| Key | Default | Meaning | Where it may be set |
+| :--- | :--- | :--- | :--- |
+| `actions` | all six | the actions this session accepts; any other answers `maic_steer_disabled`. `response.steer` (a message mid-turn) and `cancelResponse` are not among them and are never disabled | any trusted layer; a project layer and an agent only remove actions |
+| `halt_message` | the text above | what `halt` puts in the model's context and shows every client as the turn's error | any trusted layer (it is an instruction to the model, as `MAIC.md` is) |
+| `drop_trim` | `"paragraph"` | the default trim of `drop`: `none`, `sentence`, `paragraph`, `all` | any trusted layer |
+| `on_running_tool` | `"cancel"` | what `steer` and `drop` do to a running tool when the request does not say: `cancel` or `wait` | any trusted layer |
+| `clients` | local `all`, remote `all` | which actions local and remote clients may send (`"all"`, `"none"` or a list); the tier may narrow it further and adds step-up (section 14) | global file only |
+| `ban_actions` | all but `further` | which actions a ban entry may name | any trusted layer, narrowing |
+| ban triggers | none | `steer` and `note` on a `bans.strings` or `bans.patterns` entry | wherever bans are set ([bans.md](../bans.md)) |
+
+Per agent, `agents.NAME.steering` takes the same keys; an agent defined in a project file can only narrow, and `clients` there is ignored with a warning naming the file. `:steering` shows what is in force and where each value came from; `:steer ACTION [NOTE]` sends one from the TUI (its keys are chosen with the TUI work, step 7).
+
+## 12. Following the Responses and Conversations lifecycle
+
+OpenAI's description covers the whole flow, not only one call: `POST /responses` (`createResponse`, with `background`, `previous_response_id`, `conversation`, `stream`, `stream_options`, `store`, `instructions`, `tool_choice`, `parallel_tool_calls`, `max_tool_calls`, `truncation`, `include`), `GET /responses/{response_id}` (`getResponse`, with `stream` and `starting_after`: resuming a stream from a sequence number) and its `DELETE`, `/responses/{response_id}/cancel`, `/responses/{response_id}/input_items`, `/responses/compact`, `/responses/input_tokens`, and `/conversations` with `/conversations/{conversation_id}/items`. MAIC follows that flow, and every row is either OpenAI's as written or a `maic` extension beside it:
+
+| OpenAI | MAIC | Status | Why |
+| :--- | :--- | :--- | :--- |
+| `response.create` (the WebSocket's form of `createResponse`) | `response.create` on the channel | adopted | the channel is the WebSocket's counterpart (section 10) |
+| `background: true` | every response | adopted | the engine owns every run; clients come and go, as with OpenAI's background responses |
+| `getResponse` with `stream=true&starting_after=N` | `getResponse`, for one response | adopted | the same need: leave a running stream and come back to it |
+| none | `maic.session.subscribe {starting_after}`, the session's whole stream; `maic.session.attach` | extension | a session runs many responses and MAIC-only events between them; the parameter keeps OpenAI's name and meaning |
+| `cancelResponse` | `cancelResponse` (Ctrl-C) | adopted | the response ends `cancelled`, its partial output kept |
+| none | the `halt`, `interrupt` and `keep` steers | extension | stopping that throws the work away, pauses, or accepts it, beside OpenAI's one cancel |
+| `deleteResponse`, `deleteConversation`, `deleteConversationItem` | not offered | adopted names, not offered | a session file is append-only; `maic.session.stop` ends a session and its transcript stays |
+| `previous_response_id` | links each response of a turn to the one before, and a fork's first response to where it forked | adopted | lineage by pointer, as MAIC's forks already are |
+| `stream_id` lanes | one lane per session | adopted | requests on a lane run FIFO, as a session's queued messages do |
+| `conversation`, `createConversation`, `getConversation`, `updateConversation` | sessions | adopted | a durable container of items with stable ids |
+| none | `live`, `background`, `parked`, `stopped`, the index, focus, side threads, forks | extension | a session's life beyond its items |
+| `listConversationItems`, `getConversationItem` | history pages and single items | adopted | |
+| none | `maic.exchanges` paging, collapsing and `maic.item.expand` ranges | extension | lazy history for a phone, by exchange and by byte range |
+| item ids | `<file id>#<line>` | adopted | ids are opaque strings; MAIC's name one line of one file and never move |
+| `listInputItems` | a response's input items | adopted | |
+| `Compactconversation`, `response.compaction.compacting`, the `compaction` item | `:compact` and automatic compaction | adopted | `encrypted_content`, opaque by contract, holds MAIC's reference to its `compact` record; the readable summary and byte counts are in `maic`. Micaiah's flow (prune old tool results first, summarise only when that is not enough) is unchanged |
+| `Getinputtokencounts` | the context estimate MAIC makes before each call | adopted | |
+| `parallel_tool_calls`, `max_tool_calls` | honoured as limits; MAIC runs one call at a time per agent, so a response reports `parallel_tool_calls: false` | adopted | each action is judged and, when asked, approved on its own; parallel work runs as background tasks, each with its own harness |
+| `tool_choice` | `auto`, `none` and a named tool, within the agent's tool list | adopted | |
+| `truncation` | `auto` lets compaction run; `disabled` refuses an input that does not fit | adopted | |
+| `include` | the values MAIC has data for | adopted | `reasoning.encrypted_content` never applies: MAIC's reasoning is plain text |
+| `instructions` | the operator prompt for this response | adopted | local clients only (section 7) |
+| `store` | `true`, or `false` in a `--no-record` session | adopted | |
+| `stream_options` | read; `include_obfuscation` has nothing to do on a local channel | adopted | |
+| `usage` | on every finished response | adopted | |
+| none | `maic.usage.updated`: per-call figures, context and budget | extension | |
+| `response.steer` and its events | a message typed mid-turn | adopted | section 11 |
+| none | the six steering actions, reviews, approvals, questions, `judged_by`, tiers, trust | extension | OpenAI's API has no harness judging actions on the user's machine and no person stopping a turn but by cancel |
+
+## 13. Harness paths
+
+Micaiah's three pipelines, chosen per agent and per session, with the rules of [harness-authority.md](../harness-authority.md) as the constraints:
+
+| `harness` | Path | Who judges an action | Streams | Valid for |
+| :--- | :--- | :--- | :--- | :--- |
+| `dumb` | the basic path | MAIC's fixed rules alone | one: the reply | any model |
+| `smart` | the local round trip | MAIC's reviewer model, over the fixed rules | two: the reply, and each action's review | everything MAIC's own loop drives: API and local models, L1, L2 |
+| `external` | full remote, no round trip | the external agent's own harness, over MAIC's fixed rules | one: what the agent said and did | an L3 agent (its own tools, opted in per agent definition) whose own harness is smart |
+| `auto` (default) | per harness-authority.md | | | `smart` for API and local models and L2; `external` for an L3 agent with a smart harness; `smart` for an L3 agent in a bypass mode |
+
+Set in `harness` (settings), `agents.NAME.harness`, and per session with `maic.session.set {harness}`, `:harness` and `--harness`; the session wins over the agent, the agent over the settings layers. The entry and `maic.session.settings` carry `harness` (the choice) and `judge` (the result: `maic`, `rules` or the agent's name, the same values as `judged_by`).
+
+Constraints:
+
+1. **The fixed rules are the floor on every path**: forbidden terms, trip patterns, trust, the sandbox, self-protection. No value turns them off.
+2. **One judge per action.** `smart` and `external` never both judge one action: on `external` MAIC sends no review, and on L2 the external agent's own prompts and classifier are off for MAIC's tools.
+3. **`external` needs an external harness.** For an API or local model, L1 or L2 it answers `maic_no_external_harness`: there nobody else judges, so it would mean nobody does.
+4. **An L3 agent in a bypass mode** keeps `smart` under `auto`; an explicit `external` for it asks for the same confirmation as dumb plus auto (`maic_confirm_required`).
+5. **Loosening is local** (section 7): `smart` to `dumb` or `external`, and anything to `dumb`. A remote client may only move toward `smart`. `dumb` with auto mode asks once, as today.
+6. **The tier caps the choice** (section 14): `airtight` refuses `dumb`.
+
+## 14. Security tiers
+
+The protocol and steering run at one of three tiers, `open`, `guarded` (the default) and `airtight`, from no checking at all (a private local sandbox, experiments) to everything validated, ordered, stepped-up and audited. The tiers, how they are set and shown, and how they map onto the rendezvous relay and a trusted node are in [protocol-security.md](protocol-security.md). What no tier changes: transport security, the remote allow-list of section 7, `Origin::Remote` always asked, no tripwire reset from a client, and the harness's fixed rules.
+
+## 15. Schemas, the ordering machine and conformance
+
+### The files
+
+```
+protocol/
+  openai/                     the pinned subset of openai/openai-openapi: every OpenAI schema MAIC emits, reads or accepts
+  maic.openrpc.json           every method, and the notifications `maic.event`, `maic.index`, `maic.engine` (OpenRPC 1.3)
+  schemas/                    JSON Schema 2020-12 for MAIC's own messages and the `maic` objects;
+                              event.schema.json is the union over `type`: OpenAI's event schemas by $ref into openai/,
+                              then the `maic.*` events, as ResponseStreamEvent is OpenAI's union
+  ordering.json               the state machines of section 10 as data: states, events, transitions, terminal states, rules
+  maic-server.openapi.yaml    the HTTP side while it exists (OpenAPI 3.2): `itemSchema` for text/event-stream
+                              and application/jsonl points at event.schema.json
+```
+
+A top-level `protocol/`, installed under `share/maic/protocol/`, because the engine (C++), maic.nvim (Lua), the web client and the tests all read it. OpenRPC is to JSON-RPC 2.0 what OpenAPI is to HTTP; its `components.schemas` are JSON Schema, so the payload schemas are written once and referenced from both the OpenRPC and the OpenAPI document. The notifications are listed as methods with no `result`, which is how OpenRPC describes a notification. OpenAPI 3.2's `itemSchema` describes each item of a sequential media type (`text/event-stream`, `application/jsonl`), the formal version of what OpenAI's 3.1 document says with a plain `schema`.
+
+**OpenAI's schemas are not copied by hand.** `protocol/openai/` is the subset of [openai/openai-openapi](https://github.com/openai/openai-openapi) MAIC needs, extracted by a script from the file at commit `de3a025c40f84b99d1401ee1c5fe69fbf8de789b` (OpenAPI 3.1.0, API 2.3.0, MIT), with a README naming the commit, the date and the extraction command: the Responses objects, items, content parts, the stream and steering events, the conversation and list objects, the error objects, and `CreateChatCompletionStreamResponse` with what it references (what `core/src/openai.cpp` reads from llama.cpp). MAIC's schemas reference it and never restate it, so an OpenAI shape can only change by bumping the pin, in a change of its own. The change that adds it adds its MIT row to [cleanroom.md](../cleanroom.md). No network is used: the gate reads the pinned copy.
+
+### One source, checked
+
+The schemas are the source of every message's shape; the C++ keeps building `nlohmann::json` values as today, with no generated structs. CMake embeds the files into the binary (a generated source holding their text), so runtime validation needs no file lookup. `ordering.json` is the source of the machines: the engine's runtime enforcement and the checker both load it, and the tables in section 10 are its design. `protocol_schema_test` keeps the sides in step:
+
+* every method in the dispatcher is in `maic.openrpc.json` and the reverse, and every method not starting with `maic.` is an `operationId` or a WebSocket client event `type` of the pinned spec;
+* every event type the engine can emit is in the union and the reverse, and every one not starting with `maic.` is an event of the pinned spec;
+* no MAIC schema defines a name the pinned spec defines, and every OpenAI-shaped object MAIC sends has no field beyond OpenAI's but `maic` (rules 3 to 5 of section 10);
+* every state and event in `ordering.json` names a real event type; every JSON example in this design and in the user docs validates; the schemas use only the keywords the validator supports.
+
+**The validator** is MAIC's own: the checker that script tool arguments already pass through ([tools.md](../tools.md)) grown to the keywords the schemas, OpenAI's included, use (`type` with type arrays, `properties`, `required`, `additionalProperties`, `enum`, `const`, `items`, `anyOf`, `oneOf`, `allOf`, `$ref` and `$defs`, `minimum`, `maximum`, `minLength`, `maxLength`, `minItems`; `discriminator` and the `x-` keys read as annotations), with no new dependency (open question 18). When Python's `jsonschema` package is importable, the conformance test also validates the recorded streams with it, and skips that half otherwise, as the TUI test does without pyte.
+
+### The checker
+
+`maic protocol check [FILE...]` and ctest `protocol_conformance` read recorded streams, one message per line as `{"dir": "in" | "out", "conn": "c1", "msg": {...}}`, and check: every message against its schema; every session's events against `ordering.json`; sequence numbers (0 at each load, one more each time, `maic.merged_from`, no repeats, `maic_resync` honoured); every request answered once; a steer's events before their effects; `maic.judged_by` against the path. The first violation per stream is reported with its `sequence_number`, the rule's id and the rule's text, and the exit status is 1.
+
+It runs on every build (`scripts/check.sh`), over:
+
+* **The test suite's own streams.** Every in-process protocol test records its exchange into `build/protocol-streams/`, and the checker runs over all of them after the tests.
+* **Mutated streams.** Each recorded stream is mutated (an event dropped, duplicated, swapped or renumbered, a stream truncated, a `type` changed, a required field removed, a field added beside OpenAI's outside `maic`, a steer placed after a terminal event); every mutation that breaks a rule must be rejected with that rule's id, and every one that breaks none must pass.
+* **Driven streams.** A randomised driver runs the in-process engine against `FakeServer`: messages, `response.steer` and steers of every action at random points, approvals answered, raced and withdrawn, ban hits with steer triggers, cancellations, a slow consumer. Every stream it produces must pass. A fixed seed in the gate keeps it deterministic ([testing.md](../testing.md)); `scripts/check-asan.sh` runs longer seeds, beside ctest `fuzz`.
+* **An OpenAI-only view.** Every stream above, with every `maic.*` event and `maic` object removed, must still pass OpenAI's own schemas and the response and item machines: rule 5, tested.
+* **The provider side.** `FakeServer`'s OpenAI-compatible chunks and the client's parsing are validated against the pinned `CreateChatCompletionStreamResponse`; fields llama.cpp adds (`timings`, `reasoning_content`) are allowed, and what OpenAI defines must be shaped as defined.
+* **Recorded real streams**, when a session ran at `airtight` and kept its stream ([protocol-security.md](protocol-security.md)).
+
+## 16. Build order
+
+Each step is one PR with its tests and is useful on its own. The names, `sequence_number`, the schemas, the ordering machine and the checker arrive with the engine itself (step 5), so no step ever ships an unchecked message.
 
 | # | Step | Roadmap |
 | :--- | :--- | :--- |
 | 1 | The sandbox hides `$XDG_RUNTIME_DIR` and clears the environment; escape tests for the nvim socket and D-Bus | prerequisite |
 | 2 | `always` never covers a remote-origin call; a turn's origin rises when a remote message is delivered into it | prerequisite |
-| 3 | Streaming tool output in core (`on_output` in the sandbox, `on_tool_output`); the TUI shows a running command's output live | 1, 4 |
-| 4 | `Engine` in core with the session table, ring, dispatcher and schema; maic-server's `Session` and `Events` move into it; protocol tests in-process | 1, 4 |
-| 5 | The TUI as an in-process client: the turn loop, titles, `!cmd` and the engine `:` commands move into the engine | 1 |
-| 6 | `maic --rpc`: JSON lines on stdio, `hello`, versioning, error codes | 1 |
-| 7 | maic.nvim's interface mode on `--rpc`: conversation and input buffers, approval and question floats, folds over collapsed items, the `maic` and `maic-input` filetypes | 1 |
-| 8 | History: the line-offset index, `attach`, `history`, `expand`, collapsing | 4 |
-| 9 | Several sessions in one engine: create, fork, focus, background, park, stop, resume, the index file, `:new`, `:switch`, `:fork`, `:bg`, `:park`, `:stop` and the switcher in the TUI and maic.nvim | 4 |
-| 10 | The daemon: `maic daemon`, the socket with the uid check, the TUI and maic.nvim attaching | 4 |
-| 11 | Background tasks: `task` with `background = true`, `task_start` and `task_end`, answers as labelled notes through the mailbox, `task_result`, parallel approvals | 4 |
-| 12 | Side threads: `session.side`, `:btw`, `:aside`, `merge_draft` and `merge` | 3 |
-| 13 | maic-server as an adapter inside the daemon; tunnel kind 6 and the LAN `/rpc` streams; the web client on the protocol with lazy history | 4, 7 |
-| 14 | The adapter, tunnel kinds 1 to 5 and the `maic-server` binary removed | 4, 7 |
-| 15 | Accounts: `owner` on sessions and entries, access tokens in `hello`, `not_owner` | 6 |
+| 3 | OpenAI's description pinned as `protocol/openai/`; `FakeServer`'s chunks and the OpenAI-compatible client validated against it, offline (section 15) | prerequisite |
+| 4 | Streaming tool output in core (`on_output` in the sandbox, `on_tool_output`); the TUI shows a running command's output live | 1, 4 |
+| 5 | `Engine` in core with the session table, ring, dispatcher and schema; maic-server's `Session` and `Events` move into it; protocol tests in-process; `protocol/` with the OpenRPC document, the JSON Schemas and `ordering.json`, the validator, runtime validation and ordering checks at the `guarded` defaults, `maic protocol check`, ctest `protocol_conformance` over recorded, mutated and driven streams | 1, 4 |
+| 6 | The TUI as an in-process client: the turn loop, titles, `!cmd` and the engine `:` commands move into the engine | 1 |
+| 7 | Steering: `response.steer` and `maic.steer` with its six actions, `response.steer.accepted` and `.failed`, `maic.steer.applied`, `maic.turn.paused`, `maic.response.cancelled`, the `steer` record, the `steering` settings and per-agent overrides, ban triggers, `:steer` and `:steering`, the TUI's keys; the driver gains steers | 1 |
+| 8 | `maic --rpc`: JSON lines on stdio, `maic.hello`, versioning, error codes | 1 |
+| 9 | maic.nvim's interface mode on `--rpc`: conversation and input buffers, approval and question floats, folds over collapsed items, the `maic` and `maic-input` filetypes, steering keys | 1 |
+| 10 | Harness paths: `harness = "auto"` and `"external"` with L3 agents, `judge` on the entry, the constraints of section 13 | 2 |
+| 11 | History: the line-offset index, `attach`, `history`, `expand`, collapsing | 4 |
+| 12 | Several sessions in one engine: create, fork, focus, background, park, stop, resume, the index file, `:new`, `:switch`, `:fork`, `:bg`, `:park`, `:stop` and the switcher in the TUI and maic.nvim | 4 |
+| 13 | The daemon: `maic daemon`, the socket with the uid check, the TUI and maic.nvim attaching; the tiers `open` and `guarded` with their enrollment (global default, per directory, per agent) and the tier on the entry and in the status strip | 4 |
+| 14 | Background tasks: `task` with `background = true`, `maic.task.created` and `maic.task.completed`, answers as labelled notes through the mailbox, `task_result`, parallel approvals | 4 |
+| 15 | Side threads: `maic.session.side`, `:btw`, `:aside`, `merge_draft` and `merge` | 3 |
+| 16 | maic-server as an adapter inside the daemon; tunnel kind 6 and the LAN `/rpc` streams; the web client on the protocol with lazy history; `maic-server.openapi.yaml` (OpenAPI 3.2) checked by the conformance test | 4, 7 |
+| 17 | The adapter, tunnel kinds 1 to 5 and the `maic-server` binary removed | 4, 7 |
+| 18 | Accounts: `owner` on sessions and entries, access tokens in `maic.hello`, `maic_not_owner`; step-up for remote steering; the `airtight` tier with the conformance stamp and recorded streams | 6 |
+| 19 | The relay's tier presets and, when wanted, the trusted node role ([protocol-security.md](protocol-security.md)) | 7 |
 
-Steps 1 and 2 are small and stand alone; 3 helps the TUI the day it lands; 4 to 7 deliver item 1; 8 to 11 and 13 deliver item 4; 12 is item 3 and needs 9.
+Steps 1 to 3 are small and stand alone; 4 helps the TUI the day it lands; 5 to 9 deliver item 1, with steering in from the start; 10 is item 2's choice of judge; 11 to 14 and 16 deliver item 4; 15 is item 3 and needs 12; 18 and 19 complete the tiers.
 
 ## Open questions for Micaiah
 
@@ -374,6 +746,22 @@ Steps 1 and 2 are small and stand alone; 3 helps the TUI the day it lands; 4 to 
 10. **The ring's size.** Recommendation: 10,000 events or 8 MiB per loaded session, in memory only; a reconnect after longer than that resyncs from the file, which is cheap with lazy history.
 11. **Typing presence ("the phone is typing").** Recommendation: no; every input names its client, which is enough.
 12. **The `maic-server` name.** Recommendation: keep `maic server start` working as `maic daemon start` with the listener on until the adapter is removed, then retire the separate binary; `maic-relay` stays its own binary.
+13. **Does Ctrl-C stay the stop?** Recommendation: yes. `cancelResponse` ends the turn as today, and the `interrupt` steer (pause and wait) gets a key of its own: a paused background session holds its slot with nobody looking at it.
+14. **A paused turn's timeout.** Recommendation: none. A pause is shown as waiting, like an approval, and park or stop end it.
+15. **`drop`'s default trim.** Recommendation: `paragraph`. `sentence` leaves most of a tangent in place and `all` throws away the good part before it; a client that lets you mark the spot sends `at`.
+16. **The halt message, and what the model sees.** Recommendation: the text in section 11, and the model is told that something was discarded but not what, so a halted tangent is not re-read into the next turn.
+17. **Remote steering under `guarded`.** Recommendation: all six actions. A note is the same as a message sent mid-turn and raises the turn's origin to remote; `airtight` adds the step-up check.
+18. **Which JSON Schema validator?** Recommendation: MAIC's own, grown from the script tool checker to the keyword subset the schemas use, with a test pinning that subset; no new dependency. jsoncons (in vcpkg, full 2020-12) is the fallback if the subset grows past what is reasonable to keep by hand.
+19. **Where the schema files live.** Recommendation: a top-level `protocol/`, installed with MAIC, since C++, Lua, the web client and the tests all read it.
+20. **The `harness` values.** Recommendation: `dumb`, `smart`, `external` and `auto` (the default). `external`, not `remote`, because remote already means a remote client's origin.
+21. **A ban's steer after `retries`.** Recommendation: escalate to `halt`; a model that keeps reaching a topic it was steered off three times is not going to stop on the fourth.
+22. **The pinned OpenAI description: the whole file or a subset?** Recommendation: the subset MAIC references, extracted by a script named in its README, so a bump is a reviewable diff rather than 4.6 MB.
+23. **`sequence_number` across a session.** OpenAI's sequence numbers belong to a response's stream; MAIC's stream is a session's, carrying many responses and MAIC's own events between them. Recommendation: one number space per session load, so each response's events are a contiguous run of it and `starting_after` means the same on `getResponse` and on `maic.session.subscribe`; OpenAI's schema says only "the sequence number for this event", and the OpenAI-only view in the checker holds MAIC to it.
+24. **Operation names as methods.** Recommendation: the `operationId` exactly (`getResponse`, `Compactconversation`, `Getinputtokencounts`), even where OpenAI's spelling is uneven, since it is the one machine name the spec gives an operation and the schema test can check it; the WebSocket's client events keep their `type` (`response.create`, `response.steer`).
+
+25. **How `interrupt` and `halt` look to an OpenAI-only client.** Recommendation: as a cancelled response (`getResponse` answers `status: "cancelled"`; `maic.response.cancelled` closes the stream for MAIC's clients), not as `incomplete` with `steered`, because OpenAI's `steered` promises an automatic successor and a pause or a halt has none.
+
+Open questions about the tiers and the relay roles are in [protocol-security.md](protocol-security.md#open-questions-for-micaiah).
 
 ## Addendum: review streams and the judge of each action (2026-10-01)
 

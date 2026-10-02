@@ -97,6 +97,8 @@ What the relay sees, in full: the pairing id, that one side is `home` and the ot
 
 **Rate limiting and audit** stay on the workstation, where the tokens are. The relay adds nothing to security; it only adds reachability.
 
+The relay stays thin by design: it cannot review, validate or keep anything, because it never holds a key. How tightly it runs under each security tier, and how a machine of yours can be paired, or a relay deliberately promoted, as a trusted node (an endpoint that runs the whole toolchain itself, harness included, with the encryption ending there), are in [design/protocol-security.md](design/protocol-security.md#the-relay-and-a-trusted-node).
+
 Why not a VPN (Tailscale, WireGuard)? It works today and is a fine answer for anyone who already runs one; the relay is for the case where MAIC should not depend on a third party's control plane for something it can do with a public key and a few hundred lines. Both keep the same rule: the server end is always the workstation, and the harness is always in front of it.
 
 ### Why the tripwire stays local
