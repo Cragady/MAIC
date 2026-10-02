@@ -9,6 +9,7 @@ add_library(maic_core
     src/harness.cpp
     src/import.cpp
     src/instructions.cpp
+    src/jsonschema.cpp
     src/lazy_lock.cpp
     src/nvim_keymaps.cpp
     src/nvim_run.cpp
@@ -46,14 +47,22 @@ target_compile_options(maic_core PRIVATE -Wall -Wextra -Wpedantic -Wno-missing-f
 set(MAIC_SOURCE_ROOT "${PROJECT_SOURCE_DIR}" CACHE PATH "MAIC repository the built binary uses as its root")
 target_compile_definitions(maic_core PRIVATE MAIC_VERSION="${MAIC_GIT_VERSION}" MAIC_ROOT="${MAIC_SOURCE_ROOT}")
 
-foreach(t harness robustness llm agent session lua_tools script_tools models lazy_lock trust instructions)
+foreach(t harness robustness llm agent session lua_tools script_tools models lazy_lock trust instructions jsonschema)
     add_executable(${t}_test tests/${t}_test.cpp)
     target_link_libraries(${t}_test PRIVATE maic_core httplib::httplib)
     target_compile_options(${t}_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
     add_test(NAME ${t} COMMAND ${t}_test)
 endforeach()
-target_compile_definitions(session_test PRIVATE MAIC_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+foreach(t session llm jsonschema)
+    target_compile_definitions(${t}_test PRIVATE MAIC_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+endforeach()
 target_compile_definitions(agent_test PRIVATE MAIC_EXAMPLES="${PROJECT_SOURCE_DIR}/tools/examples")
+# OpenAI's pinned description (protocol/openai/): jsonschema_test validates against it, agent_test checks FakeServer's chunks.
+foreach(t agent jsonschema)
+    target_compile_definitions(${t}_test PRIVATE MAIC_PROTOCOL="${PROJECT_SOURCE_DIR}/protocol")
+endforeach()
+# subset.json is what extract.py makes of the pinned openapi.json, and openapi.json is the pinned file.
+add_test(NAME openai_subset COMMAND python3 ${PROJECT_SOURCE_DIR}/protocol/openai/extract.py --check)
 
 # The parser fuzzer: a seeded mutation loop, 2 s per target by default (FUZZ_SECONDS=60 for a long run).
 add_executable(fuzz_parsers tests/fuzz_parsers.cpp)

@@ -262,9 +262,12 @@ int run_headless(const HeadlessOptions& options) {
     fflush(stdout);
     auto u = agent.usage();
     if (u.calls) {
-        if (options.json) fprintf(stdout, "%s\n", nlohmann::json{{"type", "usage"}, {"input", u.total_input}, {"output", u.total_output}, {"calls", u.calls}, {"context", u.last.context}}.dump().c_str());
+        nlohmann::json usage = {{"type", "usage"}, {"input", u.total_input}, {"output", u.total_output}, {"calls", u.calls}, {"context", u.last.context}};
+        if (!u.normalized.empty()) usage["normalized"] = u.normalized;
+        if (options.json) fprintf(stdout, "%s\n", usage.dump().c_str());
         else fprintf(stderr, "※ tokens: %ld in, %ld out over %d call%s%s\n", u.total_input, u.total_output, u.calls, u.calls == 1 ? "" : "s",
                      u.last.context ? (" (context " + std::to_string(u.last.input) + "/" + std::to_string(u.last.context) + ")").c_str() : "");
+        if (!options.json && !u.normalized.empty()) fprintf(stderr, "※ adapter normalizations: %s\n", usage["normalized"].dump().c_str());
     }
     fprintf(stderr, "※ transcript%s: %s\n", options.record ? "" : " (temporary; --record keeps one)", log->path().string().c_str());
     return g_cancel ? 130 : 0;

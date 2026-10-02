@@ -248,6 +248,7 @@ public:
         long total_input = 0;
         long total_output = 0;
         int calls = 0;
+        std::map<std::string, int> normalized;  // adapter rules applied to what the providers sent (normalize_openai), by rule
     };
     UsageReport usage() const;
 
@@ -294,6 +295,9 @@ private:
     // the first turn are appended as system messages instead of rewriting the system prompt.
     void start_or_update_conversation();
     void push(Message m);  // appends to the history and the session log
+    // ChatOptions::normalized for a call to `provider`: counts the rule in usage_ and writes a `normalized` record
+    // {rule, provider, count}, so a server's departure from OpenAI's shapes is never silent.
+    std::function<void(const std::string&, int)> count_normalized(const std::string& provider);
 
     Harness harness_;
     std::vector<Message> messages_;

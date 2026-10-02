@@ -427,6 +427,7 @@ std::string Agent::summarise(size_t from, size_t to, const std::atomic<bool>& ca
     };
     auto [provider, model_name] = resolve_model(providers, model);
     ChatOptions options{model_name, false};
+    options.normalized = count_normalized(provider.name);
     Message reply = chat(provider, options, req, nlohmann::json::array(), [](std::string_view, bool) {}, cancel);
     return reply.content;
 }
@@ -515,6 +516,16 @@ Agent::UsageReport Agent::usage() const {
     return usage_;
 }
 
+std::function<void(const std::string&, int)> Agent::count_normalized(const std::string& provider) {
+    return [this, provider](const std::string& rule, int count) {
+        {
+            std::lock_guard lock(usage_mu_);
+            usage_.normalized[rule] += count;
+        }
+        if (log_) log_->write("normalized", {{"rule", rule}, {"provider", provider}, {"count", count}});
+    };
+}
+
 std::string Agent::add_context_file(const std::filesystem::path& path) {
     std::string text;
     std::string label = path.string();
@@ -592,6 +603,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
 
     ChatOptions options{model_name, think};
     options.notice = [&](const std::string& t) { events.on_notice(t); };
+    options.normalized = count_normalized(provider.name);
     options.sampling = sampling;
     // Token bans: logit_bias where the provider takes it; elsewhere text tokens become string bans (the filter
     // does that) and numeric ids are reported once.
@@ -1259,6 +1271,7 @@ ToolResult Agent::run_task(const nlohmann::json& args, Origin origin, AgentEvent
         std::lock_guard child_lock(child.usage_mu_);
         usage_.total_input += cu.total_input;
         usage_.total_output += cu.total_output;
+        for (const auto& [rule, n] : cu.normalized) usage_.normalized[rule] += n;
         reviewer_tokens_ += child.reviewer_tokens_;
         reviewer_failed_.insert(child.reviewer_failed_.begin(), child.reviewer_failed_.end());
         if (reviewer_off_.empty()) reviewer_off_ = child.reviewer_off_;
@@ -1445,6 +1458,7 @@ Decision Agent::review(const Action& action, const std::string& summary, const s
         auto [provider, name] = resolve_model(providers, reviewer);
         ChatOptions opt{name, false};
         opt.retries = 1;
+        opt.normalized = count_normalized(provider.name);
         std::atomic<bool> no{false};
         Message reply = chat(provider, opt, req, nlohmann::json::array(), [](std::string_view, bool) {}, no);
         {
