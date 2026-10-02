@@ -134,7 +134,7 @@ leave = {
 | `quit.after` | `"park"` | What a session a quit left working becomes once its work is done. |
 | `no_daemon` | `"park"` | Where no daemon can keep a session running (the TUI's or `maic --rpc`'s own engine): what a quit does, `"park"` or `"stop"`, to a session it would leave loaded, and to every session in that MAIC's background. `"park"` interrupts the turn and parks it. |
 
-`--bg`, `--park` or `--stop` on `:q`, `:new`, `:switch` or `:fork` (and maic.nvim's `:MaicNew`, `:MaicSwitch`, `:MaicFork`) decides for that one leave, whatever the case; parking or stopping a working session that way is asked first. A case leaves alone a session another window has in focus; a flag does not. Layers replace only the cases they name, so a project's file can change `quit.idle` and keep the rest. An unknown case or value is an error naming it when settings load; `"ask"` is accepted only for `switch.idle` and `switch.working`, and `no_daemon` only takes `"park"` or `"stop"`.
+`--bg`, `--park` or `--stop` on `:q`, `:new`, `:switch` or `:fork` (and maic.nvim's `:MaicNew`, `:MaicSwitch`, `:MaicFork`) decides for that one leave, whatever the case; parking or stopping a working session that way is asked first. A case leaves alone a session another window has in focus; a flag does not. Layers replace only the cases they name, so a project's file can change `quit.idle` and keep the rest. An unknown case or value is an error naming it when settings load; `"ask"` is accepted only for `switch.idle` and `switch.working`, and `no_daemon` only takes `"park"` or `"stop"`. The old `session_leave` key is an error naming this table.
 
 ## Model presets and tiers
 

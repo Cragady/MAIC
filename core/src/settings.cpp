@@ -514,6 +514,9 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.colors = j.value("colors", s.colors);
         if (s.colors != "auto" && s.colors != "truecolor" && s.colors != "256" && s.colors != "16") throw std::runtime_error(path.string() + ": colors must be \"auto\", \"truecolor\", \"256\" or \"16\", not \"" + s.colors + "\"");
         s.enter_sends = j.value("enter_sends", s.enter_sends);
+        if (j.is_object() && j.contains("session_leave")) {
+            throw std::runtime_error(path.string() + ": session_leave was replaced by the leave table (leave.switch, leave.quit, leave.no_daemon); see docs/settings.md");
+        }
         if (j.is_object() && j.contains("leave")) read_leave(s.leave, j["leave"], path.string());
         if (j.contains("max_tasks")) {
             int n = j["max_tasks"].is_number_integer() ? j["max_tasks"].get<int>() : -1;

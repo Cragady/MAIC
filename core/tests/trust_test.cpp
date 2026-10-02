@@ -875,6 +875,15 @@ int main() {
         expect(contains(refused("{ quit = { idle = 'ask' } }"), "leave.quit.idle must be \"bg\", \"park\" or \"stop\", not \"ask\""), "ask is a switch's only");
         expect(contains(refused("{ no_daemon = 'bg' }"), "leave.no_daemon must be \"park\" or \"stop\", not \"bg\""), "no_daemon cannot keep a session running");
         expect(contains(refused("'park'"), "leave must be a table of cases"), "leave itself is a table");
+        write_file(cfg, "return { session_leave = 'ask' }\n");
+        std::string old_key;
+        try {
+            load_settings(dir);
+        } catch (const std::exception& e) {
+            old_key = e.what();
+        }
+        expect(contains(old_key, "session_leave was replaced by the leave table (leave.switch, leave.quit, leave.no_daemon); see docs/settings.md"),
+               "the old session_leave key is an error naming its replacement");
         fs::remove(cfg);
     }
 
