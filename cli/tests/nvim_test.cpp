@@ -720,6 +720,19 @@ end
         expect(rc == 1 && has(out, "will not remove it") && fs::exists(ours), "and --remove refuses it too: " + out);
         fs::remove(ours);
 
+        // A mention that is not a spec: a comment in init.lua, and a note in a plugin file lazy.nvim loads.
+        std::ofstream(cfg / "init.lua") << "-- llama.vim: set up with maic nvim setup llama-vim\n";
+        std::ofstream(plugins / "notes.lua") << "-- see llama.vim's README\nreturn { 'folke/which-key.nvim' }\n";
+        rc = setup("import.lua", {"--yes"}, out);
+        expect(rc == 0 && has(out, "init.lua mentions llama.vim; it is not loaded as a plugin, continuing") &&
+                   has(out, "lua/plugins/notes.lua mentions llama.vim; it is not loaded as a plugin, continuing") && has(out, "wrote " + ours.string()) && fs::exists(ours),
+               "a file that only mentions llama.vim is a warning, and the setup writes its file: " + out);
+        rc = setup("import.lua", {"--yes"}, out);
+        expect(rc == 0 && has(out, "init.lua mentions llama.vim") && has(out, "already holds this spec"), "with MAIC's spec loaded, the mention still only warns: " + out);
+        fs::remove(cfg / "init.lua");
+        fs::remove(plugins / "notes.lua");
+        fs::remove(ours);
+
         std::ofstream(plugins / "mine.lua") << "return { { 'ggml-org/llama.vim' } }\n";
         rc = setup("import.lua", {"--yes"}, out);
         expect(rc == 1 && has(out, (plugins / "mine.lua").string()) && !fs::exists(ours), "llama.vim in the spec and no file of MAIC's: refused, nothing written: " + out);
