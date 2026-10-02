@@ -98,6 +98,19 @@ class TuiTest(unittest.TestCase):
             tui.send("<c-d>")
         self.assertIn("echo: scroll01", tui.text(), "Ctrl-D scrolls back down")
 
+    def test_a_running_command_shows_its_output_live(self):
+        tui = self.start()
+        # The output's words are not in the command's text, so finding them on screen means the output is there.
+        tui.send("ishell:printf 'live-%s\\n' one; sleep 4; printf 'live-%s\\n' two<esc>:w<cr>", settle=False)
+        tui.wait_for("[y] yes")
+        tui.send("y", settle=False)
+        text = tui.wait_for("live-one", timeout=3)
+        self.assertNotIn("live-two", text, "the first line shows while the command is still running")
+        self.assertIn("▸ $ printf", text)
+        text = tui.wait_for("ran it", timeout=15)
+        self.assertIn("exit code 0", text, "the result took the live view's place")
+        self.assertIn("live-two", text)
+
     def test_help_opens(self):
         tui = self.start()
         tui.send(":help<cr>")

@@ -28,6 +28,12 @@ What the model can call, and how to add a tool of your own: in Lua, or as a scri
 
 `question` shows up like an approval box in the interactive session (a number picks an option, typed text is a free answer, Esc gives no answer) and as a prompt on stderr in `maic -p` when there is a terminal; without one the answer is empty and the model is told so. `todo` shows as `todo n/m done` in the status strip and `:todo` lists it; `maic -p` prints it to stderr.
 
+### Live output
+
+A command shows its output while it runs. Under its tool call the TUI keeps the last 12 lines of what `run_shell` prints, inside the call's fold, and when the command ends its result takes their place, as it always looked. A script tool shows its stderr this way (its stdout is its result), and a Lua tool what its `maic.shell` commands print. A subagent's command shows under its `↳` call. `maic -p` prints nothing new; maic-server sends the output to its clients as it comes, and the web client shows it under the call the same way.
+
+The live view is a copy for you to watch: the model gets only the result, exactly as before (24 KiB of head and 8 KiB of tail with the omitted bytes counted, [harness.md](harness.md)). The command is never slowed for it. Output arrives in chunks every 100 ms or 16 KiB, whichever comes first; a screen or client that cannot keep up loses chunks rather than holding the command back, and the TUI says where (`[N bytes not shown: the screen fell behind]`). A remote client gets at most 64 KiB of output a second per session; what is over that is counted (`maic.skipped`) and not sent. The protocol events are in [design/engine-protocol.md](design/engine-protocol.md#4-streaming-tool-output); what a slow client misses is in [limits.md](limits.md#the-command-sandbox).
+
 ### task
 
 `task {agent, prompt, context?, model?}` (opencode's name and meaning; MAIC called it `delegate {profile, task}`, and older transcripts with that name still read) starts a second agent in the same workspace and runs `prompt` to completion. The child gets none of the parent's conversation: `prompt` and `context` are all it knows, and its final answer comes back as the tool result (capped at 16 KB), ending with `(the subagent used N steps, M tokens)`. The model is briefed to use `explore` for long reads or searches it does not want in its own context (asked for a short report with paths and line numbers), and `plan` for a read-only review of its own change before it calls the work done; `general` takes a self-contained piece of editing.

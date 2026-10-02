@@ -7,6 +7,7 @@
 #include "maic/lua_tools.hpp"
 #include "maic/agent_def.hpp"
 #include "maic/nvim_host.hpp"
+#include "maic/sandbox.hpp"
 #include "maic/script_tools.hpp"
 #include "maic/session.hpp"
 #include "maic/settings.hpp"
@@ -50,7 +51,7 @@ struct TodoItem {
 };
 
 // What a front end (the CLI now, the server later) implements to follow and steer a turn.
-// Every method is called from the agent's worker thread.
+// Every method is called from the agent's worker thread, except on_tool_output (below).
 class AgentEvents {
 public:
     virtual ~AgentEvents() = default;
@@ -75,6 +76,14 @@ public:
     // A tool call that changed this file finished without error (a write, an edit, a patch, a move's two ends,
     // a delete; a Lua tool's maic.write).
     virtual void on_file_written(const std::filesystem::path& path, const std::string& tool) { (void)path, (void)tool; }
+    // A running command's output, for display only (the model gets the result): run_shell's output, a script
+    // tool's stderr, what a Lua tool's maic.shell prints. `chunk` starts at byte `offset` of the call's stream; a
+    // gap between two chunks is output dropped because the front end fell behind. Called between on_tool_call
+    // and on_tool_result, in order, from the sandbox's delivery thread while the worker waits for the tool. A
+    // subagent's calls arrive as "<agent>:<call id>".
+    virtual void on_tool_output(const std::string& call_id, OutputStream stream, std::string_view chunk, size_t offset) {
+        (void)call_id, (void)stream, (void)chunk, (void)offset;
+    }
 };
 
 // An action that would change which directories are trusted or at what tier (a write to <state>/trust*, a

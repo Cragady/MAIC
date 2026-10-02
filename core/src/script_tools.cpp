@@ -293,8 +293,9 @@ std::vector<Action> script_tool_actions(const Harness& harness, const ScriptTool
     return actions;
 }
 
-ToolResult run_script_tool(const ScriptTool& tool, const json& args, const Harness& harness, bool read_only, const std::atomic<bool>& cancel) {
-    SandboxResult r = run_sandboxed_argv(tool.run, args.dump(), harness.workspace(), read_only, std::chrono::seconds(tool.timeout_s), cancel);
+ToolResult run_script_tool(const ScriptTool& tool, const json& args, const Harness& harness, bool read_only, const std::atomic<bool>& cancel,
+                           const OutputTaps& taps) {
+    SandboxResult r = run_sandboxed_argv(tool.run, args.dump(), harness.workspace(), read_only, std::chrono::seconds(tool.timeout_s), cancel, {}, taps);
     auto trimmed = [](std::string s) {
         while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
         return s;

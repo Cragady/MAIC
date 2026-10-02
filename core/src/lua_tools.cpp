@@ -38,6 +38,8 @@ struct Ctx {
     std::chrono::steady_clock::time_point deadline;
     std::string output;  // print()
     NvimHost* nvim;
+    const OnOutput* on_output;
+    size_t shell_bytes = 0;  // maic.shell output so far this call: the next command's stream continues from here
 };
 
 Ctx& ctx(lua_State* L) {
@@ -174,7 +176,12 @@ int l_shell(lua_State* L) {
         lua_pop(L, 1);
     }
     Decision d = gate(L, a, "$ " + command, "");
-    SandboxResult r = run_sandboxed(command, c.harness->workspace(), d.read_only_sandbox, std::chrono::seconds(secs), *c.cancel, a.workdir);
+    OutputTaps taps;
+    if (*c.on_output) {
+        taps.on_output = [&c, base = c.shell_bytes](OutputStream s, std::string_view bytes, size_t offset) { (*c.on_output)(s, bytes, base + offset); };
+    }
+    SandboxResult r = run_sandboxed(command, c.harness->workspace(), d.read_only_sandbox, std::chrono::seconds(secs), *c.cancel, a.workdir, taps);
+    c.shell_bytes += r.output_bytes;
     if (r.cancelled) return fail(L, "cancelled by the user");
     if (r.timed_out) return fail(L, "command exceeded its timeout of " + std::to_string(secs) + " s");
     lua_pushlstring(L, r.output.data(), r.output.size());
@@ -337,8 +344,8 @@ LuaToolSet load_lua_tools(const fs::path& workspace) {
 }
 
 ToolResult run_lua_tool(const LuaTool& tool, const nlohmann::json& args, const Harness& harness, const Authorise& authorise,
-                        const std::atomic<bool>& cancel, std::chrono::seconds timeout, NvimHost* nvim) {
-    Ctx c{&tool, &harness, &authorise, &cancel, std::chrono::steady_clock::now() + timeout, "", nvim};
+                        const std::atomic<bool>& cancel, std::chrono::seconds timeout, NvimHost* nvim, const OnOutput& on_output) {
+    Ctx c{&tool, &harness, &authorise, &cancel, std::chrono::steady_clock::now() + timeout, "", nvim, &on_output};
     lua_State* L = sandboxed_state();
     struct Close {
         lua_State* L;

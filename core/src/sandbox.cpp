@@ -8,20 +8,32 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace maic {
 
 namespace fs = std::filesystem;
+using Clock = std::chrono::steady_clock;
 
 namespace {
 
-constexpr size_t kHeadBytes = 24 * 1024;
-constexpr size_t kTailBytes = 8 * 1024;
+constexpr size_t kHeadBytes = kOutputHeadBytes;
+constexpr size_t kTailBytes = kOutputTailBytes;
+// Streamed output (on_output): a chunk per stream every kChunkEvery or kChunkBytes, whichever comes first; at
+// most kQueuedBytes waiting for the consumer; kDrainGrace for it to catch up once the program has ended.
+constexpr size_t kChunkBytes = 16 * 1024;
+constexpr auto kChunkEvery = std::chrono::milliseconds(100);
+constexpr size_t kQueuedBytes = 2 * 1024 * 1024;
+constexpr auto kDrainGrace = std::chrono::milliseconds(200);
 
 // The environment a sandboxed program gets, and nothing else: bwrap starts it with --clearenv and sets these
 // from MAIC's own environment when they are set, plus every LC_* variable. MAIC sets no variable of its own for
@@ -160,22 +172,142 @@ std::vector<std::string> bwrap_args(const fs::path& workspace, bool read_only, c
     return args;
 }
 
-std::string trim_output(std::string out) {
-    if (out.size() <= kHeadBytes + kTailBytes) {
+// `total` is every byte the program wrote, so the omitted count is right however often absorb cut the middle.
+std::string trim_output(std::string out, size_t total) {
+    if (total <= kHeadBytes + kTailBytes) {
         return out;
     }
-    size_t cut = out.size() - kHeadBytes - kTailBytes;
+    size_t cut = total - kHeadBytes - kTailBytes;
     return out.substr(0, kHeadBytes) + "\n... [" + std::to_string(cut) + " bytes omitted] ...\n" +
            out.substr(out.size() - kTailBytes);
 }
 
 // Keeps memory bounded on runaway output: the head and a rolling tail.
-void absorb(std::string& out, const char* buf, size_t n) {
+void absorb(std::string& out, size_t& total, const char* buf, size_t n) {
     out.append(buf, n);
+    total += n;
     if (out.size() > 4 * (kHeadBytes + kTailBytes)) {
         out.erase(kHeadBytes, out.size() - kHeadBytes - 2 * kTailBytes);
     }
 }
+
+// How much of `s`'s first `n` bytes to send so no UTF-8 character is cut in two: `n`, or less by the 1 to 3
+// bytes of a character that continues past it. Anything else (binary output) is sent as it is.
+size_t whole_chars(const std::string& s, size_t n) {
+    size_t i = n;
+    while (i > 0 && n - i < 3 && (static_cast<unsigned char>(s[i - 1]) & 0xC0) == 0x80) --i;
+    if (i == 0) return n;
+    unsigned char lead = static_cast<unsigned char>(s[i - 1]);
+    size_t len = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+    return n - (i - 1) < len ? i - 1 : n;
+}
+
+// The tee in front of the result: spawn's loop hands it what it read and never waits on `on_output`, which a
+// thread of its own calls in order. Past kQueuedBytes waiting, newer chunks are dropped and counted; their
+// offsets leave the gap for the consumer to see.
+class OutputTee {
+public:
+    explicit OutputTee(const OnOutput& on_output) : on_output_(on_output), thread_([this] { deliver(); }) {}
+    ~OutputTee() {
+        if (thread_.joinable()) finish();  // spawn left early by an exception
+    }
+
+    void add(OutputStream stream, const char* data, size_t n, Clock::time_point now) {
+        Batch& b = batch_[static_cast<int>(stream)];
+        if (b.data.empty()) b.since = now;
+        b.data.append(data, n);
+        while (b.data.size() >= kChunkBytes) send(stream, whole_chars(b.data, kChunkBytes));
+    }
+
+    // Sends every batch that has waited kChunkEvery; returns the milliseconds until the next is due, at most `cap`.
+    long flush_due(Clock::time_point now, long cap) {
+        for (int s = 0; s < 2; ++s) {
+            Batch& b = batch_[s];
+            if (b.data.empty()) continue;
+            auto due = b.since + kChunkEvery;
+            if (due <= now) {
+                size_t n = whole_chars(b.data, b.data.size());
+                if (n) send(static_cast<OutputStream>(s), n);
+                if (!b.data.empty()) b.since = now;  // the start of a character: it waits for the rest
+            } else cap = std::min<long>(cap, std::chrono::ceil<std::chrono::milliseconds>(due - now).count());
+        }
+        return cap;
+    }
+
+    // The last flush; waits kDrainGrace for the consumer, drops what it has not reached by then, and joins.
+    void finish() {
+        for (int s = 0; s < 2; ++s) {
+            if (!batch_[s].data.empty()) send(static_cast<OutputStream>(s), batch_[s].data.size());
+        }
+        std::unique_lock lock(mu_);
+        closing_ = true;
+        cv_.notify_all();
+        if (!cv_.wait_for(lock, kDrainGrace, [&] { return chunks_.empty(); })) {
+            for (const auto& c : chunks_) {
+                ++dropped_chunks;
+                dropped_bytes += c.data.size();
+            }
+            chunks_.clear();
+        }
+        lock.unlock();
+        thread_.join();
+    }
+
+    size_t dropped_chunks = 0, dropped_bytes = 0;
+
+private:
+    struct Batch {
+        std::string data;
+        size_t offset = 0;  // where data starts in the stream
+        Clock::time_point since;
+    };
+    struct Chunk {
+        OutputStream stream;
+        std::string data;
+        size_t offset;
+    };
+
+    // Moves the batch's first `n` bytes to the queue, or drops them when the consumer is too far behind.
+    void send(OutputStream stream, size_t n) {
+        Batch& b = batch_[static_cast<int>(stream)];
+        Chunk c{stream, b.data.substr(0, n), b.offset};
+        b.data.erase(0, n);
+        b.offset += n;
+        std::lock_guard lock(mu_);
+        if (queued_ + n > kQueuedBytes) {
+            ++dropped_chunks;
+            dropped_bytes += n;
+            return;
+        }
+        queued_ += n;
+        chunks_.push_back(std::move(c));
+        cv_.notify_all();
+    }
+
+    void deliver() {
+        std::unique_lock lock(mu_);
+        for (;;) {
+            cv_.wait(lock, [&] { return !chunks_.empty() || closing_; });
+            if (chunks_.empty()) return;
+            Chunk c = std::move(chunks_.front());
+            chunks_.pop_front();
+            lock.unlock();
+            on_output_(c.stream, c.data, c.offset);
+            lock.lock();
+            queued_ -= c.data.size();  // counted until the call returns: a chunk in a slow consumer's hands still waits
+            cv_.notify_all();
+        }
+    }
+
+    const OnOutput& on_output_;
+    Batch batch_[2];
+    std::mutex mu_;
+    std::condition_variable cv_;
+    std::deque<Chunk> chunks_;
+    size_t queued_ = 0;
+    bool closing_ = false;
+    std::thread thread_;  // last: it starts in the constructor and uses everything above
+};
 
 // A write to a child that has already gone raises SIGPIPE, which would end MAIC: block it on this thread for the
 // write and swallow the one it may have left pending.
@@ -196,9 +328,9 @@ ssize_t write_quietly(int fd, const char* data, size_t n) {
 }
 
 // Forks bwrap with `args`, feeds `input` (when `feed_input`) to its stdin, reads stdout and, apart when
-// `separate_stderr`, stderr, until both close, the deadline passes or the user cancels.
+// `separate_stderr`, stderr, until both close, the deadline passes or the user cancels; the taps get copies.
 SandboxResult spawn(std::vector<std::string>& args, const std::string& input, bool feed_input, bool separate_stderr,
-                    std::chrono::seconds timeout, const std::atomic<bool>& cancel) {
+                    std::chrono::seconds timeout, const std::atomic<bool>& cancel, const OutputTaps& taps) {
     std::vector<char*> argv;
     for (auto& a : args) {
         argv.push_back(a.data());
@@ -239,26 +371,32 @@ SandboxResult spawn(std::vector<std::string>& args, const std::string& input, bo
 
     SandboxResult result;
     std::string stdout_text, stderr_text;
+    size_t stdout_total = 0, stderr_total = 0;
+    std::optional<OutputTee> tee;
+    if (taps.on_output) tee.emplace(taps.on_output);
     size_t sent = 0;
-    auto deadline = std::chrono::steady_clock::now() + timeout;
+    auto deadline = Clock::now() + timeout;
     char buf[8192];
     while (out_r >= 0 || err_r >= 0) {
         if (cancel.load()) {
             result.cancelled = true;
             break;
         }
-        auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+        auto now = Clock::now();
+        auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
         if (left.count() <= 0) {
             result.timed_out = true;
             break;
         }
+        long wait = std::min<long>(left.count(), 200);
+        if (tee) wait = tee->flush_due(now, wait);
         pollfd pfds[3];
         int n_fds = 0;
         int out_i = -1, err_i = -1, in_i = -1;
         if (out_r >= 0) { out_i = n_fds; pfds[n_fds++] = {out_r, POLLIN, 0}; }
         if (err_r >= 0) { err_i = n_fds; pfds[n_fds++] = {err_r, POLLIN, 0}; }
         if (in_w >= 0) { in_i = n_fds; pfds[n_fds++] = {in_w, POLLOUT, 0}; }
-        int ready = poll(pfds, static_cast<nfds_t>(n_fds), static_cast<int>(std::min<long>(left.count(), 200)));
+        int ready = poll(pfds, static_cast<nfds_t>(n_fds), static_cast<int>(wait));
         if (ready < 0 && errno != EINTR) {
             break;
         }
@@ -269,7 +407,9 @@ SandboxResult spawn(std::vector<std::string>& args, const std::string& input, bo
                 close(out_r);
                 out_r = -1;
             } else {
-                absorb(stdout_text, buf, static_cast<size_t>(n));
+                if (taps.on_read) taps.on_read(OutputStream::Stdout, std::string_view(buf, static_cast<size_t>(n)), stdout_total);
+                absorb(stdout_text, stdout_total, buf, static_cast<size_t>(n));
+                if (tee) tee->add(OutputStream::Stdout, buf, static_cast<size_t>(n), Clock::now());
             }
         }
         if (err_i >= 0 && pfds[err_i].revents) {
@@ -278,7 +418,9 @@ SandboxResult spawn(std::vector<std::string>& args, const std::string& input, bo
                 close(err_r);
                 err_r = -1;
             } else {
-                absorb(stderr_text, buf, static_cast<size_t>(n));
+                if (taps.on_read) taps.on_read(OutputStream::Stderr, std::string_view(buf, static_cast<size_t>(n)), stderr_total);
+                absorb(stderr_text, stderr_total, buf, static_cast<size_t>(n));
+                if (tee) tee->add(OutputStream::Stderr, buf, static_cast<size_t>(n), Clock::now());
             }
         }
         if (in_i >= 0 && pfds[in_i].revents) {
@@ -299,26 +441,33 @@ SandboxResult spawn(std::vector<std::string>& args, const std::string& input, bo
     int status = 0;
     waitpid(pid, &status, 0);
     result.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+    if (tee) {
+        tee->finish();
+        result.dropped_chunks = tee->dropped_chunks;
+        result.dropped_bytes = tee->dropped_bytes;
+    }
 
-    result.output = trim_output(std::move(stdout_text));
-    result.error = trim_output(std::move(stderr_text));
+    result.output_bytes = stdout_total;
+    result.output = trim_output(std::move(stdout_text), stdout_total);
+    result.error = trim_output(std::move(stderr_text), stderr_total);
     return result;
 }
 
 }  // namespace
 
 SandboxResult run_sandboxed(const std::string& command, const fs::path& workspace, bool read_only,
-                            std::chrono::seconds timeout, const std::atomic<bool>& cancel, const fs::path& workdir) {
+                            std::chrono::seconds timeout, const std::atomic<bool>& cancel, const fs::path& workdir, const OutputTaps& taps) {
     std::vector<std::string> args = bwrap_args(workspace, read_only, workdir);
     args.insert(args.end(), {"/bin/bash", "-c", command});
-    return spawn(args, "", false, false, timeout, cancel);
+    return spawn(args, "", false, false, timeout, cancel, taps);
 }
 
 SandboxResult run_sandboxed_argv(const std::vector<std::string>& argv, const std::string& input, const fs::path& workspace,
-                                 bool read_only, std::chrono::seconds timeout, const std::atomic<bool>& cancel, const fs::path& workdir) {
+                                 bool read_only, std::chrono::seconds timeout, const std::atomic<bool>& cancel, const fs::path& workdir,
+                                 const OutputTaps& taps) {
     std::vector<std::string> args = bwrap_args(workspace, read_only, workdir);
     args.insert(args.end(), argv.begin(), argv.end());
-    return spawn(args, input, true, true, timeout, cancel);
+    return spawn(args, input, true, true, timeout, cancel, taps);
 }
 
 }  // namespace maic

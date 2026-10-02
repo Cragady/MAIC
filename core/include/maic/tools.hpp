@@ -1,6 +1,7 @@
 #pragma once
 
 #include "maic/harness.hpp"
+#include "maic/sandbox.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -47,8 +48,9 @@ struct ToolResult {
     std::string text;
 };
 
-// Runs an already-approved call. `read_only_sandbox` mounts the workspace read-only for run_shell.
+// Runs an already-approved call. `read_only_sandbox` mounts the workspace read-only for run_shell, and `taps`
+// get copies of its output (run_sandboxed); no other tool streams.
 ToolResult run_tool(const Harness& harness, const std::string& name, const nlohmann::json& args,
-                    bool read_only_sandbox, const std::atomic<bool>& cancel);
+                    bool read_only_sandbox, const std::atomic<bool>& cancel, const OutputTaps& taps = {});
 
 }  // namespace maic

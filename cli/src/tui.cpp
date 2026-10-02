@@ -439,7 +439,24 @@ public:
         host_checktime(*host_);
         fire("MaicFileWritten", {{"tool", tool}, {"path", path.string()}});
     }
-    void on_tool_result(const std::string& text, bool ok) override { post(ok ? Kind::ToolOk : Kind::ToolErr, text); }
+    void on_tool_result(const std::string& text, bool ok) override {
+        view_.finish_live(ok ? Kind::ToolOk : Kind::ToolErr, text);
+        screen_.PostEvent(Event::Custom);
+    }
+    // From the sandbox's delivery thread, one call at a time. A burst of chunks asks for one redraw, not one each.
+    void on_tool_output(const std::string& call_id, OutputStream stream, std::string_view chunk, size_t offset) override {
+        if (call_id != live_call_) {
+            live_call_ = call_id;
+            live_next_[0] = live_next_[1] = 0;
+        }
+        size_t& next = live_next_[static_cast<int>(stream)];
+        std::string text;
+        if (offset > next) text = "\n[" + std::to_string(offset - next) + " bytes not shown: the screen fell behind]\n";
+        next = offset + chunk.size();
+        text += chunk;
+        view_.live_output(text);
+        if (!redraw_posted_.exchange(true)) screen_.PostEvent(Event::Custom);
+    }
     void on_notice(const std::string& text) override { post(Kind::Notice, text); }
     ApprovalAnswer ask(const ApprovalRequest& request) override {
         std::future<ApprovalAnswer> answer;
@@ -608,6 +625,9 @@ private:
 
     std::string status_msg_;
     std::atomic<int> tool_calls_{0};  // this turn
+    std::string live_call_;    // on_tool_output: the call the live entry shows, and the next offset per stream
+    size_t live_next_[2] = {0, 0};
+    std::atomic<bool> redraw_posted_{false};
     std::atomic<bool> quit_when_idle_{false};  // :wq
     std::string exit_note_;
     bool titled_ = false;
@@ -1391,7 +1411,10 @@ Element App::render() {
 // ---------- keys ----------
 
 bool App::handle(Event e) {
-    if (e == Event::Custom) return true;
+    if (e == Event::Custom) {
+        redraw_posted_ = false;
+        return true;
+    }
 
     // A bracketed paste (maic.nvim's :MaicSend when MAIC is not connected to it) goes into the input whole,
     // whatever the mode, and is never sent.

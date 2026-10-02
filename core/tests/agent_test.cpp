@@ -179,6 +179,24 @@ struct Recorder : AgentEvents {
     }
     std::vector<std::vector<TodoItem>> todos;
     void on_todo(const std::vector<TodoItem>& items) override { todos.push_back(items); }
+    struct Output {
+        std::string call;
+        OutputStream stream;
+        std::string chunk;
+        size_t offset;
+        size_t results_before;  // tool results already in when it came
+    };
+    std::vector<Output> outputs;
+    void on_tool_output(const std::string& call, OutputStream stream, std::string_view chunk, size_t offset) override {
+        outputs.push_back({call, stream, std::string(chunk), offset, results.size()});
+    }
+    std::string streamed(OutputStream s) const {
+        std::string all;
+        for (const auto& o : outputs) {
+            if (o.stream == s) all += o.chunk;
+        }
+        return all;
+    }
 };
 
 std::error_code& ec_ignore() {
@@ -1074,6 +1092,73 @@ int main() {
         expect(last_tool && last_tool->tool_name == "word_count", "the result goes back under the tool's name");
         fs::remove_all(ws / ".maic");
         fs::remove_all(ws / "out");
+        unsetenv("XDG_CONFIG_HOME");
+    }
+
+    section("a running command's output reaches the front end");
+    {
+        fs::path cfg = ws / "cfg";
+        fs::create_directories(cfg);
+        setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
+        fs::create_directories(ws / ".maic" / "tools" / "noisy");
+        std::ofstream(ws / ".maic" / "tools" / "noisy" / "tool.json")
+            << R"({"name": "noisy", "description": "says how it is going", "parameters": {"type": "object", "properties": {}}, "run": ["sh", "main.sh"]})";
+        std::ofstream(ws / ".maic" / "tools" / "noisy" / "main.sh") << "#!/bin/sh\necho the result\necho working on it >&2\n";
+        std::ofstream(ws / ".maic" / "tools" / "shells.lua") << "return {\n"
+                                                                 "  name = 'shells', description = 'runs two commands',\n"
+                                                                 "  parameters = { type = 'object', properties = {} },\n"
+                                                                 "  run = function() return maic.shell('echo first') .. maic.shell('echo second') end,\n"
+                                                                 "}\n";
+        FakeServer fake;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        agent.review_with_model = false;
+        agent.agents.push_back({"fast", Mode::Auto});
+        auto all_before_result = [](const Recorder& r, const std::string& call) {
+            return std::all_of(r.outputs.begin(), r.outputs.end(), [&](const Recorder::Output& o) { return o.results_before == 0 && o.call == call; });
+        };
+
+        Recorder r;
+        r.reply = {Approval::Yes, ""};
+        fake.tool_call = json{{"name", "run_shell"}, {"arguments", {{"command", "echo out; echo err >&2"}}}};
+        fake.calls_left = 1;
+        agent.submit("run it", Origin::Local, r, no_cancel);
+        expect(!r.outputs.empty() && all_before_result(r, "call_1") && r.streamed(OutputStream::Stdout) == "out\nerr\n" && r.outputs[0].offset == 0,
+               "run_shell's output, stderr interleaved as stdout, arrives under its call id before the result");
+        expect(r.results.size() == 1 && r.results[0] == "exit code 0\nout\nerr", "the result is what it always was: " + (r.results.empty() ? "" : r.results[0]));
+
+        Recorder s;
+        fake.tool_call = json{{"name", "noisy"}, {"arguments", json::object()}};
+        fake.calls_left = 1;
+        agent.submit("noisy", Origin::Local, s, no_cancel);
+        expect(all_before_result(s, "call_1") && s.streamed(OutputStream::Stderr) == "working on it\n" && s.streamed(OutputStream::Stdout).empty(),
+               "a script tool streams its stderr only");
+        expect(s.results.size() == 1 && s.results[0] == "the result", "its stdout is still the result");
+
+        Recorder l;
+        l.reply = {Approval::Yes, ""};
+        fake.tool_call = json{{"name", "shells"}, {"arguments", json::object()}};
+        fake.calls_left = 1;
+        agent.submit("shells", Origin::Local, l, no_cancel);
+        expect(all_before_result(l, "call_1") && l.streamed(OutputStream::Stdout) == "first\nsecond\n" && l.outputs.size() == 2 && l.outputs[1].offset == 6,
+               "a Lua tool's maic.shell commands stream as one stream, the second continuing the first's offsets");
+
+        Recorder c;
+        c.reply = {Approval::Yes, ""};
+        int parent_calls = 0, child_calls = 0;
+        fake.tool_call_for = [&](const json& b) -> json {
+            if (!from_child(b)) return ++parent_calls == 1 ? json{{"name", "task"}, {"arguments", {{"agent", "fast"}, {"prompt", "say hi"}}}} : json();
+            return ++child_calls == 1 ? json{{"name", "run_shell"}, {"arguments", {{"command", "echo from the child"}}}} : json();
+        };
+        agent.submit("delegate", Origin::Local, c, no_cancel);
+        fake.tool_call_for = nullptr;
+        expect(!c.outputs.empty() && all_before_result(c, "fast:call_1") && c.streamed(OutputStream::Stdout) == "from the child\n",
+               "a subagent's command streams to the parent's front end, labelled with the agent: " + (c.outputs.empty() ? "" : c.outputs[0].call));
+        for (const auto& sub : list_sessions(ws)) {
+            if (sub.kind == "sub") fs::remove(sub.path);
+        }
+        fs::remove_all(ws / ".maic");
         unsetenv("XDG_CONFIG_HOME");
     }
 

@@ -58,6 +58,9 @@ struct ChildEvents : AgentEvents {
         parent.on_tool_started(tool, path, agent + ": " + summary);
     }
     void on_file_written(const std::filesystem::path& path, const std::string& tool) override { parent.on_file_written(path, tool); }
+    void on_tool_output(const std::string& call_id, OutputStream stream, std::string_view chunk, size_t offset) override {
+        parent.on_tool_output(agent + ":" + call_id, stream, chunk, offset);
+    }
     ApprovalAnswer ask(const ApprovalRequest& request) override {
         ApprovalRequest r = request;
         r.summary = agent + ": " + request.summary;
@@ -924,6 +927,9 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         return result("REFUSED: this exact call has been made " + std::to_string(repeats_) + " times in a row. Do something different, or tell the user what is blocking you.", false);
     }
 
+    // A running command's output reaches the front end as it arrives; the model gets only the result.
+    OnOutput stream_output = [&](OutputStream s, std::string_view chunk, size_t offset) { events.on_tool_output(call.id, s, chunk, offset); };
+
     if (name == "task") {
         ToolResult r = run_task(call.arguments, origin, events, cancel, record);
         return result(r.text, r.ok);
@@ -971,7 +977,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
             record["actions"].push_back(sub);
             return d;
         };
-        ToolResult r = run_lua_tool(*lua, call.arguments, harness_, gate, cancel, std::chrono::seconds(60), nvim_.get());
+        ToolResult r = run_lua_tool(*lua, call.arguments, harness_, gate, cancel, std::chrono::seconds(60), nvim_.get(), stream_output);
         for (const auto& p : written) events.on_file_written(p, name);
         return result(r.text, r.ok);
     }
@@ -986,7 +992,12 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
             if (d.verdict != Verdict::Allow) return result(d.reason, false);
         }
         // The workspace is writable only for a tool that declared writes; the mode has already allowed each of them.
-        ToolResult r = run_script_tool(*script, call.arguments, harness_, script->writes.empty(), cancel);
+        // Its stdout is the result, so only stderr streams.
+        OutputTaps taps;
+        taps.on_output = [&](OutputStream s, std::string_view chunk, size_t offset) {
+            if (s == OutputStream::Stderr) stream_output(s, chunk, offset);
+        };
+        ToolResult r = run_script_tool(*script, call.arguments, harness_, script->writes.empty(), cancel, taps);
         return result(r.text, r.ok);
     }
 
@@ -1011,7 +1022,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
             if (a.kind == Action::Kind::Write) save_undo_point(a.path, summary);
         }
     }
-    ToolResult r = run_tool(harness_, name, call.arguments, d.read_only_sandbox, cancel);
+    ToolResult r = run_tool(harness_, name, call.arguments, d.read_only_sandbox, cancel, {stream_output, {}});
     if (r.ok && name == "move_file") push_undo({actions[0].path, std::nullopt, summary, actions[1].path});
     if (r.ok) {
         for (const auto& a : actions) {

@@ -31,6 +31,7 @@ git config core.hooksPath .githooks         # .githooks/pre-push runs scripts/ch
 | `agent` | the agent loop against `FakeServer`: turns, tools, approvals, compaction, subagents, cancel, resume | `core/tests/agent_test.cpp` |
 | `session` | session files, homes, forks, import | `core/tests/session_test.cpp` |
 | `lua_tools` | user-defined Lua tools | `core/tests/lua_tools_test.cpp` |
+| `tool_output` | streamed command output: chunks, offsets, batching, stdout and stderr apart, the model's result byte for byte, a slow consumer timed | `core/tests/tool_output_test.cpp` |
 | `fuzz` | the parser fuzzer, 2 s per target by default | `core/tests/fuzz_parsers.cpp` |
 | `server` | maic-server over HTTP | `server/tests/server_test.cpp` |
 | `editor` | the vim input | `cli/tests/editor_test.cpp` |

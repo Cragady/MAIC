@@ -11,7 +11,8 @@ import http.server, json, os, shutil, socket, subprocess, sys, tempfile, threadi
 class Fake(http.server.BaseHTTPRequestHandler):
     """Answers every chat with "echo: " plus the first line of the last user message, streamed as SSE. A message
     starting with "hold" gets a reply that idles for 10 s instead, for the interrupt tests; one starting "slow:" is
-    answered after three seconds, for a test that needs the agent busy."""
+    answered after three seconds, for a test that needs the agent busy; "shell:CMD" is a run_shell call of CMD,
+    answered "ran it" once its result is in."""
 
     def log_message(self, *a):
         pass
@@ -29,9 +30,25 @@ class Fake(http.server.BaseHTTPRequestHandler):
         if isinstance(last, list):  # text parts beside an image
             last = "".join(p.get("text", "") for p in last if p.get("type") == "text")
         try:
-            self.reply(last)
+            if last.startswith("shell:"):
+                self.shell(last[6:], body["messages"][-1].get("role") == "tool")
+            else:
+                self.reply(last)
         except (BrokenPipeError, ConnectionResetError):
             pass  # MAIC hung up mid-reply (an interrupt does): that is the end of this reply
+
+    def shell(self, command, answered):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        if answered:
+            chunks = [{"choices": [{"delta": {"content": "ran it"}}]}, {"choices": [{"delta": {}, "finish_reason": "stop"}]}]
+        else:
+            call = {"index": 0, "id": "call_1", "type": "function", "function": {"name": "run_shell", "arguments": json.dumps({"command": command})}}
+            chunks = [{"choices": [{"delta": {"tool_calls": [call]}}]}, {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}]
+        for c in chunks:
+            self.wfile.write(("data: " + json.dumps(c) + "\n\n").encode())
+        self.wfile.write(b"data: [DONE]\n\n")
 
     def reply(self, last):
         self.send_response(200)

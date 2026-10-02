@@ -55,6 +55,9 @@ const char* marker(const Entry& e) {
 }
 
 constexpr size_t kPreviewLines = 8;
+// A live entry: the last lines of a running command, at most this many bytes of them.
+constexpr size_t kLiveLines = 12;
+constexpr size_t kLiveBytes = kLiveLines * 160;
 
 // The first lines of a tool result, with a note about the rest.
 std::string preview(const std::string& text) {
@@ -153,8 +156,58 @@ void View::set_all_collapsed(bool on) {
 
 void View::append_to_last(Kind kind, std::string_view delta) {
     std::lock_guard lock(mu_);
-    if (entries_.empty() || entries_.back().kind != kind) entries_.push_back({kind, "", false, std::time(nullptr)});
+    if (entries_.empty() || entries_.back().kind != kind || entries_.back().live) entries_.push_back({kind, "", false, std::time(nullptr)});
     entries_.back().text += delta;
+    ++version_;
+}
+
+void View::live_output(std::string_view text) {
+    std::lock_guard lock(mu_);
+    auto it = std::find_if(entries_.rbegin(), entries_.rend(), [](const Entry& e) { return e.live; });
+    if (it == entries_.rend()) {
+        entries_.push_back({Kind::ToolOk, "", false, std::time(nullptr), true});
+        it = entries_.rbegin();
+    }
+    std::string& t = it->text;
+    // A carriage return starts its line over, as a progress bar redraws it, and a CRLF is a newline; one that
+    // ends a chunk waits at the end of the text for the next chunk to say which it is.
+    std::string in;
+    if (!t.empty() && t.back() == '\r') {
+        t.pop_back();
+        in = "\r";
+    }
+    in += text;
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in[i] != '\r') {
+            t += in[i];
+        } else if (i + 1 == in.size()) {
+            t += '\r';
+        } else if (in[i + 1] != '\n') {
+            size_t nl = t.rfind('\n');
+            t.erase(nl == std::string::npos ? 0 : nl + 1);
+        }
+    }
+    // From the start of the kLiveLines-th line before the end (a line still being written counts), then bytes.
+    size_t from = 0, pos = t.size() && t.back() == '\n' ? t.size() - 1 : t.size();
+    for (size_t n = 0; n < kLiveLines; ++n) {
+        size_t nl = pos ? t.rfind('\n', pos - 1) : std::string::npos;
+        if (nl == std::string::npos) {
+            from = 0;
+            break;
+        }
+        from = nl + 1;
+        pos = nl;
+    }
+    if (t.size() - from > kLiveBytes) from = t.size() - kLiveBytes;
+    while (from < t.size() && (static_cast<unsigned char>(t[from]) & 0xC0) == 0x80) ++from;  // not inside a UTF-8 character
+    t.erase(0, from);
+    ++version_;
+}
+
+void View::finish_live(Kind kind, std::string text) {
+    std::lock_guard lock(mu_);
+    entries_.erase(std::remove_if(entries_.begin(), entries_.end(), [](const Entry& e) { return e.live; }), entries_.end());
+    entries_.push_back({kind, std::move(text), attached(kind) && collapse_default_, std::time(nullptr)});
     ++version_;
 }
 
