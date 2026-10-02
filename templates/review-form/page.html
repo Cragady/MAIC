@@ -85,6 +85,13 @@ button:disabled { opacity: .45; cursor: default; }
 .check { display: inline-flex; gap: 6px; align-items: center; font-size: .9rem; color: var(--muted); }
 .sent { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; display: grid; gap: 4px; }
 .sent p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.recent { background: var(--addr-soft); border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; }
+.recent p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.recent a { color: var(--accent); }
+.chip.staged { background: var(--addr-soft); color: var(--addr); outline: 1px dashed var(--addr); }
+.modal { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.45); display: grid; place-items: center; padding: 16px; }
+.modal[hidden] { display: none; }
+.modal-box { background: var(--surface); color: var(--ink); border-radius: 10px; padding: 18px; max-width: 440px; display: grid; gap: 12px; }
 /* Side Prompt: a fixed panel beside the page on wide screens, a chat bubble that opens a sheet on narrow ones. */
 #side-panel { position: fixed; z-index: 20; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 10px; align-content: start; overflow-y: auto; box-shadow: 0 6px 24px rgba(0,0,0,.12); }
 #side-panel h2 { font-size: 1.1rem; flex: 1; }
@@ -125,12 +132,20 @@ button:disabled { opacity: .45; cursor: default; }
   <section aria-labelledby="h-misc" id="misc-sec"><h2 id="h-misc">Misc / Uncovered / Ungrouped</h2><p class="note">Things that don't slot in above, oldest first.</p><div id="misc" class="list"></div></section>
   <section aria-labelledby="h-own"><h2 id="h-own">This page's own improvements and to-do</h2><div id="own" class="list"></div></section>
   <section aria-labelledby="h-after"><h2 id="h-after">After Prompt</h2><p class="note">Anything you'd otherwise send as a separate message, so threads don't drift apart.</p><div id="after"></div>
-    <div class="row"><button class="primary" id="submit-end" type="button">Submit</button><span class="note">Tab here from the last box; Enter or Space submits.</span></div>
+    <div class="row"><label class="check" for="resolve-mark"><input type="checkbox" id="resolve-mark"> Mark for resolution</label><button class="primary" id="submit-end" type="button">Submit</button><span class="note">Tab here from the last box; Enter or Space works on both.</span></div>
   </section>
 </div>
 
+<div class="modal" id="modal" hidden role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal-box">
+    <h2 id="modal-title">Mark this document for resolution?</h2>
+    <p class="note">On Submit it is staged and flagged so Claude resolves it once every topic is resolved. You can untick it before submitting.</p>
+    <div class="row"><button class="primary" id="modal-yes" type="button">Confirm resolution marker</button><button id="modal-no" type="button">Cancel</button></div>
+  </div>
+</div>
 <aside id="side-panel" aria-labelledby="h-side">
   <div class="row side-head"><h2 id="h-side">Side Prompt</h2><button class="small" id="side-close" type="button" aria-label="Close the Side Prompt">Close</button></div>
+  <div class="recent" id="recent" aria-live="polite"><strong>Most Recent Reply</strong><p class="note" id="recent-body">No reply yet. Claude's answer to a side prompt appears here once it has been sorted into the page.</p></div>
   <p class="note">A prompt on its own, sent by its own button. One left unsent goes out with the overall Submit. The ↪ beside a box adds a reference to it here.</p>
   <div id="side"></div>
   <div class="row"><button class="primary" id="side-submit" type="button">Submit side prompt</button></div>
@@ -146,7 +161,7 @@ button:disabled { opacity: .45; cursor: default; }
   var DOC = "review/" + DATA.id;
   var LOCAL = "review-draft:" + DATA.id;
   var STATES = ["open", "addressed", "resolved"];
-  var state = { answers: {}, status: {}, doc_status: "open", folded: {}, merges: {}, kept: {}, side_prompts: [], submitted: false, submittedAt: null, savedAt: null };
+  var state = { answers: {}, status: {}, doc_status: "open", folded: {}, merges: {}, kept: {}, side_prompts: [], resolve_requested: false, submitted: false, submittedAt: null, savedAt: null };
   var db = null, comments = null, timer = null, queue = Promise.resolve(), pending = 0;
   var KEY = {
     version: 2,
@@ -165,7 +180,9 @@ button:disabled { opacity: .45; cursor: default; }
     status: "Card id (issue, message or misc id) to open, addressed or resolved; a card missing here is open unless the page marks it addressed by default.",
     status_colors: { open: "amber: needs attention", addressed: "blue: answered, not closed", resolved: "green: closed" },
     status_rules: "A topic can be resolved only after it is addressed, and only once the document is addressed. The document can be resolved by the user or an agent once every topic is resolved. If everything is addressed but a topic has grown new depth, a new artifact is made instead of stretching this one.",
-    doc_status: "The whole document: open, addressed or resolved.",
+    doc_status: "The whole document: open, addressed, staged (the overall Submit was pressed; awaiting resolution by an agent, by the user's request, or through resolve_requested) or resolved.",
+    resolve_requested: "true when the user ticked Mark for resolution (confirmed in a dialog) before the overall Submit: resolve the document once every topic is resolved.",
+    replies: "Claude's replies live in a separate document, review-replies/<id>, written only by Claude: { latest: { text, at, side_prompt (its index, from 1), sorted_into (card id) } }. The page shows latest in Most Recent Reply and never writes it.",
     folded: "Field id to true where the viewer collapsed the box (view only).",
     merges: "Combined boxes by merge id: card, members (field ids in order), text (each part starts with a line '── <field id> ──'), originals (each member's text when combined). A member's own answers entry is stale while it is merged; read the merge text.",
     kept: "Field id to combined text kept beside that box after a back-to-default whose marker lines were damaged.",
@@ -370,10 +387,11 @@ button:disabled { opacity: .45; cursor: default; }
     ds.appendChild(el("strong", null, "This document:"));
     ds.appendChild(el("span", "chip " + state.doc_status, state.doc_status));
     ds.appendChild(el("span", "note", open + " open · " + addr + " addressed · " + res + " resolved"));
+    if (state.doc_status === "staged") ds.appendChild(el("span", "note", "Staged for resolution" + (state.resolve_requested ? ", marked by you" : "") + ". Claude resolves it once every topic is resolved, or when you ask."));
     var a = btn(state.doc_status === "open" ? "Mark document addressed" : "Reopen document");
     a.addEventListener("click", function () { state.doc_status = state.doc_status === "open" ? "addressed" : "open"; touch(); render(); });
     var r = btn("Mark document resolved");
-    r.disabled = state.doc_status !== "addressed" || res !== cards.length;
+    r.disabled = (state.doc_status !== "addressed" && state.doc_status !== "staged") || res !== cards.length;
     if (r.disabled) r.title = "Every topic must be resolved, and the document addressed, first";
     r.addEventListener("click", function () { state.doc_status = "resolved"; touch(); render(); });
     ds.appendChild(a); if (state.doc_status !== "resolved") ds.appendChild(r);
@@ -456,6 +474,9 @@ button:disabled { opacity: .45; cursor: default; }
   function submit() {
     sendSide("document");
     state.submitted = true; state.submittedAt = new Date().toISOString();
+    if (state.doc_status !== "resolved") state.doc_status = "staged";
+    state.resolve_requested = $("resolve-mark").checked;
+    showRecent({ canned: true, text: "The overall Submit was pressed " + new Date().toLocaleString() + ". The document is staged for resolution: Claude can resolve it, you can ask Claude to, or it resolves through the marker beside Submit" + (state.resolve_requested ? " (ticked)." : " (not ticked).") });
     render();
     enqueue().then(function () {
       counts();
@@ -466,6 +487,29 @@ button:disabled { opacity: .45; cursor: default; }
   function sidePanel(open) { $("side-panel").classList.toggle("open", open); $("side-bubble").setAttribute("aria-expanded", open ? "true" : "false"); if (open) { var t = $("f-side-prompt"); if (t) t.focus(); } }
   $("side-bubble").addEventListener("click", function () { sidePanel(!$("side-panel").classList.contains("open")); });
   $("side-close").addEventListener("click", function () { sidePanel(false); $("side-bubble").focus(); });
+  var lastReply = null;
+  function showRecent(r) {
+    var b = $("recent-body"); b.textContent = "";
+    if (!r) { b.textContent = "No reply yet. Claude's answer to a side prompt appears here once it has been sorted into the page."; return; }
+    var p = el("p", null, r.text); b.appendChild(p);
+    var meta = el("span", "note", r.canned ? "Note from this page" : ("Reply" + (r.side_prompt ? " to side prompt #" + r.side_prompt : "") + (r.at ? ", " + new Date(r.at).toLocaleString() : "")));
+    b.appendChild(meta);
+    if (r.sorted_into && $("c-" + r.sorted_into)) {
+      var a = el("a", null, " · see it in the page"); a.href = "#c-" + r.sorted_into;
+      a.addEventListener("click", function (e) { e.preventDefault(); var c = $("c-" + r.sorted_into); c.open = true; c.scrollIntoView({ block: "start" }); });
+      b.appendChild(a);
+    }
+  }
+  var mark = $("resolve-mark");
+  function openModal() { $("modal").hidden = false; $("modal-yes").focus(); }
+  function closeModal(ok) { $("modal").hidden = true; mark.checked = !!ok; state.resolve_requested = !!ok; touch(); $("submit-end").focus(); }
+  mark.addEventListener("click", function (e) { if (mark.checked) { e.preventDefault(); openModal(); } else { state.resolve_requested = false; touch(); } });
+  $("modal-yes").addEventListener("click", function () { closeModal(true); });
+  $("modal-no").addEventListener("click", function () { closeModal(false); });
+  $("modal").addEventListener("keydown", function (e) {
+    if (e.key === "Escape") closeModal(false);
+    if (e.key === "Tab") { var y = $("modal-yes"), n = $("modal-no"); if (e.shiftKey && document.activeElement === y) { e.preventDefault(); n.focus(); } else if (!e.shiftKey && document.activeElement === n) { e.preventDefault(); y.focus(); } }
+  });
   $("fold-all").addEventListener("click", function () { foldIn(document, true); });
   $("unfold-all").addEventListener("click", function () { state.folded = {}; touch(); render(); });
 
@@ -479,7 +523,7 @@ button:disabled { opacity: .45; cursor: default; }
     state.status = state.status || {}; state.folded = state.folded || {}; state.side_prompts = state.side_prompts || []; state.doc_status = state.doc_status || "open";
   }
   try { var d0 = JSON.parse(localStorage.getItem(LOCAL) || "null"); if (d0) adopt(d0); } catch (e) {}
-  render();
+  render(); mark.checked = !!state.resolve_requested;
   var use = window.claude && window.claude.use ? window.claude.use.bind(window.claude) : function () { return Promise.resolve(null); };
   use("comments").then(function (c) { comments = c; });
   use("db").then(function (x) {
@@ -487,7 +531,11 @@ button:disabled { opacity: .45; cursor: default; }
     if (!db) { setStatus("Shared store unavailable: answers save in this browser only", true); return; }
     return db.doc(DOC).get().then(function (snap) {
       if (snap.exists) { var remote = snap.data(); if (!state.savedAt || (remote.savedAt && remote.savedAt >= state.savedAt)) adopt(remote); }
-      render(); setStatus(state.savedAt ? "Loaded answers saved " + new Date(state.savedAt).toLocaleString() : "Ready. Nothing saved yet.");
+      db.doc("review-replies/" + DATA.id).onSnapshot(function (snap) {
+        var r = snap.exists && snap.data().latest;
+        if (r && (!lastReply || r.at !== lastReply.at)) { lastReply = r; showRecent(r); var t = Date.parse(r.at); if (t && (!state.submittedAt || t > Date.parse(state.submittedAt))) $("side-dot").hidden = false; }
+      }, function () {});
+      render(); mark.checked = !!state.resolve_requested; setStatus(state.savedAt ? "Loaded answers saved " + new Date(state.savedAt).toLocaleString() : "Ready. Nothing saved yet.");
     });
   }).catch(function () { setStatus("Shared store unavailable: answers save in this browser only", true); });
 })();
