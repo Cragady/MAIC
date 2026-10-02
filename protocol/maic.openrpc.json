@@ -247,6 +247,12 @@
               },
               "mode": {
                 "$ref": "schemas/maic.schema.json#/$defs/Mode"
+              },
+              "focus": {
+                "type": "boolean"
+              },
+              "leave": {
+                "$ref": "schemas/maic.schema.json#/$defs/Leave"
               }
             }
           }
@@ -298,6 +304,174 @@
         },
         {
           "name": "focus",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "leave",
+          "description": "What happens to the session the client's focus leaves: `bg`, `park`, `stop`, or `default` (a working session goes to the background, an idle one is parked, unless another client has it in focus). Without `leave` it goes to the background.",
+          "required": false,
+          "schema": {
+            "$ref": "schemas/maic.schema.json#/$defs/Leave"
+          }
+        }
+      ],
+      "result": {
+        "name": "entry",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/Entry"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.session.fork",
+      "summary": "A second session from this one's transcript (its first `at` records, default all of it), by pointer; it starts as any session does, and its epoch names its parent's.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "at",
+          "required": false,
+          "schema": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        {
+          "name": "focus",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "leave",
+          "description": "What happens to the session the client's focus leaves: `bg`, `park`, `stop`, or `default` (a working session goes to the background, an idle one is parked, unless another client has it in focus). Without `leave` it goes to the background.",
+          "required": false,
+          "schema": {
+            "$ref": "schemas/maic.schema.json#/$defs/Leave"
+          }
+        }
+      ],
+      "result": {
+        "name": "entry",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/Entry"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.session.focus",
+      "summary": "`:switch`: the client's focus moves to a loaded session (maic.session.resume loads a parked one).",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "leave",
+          "description": "What happens to the session the client's focus leaves: `bg`, `park`, `stop`, or `default` (a working session goes to the background, an idle one is parked, unless another client has it in focus). Without `leave` it goes to the background.",
+          "required": false,
+          "schema": {
+            "$ref": "schemas/maic.schema.json#/$defs/Leave"
+          }
+        }
+      ],
+      "result": {
+        "name": "entry",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/Entry"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.session.background",
+      "summary": "`:bg`: the client lets go of the session; it keeps working, live while another client has it in focus.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "name": "entry",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/Entry"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.session.park",
+      "summary": "Ends the session for now: it leaves memory, stays in the index with the messages that waited to run, and resumes where it was. maic_busy while a response runs, unless `interrupt`.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "interrupt",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "entry",
+        "schema": {
+          "$ref": "schemas/maic.schema.json#/$defs/Entry"
+        }
+      },
+      "x-maic-remote": true
+    },
+    {
+      "name": "maic.session.stop",
+      "summary": "Ends the session: it leaves the index and stays an ordinary transcript (a parked one can be stopped too). maic_busy while a response runs, unless `interrupt`.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "interrupt",
           "required": false,
           "schema": {
             "type": "boolean"

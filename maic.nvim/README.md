@@ -61,6 +61,7 @@ With `ui = "nvim"` (the default) `:Maic` starts `maic --rpc` as the tab's job an
 * **Floats.** Approvals (`y`, `n`, `N` with a reason, `a` always, `t` trip, `e` open the file, `d` diff a write), questions (a digit picks, `<CR>` types), and the pause menu.
 * **Steering.** `<C-c>` cancels the turn, `<C-s>` pauses it (the menu: `<C-q>` resume, `s` steer, `d` drop, `f` further, `k` keep, `h` halt), `<C-q>` resumes; `:MaicSteer` does any of them.
 * **History.** A resumed session shows its last three exchanges; the top line, or `:MaicOlder`, loads the ten before them.
+* **Sessions.** `:MaicNew`, `:MaicSwitch` (alone, a switcher), `:MaicFork`, `:MaicBg`, `:MaicPark` and `:MaicStop`: each session has a conversation buffer of its own under the one input, and a background one keeps working and writing its buffer.
 
 The User autocmds below fire from the plugin as it renders. More: `:h maic-interface`, [docs/nvim.md](../docs/nvim.md#nvim-as-maics-interface).
 

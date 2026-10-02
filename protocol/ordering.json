@@ -98,9 +98,10 @@
   "machines": [
     {
       "name": "session",
-      "description": "One per load of a session (maic.session.state). activity moves without changing the state.",
+      "description": "One per load of a session (maic.session.state). activity moves without changing the state. A load's first event carries the stream's epoch, so a parked session loaded again starts a new instance.",
       "key": "stream",
       "initial": "-",
+      "restarts_on": "/epoch",
       "terminal": [
         "parked",
         "stopped"

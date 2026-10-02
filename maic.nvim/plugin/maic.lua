@@ -23,3 +23,13 @@ vim.api.nvim_create_user_command("MaicOlder", function() require("maic.ui").olde
   { desc = "Load the conversation's earlier history above what is shown" })
 vim.api.nvim_create_user_command("MaicQuickfix", function() maic().send_quickfix() end,
   { desc = "Send the quickfix list into MAIC's input" })
+local function session(verb, desc)
+  vim.api.nvim_create_user_command("Maic" .. verb:sub(1, 1):upper() .. verb:sub(2), function(o) require("maic.ui").session_command(verb, o.fargs) end,
+    { nargs = "*", complete = function() return { "--bg", "--park", "--stop" } end, desc = desc })
+end
+session("new", "Start another session in this tab's engine and go to it: [--bg|--park|--stop] [DIR]")
+session("switch", "Go to another session, or pick one: [--bg|--park|--stop] [ID|TITLE]")
+session("fork", "Fork this session into a second one and go to it: [--bg|--park|--stop]")
+session("bg", "Send this session to the background (it keeps working) and pick another")
+session("park", "End this session (or ID) for now; it resumes where it was")
+session("stop", "End this session (or ID); it stays a transcript")

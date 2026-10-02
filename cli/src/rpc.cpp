@@ -174,6 +174,7 @@ int run_rpc(const TuiOptions& options) {
     eo.settings = settings;
     eo.mode_asked = options.mode.has_value();
     eo.kind = "rpc";
+    eo.titles = true;
     eo.settings_at = [&options](const std::filesystem::path& dir) { return tui_settings(options, dir); };
     eo.setup = [host](Agent& agent, const Settings& st) {
         configure_agent(agent, st);

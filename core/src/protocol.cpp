@@ -260,6 +260,7 @@ struct Machine {
     std::string scope;
     std::vector<json::json_pointer> key;
     std::string initial;
+    std::optional<json::json_pointer> restarts_on;  // an event with this field starts a new instance (a new load)
     std::set<std::string> terminal;
     std::vector<std::string> closes;
     std::vector<Transition> transitions;
@@ -283,6 +284,7 @@ const std::vector<Machine>& machines() {
             machine.one_open = m.value("one_open", false);
             machine.scope = m.value("scope", "");
             machine.initial = m.at("initial");
+            if (m.contains("restarts_on")) machine.restarts_on = json::json_pointer(m["restarts_on"].get<std::string>());
             for (const auto& t : m.at("terminal")) machine.terminal.insert(t.get<std::string>());
             for (const auto& c : m.value("closes", json::array())) machine.closes.push_back(c);
             for (const auto& t : m.at("transitions")) {
@@ -487,7 +489,7 @@ std::optional<Violation> StreamChecker::check(const json& event) {
         }
         auto& instances = states_[m.name];
         auto it = instances.find(key);
-        std::string state = it == instances.end() ? m.initial : it->second;
+        std::string state = it == instances.end() || (m.restarts_on && event.contains(*m.restarts_on)) ? m.initial : it->second;
         const json& rid = at(event, "/response/id");
         bool unknown = joined_ && it == instances.end() && m.scope.empty() && (m.name != "response" || !rid.is_string() || !seen_responses_.count(rid.get<std::string>()));
         const Transition* chosen = nullptr;

@@ -126,6 +126,16 @@ struct PendingConfirm {
     std::string title;
     std::vector<std::string> lines;
     std::string keys;
+    std::function<void(const std::string&)> local;  // a question the TUI asks itself: the key goes here, not to the engine
+};
+
+// The session switcher (:switch, and :bg, :park or :stop on this session): the other sessions the engine holds,
+// with what each is doing and where it works, and a new one; Enter goes there.
+struct Switcher {
+    std::string title;
+    std::string leave;             // what happens to this session: "" for session_leave's choice
+    std::vector<std::string> ids;  // "" is a new session here
+    size_t sel = 0;
 };
 
 // The question tool: shown like an approval; a number picks an option, typed text is a free answer.
@@ -200,11 +210,19 @@ public:
         EngineOptions eo;
         eo.settings = settings_;
         eo.kind = "tui";
+        eo.titles = true;
         // :cd reads the new directory's settings as a start there would, flags included; the TUI keeps that copy.
         eo.settings_at = [this](const std::filesystem::path& ws) {
             Settings st = settings_at_(ws);
             cd_settings_ = st;
             return st;
+        };
+        // Sessions :new, :fork and :switch open are set up as this one is.
+        eo.setup = [this](Agent& agent, const Settings& st) {
+            configure_agent(agent, st);
+            if (confined_) agent.set_confined(true);
+            agent.reload_instructions();
+            agent.set_nvim_host(host_);
         };
         engine_ = std::make_unique<Engine>(std::move(eo));
         client_ = engine_->connect(Origin::Local, "maic", "in-process", [this] { wake_pump(); });
@@ -245,6 +263,7 @@ public:
         session_ = engine_->open_local(client_, std::move(ls));
         nlohmann::json snap = result(call("maic.session.attach", {{"session", session_}}));
         call("maic.index.subscribe");
+        for (const auto& e : result(call("maic.index.get")).value("entries", nlohmann::json::array())) index_[e.value("id", "")] = e;
         take_events();
         follow_entry(snap.value("entry", nlohmann::json::object()));
         usage_ = snap.value("usage", nlohmann::json::object());
@@ -289,6 +308,20 @@ private:
     void follow_workspace(const std::filesystem::path& to);
     void live(const std::string& key, int stream, const std::string& data, size_t offset);
     void after_turn();
+    // Sessions (`:h sessions`): the view follows the one in this client's focus.
+    void show_session(const std::string& id);
+    void session_verb(const std::string& cmd, const std::string& arg);
+    enum class Go { New, Fork, To };
+    void go(Go how, const std::string& target, std::string as, const std::string& dir, bool sure = false);
+    void end_other(const std::string& id, const std::string& verb, bool sure = false);
+    void open_switcher(const std::string& title, const std::string& leave);
+    std::string resolve_session(const std::string& given) const;
+    std::string session_line(const nlohmann::json& e) const;
+    Element render_switcher();
+    bool handle_switcher(const Event& e);
+    std::map<std::string, nlohmann::json> index_;  // the engine's sessions, from maic.index
+    std::optional<Switcher> switcher_;
+    bool quit_warned_ = false;  // :q was told other sessions are working
     void open_recording();
     void record(const char* dir, const nlohmann::json& msg);
     std::function<Settings(const std::filesystem::path&)> settings_at_;
@@ -558,9 +591,14 @@ void App::apply(const nlohmann::json& m) {
     std::string method = m.value("method", "");
     const nlohmann::json& p = m.contains("params") ? m["params"] : nlohmann::json::object();
     if (method == "maic.event") {
-        on_event(p);
+        if (p.value("stream_id", "") == session_) on_event(p);  // else a session this view left, its last events before the switch
     } else if (method == "maic.index") {
-        if (p.contains("entry") && p["entry"].value("id", "") == session_) follow_entry(p["entry"]);
+        if (p.contains("removed")) index_.erase(p["removed"].get<std::string>());
+        if (!p.contains("entry")) return;
+        std::string id = p["entry"].value("id", "");
+        index_[id] = p["entry"];
+        if (id == session_) follow_entry(p["entry"]);
+        screen_.PostEvent(Event::Custom);
     } else if (method == "maic.engine" && p.contains("notice")) {
         post(p.value("level", "warn") == "info" ? Kind::Notice : Kind::Error, p["notice"]);
     }
@@ -1231,6 +1269,19 @@ Element App::render_top_status() {
         right.push_back(text(" · todo " + std::to_string(done) + "/" + std::to_string(todo_.size()) + " done") | decorate(settings_.style("notice")));
     }
     if (queued_) right.push_back(text(" · " + std::to_string(queued_) + " queued (:w now)") | decorate(settings_.style("notice")));
+    size_t others = 0, waiting = 0, finished = 0;
+    for (const auto& [id, e] : index_) {
+        if (id == session_ || e.value("state", "") == "parked") continue;
+        ++others;
+        waiting += e.value("activity", "") == "waiting";
+        finished += e.value("unseen", false);
+    }
+    if (others > 0) {
+        std::string t = " · " + std::to_string(others) + (others == 1 ? " other session" : " other sessions");
+        if (waiting) t += ", " + std::to_string(waiting) + " waiting";
+        if (finished) t += ", " + std::to_string(finished) + " finished";
+        right.push_back(text(t + " (:switch)") | decorate(settings_.style(waiting ? "notice" : "status_dim")));
+    }
     if (paused_) right.push_back(text(" · PAUSED: ctrl-q resumes") | decorate(settings_.style("notice")));
     else if (busy_) right.push_back(text(" · working… ctrl-c interrupts, ctrl-s pauses") | decorate(settings_.style("notice")));
     if (shell_busy_) right.push_back(text(" · shell running") | decorate(settings_.style("shell")));
@@ -1342,6 +1393,11 @@ bool App::handle_confirm(const Event& e) {
     else if (confirm_->keys != "yn" && k.size() == 1 && confirm_->keys.find(k) != std::string::npos) key = k;
     else return true;
     std::string id = confirm_->id;
+    if (auto local = confirm_->local) {
+        confirm_.reset();
+        local(key);
+        return true;
+    }
     confirm_.reset();
     nlohmann::json reply = call("maic.session.command", {{"session", session_}, {"ask", id}, {"key", key}});
     drain();
@@ -1395,10 +1451,11 @@ Element App::render() {
         if (question_) approval_rows = 4 + static_cast<int>(question_->options.size());
     }
     if (pause_menu_ && paused_) approval_rows += 4;
+    if (switcher_) approval_rows += static_cast<int>(std::min<size_t>(switcher_->ids.size(), 12)) + 3;
     view_height_ = std::max(1, size.dimy - input_rows - palette_rows - 3 - approval_rows - (focused ? 2 : 0));
     Element conversation = view_.render(settings_, focused ? width - 2 : width, view_height_);
     if (focused) conversation = conversation | borderLight | decorate(settings_.style("focus"));
-    return vbox({conversation, render_approval(), render_question(), render_confirm(), render_pause_menu(), render_top_status(), separator() | decorate(settings_.style("separator")), input, palette,
+    return vbox({conversation, render_approval(), render_question(), render_confirm(), render_switcher(), render_pause_menu(), render_top_status(), separator() | decorate(settings_.style("separator")), input, palette,
                  render_bottom_status()});
 }
 
@@ -1467,6 +1524,7 @@ bool App::handle(Event e) {
     if (question_) return handle_question(e);
     if (!approval_ && confirm_) return handle_confirm(e);
     if (asking()) return handle_approval(e);
+    if (switcher_) return handle_switcher(e);
     if (pause_menu_ && paused_) return handle_pause_menu(e);
     // Ctrl-S pauses a running turn (the interrupt steer), Ctrl-Q resumes a paused one: MAIC keeps the terminal's
     // flow control off, so neither stops the output.
@@ -1949,7 +2007,10 @@ void App::run_command(const std::string& line) {
                 quit();
             }
         } else if (cmd == "q" || cmd == "q!" || cmd == "quit" || cmd == "exit") {
+            if (cmd == "q!") quit_warned_ = true;
             quit();
+        } else if (cmd == "new" || cmd == "switch" || cmd == "fork" || cmd == "bg" || cmd == "park" || cmd == "stop") {
+            session_verb(cmd, arg);
         } else if (cmd == "w" || cmd == "write" || cmd == "send") {
             submit(editor_.text(), arg == "now" || arg == "!");
         } else if (cmd == "ww") {
@@ -2186,7 +2247,230 @@ void App::run_command(const std::string& line) {
     }
 }
 
+// ---------- sessions ----------
+
+// The view follows the session this client's focus moved to: its last exchanges from attach, what it is writing,
+// its waiting approval or question and its settings, in its workspace; the session left sends no more here.
+void App::show_session(const std::string& id) {
+    if (session_ != id) call("maic.session.unsubscribe", {{"session", session_}});  // refused when the leave ended it: nothing to undo
+    session_ = id;
+    nlohmann::json snap = result(call("maic.session.attach", {{"session", id}, {"exchanges", 10}}));
+    approval_.reset();
+    question_.reset();
+    todo_.clear();
+    approvals_seen_.clear();
+    paused_ = pause_menu_ = false;
+    tool_calls_ = 0;
+    live_call_.clear();
+    view_.clear();
+    const nlohmann::json& e = snap.value("entry", nlohmann::json::object());
+    if (snap.value("more_before", false)) view_.append(Kind::Notice, "(earlier turns: maic sessions read " + id + ")");
+    for (const auto& item : snap.value("items", nlohmann::json::array())) {
+        std::string type = item.value("type", "");
+        const nlohmann::json& m = item.value("maic", nlohmann::json::object());
+        if (type == "message") {
+            std::string t;
+            for (const auto& part : item.value("content", nlohmann::json::array())) t += part.value("text", "");
+            view_.append(item.value("role", "") == "user" ? Kind::User : Kind::Assistant, t);
+        } else if (type == "function_call_output" || type == "shell_call_output") {
+            std::string out = type == "function_call_output" ? item.value("output", "") : item["output"].empty() ? "" : item["output"][0].value("stdout", "");
+            if (m.value("collapsed", false)) out = m.value("head", "") + " … (" + std::to_string(m.value("size", size_t(0))) + " bytes)";
+            view_.append(Kind::Tool, m.value("summary", ""));
+            view_.append(m.value("ok", true) ? Kind::ToolOk : Kind::ToolErr, out);
+        } else {
+            view_.append(Kind::Notice, m.value("collapsed", false) ? m.value("head", "") + " …" : item.value("text", ""));
+        }
+    }
+    if (snap["inflight"].is_object()) {
+        for (const auto& open : snap["inflight"].value("items", nlohmann::json::array())) {
+            std::string type = open["item"].value("type", ""), t = open.value("text", "");
+            if (type == "message") view_.append(Kind::Assistant, t);
+            else if (type == "reasoning") view_.append(Kind::Thinking, t);
+            else if (type == "function_call_output" || type == "shell_call_output") {
+                view_.append(Kind::Tool, open.contains("call") && open["call"].contains("maic") ? open["call"]["maic"].value("summary", "") : "");
+                live_call_ = open["item"].value("id", "");
+                live_next_[0] = live_next_[1] = open.value("size", t.size());
+                view_.live_output(t);
+            }
+        }
+    }
+    for (const auto& a : snap.value("pending", nlohmann::json::array())) {
+        if (!approval_) approval_ = PendingApproval{a.value("id", ""), a};
+    }
+    for (const auto& q : snap.value("questions", nlohmann::json::array())) {
+        if (!question_) question_ = PendingQuestion{q.value("id", ""), q.value("text", ""), q.value("options", std::vector<std::string>{}), ""};
+    }
+    for (const auto& t : snap.value("todo", nlohmann::json::array())) todo_.push_back({t.value("text", ""), t.value("done", false)});
+    usage_ = snap.value("usage", nlohmann::json::object());
+    index_[id] = e;
+    queued_ = 0;
+    follow_entry(e);
+    busy_ = e.value("activity", "idle") != "idle";
+    response_ = e["response"].is_string() ? e["response"].get<std::string>() : "";
+    turn_seq_ = snap.value("sequence_number", -1L);
+    std::string ws = e.value("workspace", ws_);
+    if (ws != ws_) follow_workspace(ws);
+    view_.append(Kind::Notice, "session " + session_line(e));
+    screen_.PostEvent(Event::Custom);
+}
+
+// One line about a session: what it is doing, its title (or id), its model and where it works.
+std::string App::session_line(const nlohmann::json& e) const {
+    std::string state = e.value("state", ""), activity = e.value("activity", "idle");
+    std::string doing = state == "parked" ? "parked" : activity == "waiting" ? "waiting" : activity != "idle" ? "working" : e.value("unseen", false) ? "finished" : "idle";
+    if (activity == "waiting" && e["waiting"].is_object()) doing += ": " + e["waiting"].value("summary", e["waiting"].value("kind", ""));
+    std::string ws = e.value("workspace", ""), home = std::getenv("HOME") ? std::getenv("HOME") : "";
+    if (!home.empty() && ws.rfind(home + "/", 0) == 0) ws = "~" + ws.substr(home.size());
+    std::string title = e.value("title", "");
+    return (title.empty() ? e.value("id", "") : title) + "  ·  " + doing + "  ·  " + e.value("model", "") + "  ·  " + ws;
+}
+
+// An id, a unique id prefix or a title (any letter case) among the sessions the engine holds; else what was typed,
+// for maic.session.resume to find among the transcripts.
+std::string App::resolve_session(const std::string& given) const {
+    if (index_.count(given)) return given;
+    auto lower = [](std::string t) {
+        for (auto& ch : t) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        return t;
+    };
+    std::vector<std::string> hits;
+    for (const auto& [id, e] : index_) {
+        if (id.rfind(given, 0) == 0 || lower(e.value("title", "")) == lower(given)) hits.push_back(id);
+    }
+    return hits.size() == 1 ? hits.front() : given;
+}
+
+// :new, :switch, :fork, :bg, :park and :stop (`:h sessions`). --bg, --park or --stop names what happens to the
+// session left, this once.
+void App::session_verb(const std::string& cmd, const std::string& arg) {
+    std::istringstream in(arg);
+    std::string as, rest;
+    for (std::string w; in >> w;) {
+        if (w == "--bg" || w == "--park" || w == "--stop") as = w.substr(2);
+        else rest += (rest.empty() ? "" : " ") + w;
+    }
+    if (cmd == "new") return go(Go::New, "", as, rest);
+    if (cmd == "fork") return go(Go::Fork, "", as, "");
+    if (cmd == "switch" && !rest.empty()) {
+        std::string id = resolve_session(rest);
+        if (id == session_) return post(Kind::Notice, "already in " + session_line(index_[id]));
+        return go(Go::To, id, as, "");
+    }
+    if (cmd == "switch") return open_switcher(" switch to ", as);
+    if (cmd == "bg") return open_switcher(" background this session, and go to ", "bg");
+    std::string id = rest.empty() ? session_ : resolve_session(rest);
+    if (id == session_) return open_switcher(" " + cmd + " this session, and go to ", cmd);
+    end_other(id, cmd);
+}
+
+// Moves this client's focus: to a new session, a fork of this one, or another session (`target`), loaded or parked. `as` says what happens to the one left: "" for session_leave's choice, which may be to
+// ask; parking or stopping one mid-turn interrupts it, so that is asked first.
+void App::go(Go how, const std::string& target, std::string as, const std::string& dir, bool sure) {
+    if (as.empty()) as = settings_.session_leave;
+    if (as == "ask") {
+        confirm_ = PendingConfirm{"leave", " leave this session? ", {"[b] background: it keeps working", "[p] park: it stops for now and resumes where it was",
+                                                                   "[s] stop: it ends; its transcript stays (maic -r)", "Esc stays here"},
+                                  "bps", [this, how, target, dir](const std::string& k) {
+                                      if (k != "n") go(how, target, k == "b" ? "bg" : k == "p" ? "park" : "stop", dir);
+                                  }};
+        return;
+    }
+    if (!sure && busy_ && (as == "park" || as == "stop")) {
+        confirm_ = PendingConfirm{"leave", " " + as + " a working session? ", {"Its turn is interrupted (y), or it stays (n)."}, "yn",
+                                  [this, how, target, as, dir](const std::string& k) {
+                                      if (k == "y") go(how, target, as, dir, true);
+                                  }};
+        return;
+    }
+    nlohmann::json leave = {{"as", as}};
+    nlohmann::json reply;
+    if (how == Go::New) reply = call("createConversation", {{"maic", {{"workspace", ws_}, {"leave", leave}}}});
+    else if (how == Go::Fork) reply = call("maic.session.fork", {{"session", session_}, {"leave", leave}});
+    else if (index_.count(target) && index_[target].value("state", "") != "parked") reply = call("maic.session.focus", {{"session", target}, {"leave", leave}});
+    else reply = call("maic.session.resume", {{"session", target}, {"leave", leave}});
+    if (reply.contains("error")) {
+        drain();
+        show(reply);
+        return;
+    }
+    drain();
+    show_session(result(reply).value("id", ""));
+    if (!dir.empty()) command("cd " + dir);
+}
+
+// :park ID or :stop ID: another session ends, asked first when it is mid-turn; this one stays in focus.
+void App::end_other(const std::string& id, const std::string& verb, bool sure) {
+    bool working = index_.count(id) && index_[id].value("state", "") != "parked" && index_[id].value("activity", "idle") != "idle";
+    if (working && !sure) {
+        confirm_ = PendingConfirm{verb, " " + verb + " a working session? ", {session_line(index_[id]), "Its turn is interrupted (y), or it goes on (n)."}, "yn",
+                                  [this, id, verb](const std::string& k) {
+                                      if (k == "y") end_other(id, verb, true);
+                                  }};
+        return;
+    }
+    nlohmann::json reply = call(verb == "park" ? "maic.session.park" : "maic.session.stop", {{"session", id}, {"interrupt", true}});
+    drain();
+    if (reply.contains("error")) return show(reply);
+    post(Kind::Notice, (verb == "park" ? "parked " : "stopped ") + session_line(result(reply)) + (verb == "park" ? "  (:switch resumes it)" : "  (maic -r resumes it)"));
+}
+
+void App::open_switcher(const std::string& title, const std::string& leave) {
+    Switcher sw{title, leave, {""}, 0};
+    std::vector<const nlohmann::json*> loaded, parked;
+    for (const auto& [id, e] : index_) {
+        if (id != session_) (e.value("state", "") == "parked" ? parked : loaded).push_back(&e);
+    }
+    auto newest = [](const nlohmann::json* a, const nlohmann::json* b) { return a->value("last_activity", "") > b->value("last_activity", ""); };
+    std::sort(loaded.begin(), loaded.end(), newest);
+    std::sort(parked.begin(), parked.end(), newest);
+    for (const auto* e : loaded) sw.ids.push_back(e->value("id", ""));
+    for (const auto* e : parked) sw.ids.push_back(e->value("id", ""));
+    if (sw.ids.size() > 1) sw.sel = 1;
+    switcher_ = std::move(sw);
+}
+
+Element App::render_switcher() {
+    if (!switcher_) return emptyElement();
+    Elements rows;
+    size_t first = switcher_->sel >= 12 ? switcher_->sel - 11 : 0;
+    for (size_t i = first; i < switcher_->ids.size() && i < first + 12; ++i) {
+        const std::string& id = switcher_->ids[i];
+        std::string line = id.empty() ? "+ a new session in " + ws_ : session_line(index_.count(id) ? index_.at(id) : nlohmann::json{{"id", id}});
+        Element row = text((i == switcher_->sel ? "▸ " : "  ") + line);
+        if (i == switcher_->sel) row = row | decorate(settings_.style("visual"));
+        rows.push_back(row);
+    }
+    rows.push_back(text("j/k move · Enter goes there · Esc stays") | decorate(settings_.style("status_dim")));
+    return window(text(switcher_->title) | bold, vbox(rows)) | decorate(settings_.style("approval"));
+}
+
+bool App::handle_switcher(const Event& e) {
+    const std::string& k = e.input();
+    if (e == Event::Escape || k == "\x03" || k == "q") {
+        switcher_.reset();
+    } else if (k == "j" || e == Event::ArrowDown) {
+        if (switcher_->sel + 1 < switcher_->ids.size()) ++switcher_->sel;
+    } else if (k == "k" || e == Event::ArrowUp) {
+        if (switcher_->sel > 0) --switcher_->sel;
+    } else if (e == Event::Return) {
+        Switcher sw = std::move(*switcher_);
+        switcher_.reset();
+        const std::string& id = sw.ids[sw.sel];
+        go(id.empty() ? Go::New : Go::To, id, sw.leave, "");
+    }
+    return true;
+}
+
 void App::quit() {
+    // Background sessions live in this process until the daemon (step 13): quitting parks them, mid-turn too.
+    size_t working = 0;
+    for (const auto& [id, e] : index_) working += id != session_ && e.value("state", "") != "parked" && e.value("activity", "idle") != "idle";
+    if (working > 0 && !quit_warned_) {
+        quit_warned_ = true;
+        post(Kind::Notice, std::to_string(working) + (working == 1 ? " other session is" : " other sessions are") +
+                               " still working: quitting parks them and interrupts their turns (each resumes where it stopped). :q again quits.");
+        return;
+    }
     // A draft that was never sent is stashed, so a reflexive :q loses nothing.
     if (!editor_.text().empty()) {
         std::ofstream f(state_dir() / "prompt-stash.jsonl", std::ios::app);

@@ -897,6 +897,7 @@ int main() {
             };
             std::string bid = local.open_local(a.id, std::move(bs));
             a.ok("maic.session.attach", {{"session", bid}});
+            a.pump(50ms);  // the session it left goes to the background: that state, idle, is not this turn's end
             mark = a.events.size();
             a.ok("response.create", {{"conversation", bid}, {"input", "say forbidden words"}});
             a.until_idle(mark);
@@ -1351,6 +1352,128 @@ int main() {
         engine->disconnect(n.id);
         hist.finish();
     }
+
+    section("several sessions in one engine: parallel turns, focus, fork, park, resume and stop");
+    Recording multi("sessions");
+    {
+        TestClient a(*engine, multi, Origin::Local, "tui");
+        a.hello();
+        a.ok("maic.index.subscribe");
+        auto state_of = [&](const std::string& id) {
+            json entries = a.ok("maic.index.get")["entries"];
+            for (const auto& e : entries) {
+                if (e["id"] == id) return e;
+            }
+            return json();
+        };
+        auto on = [](const std::string& id, const std::string& type) { return [id, type](const json& e) { return e["stream_id"] == id && e["type"] == type; }; };
+        json one = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}});
+        std::string s1 = one["id"];
+        expect(one["maic"]["entry"]["state"] == "live", "a session a client creates opens live, in its focus");
+        json two = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}});
+        std::string s2 = two["id"];
+        expect(two["maic"]["entry"]["state"] == "live" && state_of(s1)["state"] == "background",
+               "creating another moves the client's focus, and without `leave` the first only goes to the background");
+        a.ok("maic.session.subscribe", {{"session", s1}});
+        a.ok("maic.session.subscribe", {{"session", s2}});
+        a.pump(50ms);
+
+        // The first session's reply is held mid-stream; the second's runs to its end meanwhile.
+        int base;
+        {
+            std::lock_guard lock(fake.mu);
+            base = fake.streaming;
+        }
+        size_t mark = a.events.size();
+        fake.hold_left = 1;
+        json r1 = a.ok("response.create", {{"conversation", s1}, {"input", "the first one waits"}});
+        fake.wait_streaming(base + 1);
+        a.ok("response.create", {{"conversation", s2}, {"input", "the second one runs"}});
+        long done2 = a.until(on(s2, "response.completed"), mark);
+        bool first_open = true;
+        for (size_t i = mark; i < a.events.size(); ++i) first_open = first_open && !on(s1, "response.completed")(a.events[i]);
+        expect(done2 >= 0 && first_open, "two sessions' turns run in parallel: the second completes while the first is still streaming");
+        a.ok("cancelResponse", {{"response_id", r1["id"]}});
+        a.until([&](const json& e) { return e["stream_id"] == s1 && e["type"] == "maic.session.state" && e["activity"] == "idle"; }, mark);
+        expect(state_of(s1)["unseen"] == true && state_of(s2)["unseen"] == false, "a turn that ends while no client has the session in focus marks it unseen");
+
+        json f = a.ok("maic.session.focus", {{"session", s1}, {"leave", {{"as", "bg"}}}});
+        expect(f["state"] == "live" && f["unseen"] == false && state_of(s2)["state"] == "background",
+               "maic.session.focus brings a session into focus, clears unseen, and the one left goes to the background");
+
+        mark = a.events.size();
+        json fk = a.ok("maic.session.fork", {{"session", s1}, {"leave", {{"as", "bg"}}}});
+        std::string s3 = fk["id"];
+        a.ok("maic.session.subscribe", {{"session", s3}});
+        long first = a.until(on(s3, "maic.session.state"), mark);
+        expect(fk["state"] == "live" && fk["turns"].get<int>() == 1 && state_of(s1)["state"] == "background", "a fork opens in focus with its parent's turns");
+        expect(first >= 0 && a.events[first].contains("forked_from") && a.events[first]["forked_from"]["session"] == s1,
+               "its first event's epoch names the session it forked from");
+
+        a.ok("maic.session.focus", {{"session", s1}, {"leave", {{"as", "default"}}}});
+        expect(state_of(s3)["state"] == "parked" && a.error("getConversation", {{"conversation_id", s3}}) == "maic_not_found",
+               "the default leave parks an idle session: it leaves memory and stays in the index");
+
+        {
+            std::lock_guard lock(fake.mu);
+            base = fake.streaming;
+        }
+        fake.hold_left = 1;
+        a.ok("response.create", {{"conversation", s2}, {"input", "busy for a while"}});
+        fake.wait_streaming(base + 1);
+        expect(a.error("maic.session.park", {{"session", s2}}) == "maic_busy", "parking a session mid-turn is maic_busy without interrupt");
+        a.ok("response.create", {{"conversation", s2}, {"input", "queued behind"}});
+        json pk = a.ok("maic.session.park", {{"session", s2}, {"interrupt", true}});
+        expect(pk["state"] == "parked" && pk["queued"] == 1 && !pk.contains("queued_inputs"),
+               "with interrupt it parks, keeping the message that waited on the lane (its text stays in the engine)");
+        mark = a.events.size();
+        json rs = a.ok("maic.session.resume", {{"session", s2}, {"leave", {{"as", "bg"}}}});
+        a.ok("maic.session.subscribe", {{"session", s2}});
+        long ran = a.until([&](const json& e) {
+            return e["stream_id"] == s2 && e["type"] == "response.output_text.done" && e.value("text", "").find("echo: queued behind") != std::string::npos;
+        }, mark);
+        expect(rs["state"] == "live" && ran >= 0, "resuming the parked session runs the message that waited");
+        a.until([&](const json& e) { return e["stream_id"] == s2 && e["type"] == "maic.session.state" && e["activity"] == "idle"; }, static_cast<size_t>(std::max(ran, 0L)));
+
+        a.pump(50ms);
+        json stop = a.ok("maic.session.stop", {{"session", s2}});
+        a.pump(50ms);
+        bool removed = false;
+        for (const auto& m : a.other) removed = removed || (m["method"] == "maic.index" && m["params"].value("removed", "") == s2);
+        expect(stop["state"] == "stopped" && state_of(s2).is_null() && removed, "maic.session.stop ends it, takes it off the index and says so");
+        json stopped_parked = a.ok("maic.session.stop", {{"session", s3}});
+        expect(stopped_parked["state"] == "stopped" && state_of(s3).is_null(), "a parked session can be stopped too");
+
+        TestClient b(*engine, multi, Origin::Local, "nvim");
+        b.hello();
+        b.ok("maic.session.focus", {{"session", s1}});
+        engine->disconnect(a.id);
+        TestClient c(*engine, multi, Origin::Local, "look");
+        c.hello();
+        auto entry_of = [&](const std::string& id) { return c.ok("getConversation", {{"conversation_id", id}})["maic"]["entry"]; };
+        expect(entry_of(s1)["state"] == "live", "a session stays live while another client has it in focus");
+        engine->disconnect(b.id);
+        expect(entry_of(s1)["state"] == "background", "a client that goes lets go of its focus: the session stays loaded, in the background");
+        engine->disconnect(c.id);
+        multi.finish();
+
+        // A session loads again only with a load's header: a state after `parked` without one is caught.
+        std::vector<json> mutated = multi.records;
+        bool parked = false, cut = false;
+        for (auto& r : mutated) {
+            json& ev = r["msg"]["params"];
+            if (r["msg"].value("method", "") != "maic.event" || ev["stream_id"] != s2 || ev["type"] != "maic.session.state") continue;
+            if (ev["state"] == "parked") parked = true;
+            else if (parked && ev.contains("epoch")) {
+                ev.erase("epoch");
+                ev.erase("protocol");
+                cut = true;
+                break;
+            }
+        }
+        expect(cut && verdict(mutated) == "machine", "mutated: a session's state after parked without a new load's epoch is caught");
+    }
+    recordings.push_back(&multi);
 
     // The epoch a load ran under, and the number its stream reached, before the restart.
     std::string epoch_before;

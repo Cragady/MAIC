@@ -22,6 +22,7 @@ struct EngineOptions {
     bool mode_asked = false;                        // settings.mode is the host's --mode: auto from it starts in any workspace
     std::vector<std::filesystem::path> workspaces;  // where a remote client may open or resume a session (server.workspaces)
     std::string kind = "engine";                    // the transcripts' kind ("server" for maic-server's sessions)
+    bool titles = false;                            // small_model titles each session it opens after its first turn
     std::filesystem::path index_file;               // the session index, <state>/engine/index.json for the daemon; "" keeps none
     std::filesystem::path protocol_log;             // where the guarded tier writes what it finds; "" is <state>/engine/protocol.log
     std::string tier = "guarded";                   // open or guarded; airtight needs the conformance stamp (step 18)

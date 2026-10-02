@@ -460,6 +460,10 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.colors = j.value("colors", s.colors);
         if (s.colors != "auto" && s.colors != "truecolor" && s.colors != "256" && s.colors != "16") throw std::runtime_error(path.string() + ": colors must be \"auto\", \"truecolor\", \"256\" or \"16\", not \"" + s.colors + "\"");
         s.enter_sends = j.value("enter_sends", s.enter_sends);
+        s.session_leave = j.value("session_leave", s.session_leave);
+        if (s.session_leave != "default" && s.session_leave != "ask" && s.session_leave != "bg" && s.session_leave != "park" && s.session_leave != "stop") {
+            throw std::runtime_error(path.string() + ": session_leave must be \"default\", \"ask\", \"bg\", \"park\" or \"stop\", not \"" + s.session_leave + "\"");
+        }
         s.record = j.value("record", s.record);
         s.models_dir = j.value("models_dir", s.models_dir);
         s.context = std::max(1024, j.value("context", s.context));
@@ -806,6 +810,8 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"//highlight", "builtin, or nvim: an embedded nvim --embed highlights the input (markdown with treesitter); falls back to builtin when nvim is missing"},
         {"enter_sends", d.enter_sends},
         {"//enter_sends", "true: Enter sends a one-line input in insert mode, Shift+Enter or Alt+Enter insert a newline; false (vim-like): Enter is always a newline, Alt+Enter or :w sends"},
+        {"session_leave", d.session_leave},
+        {"//session_leave", "what :new, :switch and :fork do with the session you leave: default (a working one goes to the background, an idle one is parked), ask, bg, park or stop; --bg, --park or --stop on the command decides once"},
         {"record", d.record},
         {"models_dir", models_dir.empty() ? d.models_dir : models_dir},
         {"context", d.context},

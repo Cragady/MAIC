@@ -21,6 +21,15 @@
     "Tier": {"enum": ["open", "guarded", "airtight"]},
     "SessionState": {"enum": ["live", "background", "parked", "stopped"]},
     "Activity": {"enum": ["idle", "working", "waiting", "slot"]},
+    "Leave": {
+      "description": "What happens to the session a client's focus leaves (section 2): `session` defaults to the client's focus; `as` defaults to `default`.",
+      "type": "object",
+      "properties": {
+        "session": {"type": "string", "minLength": 1},
+        "as": {"enum": ["default", "bg", "park", "stop"]}
+      },
+      "additionalProperties": false
+    },
     "Waiting": {
       "description": "What a waiting session waits for; on a parent entry it also covers its children.",
       "type": "object",

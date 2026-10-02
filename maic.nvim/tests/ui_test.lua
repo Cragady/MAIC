@@ -190,6 +190,60 @@ cw = vim.fn.win_findbuf(conv)[1]
 vim.api.nvim_win_call(cw, function() line = vim.fn.search("^  111$", "nw") end)
 expect(vim.api.nvim_win_call(cw, function() return vim.fn.foldclosed(line) end) > 0, "the new window gets the folds again")
 
+io.write("sessions\n")
+idle()
+local first = ui.state()
+local function landed(not_session)
+  vim.wait(30000, function()
+    local st = ui.state()
+    return st and st.session ~= not_session and st.model ~= nil
+  end, 20)
+  return ui.state()
+end
+vim.cmd("MaicNew")
+local second = landed(first.session)
+expect(second.session ~= first.session and second.conversation ~= first.conversation and second.input == first.input,
+  ":MaicNew opens another session in a conversation buffer of its own, under the same input")
+expect(#vim.fn.win_findbuf(second.conversation) == 1 and vim.wait(5000, function() return not vim.api.nvim_buf_is_valid(first.conversation) end, 20),
+  "it takes the conversation window, and the idle session it left is parked, its buffer gone")
+conv = second.conversation
+send("in the second")
+expect(wait_for("echo: in the second"), "a turn runs in the new session")
+idle()
+send("hold on")
+vim.wait(30000, function() return ui.state().response ~= nil end, 20)
+local held = ui.state()
+local real_select = vim.ui.select
+vim.ui.select = function(items, _, cb) cb(items[1]) end -- the switcher's first line: a new session
+vim.cmd("MaicBg")
+local third = landed(held.session)
+expect(third.session ~= held.session and vim.api.nvim_buf_is_valid(held.conversation),
+  ":MaicBg sends the working session to the background, its buffer kept, and the switcher's first line opens a new one")
+vim.wait(5000, function() return (vim.wo[vim.fn.win_findbuf(third.conversation)[1]].winbar or ""):find("1 other session", 1, true) ~= nil end, 20)
+expect((vim.wo[vim.fn.win_findbuf(third.conversation)[1]].winbar or ""):find("1 other session", 1, true) ~= nil, "the winbar counts the other session")
+vim.cmd("MaicSwitch " .. held.session)
+vim.wait(30000, function() return ui.state().session == held.session end, 20)
+conv = held.conversation
+expect(text():find("holding", 1, true) ~= nil and ui.state().response ~= nil and vim.fn.win_findbuf(conv)[1] ~= nil,
+  ":MaicSwitch ID goes back to it, still working, in its own buffer")
+ui.interrupt(ui.here())
+idle()
+expect(vim.wait(5000, function() return not vim.api.nvim_buf_is_valid(third.conversation) end, 20), "the idle session it left is parked")
+vim.cmd("MaicFork")
+local fork = landed(held.session)
+conv = fork.conversation
+expect(fork.session ~= held.session and wait_for("❯ hold on"), ":MaicFork goes to a fork that starts with its parent's history")
+vim.ui.select = function(items, _, cb)
+  for _, it in ipairs(items) do
+    if it.id == first.session then return cb(it) end
+  end
+end
+vim.cmd("MaicSwitch")
+vim.wait(30000, function() return ui.state().session == first.session and ui.state().model ~= nil end, 20)
+conv = ui.state().conversation
+expect(wait_for("echo: two"), "the switcher resumes the parked first session with its history")
+vim.ui.select = real_select
+
 io.write("the end\n")
 local job = ui.state().job
 vim.fn.chanclose(job, "stdin")

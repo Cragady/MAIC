@@ -96,8 +96,19 @@ still running as it goes on. While earlier history is left, the first line
 says so: moving the cursor there, or |:MaicOlder|, loads the ten exchanges
 before what is shown, above it.
 
+                                                             *maic-sessions*
+A tab's engine holds every session opened in it, each with a conversation
+buffer of its own under the tab's one input. |:MaicNew|, |:MaicSwitch|,
+|:MaicFork|, |:MaicBg|, |:MaicPark| and |:MaicStop| move between them; the
+session left goes to the background when it is working and is parked when
+idle, unless --bg, --park or --stop, or |maic-session_leave|, says
+otherwise. A background session keeps writing its buffer; its approvals and
+questions wait until you switch to it, with one notification naming it. The
+winbar counts the other sessions. A parked or stopped session's buffer goes
+once no window shows it.
+
 maic.nvim fires the |maic-events| itself and runs |:checktime| after MAIC
-writes a file. Closing nvim ends the engine, which parks the session.
+writes a file. Closing nvim ends the engine, which parks its sessions.
 
 ==============================================================================
 4. COMMANDS                                                  *maic-commands*
@@ -118,6 +129,33 @@ writes a file. Closing nvim ends the engine, which parks the session.
                                                                *:MaicTerminal*
 :MaicTerminal [args]
     MAIC's own TUI in a terminal, as |:Maic| with `ui = "terminal"`.
+
+                                                                    *:MaicNew*
+:MaicNew [--bg|--park|--stop] [DIR]
+    Another session in this tab's engine, in focus; with DIR, `/cd DIR`
+    follows. See |maic-sessions|.
+
+                                                                 *:MaicSwitch*
+:MaicSwitch [--bg|--park|--stop] [ID|TITLE]
+    Goes to another session: a loaded one, a parked one (resumed), or any
+    transcript by id. Alone, the switcher (|vim.ui.select()|): a new session
+    first, then every other with what it is doing, its model and workspace.
+
+                                                                   *:MaicFork*
+:MaicFork [--bg|--park|--stop]
+    Forks this session into a second one and goes to it.
+
+                                                                     *:MaicBg*
+:MaicBg
+    Sends this session to the background, where it keeps working, and opens
+    the switcher to pick where to go.
+
+                                                          *:MaicPark* *:MaicStop*
+:MaicPark [ID]
+:MaicStop [ID]
+    Ends this session (through the switcher, to pick where to go) or session
+    ID: park for now (it resumes where it was), stop for good (it stays a
+    transcript). A working one is asked about first.
 
                                                                   *:MaicOlder*
 :MaicOlder
@@ -247,6 +285,13 @@ keymaps     A table of name = key (|maic-keymaps|); merged over the
                                                          *maic-input_height*
 input_height
             The interface's input: rows under the conversation.
+
+                                                       *maic-session_leave*
+session_leave
+            What |:MaicNew|, |:MaicSwitch| and |:MaicFork| do with the
+            session left: "default" (a working one goes to the background,
+            an idle one is parked), "ask", "bg", "park" or "stop". --bg,
+            --park or --stop on the command decides once.
 
                                                           *maic-fold_output*
 fold_output

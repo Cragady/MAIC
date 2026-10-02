@@ -287,6 +287,7 @@ struct Client {
     size_t bytes = 0;
     std::string closed;
     std::set<std::string> sessions;  // subscribed to
+    std::string focus;               // the session it has in focus (section 2): live while some client does
     bool index = false;              // subscribed to maic.index
     std::set<std::string> exclude;          // event types its hello filters out
     std::map<std::string, long> skip_from;  // per session: the first number filtered out since the last event sent
@@ -436,6 +437,9 @@ struct Session {
 
     std::string state = "live", activity = "idle";
     json waiting;
+    std::set<std::string> focused_by;  // the clients that have it in focus: live while there is one, background otherwise
+    bool unseen = false;               // a turn ended while no client had it in focus (the switcher's "finished")
+    std::atomic<bool> unloading{false};  // being parked or stopped: nothing new starts, the lane stays for a later load
     std::string last_activity = local_now();
     int turns = 0;  // turns so far, the transcript's included
     bool running = false;
@@ -599,6 +603,7 @@ struct Engine::Impl {
 
     void set_activity(Session& s, const std::string& activity, json waiting = nullptr) {
         if (s.activity == activity && s.waiting == waiting) return;
+        if (activity == "idle" && s.activity != "idle" && s.focused_by.empty()) s.unseen = true;
         s.activity = activity;
         s.waiting = std::move(waiting);
         s.last_activity = local_now();
@@ -625,7 +630,7 @@ struct Engine::Impl {
                   {"created", s.created},
                   {"last_activity", s.last_activity},
                   {"turns", s.turns},
-                  {"unseen", false},
+                  {"unseen", s.unseen},
                   {"queued", s.agent.queued() + s.lane.size()},
                   {"response", s.run ? json(s.run->id) : s.paused ? json(s.last.id) : json()},
                   {"waiting", s.waiting}};
@@ -635,6 +640,7 @@ struct Engine::Impl {
 
     static json for_client(json e, const Client& c) {
         if (c.origin == Origin::Remote) e.erase("transcript");
+        e.erase("queued_inputs");  // a parked session's waiting messages: the index file's, for its next load
         return e;
     }
 
@@ -646,19 +652,26 @@ struct Engine::Impl {
             std::lock_guard lock(index_mu);
             entries[s.id] = e;
             save_index();
-            for (auto it = index_clients.begin(); it != index_clients.end();) {
-                if (auto c = it->lock()) {
-                    to.push_back(c);
-                    ++it;
-                } else {
-                    it = index_clients.erase(it);
-                }
-            }
+            to = index_followers();
         }
         for (const auto& c : to) {
             json msg = {{"jsonrpc", "2.0"}, {"method", "maic.index"}, {"params", {{"entry", for_client(e, *c)}}}};
             c->push(msg, dump(msg).size());
         }
+    }
+
+    // The clients following the index, dropping the ones gone; the caller holds index_mu.
+    std::vector<std::shared_ptr<Client>> index_followers() {
+        std::vector<std::shared_ptr<Client>> to;
+        for (auto it = index_clients.begin(); it != index_clients.end();) {
+            if (auto c = it->lock()) {
+                to.push_back(c);
+                ++it;
+            } else {
+                it = index_clients.erase(it);
+            }
+        }
+        return to;
     }
 
     // Written through a temporary file and a rename, 0600; the caller holds index_mu.
@@ -756,6 +769,154 @@ struct Engine::Impl {
         if (c.origin == Origin::Remote && options.settings.tripwire == "isolated") {
             throw refuse("maic_forbidden_remote", "this MAIC runs isolated sessions (tripwire = isolated): it takes no remote work");
         }
+    }
+
+    // ---------- focus, background, park and stop (section 2) ----------
+
+    // A loaded session's state follows focus: live while some client has it in focus, background otherwise. The
+    // caller holds s.mu.
+    void restate(Session& s, const json& by) {
+        std::string want = s.focused_by.empty() ? "background" : "live";
+        if (s.state == want || (s.state != "live" && s.state != "background")) return;
+        s.state = want;
+        emit(s, {{"type", "maic.session.state"}, {"state", s.state}, {"activity", s.activity}, {"waiting", s.waiting}, {"by", by}});
+        index_changed(s);
+    }
+
+    // Whether a response, a paused turn, a queued one or a `!cmd` is under way: what leaving or parking would cut
+    // short. The worker titling a session after its turn is not.
+    static bool busy(const Session& s) { return s.run || s.paused || !s.lane.empty() || s.shell_running; }
+
+    // `leave` ({session, as}): what happens to the session a client's focus moves away from. A call without one
+    // only lets go of it (`bg`): nothing a client did not ask for ends a session.
+    static json leave_of(const json& p) {
+        json leave = p.value("leave", json{{"as", "bg"}});
+        std::string as = leave.value("as", "default");
+        if (as != "default" && as != "bg" && as != "park" && as != "stop") throw bad_params("leave.as is one of default, bg, park, stop", "leave");
+        return leave;
+    }
+
+    // Moves `c`'s focus to `to`, which is loaded, and does with the session it leaves what `leave` says: by default a
+    // working session goes to the background and an idle one is parked, unless another client has it in focus.
+    void move_focus(Client& c, const std::shared_ptr<Session>& to, const json& leave) {
+        std::string old;
+        {
+            std::lock_guard lock(c.mu);
+            old = c.focus;
+            c.focus = to->id;
+        }
+        {
+            std::lock_guard lock(to->mu);
+            to->focused_by.insert(c.id);
+            bool seen = to->unseen;
+            to->unseen = false;
+            restate(*to, c.by());
+            if (seen) index_changed(*to);
+        }
+        if (leave.contains("session")) old = leave["session"];
+        if (old.empty() || old == to->id) return;
+        std::shared_ptr<Session> s;
+        {
+            std::lock_guard lock(mu);
+            auto it = sessions.find(old);
+            if (it == sessions.end()) return;
+            s = it->second;
+        }
+        std::string as = leave.value("as", "default");
+        {
+            std::lock_guard lock(s->mu);
+            s->focused_by.erase(c.id);
+            restate(*s, c.by());
+            if (as == "default" && !s->focused_by.empty()) return;
+            if (as == "default") as = busy(*s) ? "bg" : "park";
+        }
+        if (as == "park" || as == "stop") unload(s, as == "park" ? "parked" : "stopped", c.by(), true);
+    }
+
+    // Ends this load of `s`: parked stays in the index and resumes where it was, the messages that waited to run
+    // kept for its next load; stopped leaves the index, an ordinary transcript. A running turn or `!cmd` is
+    // interrupted first when `interrupt` says so, and is maic_busy otherwise. Returns the entry as it ends.
+    json unload(const std::shared_ptr<Session>& s, const std::string& state, const json& by, bool interrupt_running) {
+        {
+            std::unique_lock lock(s->mu);
+            if (s->unloading.load()) throw refuse("maic_not_found", "session " + s->id + " is being parked or stopped", "session");
+            if (busy(*s) && !interrupt_running) {
+                throw refuse("maic_busy", "session " + s->id + " is running a response; interrupt: true ends it first", "session");
+            }
+            s->unloading = true;
+            interrupt(*s, by, ApprovalAnswer{Approval::No, "the session is being " + state});
+            s->shell_cancel = true;
+            s->cv.wait(lock, [&] { return !s->shell_running; });
+        }
+        if (s->worker.joinable()) s->worker.join();
+        std::vector<std::string> focusers;
+        json e;
+        {
+            std::lock_guard lock(s->mu);
+            json queued = json::array();
+            for (const auto& q : s->lane) queued.push_back({{"text", q.text}, {"origin", origin_name(q.origin)}});
+            std::string left;
+            Origin origin = Origin::Local;
+            take_leftovers(*s, left, origin);
+            if (!left.empty()) queued.push_back({{"text", left}, {"origin", origin_name(origin)}});
+            s->lane.clear();
+            s->state = state;
+            s->activity = "idle";
+            s->waiting = nullptr;
+            emit(*s, {{"type", "maic.session.state"}, {"state", state}, {"activity", "idle"}, {"waiting", nullptr}, {"by", by}});
+            if (s->log) s->log->write("stream", {{"epoch", s->epoch}, {"next", s->next}, {"closed", true}});
+            for (const auto& sub : s->subscribers) {
+                std::lock_guard cl(sub->mu);
+                sub->sessions.erase(s->id);
+                sub->skip_from.erase(s->id);
+            }
+            s->subscribers.clear();
+            focusers.assign(s->focused_by.begin(), s->focused_by.end());
+            s->focused_by.clear();
+            e = entry(*s);
+            e["queued"] = queued.size();
+            if (!queued.empty()) e["queued_inputs"] = queued;
+        }
+        {
+            std::lock_guard lock(mu);
+            sessions.erase(s->id);
+            for (const auto& id : focusers) {
+                auto it = clients.find(id);
+                if (it == clients.end()) continue;
+                std::lock_guard cl(it->second->mu);
+                if (it->second->focus == s->id) it->second->focus.clear();
+            }
+        }
+        if (state == "parked") put_entry(e);
+        else drop_entry(s->id);
+        return e;
+    }
+
+    // An index change that is not a loaded session's: a parked entry, or one leaving the index.
+    void put_entry(const json& e) {
+        std::vector<std::shared_ptr<Client>> to;
+        {
+            std::lock_guard lock(index_mu);
+            entries[e["id"].get<std::string>()] = e;
+            save_index();
+            to = index_followers();
+        }
+        for (const auto& c : to) {
+            json msg = {{"jsonrpc", "2.0"}, {"method", "maic.index"}, {"params", {{"entry", for_client(e, *c)}}}};
+            c->push(msg, dump(msg).size());
+        }
+    }
+
+    void drop_entry(const std::string& id) {
+        std::vector<std::shared_ptr<Client>> to;
+        {
+            std::lock_guard lock(index_mu);
+            entries.erase(id);
+            save_index();
+            to = index_followers();
+        }
+        json msg = {{"jsonrpc", "2.0"}, {"method", "maic.index"}, {"params", {{"removed", id}}}};
+        for (const auto& c : to) c->push(msg, dump(msg).size());
     }
 
     // A new load of a session. Its first event is its state, carrying the stream's header: the epoch, the protocol
@@ -1027,6 +1188,8 @@ struct Engine::Impl {
     json create_conversation(Client& c, const json& p) {
         no_isolated_remote(c);
         json m = p.value("maic", json::object());
+        json leave = leave_of(m);
+        bool focus = m.value("focus", true);
         std::string given = m.value("workspace", "");
         if (given.empty()) given = options.workspaces.empty() ? fs::current_path().string() : options.workspaces.front().string();
         fs::path ws = workspace_for(c, given);
@@ -1038,6 +1201,7 @@ struct Engine::Impl {
         auto s = std::make_shared<Session>(ws, m.value("model", options.settings.model));
         s->settings = options.settings;
         s->commands.dumb_auto_ok = options.settings.dumb_auto_ok;
+        s->titles = options.titles;
         configure(s->agent, *mode);
         if (options.setup) options.setup(s->agent, s->settings);
         s->log = std::make_unique<SessionLog>(options.kind, options.settings.record ? resolve_sessions_home(options.settings, ws) : runtime_sessions_dir());
@@ -1047,10 +1211,18 @@ struct Engine::Impl {
             s->title = p["metadata"].value("title", "");
             if (!s->title.empty()) s->log->write("title", {{"text", s->title}});
         }
-        open_session(s, c);
+        open_focused(s, c, focus, leave);
         std::lock_guard lock(s->mu);
         if (!held.empty()) emit(*s, {{"type", "maic.notice"}, {"text", held}, {"level", "info"}});
         return conversation(*s, c);
+    }
+
+    // A new load opens live in the client's focus (its last focus left as `leave` says), or in the background.
+    void open_focused(const std::shared_ptr<Session>& s, Client& c, bool focus, const json& leave) {
+        if (focus) s->focused_by.insert(c.id);
+        else s->state = "background";
+        open_session(s, c);
+        if (focus) move_focus(c, s, leave);
     }
 
     json get_conversation(Client& c, const json& p) {
@@ -1061,17 +1233,26 @@ struct Engine::Impl {
 
     json session_resume(Client& c, const json& p) {
         no_isolated_remote(c);
+        json leave = leave_of(p);
+        bool focus = p.value("focus", true);
         std::string given = p.at("session");
         if (c.origin == Origin::Remote && given.find('/') != std::string::npos) throw refuse("maic_forbidden_remote", "a remote client resumes by id, not by path", "session");
-        auto info = find_session(given);
+        std::string where = given;  // a session this engine parked: its transcript, wherever it is (--no-record ones are never listed)
+        {
+            std::lock_guard lock(index_mu);
+            if (auto it = entries.find(given); it != entries.end() && it->second.contains("transcript")) where = it->second["transcript"];
+        }
+        auto info = find_session(where);
         if (!info) throw refuse("maic_not_found", "no session matching " + given, "session");
+        std::shared_ptr<Session> loaded;
         {
             std::lock_guard lock(mu);
-            if (auto it = sessions.find(info->id); it != sessions.end()) {
-                auto s = it->second;
-                std::lock_guard sl(s->mu);
-                return for_client(entry(*s), c);
-            }
+            if (auto it = sessions.find(info->id); it != sessions.end()) loaded = it->second;
+        }
+        if (loaded) {
+            if (focus) move_focus(c, loaded, leave);
+            std::lock_guard sl(loaded->mu);
+            return for_client(entry(*loaded), c);
         }
         fs::path ws = workspace_for(c, info->workspace);
         LoadedSession old = load_session(info->path);
@@ -1085,14 +1266,117 @@ struct Engine::Impl {
         s->log = std::make_unique<SessionLog>(SessionLog::Reopen{}, info->path);
         s->id = info->id;
         s->title = info->title;
+        s->titles = options.titles;
+        s->titled = !s->title.empty();
         s->turns = s->turns_reserved = static_cast<int>(info->turns);
         s->responses = s->turns;
         s->agent.set_log(s->log.get());
         s->agent.restore(old.messages);
-        open_session(s, c);
+        json queued;  // what waited to run when it was parked runs now, in order
+        {
+            std::lock_guard lock(index_mu);
+            if (auto it = entries.find(s->id); it != entries.end() && it->second.contains("queued_inputs")) queued = it->second["queued_inputs"];
+        }
+        open_focused(s, c, focus, leave);
+        std::lock_guard lock(s->mu);
+        if (!held.empty()) emit(*s, {{"type", "maic.notice"}, {"text", held}, {"level", "info"}});
+        for (const auto& q : queued) {
+            json by = {{"client", "engine"}, {"name", "engine"}, {"origin", q.value("origin", "local")}};
+            start_or_queue(s, q.value("text", ""), q.value("origin", "local") == "remote" ? Origin::Remote : Origin::Local, by);
+        }
+        return for_client(entry(*s), c);
+    }
+
+    // A second session from this one's transcript as it stands (or its first `at` records): a pointer, not a copy.
+    // It starts as any session does, auto held where the workspace is not trusted, and its epoch names its parent's.
+    json session_fork(Client& c, const json& p) {
+        no_isolated_remote(c);
+        json leave = leave_of(p);
+        bool focus = p.value("focus", true);
+        auto parent = session(p.at("session"));
+        fs::path from, ws;
+        std::string model;
+        Mode mode;
+        Settings st;
+        {
+            std::lock_guard lock(parent->mu);
+            from = parent->log->path();
+            ws = parent->workspace;
+            model = parent->agent.model;
+            mode = parent->agent.mode;
+            st = parent->settings;
+        }
+        ws = workspace_for(c, ws.string());
+        size_t records = count_records(from);
+        size_t at = p.value("at", records);
+        if (at > records) throw bad_params("the transcript has " + std::to_string(records) + " records", "at");
+        std::string held = auto_held_mode(mode, ws, c);
+        auto s = std::make_shared<Session>(ws, model);
+        s->settings = std::move(st);
+        s->commands.dumb_auto_ok = s->settings.dumb_auto_ok;
+        s->titles = options.titles;
+        configure(s->agent, mode);
+        if (options.setup) options.setup(s->agent, s->settings);
+        s->log = std::make_unique<SessionLog>(SessionLog::Fork{}, from, at, options.kind,
+                                              options.settings.record ? resolve_sessions_home(options.settings, ws) : runtime_sessions_dir());
+        s->id = s->log->path().stem().string();
+        LoadedSession old = load_session(s->log->path());
+        s->turns = s->turns_reserved = static_cast<int>(std::count_if(old.transcript.begin(), old.transcript.end(), [](const TranscriptEntry& t) { return t.type == "user"; }));
+        s->responses = s->turns;
+        s->agent.set_log(s->log.get());
+        s->agent.restore(old.messages);
+        open_focused(s, c, focus, leave);
         std::lock_guard lock(s->mu);
         if (!held.empty()) emit(*s, {{"type", "maic.notice"}, {"text", held}, {"level", "info"}});
         return for_client(entry(*s), c);
+    }
+
+    // `:switch`: the client's focus moves to a loaded session (a parked one is resumed with maic.session.resume).
+    json session_focus(Client& c, const json& p) {
+        json leave = leave_of(p);
+        auto s = session(p.at("session"));
+        move_focus(c, s, leave);
+        std::lock_guard lock(s->mu);
+        return for_client(entry(*s), c);
+    }
+
+    // `:bg`: the client lets go of the session; it keeps working, live while another client has it in focus.
+    json session_background(Client& c, const json& p) {
+        auto s = session(p.at("session"));
+        {
+            std::lock_guard lock(c.mu);
+            if (c.focus == s->id) c.focus.clear();
+        }
+        std::lock_guard lock(s->mu);
+        s->focused_by.erase(c.id);
+        restate(*s, c.by());
+        return for_client(entry(*s), c);
+    }
+
+    json session_park(Client& c, const json& p) { return end_session(c, p, "parked"); }
+    json session_stop(Client& c, const json& p) { return end_session(c, p, "stopped"); }
+
+    // Park or stop a loaded session; a parked one (not loaded) can still be stopped, which takes it off the index.
+    json end_session(Client& c, const json& p, const std::string& state) {
+        std::string id = p.at("session");
+        std::shared_ptr<Session> s;
+        {
+            std::lock_guard lock(mu);
+            if (auto it = sessions.find(id); it != sessions.end()) s = it->second;
+        }
+        if (s) return for_client(unload(s, state, c.by(), p.value("interrupt", false)), c);
+        json e;
+        {
+            std::lock_guard lock(index_mu);
+            auto it = entries.find(id);
+            if (it == entries.end()) throw refuse("maic_not_found", "no session " + id + " is loaded or parked", "session");
+            e = it->second;
+        }
+        if (state == "stopped") {
+            drop_entry(id);
+            e["state"] = "stopped";
+        }
+        return for_client(e, c);
     }
 
     // The replay from the ring after `starting_after`, then everything as it comes; under s.mu, so nothing falls between.
@@ -1458,6 +1742,7 @@ struct Engine::Impl {
         if (text.empty() && !now) throw bad_params("the input is empty", "input");
         auto s = session(sid);
         std::lock_guard lock(s->mu);
+        if (s->unloading.load()) throw refuse("maic_not_found", "session " + sid + " is being parked or stopped", "conversation");
         long before = s->next - 1;
         if (text.empty()) {
             if (!s->running || !s->run) throw refuse("response_not_active", "nothing is running to deliver into", "input");
@@ -1496,12 +1781,19 @@ struct Engine::Impl {
             r["maic"]["sequence_number"] = before;
             return r;
         }
+        return start_or_queue(s, text, c.origin, c.by());
+    }
+
+    // A message that starts a turn on an idle session, or waits on a busy one's lane for a turn of its own once the
+    // running one (and those queued before it) end: OpenAI's FIFO. The caller holds s->mu.
+    json start_or_queue(const std::shared_ptr<Session>& s, const std::string& text, Origin origin, const json& by) {
+        long before = s->next - 1;
+        json item = {{"id", "~" + std::to_string(s->next)}, {"type", "message"}, {"role", "user"}, {"content", {{{"type", "input_text"}, {"text", text}}}}};
         if (s->running) {
-            // FIFO on the lane: a turn of its own once the running one (and those queued before it) end.
-            Run r = reserve_turn(*s, c.origin);
-            emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", true}, {"by", c.by()}});
+            Run r = reserve_turn(*s, origin);
+            emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", true}, {"by", by}});
             r.cause = s->next - 1;
-            s->lane.push_back({r, text, c.origin});
+            s->lane.push_back({r, text, origin});
             index_changed(*s);
             json resp = response_object(*s, r, "queued");
             resp["maic"]["queued"] = true;
@@ -1510,11 +1802,11 @@ struct Engine::Impl {
         }
         // The pictures attached since the last message go with this one.
         if (auto pics = s->agent.pending_images(); !pics.empty()) item["maic"] = {{"images", pics}};
-        emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", false}, {"by", c.by()}});
-        Run run = reserve_turn(*s, c.origin);
+        emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", false}, {"by", by}});
+        Run run = reserve_turn(*s, origin);
         run.cause = s->next - 1;
         json r = response_object(*s, run, "in_progress");
-        start_turn(s, std::move(run), text, c.origin);
+        start_turn(s, std::move(run), text, origin);
         r["maic"]["sequence_number"] = before;
         return r;
     }
@@ -1893,6 +2185,7 @@ struct Engine::Impl {
         fs::path ws;
         {
             std::lock_guard lock(s->mu);
+            if (s->unloading.load()) throw refuse("maic_not_found", "session " + s->id + " is being parked or stopped", "session");
             if (s->shell_running) throw refuse("maic_busy", "a shell command is still running; Ctrl-C stops it", "command");
             s->shell_running = true;
             s->shell_cancel = false;
@@ -1922,6 +2215,7 @@ struct Engine::Impl {
         if (s->running) s->agent.post_message(context);
         else s->agent.add_context(context);
         s->shell_running = false;
+        s->cv.notify_all();
         return {{"exit_code", rc}, {"item_id", id}};
     }
 
@@ -1991,6 +2285,11 @@ const std::map<std::string, Engine::Impl::Handler>& Engine::Impl::handlers() {
         {"createConversation", &Impl::create_conversation},
         {"getConversation", &Impl::get_conversation},
         {"maic.session.resume", &Impl::session_resume},
+        {"maic.session.fork", &Impl::session_fork},
+        {"maic.session.focus", &Impl::session_focus},
+        {"maic.session.background", &Impl::session_background},
+        {"maic.session.park", &Impl::session_park},
+        {"maic.session.stop", &Impl::session_stop},
         {"maic.session.attach", &Impl::session_attach},
         {"listConversationItems", &Impl::list_items},
         {"getConversationItem", &Impl::get_item},
@@ -2426,7 +2725,7 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
                 end_response(*s, "maic.response.cancelled", "cancelled", "cancel", true);
             } else if (!failure.empty()) {
                 end_response(*s, "response.failed", "failed", "error", true, {{"error", {{"code", "server_error"}, {"message", failure}}}});
-            } else if (s->agent.queued() > 0 && !stopped.load()) {
+            } else if (s->agent.queued() > 0 && !stopped.load() && !s->unloading.load()) {
                 // Steers that came after the turn's last model call: an automatic successor carries them.
                 end_response(*s, "response.completed", "completed", "", false);
                 text.clear();
@@ -2465,7 +2764,7 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
                 if (!title.empty()) retitle(*s, title, "auto", nullptr);
             }
         }
-        if (s->lane.empty() || stopped.load()) {
+        if (s->lane.empty() || stopped.load() || s->unloading.load()) {
             s->running = false;
             set_activity(*s, "idle");
             return;
@@ -2512,7 +2811,7 @@ std::string Engine::open_local(const std::string& client, LocalSession ls) {
     s->log = std::move(ls.log);
     s->id = s->log->path().stem().string();
     if (ls.setup) ls.setup(s->agent, *s->log);
-    impl_->open_session(s, *c);
+    impl_->open_focused(s, *c, true, json{{"as", "bg"}});
     return s->id;
 }
 
@@ -2526,11 +2825,14 @@ void Engine::disconnect(const std::string& id) {
         impl_->clients.erase(it);
     }
     std::set<std::string> subscribed;
+    std::string focus;
     {
         std::lock_guard lock(c->mu);
         subscribed = c->sessions;
+        focus = c->focus;
         c->closed = "disconnected";
     }
+    if (!focus.empty()) subscribed.insert(focus);
     for (const auto& sid : subscribed) {
         std::shared_ptr<Session> s;
         {
@@ -2541,6 +2843,8 @@ void Engine::disconnect(const std::string& id) {
         }
         std::lock_guard lock(s->mu);
         s->subscribers.erase(std::remove(s->subscribers.begin(), s->subscribers.end(), c), s->subscribers.end());
+        // A client that goes leaves its focus: the session keeps working, in the background if no one else has it.
+        if (s->focused_by.erase(c->id) > 0) impl_->restate(*s, c->by());
     }
     std::lock_guard lock(impl_->index_mu);
     impl_->index_clients.erase(std::remove_if(impl_->index_clients.begin(), impl_->index_clients.end(), [&](const std::weak_ptr<Client>& w) {

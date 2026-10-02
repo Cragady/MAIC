@@ -13,10 +13,11 @@ local groups = { MaicUser = "Title", MaicTool = "Function", MaicToolOk = "Diagno
   MaicError = "ErrorMsg", MaicSteer = "WarningMsg", MaicFooter = "NonText", MaicThinking = "Comment" }
 for name, link in pairs(groups) do vim.api.nvim_set_hl(0, name, { link = link, default = true }) end
 
--- The interface of each tab page.
+-- The interface of each tab page: the view of the session in its focus. A tab's engine (`conn`) holds every
+-- session it opened, and each has a view of its own (`ui`), its conversation a buffer of its own.
 local uis = {}
 
-local function alive(ui) return ui and ui.job and vim.api.nvim_buf_is_valid(ui.conv) end
+local function alive(ui) return ui and ui.conn.job and vim.api.nvim_buf_is_valid(ui.conv) end
 
 -- This tab's interface, while its engine runs.
 function U.here()
@@ -27,11 +28,12 @@ end
 -- ---------- the engine ----------
 
 local function request(ui, method, params, cb)
-  if not ui.job then return end
-  local id = ui.next
-  ui.next = id + 1
-  ui.waiting[id] = cb or false
-  vim.fn.chansend(ui.job, vim.json.encode({ jsonrpc = "2.0", id = id, method = method, params = params or vim.empty_dict() }) .. "\n")
+  local conn = ui.conn
+  if not conn.job then return end
+  local id = conn.next
+  conn.next = id + 1
+  conn.waiting[id] = cb or false
+  vim.fn.chansend(conn.job, vim.json.encode({ jsonrpc = "2.0", id = id, method = method, params = params or vim.empty_dict() }) .. "\n")
 end
 
 local function err_text(e) return (e.data and e.data.message) or e.message or "the engine refused it" end
@@ -151,7 +153,21 @@ local function status(ui)
   elseif ui.activity and ui.activity ~= "idle" then
     parts[#parts + 1] = ui.activity
   end
-  if not ui.job then parts[#parts + 1] = "engine stopped" end
+  if not ui.conn.job then parts[#parts + 1] = "engine stopped" end
+  local others, waiting, finished = 0, 0, 0
+  for id, e in pairs(ui.conn.index) do
+    if id ~= ui.session and e.state ~= "parked" then
+      others = others + 1
+      if e.activity == "waiting" then waiting = waiting + 1 end
+      if e.unseen then finished = finished + 1 end
+    end
+  end
+  if others > 0 then
+    local t = others .. (others == 1 and " other session" or " other sessions")
+    if waiting > 0 then t = t .. ", " .. waiting .. " waiting" end
+    if finished > 0 then t = t .. ", " .. finished .. " finished" end
+    parts[#parts + 1] = t .. " (:MaicSwitch)"
+  end
   local text = " " .. bar_text(table.concat(parts, " · "))
   for _, w in ipairs(vim.fn.win_findbuf(ui.conv)) do vim.wo[w].winbar = text end
 end
@@ -353,6 +369,15 @@ end
 -- The first waiting approval or question, else the pause menu while paused.
 function show_next(ui)
   local first = ui.asks[1]
+  if uis[ui.tab] ~= ui then
+    -- A session in the background asks: it waits, named, until it is switched to.
+    if first and not ui.told then
+      ui.told = true
+      vim.notify(("maic.nvim: %s waits for you (:MaicSwitch)"):format(ui.title and ui.title ~= "" and ui.title or ui.session), vim.log.levels.WARN)
+    end
+    return
+  end
+  ui.told = nil
   if ui.float and first and ui.float.id == first.id then return end
   if first then
     if first.kind == "approval" then show_approval(ui, first.e)
@@ -652,8 +677,20 @@ handlers["maic.file.written"] = function(ui, e)
   fire(ui, "MaicFileWritten", { tool = e.tool or "", path = absolute(ui, e.path) })
 end
 
+-- A session parked or stopped: its view goes, its buffer too once no window shows it (the focused one's when this
+-- tab moves on).
+local function drop_view(ui)
+  close_float(ui)
+  if vim.api.nvim_buf_is_valid(ui.conv) and #vim.fn.win_findbuf(ui.conv) == 0 then vim.api.nvim_buf_delete(ui.conv, { force = true }) end
+end
+
 handlers["maic.session.state"] = function(ui, e)
   ui.activity = e.activity
+  if e.state == "parked" or e.state == "stopped" then
+    ui.ended = e.state
+    ui.conn.views[ui.session] = nil
+    if uis[ui.tab] ~= ui then return drop_view(ui) end
+  end
   status(ui)
 end
 
@@ -691,16 +728,21 @@ for _, kind in ipairs({ "response.completed", "response.failed", "response.incom
   handlers[kind] = function(ui, e) finished(ui, e, kind) end
 end
 
-local function on_message(ui, msg)
+local function on_message(conn, msg)
+  local ui = uis[conn.tab] or conn.first
   if msg.method == "maic.event" then
-    local h = handlers[msg.params.type]
-    if h then h(ui, msg.params) end
+    local view, h = conn.views[msg.params.stream_id], handlers[msg.params.type]
+    if view and h then h(view, msg.params) end
+  elseif msg.method == "maic.index" then
+    if msg.params.removed then conn.index[msg.params.removed] = nil end
+    if msg.params.entry then conn.index[msg.params.entry.id] = msg.params.entry end
+    if ui.conn == conn then status(ui) end
   elseif msg.method == "maic.engine" then
     if msg.params.tripped then notice(ui, "✗ the harness is TRIPPED: " .. (msg.params.reason or ""), "MaicError") end
     if msg.params.notice then notice(ui, msg.params.notice, msg.params.level == "error" and "MaicError" or nil) end
   elseif msg.id ~= nil and not msg.method then
-    local cb = ui.waiting[msg.id]
-    ui.waiting[msg.id] = nil
+    local cb = conn.waiting[msg.id]
+    conn.waiting[msg.id] = nil
     if cb then cb(msg.result, msg.error) end
   end
 end
@@ -905,10 +947,9 @@ local function show(ui, win)
   return conv, input
 end
 
-local function set_keys(ui)
+local function set_keys(buf, which)
   if vim.g.maic_keymap_check == 1 then return end
-  for _, k in ipairs(maic().buffer_planned("conversation")) do maic().map(k, ui.conv) end
-  for _, k in ipairs(maic().buffer_planned("input")) do maic().map(k, ui.input) end
+  for _, k in ipairs(maic().buffer_planned(which)) do maic().map(k, buf) end
 end
 
 local function engine_args(args)
@@ -920,15 +961,12 @@ local function engine_args(args)
   return cmd
 end
 
--- Starts the engine and opens a session in it (or resumes `o.session`), in this tab: `o.win` holds the
--- conversation, else a window of the configured layout.
-function U.start(args, o)
-  o = o or {}
+-- A view of one session: its conversation buffer, beside the tab's one input.
+local function new_view(conn)
   local c = maic().config
-  local tab = vim.api.nvim_get_current_tabpage()
-  local ui = { tab = tab, blocks = {}, by_id = {}, waiting = {}, next = 1, partial = "", empty = true, asks = {}, approvals = {}, stderr = {}, tool_calls = 0 }
-  ui.conv = scratch("maic://conversation/" .. tab, c.filetypes.conversation)
-  ui.input = scratch("maic://input/" .. tab, c.filetypes.input)
+  conn.made = conn.made + 1
+  local ui = { conn = conn, tab = conn.tab, input = conn.input, blocks = {}, by_id = {}, empty = true, asks = {}, approvals = {}, tool_calls = 0 }
+  ui.conv = scratch("maic://conversation/" .. conn.tab .. (conn.made > 1 and ("/" .. conn.made) or ""), c.filetypes.conversation)
   vim.bo[ui.conv].modifiable = false
   vim.api.nvim_create_autocmd("BufWinEnter", { buffer = ui.conv, callback = function()
     window_opts(ui, vim.api.nvim_get_current_win())
@@ -936,39 +974,89 @@ function U.start(args, o)
   vim.api.nvim_create_autocmd("CursorMoved", { buffer = ui.conv, callback = function()
     if ui.marker and vim.api.nvim_win_get_cursor(0)[1] == 1 then U.older(ui) end
   end })
+  set_keys(ui.conv, "conversation")
+  return ui
+end
+
+-- The view follows session `id` from its snapshot on: the last exchanges, what is in flight, what waits.
+local function attach(ui, id, done)
+  ui.session = id
+  ui.conn.views[id] = ui
+  request(ui, "maic.session.attach", { session = id, exchanges = 3 }, function(r, aerr)
+    if aerr then return notice(ui, "✗ " .. err_text(aerr), "MaicError") end
+    local entry = r.entry or {}
+    ui.workspace, ui.model, ui.mode, ui.title, ui.activity = entry.workspace, entry.model, entry.mode, entry.title, entry.activity
+    ui.response = entry.response
+    for _, item in ipairs(r.items or {}) do render_item(ui, item) end
+    render_inflight(ui, r.inflight)
+    ui.oldest, ui.more_before = r.items and r.items[1] and r.items[1].id, r.more_before
+    set_marker(ui, ui.more_before and ui.oldest ~= nil)
+    for _, a in ipairs(r.pending or {}) do handlers["maic.approval.requested"](ui, a) end
+    for _, q in ipairs(r.questions or {}) do handlers["maic.question.asked"](ui, q) end
+    status(ui)
+    if done then done() end
+  end)
+end
+
+-- This tab shows `ui` now, in the window that showed the session it left; a view whose session ended goes.
+local function focus_view(ui)
+  local old = uis[ui.tab]
+  local win
+  if old and old ~= ui then
+    close_float(old)
+    win = vim.fn.win_findbuf(old.conv)[1]
+  end
+  uis[ui.tab] = ui
+  show(ui, win)
+  if old and old ~= ui and old.ended then drop_view(old) end
+  show_next(ui)
+  status(ui)
+end
+
+-- Starts the engine and opens a session in it (or resumes `o.session`), in this tab: `o.win` holds the
+-- conversation, else a window of the configured layout.
+function U.start(args, o)
+  o = o or {}
+  local c = maic().config
+  local tab = vim.api.nvim_get_current_tabpage()
+  local conn = { tab = tab, waiting = {}, next = 1, partial = "", stderr = {}, views = {}, index = {}, made = 0 }
+  conn.input = scratch("maic://input/" .. tab, c.filetypes.input)
+  set_keys(conn.input, "input")
+  local ui = new_view(conn)
+  conn.first = ui
   uis[tab] = ui
-  set_keys(ui)
   show(ui, o.win)
   local cmd = engine_args(args)
-  ui.job = vim.fn.jobstart(cmd, {
+  conn.job = vim.fn.jobstart(cmd, {
     cwd = vim.fn.getcwd(),
     on_stdout = function(_, data)
-      data[1] = ui.partial .. data[1]
-      ui.partial = table.remove(data)
+      data[1] = conn.partial .. data[1]
+      conn.partial = table.remove(data)
       for _, line in ipairs(data) do
         if line ~= "" then
           local ok, msg = pcall(vim.json.decode, line, { luanil = { object = true, array = true } })
-          if ok and type(msg) == "table" then on_message(ui, msg) end
+          if ok and type(msg) == "table" then on_message(conn, msg) end
         end
       end
     end,
     on_stderr = function(_, data)
       for _, l in ipairs(data) do
-        if l ~= "" then ui.stderr[#ui.stderr + 1] = l end
+        if l ~= "" then conn.stderr[#conn.stderr + 1] = l end
       end
-      while #ui.stderr > 40 do table.remove(ui.stderr, 1) end
+      while #conn.stderr > 40 do table.remove(conn.stderr, 1) end
     end,
     on_exit = function(_, code)
-      ui.job = nil
-      if not vim.api.nvim_buf_is_valid(ui.conv) then return end
-      local tail = table.concat(ui.stderr, "\n")
-      notice(ui, ("the engine exited (code %d)%s"):format(code, tail ~= "" and (":\n" .. tail) or ""), code == 0 and "MaicNotice" or "MaicError")
-      if not ui.session then notice(ui, "`maic --rpc` did not start; :MaicTerminal runs MAIC's own TUI (or ui = \"terminal\" in setup())") end
-      status(ui)
+      conn.job = nil
+      local here = uis[tab] and uis[tab].conn == conn and uis[tab] or ui
+      if not vim.api.nvim_buf_is_valid(here.conv) then return end
+      local tail = table.concat(conn.stderr, "\n")
+      notice(here, ("the engine exited (code %d)%s"):format(code, tail ~= "" and (":\n" .. tail) or ""), code == 0 and "MaicNotice" or "MaicError")
+      if not here.session then notice(here, "`maic --rpc` did not start; :MaicTerminal runs MAIC's own TUI (or ui = \"terminal\" in setup())") end
+      status(here)
     end,
   })
-  if ui.job <= 0 then
-    ui.job = nil
+  if conn.job <= 0 then
+    conn.job = nil
     uis[tab] = nil
     vim.notify("maic.nvim: cannot start " .. table.concat(cmd, " "), vim.log.levels.ERROR)
     return
@@ -978,36 +1066,138 @@ function U.start(args, o)
     capabilities = { "tool_output", "autocmds" }, view = { collapse_over = 0 } }
   request(ui, "maic.hello", hello, function(_, err)
     if err then return notice(ui, "✗ " .. err_text(err), "MaicError") end
-    local function attach(id)
-      ui.session = id
-      request(ui, "maic.session.attach", { session = id, exchanges = 3 }, function(r, aerr)
-        if aerr then return notice(ui, "✗ " .. err_text(aerr), "MaicError") end
-        local entry = r.entry or {}
-        ui.workspace, ui.model, ui.mode, ui.title, ui.activity = entry.workspace, entry.model, entry.mode, entry.title, entry.activity
-        ui.response = entry.response
-        for _, item in ipairs(r.items or {}) do render_item(ui, item) end
-        render_inflight(ui, r.inflight)
-        ui.oldest, ui.more_before = r.items and r.items[1] and r.items[1].id, r.more_before
-        set_marker(ui, ui.more_before and ui.oldest ~= nil)
-        for _, a in ipairs(r.pending or {}) do handlers["maic.approval.requested"](ui, a) end
-        for _, q in ipairs(r.questions or {}) do handlers["maic.question.asked"](ui, q) end
-        status(ui)
-      end)
-    end
+    request(ui, "maic.index.subscribe")
+    request(ui, "maic.index.get", nil, function(r)
+      for _, e in ipairs(r and r.entries or {}) do conn.index[e.id] = e end
+    end)
     if o.session then
       request(ui, "maic.session.resume", { session = o.session }, function(r, rerr)
         if rerr then return notice(ui, "✗ " .. err_text(rerr), "MaicError") end
-        attach((r.entry and r.entry.id) or r.id or o.session)
+        attach(ui, (r.entry and r.entry.id) or r.id or o.session)
       end)
     else
       request(ui, "createConversation", vim.empty_dict(), function(r, cerr)
         if cerr then return notice(ui, "✗ " .. err_text(cerr), "MaicError") end
-        attach(r.id)
+        attach(ui, r.id)
       end)
     end
   end)
   vim.cmd("startinsert")
   return ui
+end
+
+-- ---------- sessions: :MaicNew, :MaicSwitch, :MaicFork, :MaicBg, :MaicPark, :MaicStop ----------
+
+-- One line about a session: its title (or id), what it is doing, its model and where it works.
+local function session_line(e)
+  local doing = e.state == "parked" and "parked" or e.activity == "waiting" and "waiting" or (e.activity and e.activity ~= "idle") and "working"
+    or e.unseen and "finished" or "idle"
+  local ws = vim.fn.fnamemodify(e.workspace or "", ":~")
+  return ("%s  ·  %s  ·  %s  ·  %s"):format((e.title and e.title ~= "") and e.title or e.id, doing, e.model or "", ws)
+end
+
+-- An id, a unique id prefix or a title (any letter case) among the engine's sessions; else what was typed, for
+-- maic.session.resume to find among the transcripts.
+local function resolve(ui, given)
+  if ui.conn.index[given] then return given end
+  local hits = {}
+  for id, e in pairs(ui.conn.index) do
+    if id:sub(1, #given) == given or (e.title or ""):lower() == given:lower() then hits[#hits + 1] = id end
+  end
+  return #hits == 1 and hits[1] or given
+end
+
+-- Moves this tab's focus: to a new session ("new"), a fork of this one ("fork"), or session `target` ("to"),
+-- loaded or parked. `as` says what happens to the one left (session_leave when nil); parking or stopping it
+-- mid-turn interrupts the turn, so that is asked first. `after` runs on the view it lands in.
+function U.go(ui, how, target, as, sure, after)
+  as = as or maic().config.session_leave
+  if as == "ask" then
+    return vim.ui.select({ "bg", "park", "stop" }, { prompt = "leave this session (bg: it keeps working, park: it stops for now, stop: it ends)" }, function(pick)
+      if pick then U.go(ui, how, target, pick, sure, after) end
+    end)
+  end
+  if not sure and ui.response and (as == "park" or as == "stop") then
+    return vim.ui.select({ "yes", "no" }, { prompt = as .. " a working session? Its turn is interrupted." }, function(pick)
+      if pick == "yes" then U.go(ui, how, target, as, true, after) end
+    end)
+  end
+  local conn, leave = ui.conn, { as = as }
+  local function done(r, err)
+    if err then return notice(ui, "✗ " .. err_text(err), "MaicError") end
+    local view = conn.views[r.id]
+    local function land()
+      focus_view(view)
+      if after then after(view) end
+    end
+    if view then return land() end
+    view = new_view(conn)
+    attach(view, r.id, land)
+  end
+  if how == "new" then
+    request(ui, "createConversation", { maic = { workspace = ui.workspace, leave = leave } }, done)
+  elseif how == "fork" then
+    request(ui, "maic.session.fork", { session = ui.session, leave = leave }, done)
+  elseif conn.index[target] and conn.index[target].state ~= "parked" then
+    request(ui, "maic.session.focus", { session = target, leave = leave }, done)
+  else
+    request(ui, "maic.session.resume", { session = target, leave = leave }, done)
+  end
+end
+
+-- The switcher: every other session the engine holds, and a new one.
+function U.switcher(ui, prompt, as)
+  local list = {}
+  for id, e in pairs(ui.conn.index) do
+    if id ~= ui.session then list[#list + 1] = e end
+  end
+  table.sort(list, function(a, b)
+    if (a.state == "parked") ~= (b.state == "parked") then return b.state == "parked" end
+    return (a.last_activity or "") > (b.last_activity or "")
+  end)
+  table.insert(list, 1, { new = true })
+  vim.ui.select(list, { prompt = prompt, format_item = function(e)
+    return e.new and ("+ a new session in " .. vim.fn.fnamemodify(ui.workspace or "", ":~")) or session_line(e)
+  end }, function(e)
+    if e then U.go(ui, e.new and "new" or "to", e.id, as) end
+  end)
+end
+
+-- :MaicPark ID or :MaicStop ID: another session ends, asked first when it is mid-turn.
+local function end_other(ui, id, verb, sure)
+  local e = ui.conn.index[id]
+  if not sure and e and e.state ~= "parked" and e.activity ~= "idle" then
+    return vim.ui.select({ "yes", "no" }, { prompt = verb .. " " .. session_line(e) .. "? Its turn is interrupted." }, function(pick)
+      if pick == "yes" then end_other(ui, id, verb, true) end
+    end)
+  end
+  request(ui, "maic.session." .. verb, { session = id, interrupt = true }, function(r, err)
+    if err then return notice(ui, "✗ " .. err_text(err), "MaicError") end
+    notice(ui, (verb == "park" and "parked " or "stopped ") .. session_line(r) .. (verb == "park" and "  (:MaicSwitch resumes it)" or "  (maic -r resumes it)"))
+  end)
+end
+
+-- :MaicNew [DIR], :MaicSwitch [ID], :MaicFork, :MaicBg, :MaicPark [ID], :MaicStop [ID]; --bg, --park or --stop
+-- names what happens to the session left, this once.
+function U.session_command(verb, fargs)
+  local ui = U.here()
+  if not ui or not ui.session then
+    vim.notify("maic.nvim: no interface in this tab (:Maic starts one)", vim.log.levels.WARN)
+    return
+  end
+  local as, rest = nil, {}
+  for _, a in ipairs(fargs or {}) do
+    if a == "--bg" or a == "--park" or a == "--stop" then as = a:sub(3) else rest[#rest + 1] = a end
+  end
+  local target = table.concat(rest, " ")
+  if verb == "new" then return U.go(ui, "new", nil, as, false, target ~= "" and function(view) U.command(view, "cd " .. target) end or nil) end
+  if verb == "fork" then return U.go(ui, "fork", nil, as) end
+  if verb == "switch" and target ~= "" then return U.go(ui, "to", resolve(ui, target), as) end
+  if verb == "switch" then return U.switcher(ui, "switch to", as) end
+  if verb == "bg" then return U.switcher(ui, "background this session, and go to", "bg") end
+  local id = target == "" and ui.session or resolve(ui, target)
+  if id == ui.session then return U.switcher(ui, verb .. " this session, and go to", verb) end
+  end_other(ui, id, verb)
 end
 
 -- :Maic in the interface: focus this tab's input (a waiting float first), showing its windows again if hidden, or
@@ -1047,7 +1237,7 @@ end
 function U.state(ui)
   ui = ui or U.here()
   if not ui then return nil end
-  return { job = ui.job, session = ui.session, response = ui.response, paused = ui.paused, activity = ui.activity, mode = ui.mode, model = ui.model,
+  return { job = ui.conn.job, session = ui.session, response = ui.response, paused = ui.paused, activity = ui.activity, mode = ui.mode, model = ui.model,
     conversation = ui.conv, input = ui.input, float = ui.float and { kind = ui.float.kind, win = ui.float.win, buf = ui.float.buf } or nil }
 end
 
