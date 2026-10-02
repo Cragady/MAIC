@@ -3,6 +3,7 @@
 #include "maic/bans.hpp"
 #include "maic/llm.hpp"
 #include "maic/agent_def.hpp"
+#include "maic/instructions.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -135,8 +136,7 @@ struct Settings {
     bool follow_nvim_theme = true;  // inside a connected host nvim (maic.nvim): the theme follows its colorscheme live
     bool bare = false;              // nothing from nvim: no host, no nvim highlighter or theme, no lazy-lock notice or keymap check (--bare, MAIC_BARE=1)
     std::string colors = "auto";    // colour depth: auto, truecolor, 256 or 16
-    std::vector<std::string> instruction_files = {"MAIC.md", "AGENTS.md"};
-    bool load_instructions = true;  // false: no MAIC.md / AGENTS.md anywhere
+    bool load_instructions = true;  // false: no instruction file anywhere
     std::string system_prompt;      // text placed first in the system prompt; "@path" reads a file (~ expands)
     std::string prefill;            // text every reply starts with (the model continues it); "@path" reads a file
     std::vector<std::string> rules; // standing one-line instructions, carried with system_prompt; layers add up
@@ -183,6 +183,8 @@ struct Settings {
     // bound "home" or outside any project (maic/trust.hpp, config_chain).
     std::vector<std::string> project_markers = {".git", ".maic", "MAIC.md"};
     std::string instructions_bound = "project";
+    // The rest of `instructions`: files, read, local_files, imports.depth, extra_dirs (docs/instructions.md).
+    InstructionOptions instructions;
     std::vector<std::string> warnings;        // keys a project file set that only the global file may
     ServerSettings server;
 

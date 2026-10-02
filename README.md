@@ -90,6 +90,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 
 * [tools.md](docs/tools.md): the model's tools, and writing your own, in Lua or any language, behind the harness.
 * [settings.md](docs/settings.md) — the settings file: model providers (local and remote), styles, instruction files.
+* [instructions.md](docs/instructions.md): instruction files: where MAIC looks and in what order, the classes, local files, imports and on-demand loading, how trust covers them, and how this compares with Claude Code and opencode.
 * [themes.md](docs/themes.md): themes (default, gruvbox dark and light, mono), writing one, importing a neovim colorscheme, colour depth.
 * [nvim.md](docs/nvim.md): maic.nvim, MAIC inside nvim: the plugin's commands, how MAIC finds and trusts its host, what the host gives (files, diffs, User autocmds, the live theme, `maic.nvim` in your Lua) and what the model never gets.
 * [sessions.md](docs/sessions.md): the session file format, every record type, homes, forks and `--fork-at`, `maic sessions import` (claude.ai exports, Claude Code transcripts), `redact`, `export`.

@@ -248,7 +248,7 @@ public:
         agent_.compaction.at = settings_.compact_at;
         agent_.compaction.keep_results = settings_.compact_keep_results;
         agent_.budget_tokens = settings_.budget_tokens;
-        agent_.set_instruction_names(settings_.instruction_files);
+        agent_.set_instruction_options(settings_.instructions);
         agent_.load_instruction_files = settings_.load_instructions;
         agent_.system_prefix = resolve_system_prompt(settings_.system_prompt);
         agent_.prefill = resolve_system_prompt(settings_.prefill);
@@ -717,8 +717,8 @@ void App::cd_to(const std::filesystem::path& ws, const std::filesystem::path& to
     if (has("leader")) editor_.set_leader(settings_.leader), view_.set_leader(settings_.leader);
     if (has("enter_sends")) editor_.set_enter_sends(settings_.enter_sends);
     if (has("timestamps")) view_.set_timestamps(settings_.timestamps);
-    if (has("instruction_files") || has("load_instructions")) {
-        agent_.set_instruction_names(settings_.instruction_files);
+    if (has("instructions") || has("load_instructions")) {
+        agent_.set_instruction_options(settings_.instructions);
         agent_.load_instruction_files = settings_.load_instructions;
         agent_.reload_instructions();
     }
@@ -2469,8 +2469,8 @@ void App::run_command(const std::string& line) {
                 return;
             }
             std::string out = "instruction files in effect (re-read every turn):";
-            for (const auto& f : agent_.instructions()) out += "\n  " + f.path.string() + "  (" + std::to_string(f.text.size()) + " bytes)";
-            if (agent_.instructions().empty()) out += "\n  none. Create " + global_instructions_path().string() + " or a MAIC.md / AGENTS.md in the workspace.";
+            for (const auto& f : agent_.instructions()) out += "\n  " + f.path.string() + "  (" + std::to_string(f.text.size()) + " bytes" + (f.imported_by.empty() ? "" : ", imported by " + f.imported_by.string()) + ")";
+            if (agent_.instructions().empty()) out += "\n  none. Create " + global_instructions_path().string() + " or a MAIC.md / AGENTS.md / CLAUDE.md in the workspace.";
             post(Kind::Notice, out);
         } else if (cmd == "session") {
             post(Kind::Notice, "this session: " + log_path() + (settings_.record ? "\nhome: " + log_->path().parent_path().lexically_relative(sessions_dir()).string() +

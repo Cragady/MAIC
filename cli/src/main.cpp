@@ -60,7 +60,7 @@ void usage(std::ostream& out = std::cerr) {
                  "       --image FILE, -I                   a picture sent with the first (or only) prompt; repeatable; the model must\n"
                  "                                          be a vision one (both Qwen3.5 GGUFs here are)\n"
                  "       --system TEXT|@FILE, -S            operator instructions placed first in the system prompt (front-loads behaviour)\n"
-                 "       --no-instructions                  load no MAIC.md / AGENTS.md anywhere; combines with --system\n"
+                 "       --no-instructions                  load no instruction file anywhere; combines with --system\n"
                  "       --ctx N                            context window in tokens: starts (or restarts) the local llama.cpp server\n"
                  "                                          with --ctx-size N and sizes the readout; also `maic up llamacpp --ctx N`\n"
                  "       --ctx2 N                           the same for the side server llamacpp-2 (port 8082; default 8192)\n"

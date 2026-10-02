@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include "maic/instructions.hpp"
 #include "maic/lua.hpp"
 
 #include <functional>
@@ -14,7 +15,8 @@ namespace maic {
 enum class Origin;
 
 // Directory trust (docs/harness.md, Trust). A project directory is one on the config chain (from the project
-// root, or just under $HOME, down to the workspace; config_chain) that holds .maic/, MAIC.md or AGENTS.md. Until it is trusted
+// root, or just under $HOME, down to the workspace; config_chain) that holds .maic/ or instruction files (its own,
+// or nested ones below it that no project directory above it already covers). Until it is trusted
 // its .maic/settings.* are not applied, its instruction files are not given to the model and its .maic/tools/
 // are not loaded. $HOME and / are never project directories. The user's global config is always trusted.
 //
@@ -32,10 +34,12 @@ enum class Origin;
 struct ProjectDir {
     std::filesystem::path dir;
     std::vector<std::filesystem::path> settings;      // .maic/settings{,.local}.{lua,json}
-    std::vector<std::filesystem::path> instructions;  // MAIC.md, AGENTS.md
+    std::vector<std::filesystem::path> instructions;  // the instruction files in it: instructions.files and their local variants
+    std::vector<std::filesystem::path> nested;        // the same names in its subdirectories (on-demand loading), bounded
+    std::vector<std::filesystem::path> imports;       // files inside it that those import (@path)
     std::vector<std::filesystem::path> tools;         // every file under .maic/tools/
     bool tool_dir = false;                            // .maic/tools/ exists
-    bool empty() const { return settings.empty() && instructions.empty() && tools.empty() && !tool_dir; }
+    bool empty() const { return settings.empty() && instructions.empty() && nested.empty() && tools.empty() && !tool_dir; }
     std::vector<std::filesystem::path> files() const;  // the hashed files, sorted
 };
 
@@ -62,6 +66,7 @@ struct TrustConfig {
     std::map<std::string, std::string> levels;        // directory (~ expanded) -> tier
     std::vector<std::string> project_markers = {".git", ".maic", "MAIC.md"};  // instructions.project_markers
     std::string bound = "project";                    // instructions.bound: "project" or "home"
+    InstructionOptions instructions;                  // which files count as instruction files, for the hash
 };
 void set_trust_config(TrustConfig config);
 bool valid_trust_level(const std::string& level);
