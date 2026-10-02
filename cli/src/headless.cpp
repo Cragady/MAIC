@@ -214,6 +214,10 @@ int run_headless(const HeadlessOptions& options) {
     set_tripwire_scope(settings.tripwire, log->path().string() + ".tripped");
     if (settings.tripwire == "isolated") agent.set_confined(true);
     agent.reload_instructions();
+    for (const auto& p : agent.pending_imports()) {
+        fprintf(stderr, "※ %s imports %s from outside your trusted directories: not read until you approve it (%s); maic trust imports --approve asks at a terminal\n",
+                p.importer.c_str(), p.target.c_str(), p.changed ? "it changed since you did" : "not approved yet");
+    }
     agent.bans = settings.bans;
     {
         auto [provider, name] = resolve_model(agent.providers, agent.model);

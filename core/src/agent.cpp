@@ -140,7 +140,8 @@ std::string Agent::instructions_text() const {
 }
 
 void Agent::reload_instructions() {
-    instructions_ = load_instruction_files ? load_instructions(harness_.workspace(), instruction_options_) : std::vector<InstructionFile>{};
+    pending_imports_.clear();
+    instructions_ = load_instruction_files ? load_instructions(harness_.workspace(), instruction_options_, {}, &pending_imports_) : std::vector<InstructionFile>{};
     nested_allowed_ = load_instruction_files ? nested_allowed(harness_.workspace()) : std::set<std::filesystem::path>{};
 }
 
@@ -1070,6 +1071,11 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     Decision d = harness_.check(action, mode, origin);
     if (action.kind != Action::Kind::Read && touches_harness(action) && d.verdict == Verdict::Allow) d = {Verdict::Ask, "changes the harness's own files"};
     if (touches_trust(action) && d.verdict != Verdict::Trip) d = {Verdict::Deny, "trust is the user's alone: only they grant it, at the terminal (:trust, maic trust PATH)"};
+    // A file the user's own instructions import with their approval would change their standing instructions.
+    if (d.verdict != Verdict::Trip && d.verdict != Verdict::Deny && changes_approved_import(action)) {
+        if (!review_with_model) d = {Verdict::Deny, "it is a file your own instructions import (an approved import); the dumb harness never lets the agent change it"};
+        else if (d.verdict == Verdict::Allow) d = {Verdict::Ask, "changes a file your own instructions import (an approved import)"};
+    }
     record["decision"] = verdict_name(d.verdict);
     record["reason"] = d.reason;
     bool user_allowed = false;
@@ -1304,6 +1310,17 @@ bool touches_trust(const Action& action) {
     if (action.kind != Action::Kind::Shell) return false;
     static const std::regex re(R"((^|[\s;&|(`])(\S*/)?maic\s+(un)?trust(\s|$)|(^|[\s;&|(`])(\S*/)?maic\s[^;&|\n]*--trust(\s|=|$)|maic/trust[.-])");
     return std::regex_search(action.command, re);
+}
+
+// A write to a target `maic trust imports` lists, or a command that is not read-only and names one.
+bool changes_approved_import(const Action& action) {
+    if (action.kind == Action::Kind::Read) return false;
+    if (action.kind == Action::Kind::Shell && is_read_only_command(action.command)) return false;
+    std::error_code ec;
+    for (const auto& t : import_exception_targets()) {
+        if (action.kind == Action::Kind::Shell ? action.command.find(t.string()) != std::string::npos : std::filesystem::weakly_canonical(action.path, ec) == t) return true;
+    }
+    return false;
 }
 
 bool Agent::touches_harness(const Action& action) const {

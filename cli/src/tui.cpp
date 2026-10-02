@@ -259,6 +259,7 @@ public:
         set_tripwire_scope(settings_.tripwire, log_->path().string() + ".tripped");
         if (settings_.tripwire == "isolated") agent_.set_confined(true);
         agent_.reload_instructions();
+        ask_imports(agent_.pending_imports(), false);
         agent_.bans = settings_.bans;
         agent_.set_nvim_host(host_);
         apply_sampling();
@@ -617,6 +618,8 @@ private:
     void run_lua(const std::string& code, bool from_file);
     void cd_to(const std::filesystem::path& ws, const std::filesystem::path& to);
     void ask_cd_trust(std::vector<ProjectDir> dirs, const std::filesystem::path& ws, const std::filesystem::path& to);
+    void ask_imports(std::vector<PendingImport> pending, bool again);
+    std::set<std::string> asked_imports_;  // importer > target pairs asked about this session
     bool ctrl_w_pending_ = false;
     bool ctrl_x_pending_ = false;
     size_t palette_sel_ = 0;
@@ -753,6 +756,35 @@ void App::ask_cd_trust(std::vector<ProjectDir> dirs, const std::filesystem::path
     confirm_ = PendingConfirm{" trust this directory? ", lines, {}, "tsnv", [this, p, dirs, ws, to](const std::string& answer) {
                                   post(Kind::Notice, answer_trust(p, answer));
                                   ask_cd_trust(dirs, ws, to);
+                              }};
+    screen_.PostEvent(Event::Custom);
+}
+
+// Imports of the user's own instruction files waiting for approval: each asked once per session in the confirm
+// modal (`again`: :trust imports --approve asks about declined ones too); yes records it for every later session.
+void App::ask_imports(std::vector<PendingImport> pending, bool again) {
+    std::lock_guard lock(mu_);
+    if (confirm_) return;  // something else is being asked; the next turn's end asks
+    while (!pending.empty() && !again && asked_imports_.count(pending.front().importer.string() + ">" + pending.front().target.string())) pending.erase(pending.begin());
+    if (pending.empty()) return;
+    PendingImport p = pending.front();
+    pending.erase(pending.begin());
+    asked_imports_.insert(p.importer.string() + ">" + p.target.string());
+    std::vector<std::string> lines = {"your instruction file imports a file from outside your trusted directories:"};
+    for (const auto& l : import_prompt(p.importer, p.target, import_exception_status(p.importer, p.target))) lines.push_back("  " + l);
+    lines.push_back("[y] approve: remembered for every session (maic trust imports lists, --remove forgets)   [n] not now");
+    confirm_ = PendingConfirm{" import from outside? ", lines, [this, p, pending, again](bool yes) {
+                                  if (yes) {
+                                      try {
+                                          approve_import(p.importer, p.target, Origin::Local);
+                                          post(Kind::Notice, "approved import: " + p.target.string() + " is read from your next message");
+                                      } catch (const std::exception& e) {
+                                          post(Kind::Error, e.what());
+                                      }
+                                  } else {
+                                      post(Kind::Notice, "not imported: " + p.target.string() + " (:trust imports --approve asks again)");
+                                  }
+                                  ask_imports(pending, again);
                               }};
     screen_.PostEvent(Event::Custom);
 }
@@ -1691,6 +1723,7 @@ void App::start_turn(const std::string& text_in) {
         }
         if (lazy_lock_) screen_.Post([this, lock = lazy_lock_->check()] { maybe_check_keymaps(lock); });
         busy_ = false;
+        screen_.Post([this] { ask_imports(agent_.pending_imports(), false); });
         if (quit_when_idle_.load() && !cancel_.load()) {
             quit_when_idle_ = false;
             screen_.Post([this] { quit(); });
@@ -2118,6 +2151,12 @@ void App::run_command(const std::string& line) {
             std::istringstream words(arg);
             std::vector<std::string> args;
             for (std::string w; words >> w;) args.push_back(w);
+            if (cmd == "trust" && args == std::vector<std::string>{"imports", "--approve"}) {
+                if (busy_) return post(Kind::Notice, ":trust imports --approve waits until the turn is over");
+                agent_.reload_instructions();
+                if (agent_.pending_imports().empty()) post(Kind::Notice, "no import of your own instruction files waits for approval");
+                return ask_imports(agent_.pending_imports(), true);
+            }
             try {
                 post(Kind::Notice, trust_command(cmd, args, agent_.harness().workspace()));
             } catch (const std::exception& e) {

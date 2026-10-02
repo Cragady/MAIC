@@ -68,7 +68,22 @@ Follow the house style in @docs/style.md and the shared notes in @~/.config/maic
 * The path is relative to the importing file; an absolute path and `~/` work too. An `@` counts only at the start of a line or after a space or `(`, and only when what follows looks like a path (it has a `/` or a `.`, or starts with `~`), so `me@example.com` and `@someone` are left alone. Trailing `.`, `:`, `!` and `?` are not part of the path.
 * Never inside a code span (`` `@x.md` ``), a fenced code block, a block quote (`> @x.md`) or double quotes (`"@x.md"`).
 * An imported file is read right before the file that imports it, so the importing file's own words come later and take precedence. Imports nest up to `imports.depth` hops (4); the fifth is not followed. Each file is read once, so a cycle ends where it starts.
-* **An import may not reach outside the trusted chain and your config directory**, unless the target is in a trusted directory. Allowed: anything under the system directory, under `~/.config/maic/`, under a trusted directory of the chain (or a trusted extra directory), or in a directory you have trusted with `maic trust`. Your own global file follows the same rule. A refused import is noted in the importing file as the model sees it (`[MAIC: @/path was not imported: it is outside the trusted directories and your config directory]`), as is a missing one; neither stops the rest from loading.
+* **An import may not reach outside the trusted chain and your config directory**, unless the target is in a trusted directory. Allowed: anything under the system directory, under `~/.config/maic/`, under a trusted directory of the chain (or a trusted extra directory), or in a directory you have trusted with `maic trust`. Your own files (the system directory and `~/.config/maic/`) may reach further, once you approve each import: see [Imports from your own files](#imports-from-your-own-files). A refused import is noted in the importing file as the model sees it (`[MAIC: @/path was not imported: it is outside the trusted directories and your config directory]`), as is a missing one; neither stops the rest from loading.
+
+## Imports from your own files
+
+An `@path` in one of your own instruction files (`/etc/maic/` and `~/.config/maic/`) may import a file from outside the trusted directories, such as `~/notes/style.md`, but only after you verify it. The first time MAIC meets such an import it does not read the file; it asks you once, showing the importing file, the target, the target's size and what approving means:
+
+1. it becomes standing instructions for every agent in every project;
+2. its contents are sent to whatever model provider a session uses, cloud included;
+3. every session pays its tokens;
+4. if an agent or another tool can write that file, it can change future instructions.
+
+In the TUI the question is the confirm modal (**y** approves, **n** leaves it unread this session; `:trust imports --approve` asks again). Headless and off a terminal nothing is asked: the import is not read and a notice names `maic trust imports --approve`, which asks at a terminal.
+
+An approval is kept for good, for every later session and client: the (importing file, target) pair goes into `<state>/trust-imports.json` (0600, beside `trust.json`) with the target's SHA-256. When the target changes, the global `trust_strictness` decides as it does for trust: `strict` asks again, `standard` lets your own uncommitted edit or your own commit pass (anything else, or a file outside a git working tree, asks again), `relaxed` lets it pass. `maic trust imports` lists the approvals, `maic trust imports --remove PATH` forgets every pair whose importing file or target is PATH.
+
+The agent can never approve an import: a write to the list, and any `maic trust` command, are trust actions it is refused, and approving takes the local user. Every approved target is protected too: an agent's write to it (or a command that is not read-only and names it) is asked under the smart harness, even in auto mode, and refused under the dumb one. A project's files keep the ordinary rule above: they cannot import from outside, approved or not. An approved file's own imports follow the ordinary rule as well.
 
 ## Trust
 

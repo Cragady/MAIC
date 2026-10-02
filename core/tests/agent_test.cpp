@@ -1348,6 +1348,35 @@ int main() {
         fs::remove(ws / "MAIC.md");
     }
 
+    section("a file your own instructions import is self-protected");
+    {
+        FakeServer fake;
+        fs::path target = ws / "approved-style.md";
+        std::ofstream(target) << "style\n";
+        approve_import(ws / "cfg-MAIC.md", target, Origin::Local);
+        fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", "approved-style.md"}, {"content", "changed"}}}};
+        Agent dumb(ws, "test");
+        dumb.providers = {fake.provider()};
+        dumb.mode = Mode::Auto;
+        dumb.review_with_model = false;
+        Recorder rd;
+        fake.calls_left = 1;
+        dumb.submit("change it", Origin::Local, rd, no_cancel);
+        expect(rd.asked.empty() && !rd.results.empty() && rd.results[0].find("an approved import") != std::string::npos, "the dumb harness refuses the agent's write to it");
+        Agent smart(ws, "test");
+        smart.providers = {fake.provider()};
+        smart.mode = Mode::Auto;
+        Recorder rs;
+        fake.calls_left = 1;
+        smart.submit("change it", Origin::Local, rs, no_cancel);
+        expect(rs.asked.size() == 1, "the smart harness asks you, even in auto mode");
+        std::ifstream in(target);
+        std::string kept((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        expect(kept == "style\n", "and nothing was written");
+        trust_imports_command({"--remove", target.string()});
+        fs::remove(target);
+    }
+
     section("a request over the context window");
     {
         FakeServer fake;

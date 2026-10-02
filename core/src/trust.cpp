@@ -858,7 +858,135 @@ std::string trust_listing() {
     return out;
 }
 
+namespace {
+
+json read_imports() {
+    std::ifstream in(import_exceptions_path());
+    json j = in ? json::parse(in, nullptr, false) : json::object();
+    if (!j.is_object()) j = json::object();
+    if (!j.contains("imports") || !j["imports"].is_array()) j["imports"] = json::array();
+    return j;
+}
+
+std::string canonical_string(const fs::path& p) {
+    std::error_code ec;
+    fs::path c = fs::weakly_canonical(p, ec);
+    return (ec ? p : c).string();
+}
+
+// The record for a pair: the target's hash, and where it is a git working tree its HEAD and whether it is
+// tracked, which the standard tier reads as for a trusted directory.
+json import_record(const fs::path& importer, const fs::path& target) {
+    json e = {{"importer", canonical_string(importer)}, {"target", canonical_string(target)}, {"sha256", sha256({read_all(target)})}, {"at", utc_now()}};
+    fs::path dir = target.parent_path();
+    if (work_tree(dir)) {
+        std::string name = target.filename().string();
+        e["git"] = {{"head", git_head(dir)}, {"untracked", git_tracked(dir, name) ? json::array() : json::array({name})}};
+    }
+    return e;
+}
+
+void store_import(const json& entry) {
+    json j = read_imports();
+    json kept = json::array();
+    for (const auto& e : j["imports"]) {
+        if (e.value("importer", "") != entry["importer"].get<std::string>() || e.value("target", "") != entry["target"].get<std::string>()) kept.push_back(e);
+    }
+    kept.push_back(entry);
+    j["imports"] = kept;
+    write_private(import_exceptions_path(), j.dump(2) + "\n", false);
+}
+
+}  // namespace
+
+fs::path import_exceptions_path() {
+    return state_dir() / "trust-imports.json";
+}
+
+TrustStatus import_exception_status(const fs::path& importer, const fs::path& target) {
+    TrustStatus s;
+    {
+        std::lock_guard lock(g_mu);
+        s.level = config().strictness;
+    }
+    std::string imp = canonical_string(importer), tgt = canonical_string(target);
+    json entry, all = read_imports();
+    for (const auto& e : all["imports"]) {
+        if (e.value("importer", "") == imp && e.value("target", "") == tgt) entry = e;
+    }
+    if (!entry.is_object()) return s;
+    if (sha256({read_all(tgt)}) == entry.value("sha256", "")) return s.trust = Trust::Trusted, s;
+    s.changed = {tgt};
+    if (s.level == "strict") s.reasons = {"strict: every change is asked about"};
+    else if (s.level == "standard") {
+        ProjectDir p;
+        p.dir = fs::path(tgt).parent_path();
+        s.reasons = not_own(p, entry, s.changed);
+    }
+    s.trust = s.reasons.empty() ? Trust::Trusted : Trust::Changed;
+    if (s.trust == Trust::Trusted) store_import(import_record(imp, tgt));  // the change passed: it is the new record
+    return s;
+}
+
+void approve_import(const fs::path& importer, const fs::path& target, Origin origin) {
+    require_local(origin);
+    store_import(import_record(importer, target));
+}
+
+std::vector<fs::path> import_exception_targets() {
+    std::vector<fs::path> out;
+    json all = read_imports();
+    for (const auto& e : all["imports"]) out.push_back(e.value("target", ""));
+    return out;
+}
+
+std::vector<std::string> import_prompt(const fs::path& importer, const fs::path& target, const TrustStatus& status) {
+    std::error_code ec;
+    auto size = fs::file_size(target, ec);
+    std::vector<std::string> lines = {"importing file: " + importer.string(), "target:         " + target.string(),
+                                      "size:           " + (ec ? std::string("unknown") : std::to_string(size) + " bytes")};
+    if (status.trust == Trust::Changed) {
+        for (const auto& r : status.reasons) lines.push_back("changed since you approved it: " + r);
+    }
+    lines.insert(lines.end(), {
+        "approving it means:",
+        "  it becomes standing instructions for every agent in every project",
+        "  its contents are sent to whatever model provider a session uses, cloud included",
+        "  every session pays its tokens",
+        "  if an agent or another tool can write that file, it can change future instructions",
+    });
+    return lines;
+}
+
+std::string trust_imports_command(const std::vector<std::string>& args) {
+    json j = read_imports();
+    if (args.empty()) {
+        if (j["imports"].empty()) return "no approved imports (" + import_exceptions_path().string() + ")";
+        std::string out = "approved imports from your own instruction files (" + import_exceptions_path().string() + "):";
+        for (const auto& e : j["imports"]) {
+            TrustStatus s = import_exception_status(e.value("importer", ""), e.value("target", ""));
+            out += "\n  " + e.value("importer", "") + " -> " + e.value("target", "") + "  (" + e.value("at", "") + (s.trust == Trust::Changed ? ", changed: asked again" : "") + ")";
+        }
+        return out;
+    }
+    if (args.size() != 2 || args[0] != "--remove") throw std::runtime_error("usage: trust imports [--remove PATH | --approve]");
+    std::string path = args[1];
+    if (!path.empty() && path[0] == '~') path = expand_home(path);
+    std::string c = canonical_string(fs::absolute(path));
+    json kept = json::array();
+    std::string out;
+    for (const auto& e : j["imports"]) {
+        if (e.value("importer", "") == c || e.value("target", "") == c) out += (out.empty() ? "" : "\n") + ("removed " + e.value("importer", "") + " -> " + e.value("target", ""));
+        else kept.push_back(e);
+    }
+    if (out.empty()) return "no approved import names " + c;
+    j["imports"] = kept;
+    write_private(import_exceptions_path(), j.dump(2) + "\n", false);
+    return out;
+}
+
 std::string trust_command(const std::string& command, const std::vector<std::string>& args, const fs::path& workspace) {
+    if (command == "trust" && !args.empty() && args[0] == "imports") return trust_imports_command({args.begin() + 1, args.end()});
     std::string path, level, lua;
     bool list = false;
     for (size_t i = 0; i < args.size(); ++i) {

@@ -140,6 +140,24 @@ void ask_trust(const std::filesystem::path& workspace, std::istream& in, std::os
 std::vector<std::string> trust_prompt(const ProjectDir& p);
 std::string answer_trust(const ProjectDir& p, const std::string& answer);
 
+// Imports your own instruction files (the system directory and ~/.config/maic) make from outside the trusted
+// directories (docs/instructions.md, Imports from your own files). Each one is read only once you approved the
+// (importer, target) pair; <state>/trust-imports.json (0600) keeps the pairs with the target's SHA-256. A changed
+// target is asked about again under the global trust_strictness: strict asks, standard lets your own edit or
+// commit pass (as for trust), relaxed lets it pass. The agent never reaches the file (touches_trust).
+std::filesystem::path import_exceptions_path();
+// Trusted (approved, and unchanged or changed in a way the tier lets pass, then recorded), Changed (with the
+// reasons) or Unknown.
+TrustStatus import_exception_status(const std::filesystem::path& importer, const std::filesystem::path& target);
+// Remembers the pair with the target's current contents. A remote origin cannot: throws.
+void approve_import(const std::filesystem::path& importer, const std::filesystem::path& target, Origin origin);
+// Every approved target, for self-protection: an agent's write to one is asked (smart) or refused (dumb).
+std::vector<std::filesystem::path> import_exception_targets();
+// The question for one pair: the importing file, the target, its size, what approving means, one line each.
+std::vector<std::string> import_prompt(const std::filesystem::path& importer, const std::filesystem::path& target, const TrustStatus& status);
+// `maic trust imports` (the list), `--remove PATH` (every pair whose importer or target is PATH).
+std::string trust_imports_command(const std::vector<std::string>& args);
+
 // A remote device changing trust (POST /api/trust): only with a step-up proof the registered verifier accepts.
 // Until accounts exist (docs/design/accounts.md) none is registered and every request is refused. `action` is
 // trust, untrust, never, level or lua (`lua`: full, sandbox or restricted); `path` is absolute. Each request, done or refused, is a line in

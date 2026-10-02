@@ -61,6 +61,12 @@ struct Loader {
     std::vector<fs::path> roots;
     std::set<fs::path>& seen;
     std::vector<InstructionFile> out;
+    std::vector<PendingImport>* pending = nullptr;
+
+    // Your own files: the system and config directories, the first two roots.
+    bool own(const fs::path& file) const {
+        return under(resolved(file), roots[0]) || under(resolved(file), roots[1]);
+    }
 
     bool allowed(const fs::path& target) const {
         for (const auto& r : roots) {
@@ -81,8 +87,13 @@ struct Loader {
                 fs::path t = resolved(target);
                 if (!fs::is_regular_file(t, ec)) {
                     text += "\n[MAIC: @" + target.string() + " was not imported: there is no such file]";
-                } else if (!allowed(t)) {
+                } else if (!allowed(t) && !own(file)) {
                     text += "\n[MAIC: @" + target.string() + " was not imported: it is outside the trusted directories and your config directory]";
+                } else if (Trust st = allowed(t) ? Trust::Trusted : import_exception_status(file, t).trust; st != Trust::Trusted) {
+                    bool changed = st == Trust::Changed;
+                    if (pending) pending->push_back({file, t, changed});
+                    text += "\n[MAIC: @" + target.string() + " was not imported: it is outside the trusted directories, and the user has not " +
+                            (changed ? "approved it since it changed" : "approved it yet") + " (maic trust imports --approve)]";
                 } else {
                     add(t, depth + 1, file);
                 }
@@ -189,7 +200,8 @@ std::vector<fs::path> import_targets(const fs::path& file, const std::string& te
     return out;
 }
 
-std::vector<InstructionFile> load_instructions(const fs::path& workspace, const InstructionOptions& options, const std::vector<fs::path>& extra) {
+std::vector<InstructionFile> load_instructions(const fs::path& workspace, const InstructionOptions& options, const std::vector<fs::path>& extra,
+                                               std::vector<PendingImport>* pending) {
     std::vector<fs::path> chain = trusted_chain(workspace), extras;
     if (options.extra_dirs) {
         for (const auto& e : extra) {
@@ -199,7 +211,7 @@ std::vector<InstructionFile> load_instructions(const fs::path& workspace, const 
     std::vector<fs::path> in_play = extras;
     in_play.insert(in_play.end(), chain.begin(), chain.end());
     std::set<fs::path> seen;
-    Loader loader{options, base_roots(in_play), seen, {}};
+    Loader loader{options, base_roots(in_play), seen, {}, pending};
     loader.add_dir(system_instructions_dir());
     loader.add_dir(user_instructions_dir());
     for (const auto& d : in_play) loader.add_dir(d);

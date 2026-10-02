@@ -23,6 +23,14 @@ struct InstructionFile {
     std::filesystem::path imported_by;  // empty unless an @path import brought it in
 };
 
+// An import one of your own files (system or config directory) makes from outside the trusted directories, not
+// read until you approve it (maic/trust.hpp, approve_import). `changed`: approved once, changed since.
+struct PendingImport {
+    std::filesystem::path importer;
+    std::filesystem::path target;
+    bool changed = false;
+};
+
 // Standing instructions for the agent, read in this order (later ones take precedence where they conflict):
 //   1. the system directory (system_instructions_dir(), empty by default)
 //   2. your config directory (user_instructions_dir())
@@ -30,9 +38,10 @@ struct InstructionFile {
 //   4. the config chain (the project root, or the top of $HOME, down to the workspace), outermost first, in
 //      trusted directories only (maic/trust.hpp)
 // In each directory the classes go lowest priority first, then the local files. An imported file comes right
-// before the file that imports it. Each file is capped at 32 KB.
+// before the file that imports it. Each file is capped at 32 KB. Imports of your own files that wait for your
+// approval go to `pending`.
 std::vector<InstructionFile> load_instructions(const std::filesystem::path& workspace, const InstructionOptions& options = {},
-                                               const std::vector<std::filesystem::path>& extra = {});
+                                               const std::vector<std::filesystem::path>& extra = {}, std::vector<PendingImport>* pending = nullptr);
 
 // On-demand loading: the instruction files from `file`'s directory up to (not including) the workspace,
 // outermost first, that a trusted directory on the chain hashes (`allowed`, from nested_allowed), skipping

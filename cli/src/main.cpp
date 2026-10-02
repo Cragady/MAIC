@@ -3,6 +3,7 @@
 #include "headless.hpp"
 #include "setup.hpp"
 #include "maic/artifacts.hpp"
+#include "maic/harness.hpp"
 #include "maic/import.hpp"
 #include "maic/lazy_lock.hpp"
 #include "maic/nvim_keymaps.hpp"
@@ -1083,6 +1084,36 @@ int cmd_model(const std::vector<std::string>& args) {
     return 0;
 }
 
+// `maic trust imports --approve`: asks at the terminal about each import of your own instruction files that waits
+// for approval (docs/instructions.md, Imports from your own files).
+int cmd_approve_imports() {
+    maic::Settings settings = maic::load_settings();
+    std::vector<maic::PendingImport> pending;
+    maic::load_instructions(std::filesystem::current_path(), settings.instructions, {}, &pending);
+    if (pending.empty()) {
+        std::cout << "no import of your own instruction files waits for approval\n";
+        return 0;
+    }
+    if (!isatty(STDIN_FILENO)) {
+        std::cerr << "maic: approving an import asks at a terminal; run maic trust imports --approve in one. Nothing was approved.\n";
+        return 2;
+    }
+    for (const auto& p : pending) {
+        std::cout << "\nyour instruction file imports a file from outside your trusted directories:\n";
+        for (const auto& l : maic::import_prompt(p.importer, p.target, maic::import_exception_status(p.importer, p.target))) std::cout << "  " << l << "\n";
+        std::cout << "approve it? [y/N] " << std::flush;
+        std::string line;
+        if (!std::getline(std::cin, line)) break;
+        if (line == "y" || line == "Y" || line == "yes") {
+            maic::approve_import(p.importer, p.target, maic::Origin::Local);
+            std::cout << "approved: it is read from the next turn of every session\n";
+        } else {
+            std::cout << "not approved\n";
+        }
+    }
+    return 0;
+}
+
 int cmd_settings(const std::vector<std::string>& args) {
     if (!args.empty() && args[0] == "read") {
         if (args.size() != 2 || args[1] != "diction") throw std::runtime_error("maic settings read diction   (diction.lua beside settings.lua, as JSON)");
@@ -1394,6 +1425,7 @@ int main(int argc, char** argv) {
             return rc;
         }
         if (cmd == "settings") return cmd_settings(cargs);
+        if (cmd == "trust" && cargs == std::vector<std::string>{"imports", "--approve"}) return cmd_approve_imports();
         if (cmd == "trust" || cmd == "untrust") {
             std::cout << maic::trust_command(cmd, cargs, std::filesystem::current_path()) << "\n";
             return 0;

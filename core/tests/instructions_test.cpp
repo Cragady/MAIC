@@ -4,11 +4,13 @@
 // Everything lives under a throwaway HOME, config and state.
 #include "check.hpp"
 
+#include "maic/agent.hpp"
 #include "maic/instructions.hpp"
 #include "maic/session.hpp"
 #include "maic/settings.hpp"
 #include "maic/trust.hpp"
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstdlib>
@@ -290,6 +292,81 @@ int main() {
         trust_dir(project_dir(extra), Origin::Local);
         std::string o = order(load_instructions(proj, on, {extra}));
         expect(contains(o, "home/.config/maic/MAIC.md | home/dev/extra/MAIC.md | home/dev/proj/CLAUDE.md"), "trusted: after yours, before the project's: " + o);
+    }
+
+    section("imports from your own files wait for your approval");
+    {
+        fs::path notes = home / "own-notes", target = notes / "style.md";
+        write_file(target, "heron style\n");
+        write_file(cfg / "MAIC.md", "your maic, and @" + target.string() + "\n");
+        std::vector<PendingImport> pending;
+        auto files = load_instructions(home / "dev", InstructionOptions{}, {}, &pending);
+        const InstructionFile* own = find(files, cfg / "MAIC.md");
+        expect(!find(files, target) && pending.size() == 1 && pending[0].importer == cfg / "MAIC.md" && pending[0].target == target && !pending[0].changed,
+               "an import of your config file from outside the trusted directories is not read; it waits for approval");
+        expect(own && contains(own->text, "the user has not approved it yet (maic trust imports --approve)"), "and the model is told why");
+        std::string err;
+        try {
+            approve_import(cfg / "MAIC.md", target, Origin::Remote);
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
+        expect(!err.empty(), "a remote origin cannot approve one");
+        approve_import(cfg / "MAIC.md", target, Origin::Local);
+        struct stat st {};
+        expect(::stat(import_exceptions_path().c_str(), &st) == 0 && (st.st_mode & 0777) == 0600 && import_exceptions_path().parent_path() == trust_path().parent_path(),
+               "approved: the pair is kept beside trust.json, 0600");
+        pending.clear();
+        files = load_instructions(home / "dev", InstructionOptions{}, {}, &pending);
+        expect(find(files, target) && pending.empty(), "and read from then on, by every session");
+
+        write_file(proj / "AGENTS.md", "@" + target.string() + "\n");
+        trust_dir(project_dir(proj), Origin::Local);
+        pending.clear();
+        files = load_instructions(proj, InstructionOptions{}, {}, &pending);
+        const InstructionFile* agents = find(files, proj / "AGENTS.md");
+        expect(agents && contains(agents->text, "was not imported: it is outside the trusted directories and your config directory") && pending.empty(),
+               "a project file importing the same target keeps the existing rule: refused, nothing to approve");
+        write_file(proj / "AGENTS.md", "AGENTS.md text\n");
+        trust_dir(project_dir(proj), Origin::Local);
+
+        write_file(target, "heron style, changed\n");
+        pending.clear();
+        files = load_instructions(home / "dev", InstructionOptions{}, {}, &pending);
+        expect(!find(files, target) && pending.size() == 1 && pending[0].changed, "standard tier: a change outside a git working tree is asked about again");
+        write_file(cfg / "settings.lua", "return { trust_strictness = 'relaxed' }\n");
+        load_settings(home / "dev");
+        expect(import_exception_status(cfg / "MAIC.md", target).trust == Trust::Trusted, "relaxed: the change passes");
+        write_file(cfg / "settings.lua", "return { trust_strictness = 'strict' }\n");
+        load_settings(home / "dev");
+        expect(import_exception_status(cfg / "MAIC.md", target).trust == Trust::Trusted, "and was recorded as the new content");
+        write_file(target, "heron style, changed again\n");
+        TrustStatus ch = import_exception_status(cfg / "MAIC.md", target);
+        expect(ch.trust == Trust::Changed && contains(joined(import_prompt(cfg / "MAIC.md", target, ch)), "changed since you approved it: strict"), "strict: any change asks again, and the question says so");
+        fs::remove(cfg / "settings.lua");
+        load_settings(home / "dev");
+
+        std::string q = joined(import_prompt(cfg / "MAIC.md", target, ch));
+        expect(contains(q, "importing file: " + (cfg / "MAIC.md").string()) && contains(q, "target:         " + target.string()) && contains(q, "size:           27 bytes") &&
+                   contains(q, "standing instructions for every agent in every project") && contains(q, "cloud included") && contains(q, "every session pays its tokens") &&
+                   contains(q, "it can change future instructions"),
+               "the question shows the importer, the target, its size and the four implications:\n" + q);
+
+        expect(touches_trust(Action{Action::Kind::Write, import_exceptions_path(), "", {}, "write_file"}) &&
+                   touches_trust(Action{Action::Kind::Shell, {}, "maic trust imports --remove x", {}, "run_shell"}),
+               "the exception list is the user's alone: the agent's writes and maic trust commands are trust actions");
+        expect(changes_approved_import(Action{Action::Kind::Write, target, "", {}, "write_file"}) &&
+                   changes_approved_import(Action{Action::Kind::Shell, {}, "echo x > " + target.string(), {}, "run_shell"}) &&
+                   !changes_approved_import(Action{Action::Kind::Shell, {}, "cat " + target.string(), {}, "run_shell"}) &&
+                   !changes_approved_import(Action{Action::Kind::Write, notes / "other.md", "", {}, "write_file"}),
+               "an approved target is self-protected: writes to it are caught, reads are not");
+
+        std::string listed = trust_imports_command({});
+        expect(contains(listed, (cfg / "MAIC.md").string() + " -> " + target.string()) && contains(listed, "changed: asked again"), "maic trust imports lists it: " + listed);
+        expect(contains(trust_command("trust", {"imports", "--remove", target.string()}, home), "removed " + (cfg / "MAIC.md").string() + " -> " + target.string()),
+               "--remove PATH forgets it");
+        expect(import_exception_targets().empty() && import_exception_status(cfg / "MAIC.md", target).trust == Trust::Unknown, "and it waits for approval again");
+        write_file(cfg / "MAIC.md", "your maic\n");
     }
 
     fs::remove_all(g_root);

@@ -81,6 +81,8 @@ public:
 // `maic trust` / `maic untrust` / `maic ... --trust` command). The agent's authorise step never lets one run:
 // the smart harness trips on it, the dumb one refuses it.
 bool touches_trust(const Action& action);
+// Whether the action writes a file the user's own instructions import with their approval (maic trust imports).
+bool changes_approved_import(const Action& action);
 
 class Agent {
 public:
@@ -260,6 +262,8 @@ public:
     // loading may attach.
     const std::vector<InstructionFile>& instructions() const { return instructions_; }
     void reload_instructions();
+    // Imports of your own files waiting for your approval, as of the last reload (read it while idle).
+    const std::vector<PendingImport>& pending_imports() const { return pending_imports_; }
 
     // The model's current plan, replaced whole by every todo call; cleared with the conversation.
     const std::vector<TodoItem>& todo() const { return todo_; }
@@ -329,6 +333,7 @@ private:
     std::vector<std::string> tool_notices_;
     nlohmann::json schemas_;  // the built-ins, then the Lua tools, then the script tools
     InstructionOptions instruction_options_;
+    std::vector<PendingImport> pending_imports_;
     std::set<std::filesystem::path> nested_allowed_;        // nested files trusted chain directories hash (nested_allowed)
     std::set<std::filesystem::path> attached_instructions_;  // nested files attached in this conversation
     std::string last_call_;
