@@ -6,6 +6,7 @@ add_library(maic_core
     src/artifacts.cpp
     src/bans.cpp
     src/clipboard.cpp
+    src/full_output.cpp
     src/harness.cpp
     src/import.cpp
     src/instructions.cpp

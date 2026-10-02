@@ -395,6 +395,19 @@ int main() {
         bool folded = true;
         for (const auto& e : entries) folded = folded && e["type"] != "response.shell_call_output_content.delta";
         expect(folded, "the folded transcript leaves the deltas out");
+        const json& kept = events[result_at];
+        expect(kept.contains("full_output") && kept["full_output"]["session"] == sid && kept["full_output"]["call"] == "call_1" &&
+                   kept["full_output"]["bytes"] == 18 + 1048576 && kept["full_output"]["label"] == "full output, display only: the model saw the capped result",
+               "the result says the whole output was kept, labelled display only");
+        int status = 0;
+        json page = api.get("/api/sessions/" + sid + "/output/call_1?session=" + sid, &status);
+        expect(status == 200 && page["label"] == kept["full_output"]["label"] && page["bytes"] == 18 + 1048576 && page["data"].get<std::string>().size() == 256 * 1024 &&
+                   page["data"].get<std::string>().rfind("tick1\ntick2\ntick3\nxxx", 0) == 0 && page["done"] == false,
+               "a client fetches it 256 KiB at a time, with the label");
+        page = api.get("/api/sessions/" + sid + "/output/call_1?offset=1048576", &status);
+        expect(status == 200 && page["data"] == std::string(18, 'x') && page["done"] == true, "to the end");
+        api.get("/api/sessions/" + sid + "/output/call_1?session=elsewhere", &status);
+        expect(status == 404, "only from the session itself or its subagents");
     }
 
     section("interrupt");

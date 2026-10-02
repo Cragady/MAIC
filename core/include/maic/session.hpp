@@ -127,6 +127,10 @@ std::vector<RehomeMove> plan_rehome(const std::vector<RehomeTarget>& targets, co
 // reason: "rehome"} to it. Forks keep working: they find their parent by id.
 void rehome_session(const RehomeMove& move);
 
+// Where a session's kept outputs live, beside its file: <dir>/<id>.d (docs/sessions.md, Full output). Moving a
+// session moves it too.
+std::filesystem::path side_dir(const std::filesystem::path& session_file);
+
 // The `sub` sessions `path` started (they live in its home and name it as their parent).
 std::vector<std::filesystem::path> sub_sessions_of(const std::filesystem::path& path);
 
@@ -154,6 +158,7 @@ struct TranscriptEntry {
     std::string type;  // user, assistant, tool_call, tool_result, notice
     std::string text;
     bool ok = true;
+    nlohmann::json full_output;  // tool_result: the record's `full_output` when the whole output was kept (null otherwise)
 };
 
 struct LoadedSession {
@@ -248,7 +253,8 @@ bool is_maic_session(const std::filesystem::path& path);
 std::string export_markdown(const SessionInfo& info, const LoadedSession& session, bool tool_details = true);
 
 // The transcript as plain text for reading or piping: `[user]` and `[assistant]` blocks for user turns `from` to
-// `to` (1-based, inclusive; 0 means no bound), notices, and tool calls and results as `[tool]` / `[result]` when `tools`.
+// `to` (1-based, inclusive; 0 means no bound), notices, and tool calls and results as `[tool]` / `[result]` when `tools`,
+// a result whose whole output was kept followed by a labelled line saying where (`maic sessions output`).
 std::string render_text(const LoadedSession& session, size_t from = 0, size_t to = 0, bool tools = false);
 
 }  // namespace maic

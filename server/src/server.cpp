@@ -6,6 +6,7 @@
 #include "tunnel.hpp"
 
 #include "maic/agent.hpp"
+#include "maic/full_output.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
 #include "maic/session.hpp"
@@ -137,8 +138,17 @@ public:
     void on_tool_result(const std::string& text, bool ok) override {
         std::lock_guard lock(s_.mu);
         push_skipped_locked();
-        s_.push_locked({{"type", "tool_result"}, {"text", text}, {"ok", ok}});
+        json e = {{"type", "tool_result"}, {"text", text}, {"ok", ok}};
+        if (!kept_.empty()) {
+            // GET .../output/{call}?session= serves it, labelled.
+            std::error_code ec;
+            e["full_output"] = {{"session", kept_.parent_path().stem().string()}, {"call", kept_.stem().string()}, {"bytes", fs::file_size(kept_, ec)},
+                                {"label", kFullOutputLabel}};
+            kept_.clear();
+        }
+        s_.push_locked(std::move(e));
     }
+    void on_tool_full_output(const std::filesystem::path& file) override { kept_ = file; }
     // run_shell's output as OpenAI's shell call output deltas, anything else's as maic.tool.output.delta. A chunk
     // over the session's budget is not sent; the run of them becomes one skip event before the next data or the result.
     void on_tool_output(const std::string& call_id, OutputStream stream, std::string_view chunk, size_t offset) override {
@@ -190,6 +200,7 @@ private:
     }
 
     Session& s_;
+    fs::path kept_;  // on_tool_full_output, for the result that follows
     bool shell_ = false;  // the running tool is run_shell
     std::string skip_call_;  // a run of chunks held back by the budget: whose, from where, how many bytes
     OutputStream skip_stream_ = OutputStream::Stdout;
@@ -295,6 +306,8 @@ struct Server::Impl {
         s->agent.compaction.at = st.compact_at;
         s->agent.compaction.keep_results = st.compact_keep_results;
         s->agent.budget_tokens = st.budget_tokens;
+        s->agent.full_output = st.full_output;
+        s->agent.full_output_max_mb = static_cast<size_t>(st.full_output_max_mb);
         s->agent.set_instruction_options(st.instructions);
         return s;
     }
@@ -499,6 +512,31 @@ struct Server::Impl {
             size_t after = 0;
             if (req.has_param("after")) after = std::stoul(req.get_param_value("after"));
             stream(s, after, res);
+        });
+
+        // A command's kept output (docs/sessions.md, Full output), 256 KiB at a time: the session's own, or one of its
+        // subagents' (`session`). Display only, and labelled so.
+        srv->Get(R"(/api/sessions/([^/]+)/output/([A-Za-z0-9_-]+))", [this](const httplib::Request& req, httplib::Response& res) {
+            auto s = find(req.matches[1]);
+            fs::path owner = s->log->path();
+            if (req.has_param("session") && req.get_param_value("session") != s->id) {
+                std::string sub = req.get_param_value("session");
+                auto subs = sub_sessions_of(owner);
+                auto it = std::find_if(subs.begin(), subs.end(), [&](const fs::path& p) { return p.stem().string() == sub; });
+                if (it == subs.end()) throw HttpError{404, "no subagent session " + sub + " of " + s->id};
+                owner = *it;
+            }
+            fs::path file = side_dir(owner) / (req.matches[2].str() + ".out");
+            std::error_code ec;
+            if (!fs::is_regular_file(file, ec)) throw HttpError{404, "no kept output " + req.matches[2].str()};
+            size_t size = fs::file_size(file, ec);
+            size_t offset = req.has_param("offset") ? std::stoul(req.get_param_value("offset")) : 0;
+            size_t length = std::min<size_t>(req.has_param("length") ? std::stoul(req.get_param_value("length")) : 256 * 1024, 256 * 1024);
+            std::ifstream in(file, std::ios::binary);
+            std::string data(std::min(length, size > offset ? size - offset : 0), '\0');
+            in.seekg(static_cast<std::streamoff>(std::min(offset, size)));
+            in.read(data.data(), static_cast<std::streamsize>(data.size()));
+            reply(res, {{"label", kFullOutputLabel}, {"bytes", size}, {"offset", offset}, {"data", data}, {"done", offset + data.size() >= size}});
         });
 
         srv->Post(R"(/api/sessions/([^/]+)/messages)", [this](const httplib::Request& req, httplib::Response& res) {

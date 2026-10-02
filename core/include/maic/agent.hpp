@@ -84,6 +84,9 @@ public:
     virtual void on_tool_output(const std::string& call_id, OutputStream stream, std::string_view chunk, size_t offset) {
         (void)call_id, (void)stream, (void)chunk, (void)offset;
     }
+    // Right before on_tool_result, when the call's whole output outgrew the model's cap and was kept beside the
+    // session (`file`, its .out; Agent::full_output). Display only: the result is what the model got.
+    virtual void on_tool_full_output(const std::filesystem::path& file) { (void)file; }
 };
 
 // An action that would change which directories are trusted or at what tier (a write to <state>/trust*, a
@@ -122,6 +125,12 @@ public:
 
     // Every turn is also written here when set.
     void set_log(SessionLog* log);
+
+    // A command's whole output (run_shell, a script tool), kept beside the session file when it outgrows what the
+    // model is given, at most full_output_max_mb of it (FullOutputWriter); settings `full_output` and
+    // `full_output_max_mb`. Only with a log.
+    bool full_output = true;
+    size_t full_output_max_mb = 64;
 
     // Continues an earlier session: its messages become the history, and the model is told it resumed.
     void restore(std::vector<Message> messages);

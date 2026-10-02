@@ -595,6 +595,20 @@ class RelayTunnel {
     pre.textContent = (pre.textContent + text).split('\n').slice(-12).join('\n');
     scrollDown();
   }
+  // A result whose whole output was kept: a button under it fetches that output, labelled as what it is.
+  function keptOutput(k) {
+    const last = $('entries').lastElementChild;
+    if (!last || last.tagName !== 'DETAILS') return;
+    const b = document.createElement('button');
+    b.textContent = k.label + ' (' + k.bytes + ' bytes): show';
+    b.onclick = async () => {
+      const r = await json('/api/sessions/' + state.session.id + '/output/' + encodeURIComponent(k.call) + '?session=' + encodeURIComponent(k.session));
+      const p = document.createElement('pre');
+      p.textContent = '[' + r.label + ']\n' + r.data + (r.done ? '' : '\n[' + (r.bytes - r.data.length) + ' more bytes: maic sessions output ' + k.session + ' ' + k.call + ']');
+      b.replaceWith(p);
+    };
+    last.appendChild(b);
+  }
   function scrollDown() {
     const m = document.querySelector('main');
     if (m.scrollHeight - m.scrollTop - m.clientHeight < 200) m.scrollTop = m.scrollHeight;
@@ -620,6 +634,7 @@ class RelayTunnel {
           const p = document.createElement('pre'); p.textContent = e.text; last.appendChild(p);
           if (!e.ok) last.classList.add('bad');
         } else addTool(e.ok ? 'result' : 'failed', e.text, e.ok);
+        if (e.full_output) keptOutput(e.full_output);
         break;
       }
       case 'notice': addEntry('notice', e.text); break;

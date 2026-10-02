@@ -204,10 +204,10 @@ void View::live_output(std::string_view text) {
     ++version_;
 }
 
-void View::finish_live(Kind kind, std::string text) {
+void View::finish_live(Kind kind, std::string text, std::string full) {
     std::lock_guard lock(mu_);
     entries_.erase(std::remove_if(entries_.begin(), entries_.end(), [](const Entry& e) { return e.live; }), entries_.end());
-    entries_.push_back({kind, std::move(text), attached(kind) && collapse_default_, std::time(nullptr)});
+    entries_.push_back({kind, std::move(text), attached(kind) && collapse_default_, std::time(nullptr), false, std::move(full)});
     ++version_;
 }
 
@@ -253,7 +253,7 @@ void View::layout(size_t width) {
         if (e > 0 && !attached(entry.kind)) lines_.push_back({{}, Kind::Assistant, e, 0, 0, false});
         size_t pre = utf8_len(marker(entry)) + (timestamps_ ? 6 : 0);
         bool use_md = markdown_ && (entry.kind == Kind::Assistant || entry.kind == Kind::User || entry.kind == Kind::Notice);
-        std::string shown_text = entry.collapsed ? preview(entry.text) : entry.text;
+        std::string shown_text = entry.collapsed ? preview(entry.text) : entry.full.empty() ? entry.text : entry.full;
         bool diff = markdown_ && is_tool(entry.kind) && looks_like_diff(shown_text);
         // Tool output and shell output keep tabs; the renderer drops them, so expand.
         auto source = use_md ? markdown_lines(shown_text) : diff ? diff_lines(shown_text) : plain_lines(shown_text);
@@ -297,7 +297,7 @@ std::string View::text_of(const Line& l) const {
     std::lock_guard lock(mu_);
     if (l.entry >= entries_.size()) return "";
     const auto& e = entries_[l.entry];
-    std::string t = e.collapsed ? preview(e.text) : e.text;
+    std::string t = e.collapsed ? preview(e.text) : e.full.empty() ? e.text : e.full;
     return t.substr(std::min(l.begin, t.size()), l.end > l.begin ? l.end - l.begin : 0);
 }
 

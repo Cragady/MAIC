@@ -347,6 +347,9 @@ SandboxResult spawn(std::vector<std::string>& args, const std::string& input, bo
     }
     if (pid == 0) {
         setpgid(0, 0);
+        // An ignored SIGPIPE is inherited through exec, and a process with an httplib server (maic-server) ignores
+        // it: without this, `seq 1 1000000 | head` would print "write error: Broken pipe" instead of ending quietly.
+        signal(SIGPIPE, SIG_DFL);
         if (feed_input) {
             dup2(in[0], STDIN_FILENO);
         } else {

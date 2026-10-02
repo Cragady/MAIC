@@ -7,6 +7,7 @@
 #include "maic/agent.hpp"
 #include "maic/artifacts.hpp"
 #include "maic/clipboard.hpp"
+#include "maic/full_output.hpp"
 #include "maic/image.hpp"
 #include "maic/lazy_lock.hpp"
 #include "maic/places.hpp"
@@ -248,6 +249,8 @@ public:
         agent_.compaction.at = settings_.compact_at;
         agent_.compaction.keep_results = settings_.compact_keep_results;
         agent_.budget_tokens = settings_.budget_tokens;
+        agent_.full_output = settings_.full_output;
+        agent_.full_output_max_mb = static_cast<size_t>(settings_.full_output_max_mb);
         agent_.set_instruction_options(settings_.instructions);
         agent_.load_instruction_files = settings_.load_instructions;
         agent_.system_prefix = resolve_system_prompt(settings_.system_prompt);
@@ -440,9 +443,17 @@ public:
         fire("MaicFileWritten", {{"tool", tool}, {"path", path.string()}});
     }
     void on_tool_result(const std::string& text, bool ok) override {
-        view_.finish_live(ok ? Kind::ToolOk : Kind::ToolErr, text);
+        std::string full;
+        if (!kept_.empty()) {
+            // Opening the fold shows the whole output as it looked when it ended, at most its last MiB.
+            full = std::string("[") + kFullOutputLabel + ": maic sessions output " + kept_.parent_path().stem().string() + " " + kept_.stem().string() + "]\n" +
+                   full_output_screen(kept_, 1 << 20);
+            kept_.clear();
+        }
+        view_.finish_live(ok ? Kind::ToolOk : Kind::ToolErr, text, std::move(full));
         screen_.PostEvent(Event::Custom);
     }
+    void on_tool_full_output(const std::filesystem::path& file) override { kept_ = file; }
     // From the sandbox's delivery thread, one call at a time. A burst of chunks asks for one redraw, not one each.
     void on_tool_output(const std::string& call_id, OutputStream stream, std::string_view chunk, size_t offset) override {
         if (call_id != live_call_) {
@@ -628,6 +639,7 @@ private:
     std::string live_call_;    // on_tool_output: the call the live entry shows, and the next offset per stream
     size_t live_next_[2] = {0, 0};
     std::atomic<bool> redraw_posted_{false};
+    std::filesystem::path kept_;  // on_tool_full_output, for the result that follows
     std::atomic<bool> quit_when_idle_{false};  // :wq
     std::string exit_note_;
     bool titled_ = false;
@@ -728,6 +740,8 @@ void App::cd_to(const std::filesystem::path& ws, const std::filesystem::path& to
     if (has("small_model") || has("title_model")) agent_.small_model = settings_.small_model;
     if (has("reviewer_budget_tokens")) agent_.reviewer_budget_tokens = settings_.reviewer_budget_tokens;
     if (has("budget_tokens")) agent_.budget_tokens = settings_.budget_tokens;
+    if (has("full_output")) agent_.full_output = settings_.full_output;
+    if (has("full_output_max_mb")) agent_.full_output_max_mb = static_cast<size_t>(settings_.full_output_max_mb);
     if (has("compact_at")) agent_.compaction.at = settings_.compact_at;
     if (has("compact_keep_results")) agent_.compaction.keep_results = settings_.compact_keep_results;
     if (has("system_prompt")) agent_.set_system_prefix(resolve_system_prompt(settings_.system_prompt));

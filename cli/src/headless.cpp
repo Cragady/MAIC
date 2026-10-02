@@ -199,6 +199,8 @@ int run_headless(const HeadlessOptions& options) {
     agent.compaction.at = settings.compact_at;
     agent.compaction.keep_results = settings.compact_keep_results;
     agent.budget_tokens = settings.budget_tokens;
+    agent.full_output = settings.full_output;
+    agent.full_output_max_mb = static_cast<size_t>(settings.full_output_max_mb);
     agent.set_instruction_options(settings.instructions);
     agent.load_instruction_files = settings.load_instructions;
     agent.system_prefix = resolve_system_prompt(settings.system_prompt);

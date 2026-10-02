@@ -2,16 +2,23 @@
 // apart, the model's result unchanged, and a slow consumer that never slows the command.
 #include "check.hpp"
 
+#include "maic/full_output.hpp"
 #include "maic/sandbox.hpp"
+#include "maic/vendor.hpp"
 
+#include <signal.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 using namespace maic;
@@ -67,6 +74,16 @@ std::string capped(const std::string& full) {
     if (full.size() <= kOutputHeadBytes + kOutputTailBytes) return full;
     return full.substr(0, kOutputHeadBytes) + "\n... [" + std::to_string(full.size() - kOutputHeadBytes - kOutputTailBytes) + " bytes omitted] ...\n" +
            full.substr(full.size() - kOutputTailBytes);
+}
+
+std::string slurp(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+unsigned mode_of(const fs::path& p) {
+    struct stat st{};
+    return stat(p.c_str(), &st) == 0 ? st.st_mode & 0777 : 0;
 }
 
 std::string numbers(size_t from, size_t to) {
@@ -186,6 +203,14 @@ int main() {
         expect(ordered && content && delivered <= 2 * 1024 * 1024 + 512 * 1024, "what it got is in order, offsets leaving the gaps, and no more than the backlog allows");
     }
 
+    section("a program gets the default SIGPIPE whatever MAIC ignores");
+    {
+        signal(SIGPIPE, SIG_IGN);  // as a process with an httplib server does
+        auto r = run_sandboxed("seq 1 1000000 | head -c 6", ws, false, secs, no);
+        expect(r.output == "1\n2\n3\n", "a writer to a closed pipe ends quietly instead of printing a write error: " + r.output);
+        signal(SIGPIPE, SIG_DFL);
+    }
+
     section("cancel and timeout still work with a tap");
     {
         Collector c;
@@ -201,6 +226,102 @@ int main() {
         Collector t;
         r = run_sandboxed("echo begun; sleep 30", ws, false, std::chrono::seconds(1), no, {}, t.taps());
         expect(r.timed_out && t.joined(OutputStream::Stdout) == "begun\n", "so does the timeout");
+    }
+
+    section("the whole output, kept beside the session");
+    {
+        fs::path sess = ws / "home" / "20260101-120000-tui-1.jsonl";
+        fs::create_directories(sess.parent_path());
+        std::ofstream(sess) << "{}\n";
+        fs::path out = full_output_path(sess, "call_1");
+        expect(out == ws / "home" / "20260101-120000-tui-1.d" / "call_1.out", "its place: <id>.d/<call id>.out beside the session file");
+        {
+            FullOutputWriter w(out, 64 << 20);
+            w.add(OutputStream::Stdout, std::string(32 * 1024, 'a'));
+            expect(!w.finish(sess.parent_path()) && !fs::exists(out.parent_path()), "an output the model got whole is not kept, and nothing is created");
+        }
+        std::string full = numbers(1, 400000).substr(0, 2 * 1024 * 1024);
+        FullOutputWriter w(out, 64 << 20);
+        OutputTaps taps;
+        taps.on_read = [&](OutputStream s, std::string_view bytes, size_t) { w.add(s, bytes); };
+        auto r = run_sandboxed("seq 1 400000 | head -c 2097152", ws, false, secs, no, {}, taps);
+        auto j = w.finish(sess.parent_path());
+        expect(r.output == capped(full), "2 MiB: the model's result is the capped one, byte for byte");
+        expect(j && slurp(out) == full, "and the kept file is the whole stream, byte for byte");
+        expect(j && (*j)["path"] == "20260101-120000-tui-1.d/call_1.out" && (*j)["bytes"] == full.size() && (*j)["sha256"] == file_sha256(out) &&
+                   (*j)["delivered_to_model"] == false && !j->contains("dropped"),
+               "the record's full_output: its path beside the session, bytes, sha256 and delivered_to_model false");
+        expect(mode_of(out) == 0600 && mode_of(out.parent_path()) == 0700, "the file is 0600 in a 0700 directory");
+        auto index = read_output_index(out);
+        size_t next = 0;
+        bool contiguous = !index.empty();
+        for (const auto& c : index) {
+            contiguous = contiguous && c.stream == 'o' && c.offset == next;
+            next = c.offset + c.length;
+        }
+        expect(contiguous && next == full.size(), "the index covers it chunk by chunk: " + std::to_string(index.size()) + " chunks");
+        expect(full_output_path(sess, "call_1") == out.parent_path() / "call_1-2.out" && full_output_path(sess, "a/../b c").filename() == "a____b_c.out",
+               "a reused call id gets a suffix, and an odd one is made a plain name");
+        expect(resolve_full_output(sess, *j) == out, "a reader finds it from the record");
+        expect(resolve_full_output(sess, {{"path", "../../etc/passwd"}}).empty() && resolve_full_output(sess, {{"path", "20260101-120000-tui-1.d/../x.out"}}).empty(),
+               "a record cannot point a reader anywhere but <id>.d/<name>.out");
+    }
+
+    section("past full_output_max_mb: the head, a note and the tail");
+    {
+        fs::path out = ws / "home" / "20260101-120000-tui-1.d" / "big.out";
+        std::string full = numbers(1, 600000).substr(0, 3 * 1024 * 1024);
+        FullOutputWriter w(out, 1 << 20);
+        for (size_t i = 0; i < full.size(); i += 8192) w.add(OutputStream::Stdout, std::string_view(full).substr(i, 8192));
+        auto j = w.finish(out.parent_path().parent_path());
+        std::string kept = slurp(out);
+        size_t head = 768 * 1024, dropped = j ? (*j)["dropped"].get<size_t>() : 0;
+        std::string note = "\n... [" + std::to_string(dropped) + " bytes dropped here: the output was over full_output_max_mb] ...\n";
+        size_t tail = kept.size() - head - note.size();
+        expect(j && kept.compare(0, head, full, 0, head) == 0 && kept.compare(head, note.size(), note) == 0 && kept.compare(head + note.size(), tail, full, full.size() - tail, tail) == 0,
+               "3 MiB under a 1 MiB cap: the first 768 KiB, a note saying how much was dropped, then the end");
+        expect(tail >= 256 * 1024 && head + dropped + tail == full.size() && (*j)["bytes"] == kept.size(), "every byte is either kept or counted as dropped");
+        bool noted = false;
+        for (const auto& c : read_output_index(out)) noted = noted || (c.stream == 'm' && c.offset == head && c.length == note.size());
+        expect(noted, "the note is MAIC's own chunk (m) in the index");
+    }
+
+    section("the screen and the replay, from the index");
+    {
+        fs::path out = ws / "home" / "20260101-120000-tui-1.d" / "progress.out";
+        FullOutputWriter w(out, 64 << 20);
+        std::string dots = std::string(33000, '.') + "\n";
+        std::vector<std::pair<OutputStream, std::string>> steps = {{OutputStream::Stdout, dots}, {OutputStream::Stderr, "warn\n"}, {OutputStream::Stdout, "progress 10%\r"},
+                                                                    {OutputStream::Stdout, "progress 60%\r"}, {OutputStream::Stdout, "progress 100%\r\n"}};
+        for (size_t i = 0; i < steps.size(); ++i) {
+            if (i) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            w.add(steps[i].first, steps[i].second);
+        }
+        expect(w.finish(out.parent_path().parent_path()).has_value(), "kept once stdout passed the cap");
+        auto index = read_output_index(out);
+        bool timed = index.size() == steps.size();
+        for (size_t i = 0; timed && i < index.size(); ++i) {
+            timed = index[i].stream == (steps[i].first == OutputStream::Stdout ? 'o' : 'e') && index[i].length == steps[i].second.size() &&
+                    std::abs(index[i].ms - static_cast<long>(i) * 200) < 120;
+        }
+        expect(timed, "the index has each chunk's stream, place, length and time since the call started");
+        expect(full_output_screen(out) == dots + "warn\nprogress 100%\n", "the screen: carriage returns start their line over, a CRLF is a newline");
+        expect(full_output_screen(out, 20) == "[" + std::to_string(dots.size() + 5 + 14 - 20) + " bytes before this are left out here]\n\nwarn\nprogress 100%\n",
+               "and a capped screen keeps the end");
+        std::vector<std::tuple<char, std::string, long>> played;
+        auto t0 = Clock::now();
+        replay_full_output(out, [&](char s, std::string_view bytes) {
+            played.emplace_back(s, std::string(bytes), std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count());
+        });
+        bool replayed = played.size() == steps.size();
+        for (size_t i = 0; replayed && i < played.size(); ++i) {
+            replayed = std::get<0>(played[i]) == (steps[i].first == OutputStream::Stdout ? 'o' : 'e') && std::get<1>(played[i]) == steps[i].second &&
+                       std::abs(std::get<2>(played[i]) - index[i].ms) < 100;
+        }
+        expect(replayed, "the replay: stdout and stderr interleaved as they were, each progress redraw its own write, on time");
+        t0 = Clock::now();
+        replay_full_output(out, [](char, std::string_view) {}, 4);
+        expect(Clock::now() - t0 < std::chrono::milliseconds(500), "speed divides the waits");
     }
 
     fs::remove_all(ws);

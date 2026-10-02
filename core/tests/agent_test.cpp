@@ -190,6 +190,8 @@ struct Recorder : AgentEvents {
     void on_tool_output(const std::string& call, OutputStream stream, std::string_view chunk, size_t offset) override {
         outputs.push_back({call, stream, std::string(chunk), offset, results.size()});
     }
+    std::vector<fs::path> kept;
+    void on_tool_full_output(const fs::path& file) override { kept.push_back(file); }
     std::string streamed(OutputStream s) const {
         std::string all;
         for (const auto& o : outputs) {
@@ -1160,6 +1162,56 @@ int main() {
         }
         fs::remove_all(ws / ".maic");
         unsetenv("XDG_CONFIG_HOME");
+    }
+
+    section("a command's whole output is kept beside the session, the model's result unchanged");
+    {
+        FakeServer fake;
+        SessionLog log("agent-test");
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        agent.review_with_model = false;
+        agent.set_log(&log);
+        std::string full;
+        for (int i = 1; full.size() < 2 * 1024 * 1024; ++i) full += std::to_string(i) + "\n";
+        full.resize(2 * 1024 * 1024);
+        Recorder r;
+        r.reply = {Approval::Yes, ""};
+        fake.tool_call = json{{"name", "run_shell"}, {"arguments", {{"command", "seq 1 400000 | head -c 2097152"}}}};
+        fake.calls_left = 1;
+        agent.submit("run it", Origin::Local, r, no_cancel);
+        std::string model = full.substr(0, 24 * 1024) + "\n... [" + std::to_string(full.size() - 32 * 1024) + " bytes omitted] ...\n" + full.substr(full.size() - 8 * 1024);
+        while (!model.empty() && model.back() == '\n') model.pop_back();
+        expect(r.results.size() == 1 && r.results[0] == "exit code 0\n" + model, "the model's result is the capped one it always was: " + (r.results.empty() ? "" : r.results[0].substr(0, 60) + " ... " + std::to_string(r.results[0].size()) + " bytes"));
+        json rec;
+        std::ifstream in(log.path());
+        for (std::string line; std::getline(in, line);) {
+            json j = json::parse(line, nullptr, false);
+            if (j.is_object() && j.value("type", "") == "tool") rec = j;
+        }
+        fs::path file = log.path().parent_path() / rec["full_output"].value("path", "");
+        std::ifstream kept_in(file, std::ios::binary);
+        std::string kept((std::istreambuf_iterator<char>(kept_in)), std::istreambuf_iterator<char>());
+        expect(rec["full_output"]["path"] == log.path().stem().string() + ".d/call_1.out" && rec["full_output"]["bytes"] == full.size() &&
+                   rec["full_output"]["delivered_to_model"] == false && kept == full,
+               "the tool record names the kept file, beside the session, and it holds all 2 MiB: " + rec.dump().substr(0, 300));
+        expect(r.kept.size() == 1 && r.kept[0] == file, "the front end is told where, before the result");
+        std::string read = render_text(load_session(log.path()), 0, 0, true);
+        expect(read.find("[full output, display only: the model saw the capped result] 2097152 bytes: maic sessions output " + log.path().stem().string() + " call_1") != std::string::npos,
+               "maic sessions read labels it display only");
+        bool in_history = false;
+        for (const auto& m : agent.messages()) in_history = in_history || m.content.find("full output") != std::string::npos;
+        expect(!in_history, "and nothing of it reaches the model");
+
+        agent.full_output = false;
+        Recorder off;
+        off.reply = {Approval::Yes, ""};
+        fake.calls_left = 1;
+        agent.submit("again", Origin::Local, off, no_cancel);
+        expect(off.kept.empty() && !fs::exists(file.parent_path() / "call_1-2.out"), "full_output = false keeps nothing");
+        fs::remove_all(file.parent_path());
+        fs::remove(log.path());
     }
 
     section("operator instructions set mid-conversation");
