@@ -111,6 +111,10 @@ std::vector<std::string> settle_trust(const std::filesystem::path& workspace);
 
 // The project directories still to be asked about: Unknown or Changed, not decided in this process.
 std::vector<ProjectDir> trust_to_ask(const std::filesystem::path& workspace);
+// Auto mode at start: a session starts in auto only in a workspace covered by project directories that are all
+// trusted with full Lua, and at least one; anywhere else it starts in manual, and `:mode auto` still turns auto on.
+// "" when auto may start here, else the one line that says why not.
+std::string auto_held(const std::filesystem::path& workspace);
 // One line per untrusted project directory (what was skipped and how to trust it), and for $HOME or / as the
 // workspace, that their files are ignored. Empty when there is nothing to say.
 std::vector<std::string> trust_notices(const std::filesystem::path& workspace);

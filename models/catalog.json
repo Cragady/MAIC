@@ -39,7 +39,7 @@
       "vram": [{"context": 8192, "gb": 7.2}],
       "context": 8192,
       "presets": ["qwen-9b-vision"],
-      "notes": "qwen3.5-9b-text shares this entry's GGUF, so it cannot be removed while that one is installed."
+      "notes": "qwen3.5-9b-text shares this entry's GGUF, so it cannot be removed while that one is installed. Measured: a system-prompt rule is ignored on turns that call a tool (Qwen3.5 9B, 2026-10-02; docs/references/prompt-placement.md); MAIC's per-turn operator note holds it. Not yet measured on other families."
     },
     {
       "id": "qwen3.5-9b-text",
@@ -58,7 +58,7 @@
       "vram": [{"context": 8192, "gb": 6.3}, {"context": 16384, "gb": 7.4}],
       "context": 16384,
       "presets": ["qwen-9b"],
-      "notes": "A first-class entry by Micaiah's requirement: the 9B without image processing is never dropped from the catalog. Its file is the link Qwen3.5-9B-Q4_K_M-text.gguf -> ../Qwen3.5-9B-Q4_K_M/Qwen3.5-9B-Q4_K_M.gguf (docs/llamacpp.md, One model, two entries)."
+      "notes": "A first-class entry by Micaiah's requirement: the 9B without image processing is never dropped from the catalog. Its file is the link Qwen3.5-9B-Q4_K_M-text.gguf -> ../Qwen3.5-9B-Q4_K_M/Qwen3.5-9B-Q4_K_M.gguf (docs/llamacpp.md, One model, two entries). Measured: a system-prompt rule is ignored on turns that call a tool (Qwen3.5 9B, 2026-10-02; docs/references/prompt-placement.md); MAIC's per-turn operator note holds it. Not yet measured on other families."
     },
     {
       "id": "whisper-distil-large-v3",

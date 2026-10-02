@@ -492,7 +492,7 @@ int main() {
         other->exec_lua("vim.fn.jobstop(vim.g.maic_job)", json::array());
         expect(eventually([&] { return !client(); }, 10000), "and disconnects when it exits");
 
-        // --bare and MAIC_BARE=1: the same maic, the same host, no connection. Ready is the welcome on its screen.
+        // --bare and MAIC_BARE=1: the same maic, the same host, no connection. Ready is the smart harness's status on its screen.
         auto bare = [&](const json& argv, const json& env) {
             pid = other->exec_lua("local argv, env = ... vim.cmd('enew!') local job = vim.fn.jobstart(argv, { term = true, env = env }) vim.g.maic_job = job vim.g.maic_buf = vim.api.nvim_get_current_buf() "
                                   "return vim.fn.jobpid(job)",
@@ -504,8 +504,8 @@ int main() {
             other->exec_lua("vim.fn.jobstop(vim.g.maic_job) vim.cmd('enew!')", json::array());
             return ready && !connected;
         };
-        expect(bare(json::array({MAIC_BINARY, "--no-record", "--no-instructions", "--bare"}), json::object()), "maic --bare inside the host does not connect");
-        expect(bare(json::array({MAIC_BINARY, "--no-record", "--no-instructions"}), json{{"MAIC_BARE", "1"}}), "nor does maic with MAIC_BARE=1");
+        expect(bare(json::array({MAIC_BINARY, "--no-record", "--no-instructions", "--harness", "smart", "--bare"}), json::object()), "maic --bare inside the host does not connect");
+        expect(bare(json::array({MAIC_BINARY, "--no-record", "--no-instructions", "--harness", "smart"}), json{{"MAIC_BARE", "1"}}), "nor does maic with MAIC_BARE=1");
     }
 
     section("Esc in MAIC's terminal");

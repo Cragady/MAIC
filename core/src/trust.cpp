@@ -772,6 +772,18 @@ std::string tier_hint(const fs::path& dir, const std::string& level) {
     return "tier standard; " + cmd + "relaxed` to stop asking about your own edits, " + cmd + "strict` to be asked about every change";
 }
 
+std::string auto_held(const fs::path& workspace) {
+    std::vector<ProjectDir> dirs = project_dirs(workspace);
+    if (dirs.empty()) return "auto mode waits: nothing here is trusted (no .maic/ or instruction file); :mode auto turns it on";
+    for (const auto& p : dirs) {
+        if (!trusted(p.dir)) return "auto mode waits: " + p.dir.string() + " is not trusted; :mode auto turns it on";
+        if (LuaTier t = trust_lua_tier(p.dir); t != LuaTier::Full) {
+            return "auto mode waits: " + p.dir.string() + " is trusted with " + lua_tier_name(t) + " Lua, not fully; :mode auto turns it on";
+        }
+    }
+    return "";
+}
+
 std::vector<std::string> trust_notices(const fs::path& workspace) {
     std::vector<std::string> out;
     fs::path ws = absolute_dir(workspace);

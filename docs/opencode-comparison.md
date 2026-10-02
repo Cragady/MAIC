@@ -157,7 +157,7 @@ Honourable mentions, not in the ten: tool output spilled to a file the model can
 
 * **Unsandboxed bash with syntax-based path guessing.** `src/tool/shell.ts` skips dynamic arguments and runs with the user's full environment and network. MAIC should keep deciding as little as possible from command text and letting bwrap enforce it; the text checks stay as the trip layer.
 
-* **`*: allow` as the default ruleset** (`src/agent/agent.ts:120`) and `bash: allow` in the read-only `explore` subagent. MAIC's default is manual, and its plan mode is enforced by a read-only mount. If MAIC ever grows an explore agent, it runs in plan mode.
+* **`*: allow` as the default ruleset** (`src/agent/agent.ts:120`) and `bash: allow` in the read-only `explore` subagent. MAIC's default mode is auto, but only in a workspace you trusted fully (elsewhere a session starts in manual), auto still sandboxes commands and asks for writes outside the workspace, and its plan mode is enforced by a read-only mount. If MAIC ever grows an explore agent, it runs in plan mode.
 
 * **Process-wide or permanent "always".** V1 keeps approvals for the whole server process across sessions (`src/permission/index.ts` `approved`); V2 writes them to SQLite forever with no revoke surface (`packages/core/src/permission/saved.ts`). MAIC's session-scoped `always_allowed_` is correct. If persistence is ever added, it needs a listing and a revoke command first.
 

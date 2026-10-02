@@ -1147,6 +1147,39 @@ int main() {
                "with maic.* removed, it still sees the response created, its items, the command's output and the response completed");
     }
 
+    section("auto at start: held at manual where the workspace is not trusted, unless asked for");
+    {
+        EngineOptions oa = o;
+        oa.settings.mode = "auto";
+        oa.index_file = root / "state" / "engine-auto" / "index.json";
+        oa.protocol_log = root / "state" / "engine-auto" / "protocol.log";
+        Engine e(oa);
+        Recording autostart("auto-start");
+        TestClient a(e, autostart, Origin::Local, "tui");
+        a.hello();
+        json held = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}});
+        a.ok("maic.session.subscribe", {{"session", held["id"]}});
+        long notice = a.until([](const json& ev) { return ev["type"] == "maic.notice" && ev.value("text", "").find("auto mode waits") != std::string::npos; });
+        expect(held["maic"]["entry"]["mode"] == "manual" && notice >= 0, "auto from the settings starts in manual in an untrusted workspace, and says why");
+        json asked = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}, {"mode", "auto"}}}});
+        expect(asked["maic"]["entry"]["mode"] == "auto", "auto asked for in the call starts in auto");
+        TestClient r(e, autostart, Origin::Remote, "phone");
+        r.hello();
+        json remote = r.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}});
+        expect(remote["maic"]["entry"]["mode"] == "manual", "a remote client's session starts in manual unless it asks for auto");
+        EngineOptions ob = oa;
+        ob.mode_asked = true;
+        ob.index_file = root / "state" / "engine-asked" / "index.json";
+        ob.protocol_log = root / "state" / "engine-asked" / "protocol.log";
+        autostart.finish();
+        Engine eb(ob);
+        Recording asked_rec("auto-start-asked");
+        TestClient b(eb, asked_rec, Origin::Local, "rpc");
+        b.hello();
+        expect(b.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}})["maic"]["entry"]["mode"] == "auto", "the host's --mode auto starts in auto anywhere");
+        asked_rec.finish();
+    }
+
     section("shutdown parks the sessions in the index");
     {
         engine->shutdown();

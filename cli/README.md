@@ -140,7 +140,7 @@ The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"
 | `:rename TITLE` | title the session (`maic sessions` shows it); `small_model` in settings (older name: `title_model`) auto-titles after the first turn |
 | `:ban add TEXT` / `:ban pattern REGEX` / `:ban token ID` / `:ban list` | phrases and regexes the model must not say (cut before they show, re-asked, then replaced) and token bans (`logit_bias` on OpenAI-compatible providers). `--ban`, `--ban-pattern`, `bans` in settings. See docs/bans.md |
 | `:sampling [KEY VALUE\|xtc P T]` | temperature, top_k, min_p, seed, ... for this session; `xtc` (exclude top choices) on llama.cpp-style servers. See `:h sampling` |
-| `:harness [smart\|dumb]` | the model reviewer on (default) or off. Auto under a dumb harness warns once and asks; see `:h harness` |
+| `:harness [smart\|dumb]` | the model reviewer on or off (default). With `dumb_auto_ok = false`, auto under a dumb harness warns once and asks; see `:h harness` |
 | `:budget [N\|off]` | tokens used; a per-session budget that stops the agent when reached |
 | `:set timestamps on` | a time beside each message (also `timestamps` in settings) |
 | `:lua [CODE]` / `:luafile PATH` / `:chat` | run Lua (vendored LuaJIT) in the workspace; an expression shows its value. `:lua` alone enters **Lua mode**: the input becomes a REPL (`lua❯`) until `:chat`. Globals persist; output goes to the conversation and to the model as context. Outside a session `maic lua` is a REPL, `maic lua FILE [args]` runs a file. See `:h lua` |
@@ -162,13 +162,15 @@ Typing and sending while the agent is busy queues the message; it reaches the mo
 
 | Mode | Reads in workspace | Read-only commands | Edits in workspace | Other commands | Outside workspace |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **manual** (default) | yes | ask | ask | ask | ask |
+| **manual** | yes | ask | ask | ask | ask |
 | **auto-read** | yes | yes (read-only sandbox) | ask | ask | reads yes, writes ask |
 | **edit** | yes | ask | yes | ask | ask |
-| **auto** | yes | yes | yes | yes (sandboxed) | reads yes, writes ask |
+| **auto** (default) | yes | yes | yes | yes (sandboxed) | reads yes, writes ask |
 | **plan** | yes | yes (read-only sandbox) | no | no | reads ask |
 
 "Read-only commands" are ones MAIC recognises as only looking (`ls`, `cat`, `grep`, `git log`, `find` without `-delete`/`-exec`, ...) with no redirection or substitution. They run with the workspace mounted read-only as well, so a wrong guess still cannot change anything.
+
+A session starts in **auto** only where every project directory from the project root down is trusted fully (trusted, with full Lua), and at least one is; anywhere else, a directory with no `.maic/` or instruction file included, it starts in **manual**, says so once, and `:mode auto` turns auto on. `--mode auto` starts in auto anywhere.
 
 Whatever the mode: secrets are never read, system paths are never written, startup files and MAIC's own harness are always asked about, dangerous commands trip the harness, and a request that did not come from this terminal is always asked. See [docs/harness.md](../docs/harness.md).
 

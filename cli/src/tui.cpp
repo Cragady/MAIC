@@ -2295,6 +2295,13 @@ int run_tui(const TuiOptions& options) {
         fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
         return 2;
     }
+    // --mode auto is asked for here and now; auto from the settings starts only where the workspace is trusted.
+    if (!options.mode && parse_mode(settings.mode) == Mode::Auto) {
+        if (std::string why = auto_held(ws); !why.empty()) {
+            settings.mode = "manual";
+            trust_lines.push_back(why);
+        }
+    }
     // nvim as the interface (--ui nvim, ui = "nvim"), started here with trust settled; the engine holds a due audit.
     // Never inside nvim (maic.nvim's :Maic is the interface there) and never bare; what it cannot take runs here.
     std::string ui = options.ui.value_or(settings.ui);

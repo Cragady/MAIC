@@ -30,3 +30,7 @@ The question the table left open: is it the tool schemas themselves, or how Qwen
 | shipped default, the rule also closing the user turn (chat endpoint) | | 6 of 6, and the tool call still follows |
 
 What it says: the rule fades when the turn asks for a tool. On a turn that only talks, the 9B follows a system-side rule with all the tools attached; on a turn that wants a tool, it goes straight to `<tool_call>`. The number of schemas is not it; only taking out the reminder *and* putting the system text before the tools brings the rule partly back. A replacement template would buy 4 of 6 where the per-turn note already gives 6 of 6, so the note stays the default and no template ships. The 2026-10-01 row of 0 of 4 matches the task-shaped turn.
+
+## Per model, not general (yet)
+
+Every measurement on this page is Qwen3.5 (the 4B and the 9B, one family, one chat template). The tool-turn finding is recorded as a fact about the model, in the catalog entry's `notes` (`maic models info qwen3.5-9b-text`): "system rule ignored on tool turns: Qwen3.5 9B, measured 2026-10-02". It must be measured again on other families (and other templates) before anything general is built on it. If it holds for some families and not others, that pattern is the thing to look for, and the per-model record is where it goes.
