@@ -353,6 +353,21 @@ void read_steering(SteeringSettings& into, const json& t, const std::string& whe
     }
 }
 
+SteeringSettings agent_steering(const SteeringSettings& session, const json& agent, const std::string& name) {
+    if (!agent.is_object() || agent.empty()) return session;
+    SteeringSettings out = session;
+    std::vector<std::string> warnings;
+    read_steering(out, agent, "agents." + name + ".steering", true, false, warnings);
+    auto within = [](const std::vector<std::string>& wide, std::vector<std::string>& narrow) {
+        narrow.erase(std::remove_if(narrow.begin(), narrow.end(), [&](const std::string& a) { return std::find(wide.begin(), wide.end(), a) == wide.end(); }), narrow.end());
+    };
+    within(session.actions, out.actions);
+    within(session.ban_actions, out.ban_actions);
+    within(session.clients_local, out.clients_local);
+    within(session.clients_remote, out.clients_remote);
+    return out;
+}
+
 namespace {
 
 // Applies one settings location over `s`: `<stem>.lua` when it exists (a chunk returning a table), else
@@ -472,6 +487,11 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.session_leave = j.value("session_leave", s.session_leave);
         if (s.session_leave != "default" && s.session_leave != "ask" && s.session_leave != "bg" && s.session_leave != "park" && s.session_leave != "stop") {
             throw std::runtime_error(path.string() + ": session_leave must be \"default\", \"ask\", \"bg\", \"park\" or \"stop\", not \"" + s.session_leave + "\"");
+        }
+        if (j.contains("max_tasks")) {
+            int n = j["max_tasks"].is_number_integer() ? j["max_tasks"].get<int>() : -1;
+            if (n < 0) throw std::runtime_error(path.string() + ": max_tasks must be a whole number, 0 or more");
+            s.max_tasks = global ? n : std::min(s.max_tasks, n);
         }
         s.record = j.value("record", s.record);
         s.models_dir = j.value("models_dir", s.models_dir);
@@ -829,6 +849,8 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"//enter_sends", "true: Enter sends a one-line input in insert mode, Shift+Enter or Alt+Enter insert a newline; false (vim-like): Enter is always a newline, Alt+Enter or :w sends"},
         {"session_leave", d.session_leave},
         {"//session_leave", "what :new, :switch and :fork do with the session you leave: default (a working one goes to the background, an idle one is parked), ask, bg, park or stop; --bg, --park or --stop on the command decides once"},
+        {"max_tasks", d.max_tasks},
+        {"//max_tasks", "background tasks (the task tool's background = true) one session may have running at once; past it the call is refused. 0 turns them off; a project's settings can only lower it"},
         {"record", d.record},
         {"models_dir", models_dir.empty() ? d.models_dir : models_dir},
         {"context", d.context},

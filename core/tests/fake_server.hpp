@@ -35,6 +35,7 @@ struct FakeServer {
     std::mutex mu;
     std::condition_variable cv;
     int hold_left = 0;
+    std::function<bool(const json&)> hold_when;  // when set: also hold every request it is true for
     int streaming = 0;
     int usage_input = 0;  // reported as prompt_tokens in the final usage chunk when set
     json tool_call;       // when set and calls_left > 0, the reply is this one tool call ({"name", "arguments"})
@@ -90,6 +91,8 @@ struct FakeServer {
                 requests.push_back(body);
                 if (hold_left > 0) {
                     --hold_left;
+                    hold = true;
+                } else if (hold_when && hold_when(body)) {
                     hold = true;
                 }
             }

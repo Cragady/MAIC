@@ -12,10 +12,12 @@
 #include "maic/script_tools.hpp"
 #include "maic/session.hpp"
 #include "maic/settings.hpp"
+#include "maic/tools.hpp"
 
 #include <atomic>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <mutex>
@@ -62,6 +64,20 @@ struct Redirect {
 struct TodoItem {
     std::string text;
     bool done = false;
+};
+
+class Agent;
+
+// A background task (`task` with background = true): what a front end needs to run the subagent as a session of its
+// own, in parallel with the parent's turn (docs/design/engine-protocol.md, step 14).
+struct TaskStart {
+    std::string agent;                  // the agent it runs as
+    std::string model, model_reason;    // its model, and why (as its start record says)
+    std::string prompt;                 // the job, the parent's context included
+    std::string call_id;                // the parent's task call
+    Origin origin = Origin::Local;      // the parent turn's: a task inherits it
+    std::filesystem::path log_dir;      // where its transcript goes (beside the parent's); "" for none
+    std::function<void(Agent&)> setup;  // makes a fresh Agent in the parent's workspace the subagent, before its log is set
 };
 
 // What a front end (the CLI now, the server later) implements to follow and steer a turn.
@@ -113,6 +129,18 @@ public:
         (void)ban;
         return {};
     }
+    // A background task: the front end runs it as a session of its own and returns its handle (the child's session
+    // id), or throws with the reason it will not (a limit). "" when it runs none: the task runs in the foreground.
+    virtual std::string start_task(const TaskStart& task) {
+        (void)task;
+        return "";
+    }
+    // The task_result tool: how a background task of this session stands, or its answer; `wait` blocks until it
+    // ends or `cancel` rises.
+    virtual ToolResult task_result(const std::string& task, bool wait, const std::atomic<bool>& cancel) {
+        (void)task, (void)wait, (void)cancel;
+        return {false, "error: this session has no background tasks"};
+    }
 };
 
 // An action that would change which directories are trusted or at what tier (a write to <state>/trust*, a
@@ -154,6 +182,11 @@ public:
         Origin origin;
     };
     std::vector<Queued> take_queued();
+    // Content from another session (a background task's answer) for the running turn: it reaches the model at the
+    // next boundary as messages do, recorded as a `context` note rather than a user turn (docs/design/engine-protocol.md
+    // section 7, cross-session content is data). take_notes() hands back what was not delivered; add_context it while idle.
+    void post_note(const std::string& text);
+    std::vector<std::string> take_notes();
     // The running turn's origin: submit's, raised to Remote when a remote message was delivered into it.
     Origin turn_origin() const { return turn_origin_.load(); }
 
@@ -238,15 +271,22 @@ public:
 
     // Subagents. The `task` tool runs a child Agent in this workspace as one of these agents (role subagent or all), with
     // its own transcript (kind sub) and the parent's provider, permission, forbidden terms and operator text.
-    // A child's mode is its agent's capped by the parent's; it has no task, question or todo tool.
+    // A child's mode is its agent's capped by the parent's; it has no task, task_result, question or todo tool. With
+    // background = true the front end runs it as a session of its own (AgentEvents::start_task) and the turn goes on.
     std::vector<AgentDef> agents = default_agent_defs();
     // Model presets (settings `models`). A subagent's model is, first match wins: its agent's model, the
     // task call's `model` (one on this model's subagents list), this preset's subagent_pick, this model.
     // A subagent whose model hits its usage limit continues once on that preset's on_limit_pick.
     std::vector<ModelPreset> presets = default_presets();
-    // Makes this agent a subagent running as `def` (already narrowed to the session's mode, see narrow_agent_def).
-    void set_agent_def(const AgentDef& def);
+    // Makes this agent a subagent running as `def` (already narrowed to the session's mode, see narrow_agent_def);
+    // `parent` is its parent session's id, for its start record.
+    void set_agent_def(const AgentDef& def, const std::string& parent = "");
     const std::string& agent_name() const { return agent_name_; }  // "" for a session
+    // A subagent's report: its last reply with text, at most 16 KiB.
+    std::string final_answer() const;
+    // A subagent's spend counts against this session (its budget, the reviewer's): its tokens, normalizations and
+    // the reviewer's failures and state join this agent's. Call once, when the subagent is done.
+    void absorb_usage(const Agent& child);
 
     // Which instruction files are read and how (the global settings' `instructions`; docs/instructions.md).
     void set_instruction_options(InstructionOptions options);
@@ -335,7 +375,11 @@ public:
 private:
     Message run_tool_call(const ToolCall& call, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel);
     void audit_tool_call(const nlohmann::json& record, bool ran, bool ok, const std::string& text, AgentEvents& events);
-    ToolResult run_task(const nlohmann::json& args, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel, nlohmann::json& record);
+    ToolResult run_task(const nlohmann::json& args, const std::string& call_id, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel,
+                        nlohmann::json& record);
+    // Makes `child` a subagent of this agent as `def` on `pick`: this session's providers, harness, limits and operator
+    // text, its budget capped by what is left of this one's.
+    void make_subagent(Agent& child, const AgentDef& def, const ModelPick& pick, AgentEvents& events);
     // Policy, then this session's "always" answers (local requests only), then the user. Never returns Ask: a No becomes Deny with the
     // user's words, a Trip has already tripped the lock. For Deny and Trip the reason is the text the model
     // sees. Every tool action, built-in or from a Lua tool, goes through here; `record` gets the log fields.
@@ -369,10 +413,11 @@ private:
     UsageReport usage_;
     mutable std::mutex mailbox_mu_;
     std::deque<Queued> mailbox_;
+    std::deque<std::string> notes_;  // post_note's, under mailbox_mu_
     std::atomic<Origin> turn_origin_{Origin::Local};
     std::vector<ImageData> pending_images_;
     std::atomic<bool> deliver_now_{false};
-    bool drain_mailbox(AgentEvents& events);  // appends queued messages as user turns; true if any
+    bool drain_mailbox(AgentEvents& events);  // appends queued messages as user turns and notes as context; true if a message was
     // Applies a stop the front end decided (AgentEvents::stopped) to the history: the kept part of the reply, then
     // what the model is told. True when the turn goes on.
     bool redirected(const Redirect& r, AgentEvents& events);
@@ -412,6 +457,7 @@ private:
     std::string parent_id_;     // the parent's session id, for the start record
     std::string model_reason_;  // a subagent: why it runs on its model, for the start record
     std::string limit_from_;    // a subagent: the preset it left after a usage limit ("" = none yet)
+    bool claude_parent_ = true; // a subagent: its parent runs on a Claude model, so its on_limit may be a Claude Code preset
     // The reviewer's state, under usage_mu_: models that hit their usage limit while reviewing, why it is off
     // ("" while on; the budget, or a parent's), and what it has spent.
     std::set<std::string> reviewer_failed_;

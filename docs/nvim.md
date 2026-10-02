@@ -12,7 +12,7 @@ Standard layout: `plugin/maic.lua` (the commands, nothing else loads until one i
 | `:MaicTerminal [args]` | MAIC's own TUI in a terminal, whatever `ui` says. |
 | `:MaicSteer ACTION [NOTE]` | The interface's running or paused turn: `steer`, `drop`, `further`, `interrupt` (pause), `keep`, `halt`. |
 | `:MaicNew [--bg\|--park\|--stop] [DIR]` | Another session in this tab's engine, in focus, in a conversation buffer of its own (`/cd DIR` follows with a DIR). The session left goes to the background when working and is parked when idle, unless a flag or `session_leave` (`"default"`, `"ask"`, `"bg"`, `"park"`, `"stop"`) says otherwise. |
-| `:MaicSwitch [--bg\|--park\|--stop] [ID\|TITLE]` | Goes to another session (a parked one, or any transcript by id, is resumed); alone, the switcher (`vim.ui.select`): a new session first, then every other with what it is doing, its model and its workspace. |
+| `:MaicSwitch [--bg\|--park\|--stop] [ID\|TITLE]` | Goes to another session (a parked one, or any transcript by id, is resumed); alone, the switcher (`vim.ui.select`): a new session first, then this session's background tasks (`↳`), then every other with its own tasks under it, each with what it is doing, its model and its workspace. |
 | `:MaicFork [--bg\|--park\|--stop]` | Forks this session into a second one and goes to it. |
 | `:MaicBg` | Sends this session to the background (it keeps working, its buffer still written) and opens the switcher. |
 | `:MaicPark [ID]`, `:MaicStop [ID]` | Ends this session (through the switcher, to pick where to go) or another: park for now, stop for good (it stays a transcript); a working one is asked about first. |

@@ -837,6 +837,13 @@ void App::on_event(const nlohmann::json& e) {
         } else {
             view_.append(Kind::Notice, text);
         }
+    } else if (type == "maic.task.created") {
+        view_.append(Kind::Notice, "⧉ the " + e.value("agent", "") + " agent works in the background: " + e.value("prompt_head", "") + "  (:switch shows it)");
+    } else if (type == "maic.task.completed" || type == "maic.task.failed") {
+        bool ok = type == "maic.task.completed";
+        std::string steps = std::to_string(e.value("steps", 0)), tokens = std::to_string(e.value("tokens", 0L));
+        view_.append(ok ? Kind::Notice : Kind::Error, "⧉ the " + e.value("agent", "") + " task " + (ok ? "finished" : e.value("reason", "failed")) + " (" + steps + " steps, " + tokens +
+                                                          " tokens); its answer goes to the agent  (:switch " + e.value("task", "") + " reads it)");
     } else if (type == "maic.approval.requested") {
         approval_ = PendingApproval{e.value("id", ""), e};
         nlohmann::json data = {{"tool", e.value("tool", "")}, {"path", e.value("path", "")}, {"summary", e.value("summary", "")}, {"reason", e.value("reason", "")}, {"verdict", "pending"}};
@@ -1421,6 +1428,7 @@ Element App::render_approval() {
     std::string tool = r.value("tool", ""), covers = r.value("always_covers", ""), preview = r.value("preview", "");
     std::string key = covers.empty() ? (tool == "run_shell" ? "this program" : "this file") : covers;
     Elements rows = {text(r.value("summary", "")) | bold, text("why asking: " + r.value("reason", "") + (r.value("origin", "local") == "remote" ? "  [REMOTE REQUEST]" : "")) | dim};
+    if (r.contains("thread") && r["thread"].contains("session")) rows.push_back(text("from the background task " + r["thread"].value("title", r["thread"].value("session", ""))) | dim);
     if (!preview.empty()) {
         std::istringstream in(preview);
         int n = 0;
@@ -2385,12 +2393,14 @@ void App::show_session(const std::string& id) {
 // One line about a session: what it is doing, its title (or id), its model and where it works.
 std::string App::session_line(const nlohmann::json& e) const {
     std::string state = e.value("state", ""), activity = e.value("activity", "idle");
-    std::string doing = state == "parked" ? "parked" : activity == "waiting" ? "waiting" : activity != "idle" ? "working" : e.value("unseen", false) ? "finished" : "idle";
-    if (activity == "waiting" && e["waiting"].is_object()) doing += ": " + e["waiting"].value("summary", e["waiting"].value("kind", ""));
+    // `waiting` on a parent also covers its tasks: one of them waits for an approval.
+    const nlohmann::json waiting = e.contains("waiting") ? e["waiting"] : nlohmann::json();
+    std::string doing = state == "parked" ? "parked" : activity == "waiting" || waiting.is_object() ? "waiting" : activity != "idle" ? "working" : e.value("unseen", false) ? "finished" : "idle";
+    if (doing == "waiting" && waiting.is_object()) doing += ": " + waiting.value("summary", waiting.value("kind", "")) + (waiting.contains("session") ? " (in a task)" : "");
     std::string ws = e.value("workspace", ""), home = std::getenv("HOME") ? std::getenv("HOME") : "";
     if (!home.empty() && ws.rfind(home + "/", 0) == 0) ws = "~" + ws.substr(home.size());
     std::string title = e.value("title", "");
-    return (title.empty() ? e.value("id", "") : title) + "  ·  " + doing + "  ·  " + e.value("model", "") + "  ·  " + ws;
+    return std::string(e.value("kind", "") == "sub" ? "↳ " : "") + (title.empty() ? e.value("id", "") : title) + "  ·  " + doing + "  ·  " + e.value("model", "") + "  ·  " + ws;
 }
 
 // An id, a unique id prefix or a title (any letter case) among the sessions the engine holds; else what was typed,
@@ -2485,14 +2495,25 @@ void App::end_other(const std::string& id, const std::string& verb, bool sure) {
 void App::open_switcher(const std::string& title, const std::string& leave) {
     Switcher sw{title, leave, {""}, 0};
     std::vector<const nlohmann::json*> loaded, parked;
+    std::map<std::string, std::vector<const nlohmann::json*>> tasks;  // under their parent, this session's first
     for (const auto& [id, e] : index_) {
-        if (id != session_) (e.value("state", "") == "parked" ? parked : loaded).push_back(&e);
+        if (id == session_) continue;
+        std::string parent = e.value("kind", "") == "sub" && e["parent"].is_string() ? e["parent"].get<std::string>() : "";
+        if (!parent.empty() && (parent == session_ || index_.count(parent))) tasks[parent].push_back(&e);
+        else (e.value("state", "") == "parked" ? parked : loaded).push_back(&e);
     }
     auto newest = [](const nlohmann::json* a, const nlohmann::json* b) { return a->value("last_activity", "") > b->value("last_activity", ""); };
     std::sort(loaded.begin(), loaded.end(), newest);
     std::sort(parked.begin(), parked.end(), newest);
-    for (const auto* e : loaded) sw.ids.push_back(e->value("id", ""));
-    for (const auto* e : parked) sw.ids.push_back(e->value("id", ""));
+    auto add = [&](const std::string& id) {
+        if (!id.empty() && id != session_) sw.ids.push_back(id);
+        auto under = tasks[id];
+        std::sort(under.begin(), under.end(), newest);
+        for (const auto* t : under) sw.ids.push_back(t->value("id", ""));
+    };
+    add(session_);
+    for (const auto* e : loaded) add(e->value("id", ""));
+    for (const auto* e : parked) add(e->value("id", ""));
     if (sw.ids.size() > 1) sw.sel = 1;
     switcher_ = std::move(sw);
 }

@@ -28,7 +28,7 @@ constexpr int kDefaultShellTimeout = 120;
 constexpr int kMaxShellTimeout = 600;
 
 const char* const kToolNames[] = {"read_file", "list_dir", "glob", "search_files", "write_file", "edit_file", "multi_edit", "apply_patch",
-                                  "move_file", "copy_file", "delete_file", "make_dir", "run_shell", "question", "todo", "task"};
+                                  "move_file", "copy_file", "delete_file", "make_dir", "run_shell", "question", "todo", "task", "task_result"};
 
 nlohmann::json fn(const char* name, const char* description, nlohmann::json properties, std::vector<std::string> required) {
     return {{"type", "function"},
@@ -909,12 +909,21 @@ const nlohmann::json& tool_schemas() {
            "general for a self-contained piece of editing). Give the whole job in `prompt`; the subagent has none of "
            "this conversation. `context` carries what it needs to know (file names, decisions). A subagent cannot run "
            "task, ask the user or keep a plan; it works within its agent's budget and asks the user through you when "
-           "its mode requires.",
+           "its mode requires. With background: true the call returns a task id at once and the subagent works in "
+           "parallel with you; its answer arrives as a note in this conversation when it finishes, or read it with "
+           "task_result.",
            {{"agent", {{"type", "string"}, {"description", "explore, plan, general, or an agent from settings"}}},
             {"prompt", {{"type", "string"}, {"description", "What to do and what to report back"}}},
             {"context", {{"type", "string"}, {"description", "Background the subagent needs (optional)"}}},
-            {"model", {{"type", "string"}, {"description", "A model preset for the subagent (optional): one this description lists; left out, the default"}}}},
+            {"model", {{"type", "string"}, {"description", "A model preset for the subagent (optional): one this description lists; left out, the default"}}},
+            {"background", {{"type", "boolean"}, {"description", "Run it in parallel and keep working (optional, default false)"}}}},
            {"agent", "prompt"}),
+        fn("task_result",
+           "How a background task you started stands, or its answer once it finished. wait: true waits until it "
+           "finishes; leave it out to look and go on with your own work.",
+           {{"task", {{"type", "string"}, {"description", "The task id the task call returned"}}},
+            {"wait", {{"type", "boolean"}, {"description", "Wait for it to finish (optional, default false)"}}}},
+           {"task"}),
     });
     return schemas;
 }
@@ -1036,8 +1045,10 @@ std::string tool_summary(const std::string& name, const nlohmann::json& args) {
     if (name == "task" || name == "delegate") {  // delegate {profile, task}: transcripts from before the rename
         std::string task = args.value("prompt", args.value("task", ""));
         for (char& c : task) if (c == '\n') c = ' ';
-        return "task " + args.value("agent", args.value("profile", "")) + ": " + (task.size() > 100 ? task.substr(0, 97) + "..." : task);
+        return "task " + args.value("agent", args.value("profile", "")) + (flag(args, "background") ? " (background)" : "") + ": " +
+               (task.size() > 100 ? task.substr(0, 97) + "..." : task);
     }
+    if (name == "task_result") return "task_result " + args.value("task", "") + (flag(args, "wait") ? " (waiting)" : "");
     if (name == "move_file" || name == "copy_file") return name + " " + args.value("from", "") + " -> " + args.value("to", "");
     if (name == "delete_file") return "delete_file " + args.value("path", "") + (flag(args, "recursive") ? " (recursive)" : "");
     if (name == "multi_edit") return "multi_edit " + args.value("path", "") + " (" + std::to_string(args.contains("edits") && args["edits"].is_array() ? args["edits"].size() : 0) + " edits)";

@@ -231,6 +231,7 @@ local show_next
 
 local function approval_lines(e)
   local lines = { e.summary or "", "why asking: " .. (e.reason or "") .. (e.origin == "remote" and "  [REMOTE REQUEST]" or "") }
+  if e.thread and e.thread.session then lines[#lines + 1] = "from the background task " .. (e.thread.title or e.thread.session) end
   local preview = vim.split(e.preview or "", "\n", { plain = true })
   if preview[#preview] == "" then table.remove(preview) end
   for i = 1, math.min(#preview, 14) do lines[#lines + 1] = "  " .. preview[i] end
@@ -626,6 +627,18 @@ handlers["maic.notice"] = function(ui, e)
     finish_output(ui, b, nil, e.text, e.ok, e.full_output)
   else
     notice(ui, (e.level == "info" or not e.level) and e.text or ("✗ " .. e.text), e.level == "error" and "MaicError" or e.level == "warn" and "MaicSteer" or nil)
+  end
+end
+
+handlers["maic.task.created"] = function(ui, e)
+  notice(ui, "⧉ the " .. e.agent .. " agent works in the background: " .. (e.prompt_head or "") .. "  (:MaicSwitch shows it)")
+end
+
+for _, kind in ipairs({ "maic.task.completed", "maic.task.failed" }) do
+  handlers[kind] = function(ui, e)
+    local ok = kind == "maic.task.completed"
+    notice(ui, ("⧉ the %s task %s (%d steps, %d tokens); its answer goes to the agent  (:MaicSwitch %s reads it)"):format(e.agent, ok and "finished" or (e.reason or "failed"),
+      e.steps or 0, e.tokens or 0, e.task), ok and nil or "MaicError")
   end
 end
 
@@ -1091,10 +1104,13 @@ end
 
 -- One line about a session: its title (or id), what it is doing, its model and where it works.
 local function session_line(e)
-  local doing = e.state == "parked" and "parked" or e.activity == "waiting" and "waiting" or (e.activity and e.activity ~= "idle") and "working"
+  -- `waiting` on a parent also covers its tasks: one of them waits for an approval.
+  local waiting = type(e.waiting) == "table" and e.waiting or nil
+  local doing = e.state == "parked" and "parked" or (e.activity == "waiting" or waiting) and "waiting" or (e.activity and e.activity ~= "idle") and "working"
     or e.unseen and "finished" or "idle"
+  if doing == "waiting" and waiting then doing = doing .. ": " .. (waiting.summary or waiting.kind or "") .. (waiting.session and " (in a task)" or "") end
   local ws = vim.fn.fnamemodify(e.workspace or "", ":~")
-  return ("%s  ·  %s  ·  %s  ·  %s"):format((e.title and e.title ~= "") and e.title or e.id, doing, e.model or "", ws)
+  return ("%s%s  ·  %s  ·  %s  ·  %s"):format(e.kind == "sub" and "↳ " or "", (e.title and e.title ~= "") and e.title or e.id, doing, e.model or "", ws)
 end
 
 -- An id, a unique id prefix or a title (any letter case) among the engine's sessions; else what was typed, for
@@ -1146,17 +1162,31 @@ function U.go(ui, how, target, as, sure, after)
   end
 end
 
--- The switcher: every other session the engine holds, and a new one.
+-- The switcher: every other session the engine holds, and a new one; a task under its parent, this session's first.
 function U.switcher(ui, prompt, as)
-  local list = {}
+  local top, tasks = {}, {}
   for id, e in pairs(ui.conn.index) do
-    if id ~= ui.session then list[#list + 1] = e end
+    local parent = e.kind == "sub" and type(e.parent) == "string" and (e.parent == ui.session or ui.conn.index[e.parent]) and e.parent or nil
+    if parent then
+      tasks[parent] = tasks[parent] or {}
+      table.insert(tasks[parent], e)
+    elseif id ~= ui.session then
+      top[#top + 1] = e
+    end
   end
-  table.sort(list, function(a, b)
+  local function newest(a, b) return (a.last_activity or "") > (b.last_activity or "") end
+  table.sort(top, function(a, b)
     if (a.state == "parked") ~= (b.state == "parked") then return b.state == "parked" end
-    return (a.last_activity or "") > (b.last_activity or "")
+    return newest(a, b)
   end)
-  table.insert(list, 1, { new = true })
+  local list = { { new = true } }
+  local function add(id, e)
+    if e then list[#list + 1] = e end
+    table.sort(tasks[id] or {}, newest)
+    for _, t in ipairs(tasks[id] or {}) do list[#list + 1] = t end
+  end
+  add(ui.session)
+  for _, e in ipairs(top) do add(e.id, e) end
   vim.ui.select(list, { prompt = prompt, format_item = function(e)
     return e.new and ("+ a new session in " .. vim.fn.fnamemodify(ui.workspace or "", ":~")) or session_line(e)
   end }, function(e)

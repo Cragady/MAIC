@@ -566,6 +566,25 @@ class TuiTest(unittest.TestCase):
         tui.send(":q<cr>", settle=False)
         self.assertEqual(tui.wait_exit(), 0)
 
+    def test_a_background_task_runs_beside_the_session_and_the_switcher_shows_it(self):
+        tui = self.start()
+        tui.send("ibg:explore:slow: look around<m-cr>", settle=False)
+        tui.wait_for("the explore agent works in the background: slow: look around")
+        tui.wait_for("ran it")  # the parent's turn ended while the task works
+        tui.send("<esc>:switch<cr>", settle=False)
+        text = tui.wait_for("j/k move · Enter goes there · Esc stays")
+        self.assertIn("↳ explore: slow: look around  ·  working", text, "the task is a session of its own, under its parent")
+        tui.send("<esc>", settle=False)
+        tui.wait_for("the explore task finished", timeout=20)
+        tui.send(":switch<cr>", settle=False)
+        text = tui.wait_for("j/k move · Enter goes there · Esc stays")
+        self.assertIn("↳ explore: slow: look around  ·  finished", text)
+        tui.send("<cr>", settle=False)  # the task is the first row after a new session
+        text = tui.wait_for("echo: slow: look around")
+        self.assertIn("❯ slow: look around", text, "switched into the task: its own conversation")
+        tui.send(":q<cr>", settle=False)
+        self.assertEqual(tui.wait_exit(), 0)
+
     def test_a_session_in_the_daemon_keeps_working_after_quit(self):
         run = lambda *a: subprocess.run([MAIC, *a], capture_output=True, text=True, env=self.env, cwd=self.ws, stdin=subprocess.DEVNULL, timeout=60)
         r = run("daemon", "start")
