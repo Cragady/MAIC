@@ -1,0 +1,13 @@
+{
+ "id": "example-review",
+ "title": "Example review",
+ "since": "Your message \"Start here\"",
+ "issues": [
+  {"id": "pick-name", "title": "Pick a name", "context": "Two candidates.", "addressed": false,
+   "fields": [{"id": "pick-name-answer", "label": "Your call"}]}
+ ],
+ "messages": [
+  {"id": "m01", "who": "you", "label": "Start here", "addressed": false,
+   "text": "First paragraph.\n\nA list:\n- one\n- two"}
+ ]
+}

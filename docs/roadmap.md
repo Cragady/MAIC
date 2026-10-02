@@ -103,6 +103,16 @@ Read opencode's `.opencode/agent/*.md` files (frontmatter plus a prompt) as agen
 
 Named, definable security policies (Micaiah, 2026-10-02): a policy is a set of settings that harmonize, with an official standard to follow and MAIC's base recommendation for each protocol tier (`open`, `guarded`, `airtight`) and for each role (workstation, relay, trusted node; a relay or node will want a much stricter one). The direction is always tight first, loosened on request. Settings already decided stay as they are until a security audit of the defaults, which marks items `flagged` without calling them critical safety issues unless they are.
 
+### 12. Artifact creation and templates
+
+Micaiah's design (2026-10-02): MAIC makes artifacts (pages, forms, reports) from templates kept in the repository.
+
+* **Where templates live**: `templates/<name>/` for adopted ones with room to grow, `templates/general/` for simple ones that will not expand (one moves to its own directory if it grows), `templates/staging/` for templates not yet strongly decided, and `templates/one-off-artifacts/` for artifacts other agents made in other tools, held there so Micaiah can decide whether to adopt them. Reminder: eventually move every existing artifact into one of these.
+* **Scrub before tracking**: unique data and anything even slightly sensitive is removed before an artifact is tracked. Agents may read the untracked originals, since an agent made them.
+* **Adoption follows `adopt`**: templates use the same adoption rules as `maic settings adopt` (tracked defaults in the checkout or the user's own copy). Staging follows the same structure, so a template can go from staging straight to tracked adoption, skipping the tracked staging step, or through both the local and the tracked flows.
+* **An index before every new artifact**: before creating one, the agent is shown a short index of the templates, so it can tell whether to modify one as a one-off or extend it and save it back as a template.
+* **First template, adopted at once**: `templates/review-form/` (a reply box per paragraph and list item, decisions first, 500 ms debounced saves, Submit that flushes and marks the review, combine and back-to-default that never drop text). Future improvement: adding more textareas than the blocks give.
+
 ## Real-model checks (optional, highly recommended)
 
 Everything below is covered by tests against fake servers; these runs confirm it against real models on the card, in a window Micaiah offers. Each takes minutes. Tick them off here as they are run.

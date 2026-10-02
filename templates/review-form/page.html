@@ -1,0 +1,309 @@
+<title>ComfyMaid Review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Fraunces:opsz,wght@9..144,600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column; open decisions first, then the conversation as a ledger of cards. */
+:root {
+  --bg: #f3f5f6; --surface: #ffffff; --ink: #1d2a33; --muted: #5c6b75; --line: #d5dde2;
+  --accent: #23607a; --accent-soft: #e2eef3; --you: #7a4b23; --you-soft: #f6ece2;
+  --ok: #2f7a4b; --ok-soft: #e3f2e8; --warn: #9a5b00; --warn-soft: #fbf0dc;
+  --field: #fbfcfd;
+  --display: "Fraunces", Georgia, serif;
+  --body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12181c; --surface: #1a2227; --ink: #e3e9ec; --muted: #9aa8b1; --line: #2e3a41;
+  --accent: #7cc0db; --accent-soft: #1d3440; --you: #e2a86f; --you-soft: #3a2a1c;
+  --ok: #7fd09a; --ok-soft: #1b3326; --warn: #f0b75a; --warn-soft: #3a2c12; --field: #151c20; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #12181c; --surface: #1a2227; --ink: #e3e9ec; --muted: #9aa8b1; --line: #2e3a41;
+  --accent: #7cc0db; --accent-soft: #1d3440; --you: #e2a86f; --you-soft: #3a2a1c;
+  --ok: #7fd09a; --ok-soft: #1b3326; --warn: #f0b75a; --warn-soft: #3a2c12; --field: #151c20; color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font: 16px/1.55 var(--body); }
+.wrap { max-width: 860px; margin: 0 auto; padding-inline: 16px; padding-block: 24px 120px; display: grid; gap: 28px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; }
+h1 { font-size: 1.9rem; }
+h2 { font-size: 1.35rem; }
+.sub { color: var(--muted); margin: 6px 0 0; }
+code { font-family: var(--mono); font-size: .88em; background: var(--accent-soft); padding: 0 .3em; border-radius: 4px; overflow-wrap: anywhere; }
+pre { font-family: var(--mono); font-size: .85rem; background: var(--accent-soft); padding: 10px 12px; border-radius: 6px; overflow-x: auto; margin: 0; }
+section { display: grid; gap: 12px; }
+.bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line); padding-block: 10px; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; }
+.status { font-size: .9rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.status.local { color: var(--warn); }
+.counts { font-size: .9rem; }
+details.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+details.card > summary { list-style: none; cursor: pointer; padding: 12px 14px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+details.card > summary::-webkit-details-marker { display: none; }
+details.card > summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
+details.card[open] > summary::before { transform: rotate(90deg); }
+.who { font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; font-weight: 700; padding: 1px 8px; border-radius: 999px; }
+.who.you { background: var(--you-soft); color: var(--you); }
+.who.claude { background: var(--accent-soft); color: var(--accent); }
+.who.issue { background: var(--warn-soft); color: var(--warn); }
+.ttl { font-weight: 700; min-width: 0; flex: 1 1 260px; }
+.done-tag { font-size: .78rem; color: var(--ok); background: var(--ok-soft); padding: 1px 8px; border-radius: 999px; }
+details.card.addressed > summary .ttl { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--line); }
+.body { padding: 0 14px 14px; display: grid; gap: 14px; }
+.ctx { color: var(--muted); margin: 0; }
+.blk { display: grid; gap: 6px; }
+.blk .txt { margin: 0; white-space: pre-wrap; min-width: 0; overflow-wrap: anywhere; }
+.blk ul, .blk ol { margin: 0; padding-left: 1.3em; display: grid; gap: 10px; }
+.blk li { min-width: 0; }
+.blk li .txt { margin-bottom: 4px; }
+.group { border-left: 3px solid var(--line); padding-left: 10px; display: grid; gap: 8px; }
+label.fl { font-size: .85rem; font-weight: 700; color: var(--muted); }
+textarea { width: 100%; box-sizing: border-box; min-height: 2.6em; resize: vertical; font: inherit; font-size: .95rem; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+textarea:focus-visible, button:focus-visible, summary:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+textarea.combined { border-color: var(--accent); min-height: 8em; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button { font: inherit; font-size: .9rem; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); font-weight: 700; }
+button:disabled { opacity: .5; cursor: default; }
+.pick { display: none; align-items: center; gap: 6px; font-size: .85rem; color: var(--accent); }
+.combining .pick { display: inline-flex; }
+.note { font-size: .85rem; color: var(--muted); }
+.note.warn { color: var(--warn); }
+.panel { background: var(--warn-soft); border: 1px solid var(--warn); border-radius: 8px; padding: 12px 14px; display: grid; gap: 10px; }
+.check { display: inline-flex; gap: 6px; align-items: center; font-size: .9rem; color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { details.card > summary::before { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1 id="title">ComfyMaid review</h1>
+    <p class="sub" id="since"></p>
+  </header>
+  <div class="bar">
+    <span class="status" id="status">Loading saved answers…</span>
+    <span class="counts" id="counts"></span>
+    <button class="primary" id="submit" type="button">Submit</button>
+  </div>
+  <div class="panel" id="confirm" hidden>
+    <span id="confirm-text"></span>
+    <div class="row"><button class="primary" id="confirm-yes" type="button">Submit anyway</button><button id="confirm-no" type="button">Keep answering</button></div>
+  </div>
+  <section aria-labelledby="h-issues"><h2 id="h-issues">Decisions waiting on you</h2><div id="issues" class="row-list"></div></section>
+  <section aria-labelledby="h-msgs"><h2 id="h-msgs">The conversation since you stopped reading</h2><div id="messages"></div></section>
+</div>
+
+<script type="application/json" id="review-data">__REVIEW_DATA__</script>
+<script>
+(function () {
+  "use strict";
+  var DATA = JSON.parse(document.getElementById("review-data").textContent);
+  var DOC = "review/" + DATA.id;
+  var LOCAL = "review-draft:" + DATA.id;
+  // state: answers by field id; addressed overrides; merges by id; kept text from damaged combines.
+  var state = { answers: {}, addressed: {}, merges: {}, kept: {}, submitted: false, submittedAt: null, savedAt: null };
+  var db = null, comments = null, saving = false, dirty = false, timer = null;
+
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function inline(text, into) {
+    // `code` and **bold** only; everything else stays text.
+    var re = /(`[^`]+`|\*\*[^*]+\*\*)/g, last = 0, m;
+    while ((m = re.exec(text))) {
+      if (m.index > last) into.appendChild(document.createTextNode(text.slice(last, m.index)));
+      var t = m[0];
+      into.appendChild(t[0] === "`" ? el("code", null, t.slice(1, -1)) : el("strong", null, t.slice(2, -2)));
+      last = re.lastIndex;
+    }
+    if (last < text.length) into.appendChild(document.createTextNode(text.slice(last)));
+    return into;
+  }
+
+  // ---- saving: 500 ms after the last input; one write at a time ----
+  function touch() { if (state.submitted) { state.submitted = false; state.submittedAt = null; } dirty = true; clearTimeout(timer); timer = setTimeout(save, 500); setStatus("Unsaved changes…"); }
+  var inflight = Promise.resolve();
+  // Submit's final save: wait for any save in flight, then write the latest state at once.
+  function flush() { clearTimeout(timer); return inflight.then(function () { return save(); }); }
+  function save() {
+    if (saving) { dirty = true; return inflight; }
+    dirty = false; saving = true;
+    state.savedAt = new Date().toISOString();
+    var snap = JSON.parse(JSON.stringify(state));
+    try { localStorage.setItem(LOCAL, JSON.stringify(snap)); } catch (e) {}
+    var p = db ? db.doc(DOC).set(snap) : Promise.resolve("local");
+    return inflight = p.then(function (r) {
+      setStatus((r === "local" ? "Saved in this browser only " : "Saved ") + new Date().toLocaleTimeString(), r === "local");
+    }, function (e) {
+      setStatus("Not saved to the shared store (" + (e && e.code || "error") + "); kept in this browser", true);
+    }).then(function () { saving = false; if (dirty) { clearTimeout(timer); timer = setTimeout(save, 500); } });
+  }
+  function setStatus(t, local) { var s = $("status"); s.textContent = t; s.classList.toggle("local", !!local); }
+
+  // ---- fields ----
+  function field(id, label) {
+    var wrap = el("div", "blk");
+    if (label) { var l = el("label", "fl", label); l.htmlFor = "f-" + id; wrap.appendChild(l); }
+    var row = el("div", "row");
+    var pick = el("label", "pick"); var cb = el("input"); cb.type = "checkbox"; cb.dataset.field = id; cb.id = "p-" + id; pick.appendChild(cb); pick.appendChild(document.createTextNode("include in combine"));
+    var ta = el("textarea"); ta.id = "f-" + id; ta.dataset.field = id; ta.rows = 2;
+    if (!label) ta.setAttribute("aria-label", "Your reply to the text above");
+    ta.value = state.answers[id] || "";
+    ta.addEventListener("input", function () { state.answers[id] = ta.value; touch(); counts(); });
+    wrap.appendChild(ta); row.appendChild(pick); wrap.appendChild(row);
+    var kept = state.kept[id];
+    if (kept) {
+      var kl = el("label", "fl", "Kept from a combined box (edit or clear it as you like)"); kl.htmlFor = "k-" + id;
+      var kt = el("textarea"); kt.id = "k-" + id; kt.value = kept;
+      kt.addEventListener("input", function () { if (kt.value) state.kept[id] = kt.value; else delete state.kept[id]; touch(); });
+      wrap.appendChild(kl); wrap.appendChild(kt);
+    }
+    return wrap;
+  }
+
+  function isAddressed(item) { return item.id in state.addressed ? state.addressed[item.id] : !!item.addressed; }
+  function card(item, kind, headText) {
+    var d = el("details", "card"); d.id = "c-" + item.id;
+    if (isAddressed(item)) d.classList.add("addressed"); else d.open = true;
+    var s = el("summary");
+    s.appendChild(el("span", "who " + kind, kind === "issue" ? "Decision" : kind === "you" ? "You" : "Claude"));
+    s.appendChild(inline(headText, el("span", "ttl")));
+    if (isAddressed(item)) s.appendChild(el("span", "done-tag", "addressed"));
+    d.appendChild(s);
+    var body = el("div", "body"); d.appendChild(body);
+    var tools = el("div", "row");
+    var ck = el("label", "check"); var cb = el("input"); cb.type = "checkbox"; cb.id = "a-" + item.id; cb.checked = isAddressed(item);
+    cb.addEventListener("change", function () { state.addressed[item.id] = cb.checked; touch(); render(); });
+    ck.appendChild(cb); ck.appendChild(document.createTextNode("Addressed")); tools.appendChild(ck);
+    var comb = el("button", null, "Combine boxes"); comb.type = "button";
+    var go = el("button", null, "Combine selected"); go.type = "button"; go.hidden = true;
+    comb.addEventListener("click", function () { var on = !d.classList.contains("combining"); d.classList.toggle("combining", on); go.hidden = !on; comb.textContent = on ? "Cancel combining" : "Combine boxes"; });
+    go.addEventListener("click", function () { combine(item.id, d); });
+    tools.appendChild(comb); tools.appendChild(go);
+    return { card: d, body: body, tools: tools };
+  }
+
+  // ---- combining: originals are kept; markers let a revert hand each part back ----
+  function marker(id) { return "── " + id + " ──"; }
+  function combine(cardId, d) {
+    var ids = Array.prototype.map.call(d.querySelectorAll(".pick input:checked"), function (c) { return c.dataset.field; });
+    if (ids.length < 2) { flash(d, "Pick at least two boxes to combine."); return; }
+    var originals = {}; ids.forEach(function (id) { originals[id] = state.answers[id] || ""; });
+    var text = ids.map(function (id) { return marker(id) + "\n" + (state.answers[id] || ""); }).join("\n\n");
+    var mid = "x" + Date.now().toString(36);
+    state.merges[mid] = { card: cardId, members: ids, text: text, originals: originals };
+    touch(); render();
+  }
+  function revert(mid) {
+    var m = state.merges[mid]; if (!m) return;
+    var parts = {}, cur = null, ok = true, seen = 0;
+    m.text.split("\n").forEach(function (line) {
+      var hit = /^── (\S+) ──$/.exec(line);
+      if (hit && m.members.indexOf(hit[1]) >= 0 && !(hit[1] in parts)) { cur = hit[1]; parts[cur] = []; seen++; return; }
+      if (cur) parts[cur].push(line); else if (line.trim()) ok = false;
+    });
+    if (seen !== m.members.length) ok = false;
+    if (ok) {
+      // Markers intact: every part, edits included, returns to its own box.
+      m.members.forEach(function (id) { state.answers[id] = parts[id].join("\n").replace(/\s+$/, ""); });
+    } else {
+      // Markers damaged: restore the boxes as they were and keep the whole combined text beside the first one.
+      m.members.forEach(function (id) { state.answers[id] = m.originals[id]; });
+      var first = m.members[0];
+      state.kept[first] = (state.kept[first] ? state.kept[first] + "\n\n" : "") + m.text;
+    }
+    delete state.merges[mid];
+    touch(); render();
+  }
+  function mergedFor(fieldId) { for (var k in state.merges) if (state.merges[k].members.indexOf(fieldId) >= 0) return k; return null; }
+  function flash(d, text) { var n = d.querySelector(".note.warn") || d.querySelector(".body").appendChild(el("p", "note warn")); n.textContent = text; }
+
+  // A field, or the combined box it belongs to (shown once, at its first member).
+  function slot(id, label) {
+    var mid = mergedFor(id);
+    if (!mid) return field(id, label);
+    var m = state.merges[mid];
+    if (m.members[0] !== id) return el("p", "note", "Your reply here is in the combined box above.");
+    var wrap = el("div", "blk");
+    var l = el("label", "fl", "Combined box for " + m.members.length + " parts (keep the ── lines to split it back cleanly)"); l.htmlFor = "m-" + mid; wrap.appendChild(l);
+    var ta = el("textarea", "combined"); ta.id = "m-" + mid; ta.value = m.text;
+    ta.addEventListener("input", function () { m.text = ta.value; touch(); });
+    wrap.appendChild(ta);
+    var row = el("div", "row"); var back = el("button", null, "Back to default"); back.type = "button";
+    back.addEventListener("click", function () { revert(mid); });
+    row.appendChild(back); row.appendChild(el("span", "note", "Nothing is lost: parts go back to their boxes, or the whole text is kept beside the first box.")); wrap.appendChild(row);
+    return wrap;
+  }
+
+  function renderBlock(b, into) {
+    if (b.type === "code") { var pre = el("pre", null, b.text); into.appendChild(pre); into.appendChild(slot(b.id)); return; }
+    if (b.type === "p") { var g = el("div", "blk"); g.appendChild(inline(b.text, el("p", "txt"))); g.appendChild(slot(b.id)); into.appendChild(g); return; }
+    var grp = el("div", "group");
+    if (b.header) { grp.appendChild(inline(b.header.text, el("p", "txt"))); grp.appendChild(slot(b.header.id)); }
+    var list = el(b.ordered ? "ol" : "ul");
+    b.items.forEach(function (it) { var li = el("li"); if (it.depth) li.style.marginLeft = it.depth + "em"; li.appendChild(inline(it.text, el("p", "txt"))); li.appendChild(slot(it.id)); list.appendChild(li); });
+    grp.appendChild(list); into.appendChild(grp);
+  }
+
+  function render() {
+    var openNow = {};
+    document.querySelectorAll("details.card").forEach(function (d) { openNow[d.id] = d.open; });
+    $("title").textContent = DATA.title;
+    $("since").textContent = "Since: " + DATA.since + ". Every box saves itself half a second after you stop typing.";
+    var iss = $("issues"); iss.textContent = "";
+    DATA.issues.forEach(function (it) {
+      var c = card(it, "issue", it.title);
+      if (it.context) c.body.appendChild(inline(it.context, el("p", "ctx")));
+      var grp = el("div", it.fields.length > 1 ? "group" : "blk");
+      it.fields.forEach(function (f) { grp.appendChild(slot(f.id, f.label)); });
+      grp.appendChild(slot(it.id + "-more", "More (one bullet per line, if you need it)"));
+      c.body.appendChild(grp); c.body.appendChild(c.tools); iss.appendChild(c.card);
+    });
+    var ms = $("messages"); ms.textContent = "";
+    DATA.messages.forEach(function (m) {
+      var c = card(m, m.who, m.label);
+      m.blocks.forEach(function (b) { renderBlock(b, c.body); });
+      c.body.appendChild(c.tools); ms.appendChild(c.card);
+    });
+    document.querySelectorAll("details.card").forEach(function (d) { if (d.id in openNow) d.open = openNow[d.id]; });
+    counts();
+  }
+
+  function openFields() {
+    var ids = [];
+    DATA.issues.forEach(function (it) { if (!isAddressed(it)) it.fields.forEach(function (f) { ids.push(f.id); }); });
+    return ids;
+  }
+  function answered(id) { var mid = mergedFor(id); return mid ? /\S/.test(state.merges[mid].text.replace(/^── \S+ ──$/gm, "")) : /\S/.test(state.answers[id] || ""); }
+  function counts() {
+    var ids = openFields(), done = ids.filter(answered).length;
+    $("counts").textContent = done + " of " + ids.length + " decision boxes answered" + (state.submitted ? " · submitted" : "");
+  }
+
+  // ---- submit ----
+  $("submit").addEventListener("click", function () {
+    var left = openFields().filter(function (id) { return !answered(id); }).length;
+    if (left) { $("confirm-text").textContent = left + " decision box" + (left === 1 ? " is" : "es are") + " still empty."; $("confirm").hidden = false; return; }
+    submit();
+  });
+  $("confirm-no").addEventListener("click", function () { $("confirm").hidden = true; });
+  $("confirm-yes").addEventListener("click", function () { $("confirm").hidden = true; submit(); });
+  function submit() {
+    var btn = $("submit");
+    state.submitted = true; state.submittedAt = new Date().toISOString();
+    flush().then(function () {
+      counts();
+      setStatus("Submitted " + new Date().toLocaleTimeString() + (comments ? ". Send the comment that opened to tell Claude now." : ". Tell Claude in the terminal that you've submitted."));
+      if (comments) comments.openComposer({ element: btn }).catch(function () {});
+    });
+  }
+
+  // ---- start: render now, then fill from the shared store when it answers ----
+  try { var d0 = JSON.parse(localStorage.getItem(LOCAL) || "null"); if (d0) Object.assign(state, d0); } catch (e) {}
+  render();
+  var use = window.claude && window.claude.use ? window.claude.use.bind(window.claude) : function () { return Promise.resolve(null); };
+  use("comments").then(function (c) { comments = c; });
+  use("db").then(function (x) {
+    db = x;
+    if (!db) { setStatus("Shared store unavailable: answers save in this browser only", true); return; }
+    return db.doc(DOC).get().then(function (snap) {
+      if (snap.exists) { var remote = snap.data(); if (!state.savedAt || (remote.savedAt && remote.savedAt >= state.savedAt)) Object.assign(state, remote); }
+      render(); setStatus(state.savedAt ? "Loaded answers saved " + new Date(state.savedAt).toLocaleString() : "Ready. Nothing saved yet.");
+    });
+  }).catch(function () { setStatus("Shared store unavailable: answers save in this browser only", true); });
+})();
+</script>
