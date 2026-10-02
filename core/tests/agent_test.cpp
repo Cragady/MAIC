@@ -1747,6 +1747,7 @@ int main() {
         fs::create_directories(a);
         fs::create_directories(b);
         std::ofstream(b / "MAIC.md") << "Fennec ears stay a third of her height.\n";
+        trust_for_session(b);  // this test's own project (trust_test covers untrusted ones)
         SessionLog log("agent-test");
         Agent agent(a, "test");
         agent.providers = {fake.provider()};
