@@ -32,7 +32,11 @@ Either can be merged back into the main conversation:
 
 What lands is a clearly marked note with a pointer to the side session, never a fabricated main-thread turn. Side threads are sessions listed under their parent (like subagents) and can be resumed; the harness treats their actions like any other, and an approval names the thread it comes from. On a local server with one slot, a side thread and a running main turn take turns. Builds on forks, `maic sessions graft` and `inject`. opencode has no equivalent (no `/btw` in its source as of 2fa3363c92); the name is Micaiah's.
 
-### 4. Accounts on maic-server
+### 4. Background agents and a switcher
+
+Today a MAIC process runs one conversation in the foreground: Ctrl-Z suspends the whole process, a `task` subagent runs inside its parent's turn, and two agents mean two terminals. The plan: several agents (sessions) running at once in one MAIC, each with its own model, agent definition and workspace, and a switcher menu listing them with their state (working, idle, waiting for an approval, finished), model, and the working directory you land in by switching to each, so changing agents never surprises you with a different directory. Approvals from a background agent queue visibly and name the agent; `:btw` side threads appear in the same list. In maic.nvim each agent is a buffer. Builds on side conversations and the nvim interface's protocol; local only first, through maic-server later.
+
+### 5. Accounts on maic-server
 
 Micaiah's decision (2026-09-30): accounts belong to MAIC's own server, never to llama.cpp (which has API keys only, no identities). Design document first, then build; security-sensitive, so the design is reviewed before code.
 
@@ -45,19 +49,19 @@ Micaiah's decision (2026-09-30): accounts belong to MAIC's own server, never to 
 
 The relay (done) already carries the phone away from the LAN; accounts ride inside its tunnel unchanged.
 
-### 5. One remote interface: MAIC plus llama.cpp
+### 6. One remote interface: MAIC plus llama.cpp
 
 The web app and the phone apps present one clean interface that combines the MAIC server (sessions, approvals, the harness, services) and the llama.cpp server (models, loading and switching, sampling and XTC, a plain chat with the loaded model), so remote access gives both. llama.cpp stays behind MAIC's server, never exposed on its own; MAIC's server proxies what the app needs. A native client (Android first) follows the web app: notifications for pending approvals, pairing in the app, background reattach. Depends on 4 (accounts).
 
-### 6. MAIC packages, laid out like nvim's
+### 7. MAIC packages, laid out like nvim's
 
 A package is a directory holding MAIC's runtime folders: `plugin/` (Lua run at start in MAIC's settings Lua state, with the user's trust, as nvim runs `plugin/`), `tools/` (Lua and script tools), `themes/`, `agents/` (opencode's agent file format, its `mode:` read as `role`) and `prompts/` (text for `--system @`). MAIC's runtime path, in order: `~/.config/maic`, the project's `.maic/`, MAIC's own `<data>/maic/site/pack/*/start/*` (and `opt/*` with `:packadd`), then nvim-managed plugins that carry a `maic/` folder. nvim never loads a `maic/` folder (it is not a runtime folder nvim knows), so one repository can ship an nvim side and a MAIC side and one package manager installs both; MAIC loads its part itself. Package management stays nvim's: lazy.nvim fetches, updates and pins (its `lazy-lock.json`), and MAIC only reads the result. Finding them without nvim running: lazy's root (`stdpath("data")/lazy`, the plugin list from the lock file) and nvim's `site/pack/*/{start,opt}`; inside an nvim host (maic.nvim), MAIC asks the host for its runtime paths, so lazy-loaded plugins are found exactly as nvim sees them. Tools a package adds are model-callable and so judged by the harness like any other; package startup code runs with the user's trust, as in nvim. `maic packages` lists what was found and from where. Depends on nothing; uses maic.nvim's host connection when present.
 
-### 7. Windows
+### 8. Windows
 
 The tripwire design for Windows is in [harness.md](harness.md); the rest needs a port of the sandbox (AppContainer), the service manager (job objects with kill-on-close, junctions instead of symlinks, portable git on PATH, `%LOCALAPPDATA%\maic` for state and the uv cache), the runtime directory for temporary transcripts, and the terminal layer.
 
-### 8. opencode agent files
+### 9. opencode agent files
 
 Read opencode's `.opencode/agent/*.md` files (frontmatter plus a prompt) as agents, mapping their `mode:` to MAIC's `role`.
 
@@ -68,6 +72,7 @@ Read opencode's `.opencode/agent/*.md` files (frontmatter plus a prompt) as agen
 * Prompt completion, on purpose: a completion source for the `maic-input` filetype (for blink.cmp and nvim-cmp, and for MAIC's own interface) offering `:` commands, `@file` paths, agent, preset and model names, recent prompts, and continuations from `small_model` or the completion server. Its behaviour lives in maic.nvim's defaults table, so a consumer overrides it like any other option. Parked until nvim as MAIC's interface gives the input a real buffer.
 * Prompt profiles per backend: measured on the 4B (2026-09-30) and the 9B (2026-10-01) against MAIC's real prompt and tool schemas; both follow a short operator rule only when it closes the user turn, under Ollama and llama.cpp alike, so the per-turn `operator_note` stays the one profile and nothing differs by backend yet ([references/prompt-placement.md](references/prompt-placement.md)). Reopen when a new provider or model family measures differently.
 * Restrictiveness tiers for settings Lua, configurable: more tiers and their definitions (Micaiah, 2026-10-01).
+* Audit the Lua sandbox and the `maic` API by trust level (Micaiah, 2026-10-01): list everything each Lua runtime can reach (settings, themes, diction.lua, Lua tools, hooks) and give the `maic` API tiers: the whole API only for fully trusted code, a defined subset for sandboxed and restricted code, and refusal with no trust. Fold in docs/limits.md's Lua tools entry.
 
 ## Done
 
