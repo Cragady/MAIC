@@ -274,7 +274,7 @@ public:
 private:
     Message run_tool_call(const ToolCall& call, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel);
     ToolResult run_task(const nlohmann::json& args, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel, nlohmann::json& record);
-    // Policy, then this session's "always" answers, then the user. Never returns Ask: a No becomes Deny with the
+    // Policy, then this session's "always" answers (local requests only), then the user. Never returns Ask: a No becomes Deny with the
     // user's words, a Trip has already tripped the lock. For Deny and Trip the reason is the text the model
     // sees. Every tool action, built-in or from a Lua tool, goes through here; `record` gets the log fields.
     Decision authorise(const Action& action, const std::string& tool, const std::string& summary, const std::string& preview,

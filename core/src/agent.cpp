@@ -1066,7 +1066,10 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     record["decision"] = verdict_name(d.verdict);
     record["reason"] = d.reason;
     bool user_allowed = false;
-    if (d.verdict == Verdict::Ask && (action.kind != Action::Kind::Shell || is_simple_command(action.command)) && always_allowed_.count(Harness::approval_key(action))) {
+    // A session's "always" answers are the local user's and speak only for local requests: a remote one is asked
+    // every time (docs/harness.md, rule 5), and an "always" answered for it counts once.
+    if (d.verdict == Verdict::Ask && origin == Origin::Local && (action.kind != Action::Kind::Shell || is_simple_command(action.command)) &&
+        always_allowed_.count(Harness::approval_key(action))) {
         d = {Verdict::Allow, "allowed earlier this session"};
         user_allowed = true;
     }
@@ -1084,7 +1087,10 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     }
     if (d.verdict == Verdict::Ask) {
         std::string key = Harness::approval_key(action);
-        std::string covers = key.rfind("shell:", 0) == 0 ? "the program `" + key.substr(6) + "`" : key.rfind("write:", 0) == 0 ? "writes to this file" : "reads of this file";
+        std::string covers = origin != Origin::Local ? "this call only (a remote request is asked every time)"
+                             : key.rfind("shell:", 0) == 0 ? "the program `" + key.substr(6) + "`"
+                             : key.rfind("write:", 0) == 0 ? "writes to this file"
+                             : "reads of this file";
         ApprovalAnswer answer = events.ask({tool, summary, d.reason, origin, covers, preview, action.path, std::move(proposed)});
         record["approval"] = approval_name(answer.choice);
         if (!answer.feedback.empty()) record["feedback"] = answer.feedback;
@@ -1093,7 +1099,8 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
                 d.verdict = Verdict::Allow;
                 break;
             case Approval::Always:
-                always_allowed_.insert(key);
+                if (origin == Origin::Local) always_allowed_.insert(key);
+                else events.on_notice("\"always\" for a remote request counts for this call only: the next one is asked again");
                 d.verdict = Verdict::Allow;
                 break;
             case Approval::No:
