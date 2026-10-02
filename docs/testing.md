@@ -28,9 +28,12 @@ git config core.hooksPath .githooks         # .githooks/pre-push runs scripts/ch
 | `harness` | policy, sandbox, tripwire, classifier | `core/tests/harness_test.cpp` |
 | `robustness` | settings, places, tools, the ban filter, services, vendoring | `core/tests/robustness_test.cpp` |
 | `llm` | the provider clients against fake servers | `core/tests/llm_test.cpp` |
-| `agent` | the agent loop against `FakeServer`: turns, tools, approvals, compaction, subagents, cancel, resume | `core/tests/agent_test.cpp` |
+| `agent` | the agent loop against `FakeServer`: turns, tools, approvals, compaction, subagents, cancel, resume; then every chunk `FakeServer` sent against OpenAI's pinned `CreateChatCompletionStreamResponse` | `core/tests/agent_test.cpp` |
+| `jsonschema` | the JSON Schema validator's keywords with known answers; OpenAI's pinned subset against a Responses stream and a llama-server chat stream (`core/tests/fixtures/`); the adapter normalizations, each refused as llama.cpp sends it and accepted once normalized | `core/tests/jsonschema_test.cpp` |
+| `openai_subset` | `protocol/openai/openapi.json` is the pinned file and `subset.json` is what `extract.py` makes of it | `protocol/openai/extract.py --check` |
 | `session` | session files, homes, forks, import | `core/tests/session_test.cpp` |
 | `lua_tools` | user-defined Lua tools | `core/tests/lua_tools_test.cpp` |
+| `tool_output` | streamed command output: chunks, offsets, batching, stdout and stderr apart, the model's result byte for byte, a slow consumer timed; kept outputs: the file against the stream, the size cap, the index, the screen and the replay's order and timing | `core/tests/tool_output_test.cpp` |
 | `fuzz` | the parser fuzzer, 2 s per target by default | `core/tests/fuzz_parsers.cpp` |
 | `server` | maic-server over HTTP | `server/tests/server_test.cpp` |
 | `editor` | the vim input | `cli/tests/editor_test.cpp` |

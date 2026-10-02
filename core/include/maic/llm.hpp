@@ -91,6 +91,9 @@ struct ChatOptions {
     std::vector<std::string> stop;
     nlohmann::json logit_bias;  // null when none
     nlohmann::json sampling;    // temperature, top_k, top_p, min_p, seed, ... merged into the provider's options
+    // Hears, once per call, each adapter rule that rewrote what an OpenAI-compatible server sent into OpenAI's
+    // shape (normalize_openai) and how many times it applied, before the reply returns or the error is thrown.
+    std::function<void(const std::string& rule, int count)> normalized;
 };
 
 struct Cancelled : std::runtime_error {
@@ -124,6 +127,12 @@ using TextSink = std::function<void(std::string_view delta, bool thinking)>;
 std::vector<std::string> list_openai_models(const Provider& provider);
 // Whether something answers HTTP at the provider's host (GET /health, any status): a local server that is up.
 bool server_answers(const Provider& provider);
+
+// The OpenAI-compatible client's adapter rules ("Adapter normalizations" in docs/standards.md): rewrites one parsed
+// chunk or error body that `provider` sent into the shape OpenAI's description (protocol/openai/) gives it, in
+// place, and returns the names of the rules that applied. An error object keeps what was replaced, and the rules'
+// names, in error.maic.upstream. chat() runs it on everything it reads from an OpenAI-compatible server.
+std::vector<std::string> normalize_openai(nlohmann::json& body, const std::string& provider);
 
 // Tool schemas are given in OpenAI function format and converted per provider.
 // Throws Cancelled if `cancel` is set, std::runtime_error on transport or API errors.

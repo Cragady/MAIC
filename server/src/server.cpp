@@ -6,6 +6,7 @@
 #include "tunnel.hpp"
 
 #include "maic/agent.hpp"
+#include "maic/full_output.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
 #include "maic/session.hpp"
@@ -19,8 +20,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <ctime>
@@ -67,6 +70,10 @@ std::optional<Approval> parse_choice(const std::string& s) {
     return std::nullopt;
 }
 
+// Tool output is forwarded to clients at most this fast per session (every maic-server client is remote), so a
+// runaway command cannot crowd approvals and replies off a phone link (docs/design/engine-protocol.md, section 4).
+constexpr double kRemoteOutputRate = 64 * 1024;  // bytes a second; the bucket holds one second's worth
+
 // A handler throws one of these for a client error; anything else is a 500.
 struct HttpError {
     int status;
@@ -98,6 +105,10 @@ struct Session {
     std::optional<Pending> pending;
     int approvals = 0;
 
+    // Tool output not yet spent this second (kRemoteOutputRate), across turns.
+    double output_budget = kRemoteOutputRate;
+    std::chrono::steady_clock::time_point output_at = std::chrono::steady_clock::now();
+
     Session(fs::path ws, std::string model) : workspace(std::move(ws)), agent(workspace, std::move(model)) {}
 
     void push_locked(json e) {
@@ -123,7 +134,38 @@ public:
     explicit Events(Session& s) : s_(s) {}
     void on_text(std::string_view delta, bool thinking) override { s_.push({{"type", "text"}, {"text", std::string(delta)}, {"thinking", thinking}}); }
     void on_tool_call(const std::string& summary) override { s_.push({{"type", "tool_call"}, {"summary", summary}}); }
-    void on_tool_result(const std::string& text, bool ok) override { s_.push({{"type", "tool_result"}, {"text", text}, {"ok", ok}}); }
+    void on_tool_started(const std::string& tool, const std::string&, const std::string&) override { shell_ = tool == "run_shell"; }
+    void on_tool_result(const std::string& text, bool ok) override {
+        std::lock_guard lock(s_.mu);
+        push_skipped_locked();
+        json e = {{"type", "tool_result"}, {"text", text}, {"ok", ok}};
+        if (!kept_.empty()) {
+            // GET .../output/{call}?session= serves it, labelled.
+            std::error_code ec;
+            e["full_output"] = {{"session", kept_.parent_path().stem().string()}, {"call", kept_.stem().string()}, {"bytes", fs::file_size(kept_, ec)},
+                                {"label", kFullOutputLabel}};
+            kept_.clear();
+        }
+        s_.push_locked(std::move(e));
+    }
+    void on_tool_full_output(const std::filesystem::path& file) override { kept_ = file; }
+    // run_shell's output as OpenAI's shell call output deltas, anything else's as maic.tool.output.delta. A chunk
+    // over the session's budget is not sent; the run of them becomes one skip event before the next data or the result.
+    void on_tool_output(const std::string& call_id, OutputStream stream, std::string_view chunk, size_t offset) override {
+        std::lock_guard lock(s_.mu);
+        auto now = std::chrono::steady_clock::now();
+        s_.output_budget = std::min(kRemoteOutputRate, s_.output_budget + kRemoteOutputRate * std::chrono::duration<double>(now - s_.output_at).count());
+        s_.output_at = now;
+        if (skipped_ && (call_id != skip_call_ || stream != skip_stream_)) push_skipped_locked();
+        if (static_cast<double>(chunk.size()) > s_.output_budget) {
+            if (!skipped_) skip_call_ = call_id, skip_stream_ = stream, skip_from_ = offset;
+            skipped_ += chunk.size();
+            return;
+        }
+        s_.output_budget -= static_cast<double>(chunk.size());
+        push_skipped_locked();
+        s_.push_locked(output_event(call_id, stream, chunk, offset, 0));
+    }
     void on_notice(const std::string& text) override { s_.push({{"type", "notice"}, {"text", text}}); }
     ApprovalAnswer ask(const ApprovalRequest& request) override {
         std::unique_lock lock(s_.mu);
@@ -138,7 +180,31 @@ public:
     }
 
 private:
+    json output_event(const std::string& call_id, OutputStream stream, std::string_view data, size_t offset, size_t skipped) const {
+        if (shell_) {
+            json delta = {{"stdout", ""}, {"stderr", ""}};
+            delta[stream == OutputStream::Stdout ? "stdout" : "stderr"] = std::string(data);
+            json maic = {{"offset", offset}};
+            if (skipped) maic["skipped"] = skipped;
+            return {{"type", "response.shell_call_output_content.delta"}, {"item_id", call_id}, {"delta", delta}, {"maic", maic}};
+        }
+        json e = {{"type", "maic.tool.output.delta"}, {"item_id", call_id}, {"offset", offset}};
+        if (skipped) e["skipped"] = skipped;
+        else e["data"] = std::string(data);
+        return e;
+    }
+    void push_skipped_locked() {
+        if (!skipped_) return;
+        s_.push_locked(output_event(skip_call_, skip_stream_, "", skip_from_, skipped_));
+        skipped_ = 0;
+    }
+
     Session& s_;
+    fs::path kept_;  // on_tool_full_output, for the result that follows
+    bool shell_ = false;  // the running tool is run_shell
+    std::string skip_call_;  // a run of chunks held back by the budget: whose, from where, how many bytes
+    OutputStream skip_stream_ = OutputStream::Stdout;
+    size_t skip_from_ = 0, skipped_ = 0;
 };
 
 }  // namespace
@@ -241,6 +307,8 @@ struct Server::Impl {
         s->agent.compaction.at = st.compact_at;
         s->agent.compaction.keep_results = st.compact_keep_results;
         s->agent.budget_tokens = st.budget_tokens;
+        s->agent.full_output = st.full_output;
+        s->agent.full_output_max_mb = static_cast<size_t>(st.full_output_max_mb);
         s->agent.set_instruction_options(st.instructions);
         return s;
     }
@@ -263,7 +331,8 @@ struct Server::Impl {
                 out.back()["text"] = out.back()["text"].get<std::string>() + e["text"].get<std::string>();
                 continue;
             }
-            if (type == "approval" || type == "approval_answered" || type == "done") continue;
+            if (type == "approval" || type == "approval_answered" || type == "done" || type == "response.shell_call_output_content.delta" ||
+                type == "maic.tool.output.delta") continue;
             out.push_back(e);
         }
         return out;
@@ -444,6 +513,31 @@ struct Server::Impl {
             size_t after = 0;
             if (req.has_param("after")) after = std::stoul(req.get_param_value("after"));
             stream(s, after, res);
+        });
+
+        // A command's kept output (docs/sessions.md, Full output), 256 KiB at a time: the session's own, or one of its
+        // subagents' (`session`). Display only, and labelled so.
+        srv->Get(R"(/api/sessions/([^/]+)/output/([A-Za-z0-9_-]+))", [this](const httplib::Request& req, httplib::Response& res) {
+            auto s = find(req.matches[1]);
+            fs::path owner = s->log->path();
+            if (req.has_param("session") && req.get_param_value("session") != s->id) {
+                std::string sub = req.get_param_value("session");
+                auto subs = sub_sessions_of(owner);
+                auto it = std::find_if(subs.begin(), subs.end(), [&](const fs::path& p) { return p.stem().string() == sub; });
+                if (it == subs.end()) throw HttpError{404, "no subagent session " + sub + " of " + s->id};
+                owner = *it;
+            }
+            fs::path file = side_dir(owner) / (req.matches[2].str() + ".out");
+            std::error_code ec;
+            if (!fs::is_regular_file(file, ec)) throw HttpError{404, "no kept output " + req.matches[2].str()};
+            size_t size = fs::file_size(file, ec);
+            size_t offset = req.has_param("offset") ? std::stoul(req.get_param_value("offset")) : 0;
+            size_t length = std::min<size_t>(req.has_param("length") ? std::stoul(req.get_param_value("length")) : 256 * 1024, 256 * 1024);
+            std::ifstream in(file, std::ios::binary);
+            std::string data(std::min(length, size > offset ? size - offset : 0), '\0');
+            in.seekg(static_cast<std::streamoff>(std::min(offset, size)));
+            in.read(data.data(), static_cast<std::streamsize>(data.size()));
+            reply(res, {{"label", kFullOutputLabel}, {"bytes", size}, {"offset", offset}, {"data", data}, {"done", offset + data.size() >= size}});
         });
 
         srv->Post(R"(/api/sessions/([^/]+)/messages)", [this](const httplib::Request& req, httplib::Response& res) {

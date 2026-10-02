@@ -579,6 +579,36 @@ class RelayTunnel {
     lastText.el.textContent += text;
     scrollDown();
   }
+  // A running command's output under its tool call: the last 12 lines, until the result takes their place.
+  // A skip (the session's output budget) shows how much was left out.
+  function liveOutput(text) {
+    const last = $('entries').lastElementChild;
+    if (!last || last.tagName !== 'DETAILS') return;
+    let pre = last.querySelector('pre.live');
+    if (!pre) {
+      if (last.querySelector('pre')) return;
+      pre = document.createElement('pre');
+      pre.className = 'live';
+      last.appendChild(pre);
+      last.open = true;
+    }
+    pre.textContent = (pre.textContent + text).split('\n').slice(-12).join('\n');
+    scrollDown();
+  }
+  // A result whose whole output was kept: a button under it fetches that output, labelled as what it is.
+  function keptOutput(k) {
+    const last = $('entries').lastElementChild;
+    if (!last || last.tagName !== 'DETAILS') return;
+    const b = document.createElement('button');
+    b.textContent = k.label + ' (' + k.bytes + ' bytes): show';
+    b.onclick = async () => {
+      const r = await json('/api/sessions/' + state.session.id + '/output/' + encodeURIComponent(k.call) + '?session=' + encodeURIComponent(k.session));
+      const p = document.createElement('pre');
+      p.textContent = '[' + r.label + ']\n' + r.data + (r.done ? '' : '\n[' + (r.bytes - r.data.length) + ' more bytes: maic sessions output ' + k.session + ' ' + k.call + ']');
+      b.replaceWith(p);
+    };
+    last.appendChild(b);
+  }
   function scrollDown() {
     const m = document.querySelector('main');
     if (m.scrollHeight - m.scrollTop - m.clientHeight < 200) m.scrollTop = m.scrollHeight;
@@ -590,12 +620,21 @@ class RelayTunnel {
       case 'user': addEntry('user', e.text); break;
       case 'text': appendText(e.text, e.thinking); break;
       case 'tool_call': addTool(e.summary, '', true); break;
+      case 'response.shell_call_output_content.delta':
+        liveOutput(e.maic.skipped ? '\n[' + e.maic.skipped + ' bytes not sent]\n' : e.delta.stdout + e.delta.stderr);
+        break;
+      case 'maic.tool.output.delta':
+        liveOutput(e.skipped ? '\n[' + e.skipped + ' bytes not sent]\n' : e.data);
+        break;
       case 'tool_result': {
         const last = $('entries').lastElementChild;
+        const live = last && last.tagName === 'DETAILS' ? last.querySelector('pre.live') : null;
+        if (live) { live.remove(); last.open = false; }
         if (last && last.tagName === 'DETAILS' && !last.querySelector('pre')) {
           const p = document.createElement('pre'); p.textContent = e.text; last.appendChild(p);
           if (!e.ok) last.classList.add('bad');
         } else addTool(e.ok ? 'result' : 'failed', e.text, e.ok);
+        if (e.full_output) keptOutput(e.full_output);
         break;
       }
       case 'notice': addEntry('notice', e.text); break;

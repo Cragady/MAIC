@@ -98,6 +98,37 @@ class TuiTest(unittest.TestCase):
             tui.send("<c-d>")
         self.assertIn("echo: scroll01", tui.text(), "Ctrl-D scrolls back down")
 
+    def test_a_running_command_shows_its_output_live(self):
+        tui = self.start()
+        # The output's words are not in the command's text, so finding them on screen means the output is there.
+        tui.send("ishell:printf 'live-%s\\n' one; sleep 4; printf 'live-%s\\n' two<esc>:w<cr>", settle=False)
+        tui.wait_for("[y] yes")
+        tui.send("y", settle=False)
+        text = tui.wait_for("live-one", timeout=3)
+        self.assertNotIn("live-two", text, "the first line shows while the command is still running")
+        self.assertIn("▸ $ printf", text)
+        text = tui.wait_for("ran it", timeout=15)
+        self.assertIn("exit code 0", text, "the result took the live view's place")
+        self.assertIn("live-two", text)
+
+    def test_a_long_output_is_kept_whole_and_labelled(self):
+        tui = self.start()
+        tui.send("ishell:seq 1 20000<esc>:w<cr>", settle=False)
+        tui.wait_for("[y] yes")
+        tui.send("y", settle=False)
+        tui.wait_for("ran it", timeout=15)
+        tui.send(":set details on<cr>")
+        tui.send("<c-w>kgg")
+        text = tui.wait_for("[full output, display only: the model saw the capped result: maic sessions output ")
+        self.assertIn("call_1]", text)
+        # The same file from the shell: the label on stderr, the output itself on stdout.
+        runtime = os.path.join(self.env["XDG_RUNTIME_DIR"], "maic", "sessions")
+        newest = max((os.path.join(runtime, f) for f in os.listdir(runtime) if f.endswith(".jsonl")), key=os.path.getmtime)
+        r = subprocess.run([MAIC, "sessions", "output", newest, "call_1"], capture_output=True, text=True, env=self.env, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "".join("%d\n" % i for i in range(1, 20001)))
+        self.assertIn("full output, display only: the model saw the capped result", r.stderr)
+
     def test_help_opens(self):
         tui = self.start()
         tui.send(":help<cr>")

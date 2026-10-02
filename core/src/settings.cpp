@@ -376,6 +376,9 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.sound = j.value("sound", s.sound);
         s.sessions_home = j.value("sessions_home", s.sessions_home);
         s.init_move_outside_reads = j.value("init_move_outside_reads", s.init_move_outside_reads);
+        s.full_output = j.value("full_output", s.full_output);
+        s.full_output_max_mb = j.value("full_output_max_mb", s.full_output_max_mb);
+        if (s.full_output_max_mb < 1) throw std::runtime_error(path.string() + ": full_output_max_mb must be at least 1");
         s.leader = j.value("leader", s.leader);
         s.highlight = j.value("highlight", s.highlight);
         s.theme = j.value("theme", s.theme);
@@ -691,6 +694,10 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"sessions_home", d.sessions_home},
         {"init_move_outside_reads", d.init_move_outside_reads},
         {"//init_move_outside_reads", ":init moves this session into the project's home without asking when it wrote nothing outside the project and read at most this many files there"},
+        {"full_output", d.full_output},
+        {"//full_output", "keep a command's whole output beside the session when the model gets it capped: <session>.d/<call>.out, display only (maic sessions output). docs/sessions.md"},
+        {"full_output_max_mb", d.full_output_max_mb},
+        {"//full_output_max_mb", "at most this many MiB of it per call; past that the file keeps the head and the tail and says how much was dropped"},
         {"leader", "space"},
         {"highlight", d.highlight},
         {"theme", d.theme},

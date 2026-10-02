@@ -1,5 +1,7 @@
 #include "maic/agent.hpp"
 
+#include "maic/full_output.hpp"
+
 #include "maic/paths.hpp"
 #include "maic/settings.hpp"
 #include "maic/tools.hpp"
@@ -59,6 +61,10 @@ struct ChildEvents : AgentEvents {
         parent.on_tool_started(tool, path, agent + ": " + summary);
     }
     void on_file_written(const std::filesystem::path& path, const std::string& tool) override { parent.on_file_written(path, tool); }
+    void on_tool_output(const std::string& call_id, OutputStream stream, std::string_view chunk, size_t offset) override {
+        parent.on_tool_output(agent + ":" + call_id, stream, chunk, offset);
+    }
+    void on_tool_full_output(const std::filesystem::path& file) override { parent.on_tool_full_output(file); }
     ApprovalAnswer ask(const ApprovalRequest& request) override {
         ApprovalRequest r = request;
         r.summary = agent + ": " + request.summary;
@@ -428,6 +434,7 @@ std::string Agent::summarise(size_t from, size_t to, const std::atomic<bool>& ca
     };
     auto [provider, model_name] = resolve_model(providers, model);
     ChatOptions options{model_name, false};
+    options.normalized = count_normalized(provider.name);
     Message reply = chat(provider, options, req, nlohmann::json::array(), [](std::string_view, bool) {}, cancel);
     return reply.content;
 }
@@ -516,6 +523,16 @@ Agent::UsageReport Agent::usage() const {
     return usage_;
 }
 
+std::function<void(const std::string&, int)> Agent::count_normalized(const std::string& provider) {
+    return [this, provider](const std::string& rule, int count) {
+        {
+            std::lock_guard lock(usage_mu_);
+            usage_.normalized[rule] += count;
+        }
+        if (log_) log_->write("normalized", {{"rule", rule}, {"provider", provider}, {"count", count}});
+    };
+}
+
 std::string Agent::add_context_file(const std::filesystem::path& path) {
     std::string text;
     std::string label = path.string();
@@ -593,6 +610,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
 
     ChatOptions options{model_name, think};
     options.notice = [&](const std::string& t) { events.on_notice(t); };
+    options.normalized = count_normalized(provider.name);
     options.sampling = sampling;
     // Token bans: logit_bias where the provider takes it; elsewhere text tokens become string bans (the filter
     // does that) and numeric ids are reported once.
@@ -835,6 +853,7 @@ void Agent::audit_tool_call(const nlohmann::json& record, bool ran, bool ok, con
     entry["workspace"] = harness_.workspace().string();
     entry["ran"] = ran;
     entry["ok"] = ok;
+    if (record.contains("full_output")) entry["full_output"] = true;  // that it was kept, never where or what
     if (int code; ran && std::sscanf(text.c_str(), "exit code %d", &code) == 1) entry["exit"] = code;
     try {
         append_audit_trail(std::move(entry), audit.file_mb);
@@ -965,6 +984,26 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         return result("REFUSED: this exact call has been made " + std::to_string(repeats_) + " times in a row. Do something different, or tell the user what is blocking you.", false);
     }
 
+    // A running command's output reaches the front end as it arrives; the model gets only the result. Its whole
+    // output is kept beside the session when it outgrows that result.
+    OnOutput stream_output = [&](OutputStream s, std::string_view chunk, size_t offset) { events.on_tool_output(call.id, s, chunk, offset); };
+    std::optional<FullOutputWriter> keep;
+    if (log_ && full_output && (name == "run_shell" || script)) keep.emplace(full_output_path(log_->path(), call.id), full_output_max_mb << 20);
+    auto taps = [&](OnOutput display) {
+        OutputTaps t{std::move(display), {}};
+        if (keep) t.on_read = [&](OutputStream s, std::string_view bytes, size_t) { keep->add(s, bytes); };
+        return t;
+    };
+    auto kept = [&] {
+        if (!keep) return;
+        if (auto j = keep->finish(log_->path().parent_path())) {
+            record["full_output"] = *j;
+            events.on_tool_full_output(log_->path().parent_path() / (*j)["path"].get<std::string>());
+        } else if (!keep->error().empty()) {
+            events.on_notice("the whole output was not kept: " + keep->error());
+        }
+    };
+
     if (name == "task") {
         ran = true;
         ToolResult r = run_task(call.arguments, origin, events, cancel, record);
@@ -1016,7 +1055,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
             return d;
         };
         ran = true;
-        ToolResult r = run_lua_tool(*lua, call.arguments, harness_, gate, cancel, std::chrono::seconds(60), nvim_.get());
+        ToolResult r = run_lua_tool(*lua, call.arguments, harness_, gate, cancel, std::chrono::seconds(60), nvim_.get(), stream_output);
         for (const auto& p : written) events.on_file_written(p, name);
         return result(r.text, r.ok);
     }
@@ -1032,7 +1071,11 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         }
         // The workspace is writable only for a tool that declared writes; the mode has already allowed each of them.
         ran = true;
-        ToolResult r = run_script_tool(*script, call.arguments, harness_, script->writes.empty(), cancel);
+        // Its stdout is the result, so only stderr streams.
+        ToolResult r = run_script_tool(*script, call.arguments, harness_, script->writes.empty(), cancel, taps([&](OutputStream s, std::string_view chunk, size_t offset) {
+            if (s == OutputStream::Stderr) stream_output(s, chunk, offset);
+        }));
+        kept();
         return result(r.text, r.ok);
     }
 
@@ -1059,7 +1102,8 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         }
     }
     ran = true;
-    ToolResult r = run_tool(harness_, name, call.arguments, d.read_only_sandbox, cancel);
+    ToolResult r = run_tool(harness_, name, call.arguments, d.read_only_sandbox, cancel, taps(stream_output));
+    kept();
     if (r.ok && name == "move_file") push_undo({actions[0].path, std::nullopt, summary, actions[1].path});
     if (r.ok) {
         for (const auto& a : actions) {
@@ -1264,6 +1308,8 @@ ToolResult Agent::run_task(const nlohmann::json& args, Origin origin, AgentEvent
         child.reviewer_off_ = reviewer_off_;
         if (reviewer_budget_tokens > 0) child.reviewer_budget_tokens = reviewer_budget_tokens - reviewer_tokens_;
     }
+    child.full_output = full_output;
+    child.full_output_max_mb = full_output_max_mb;
     child.repeat_limit = repeat_limit;
     child.repeat_trip = repeat_trip;
     child.denials_limit = denials_limit;
@@ -1308,6 +1354,7 @@ ToolResult Agent::run_task(const nlohmann::json& args, Origin origin, AgentEvent
         std::lock_guard child_lock(child.usage_mu_);
         usage_.total_input += cu.total_input;
         usage_.total_output += cu.total_output;
+        for (const auto& [rule, n] : cu.normalized) usage_.normalized[rule] += n;
         reviewer_tokens_ += child.reviewer_tokens_;
         reviewer_failed_.insert(child.reviewer_failed_.begin(), child.reviewer_failed_.end());
         if (reviewer_off_.empty()) reviewer_off_ = child.reviewer_off_;
@@ -1494,6 +1541,7 @@ Decision Agent::review(const Action& action, const std::string& summary, const s
         auto [provider, name] = resolve_model(providers, reviewer);
         ChatOptions opt{name, false};
         opt.retries = 1;
+        opt.normalized = count_normalized(provider.name);
         std::atomic<bool> no{false};
         Message reply = chat(provider, opt, req, nlohmann::json::array(), [](std::string_view, bool) {}, no);
         {

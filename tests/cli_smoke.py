@@ -11,7 +11,8 @@ import http.server, json, os, shutil, socket, subprocess, sys, tempfile, threadi
 class Fake(http.server.BaseHTTPRequestHandler):
     """Answers every chat with "echo: " plus the first line of the last user message, streamed as SSE. A message
     starting with "hold" gets a reply that idles for 10 s instead, for the interrupt tests; one starting "slow:" is
-    answered after three seconds, for a test that needs the agent busy."""
+    answered after three seconds, for a test that needs the agent busy; "shell:CMD" is a run_shell call of CMD,
+    answered "ran it" once its result is in."""
 
     def log_message(self, *a):
         pass
@@ -29,9 +30,25 @@ class Fake(http.server.BaseHTTPRequestHandler):
         if isinstance(last, list):  # text parts beside an image
             last = "".join(p.get("text", "") for p in last if p.get("type") == "text")
         try:
-            self.reply(last)
+            if last.startswith("shell:"):
+                self.shell(last[6:], body["messages"][-1].get("role") == "tool")
+            else:
+                self.reply(last)
         except (BrokenPipeError, ConnectionResetError):
             pass  # MAIC hung up mid-reply (an interrupt does): that is the end of this reply
+
+    def shell(self, command, answered):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        if answered:
+            chunks = [{"choices": [{"delta": {"content": "ran it"}}]}, {"choices": [{"delta": {}, "finish_reason": "stop"}]}]
+        else:
+            call = {"index": 0, "id": "call_1", "type": "function", "function": {"name": "run_shell", "arguments": json.dumps({"command": command})}}
+            chunks = [{"choices": [{"delta": {"tool_calls": [call]}}]}, {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}]
+        for c in chunks:
+            self.wfile.write(("data: " + json.dumps(c) + "\n\n").encode())
+        self.wfile.write(b"data: [DONE]\n\n")
 
     def reply(self, last):
         self.send_response(200)
@@ -188,6 +205,7 @@ def main():
                  and json.loads(restored.splitlines()[-1]).get("type") == "rewritten")
     print(("ok" if backup_ok else "FAIL") + ": maic sessions redact --in-place keeps a copy that cai trans-fairy-write list-backups and restore see" +
           ("" if backup_ok else "\n" + r.stdout + r.stderr + lb.stdout + lb.stderr + rs.stdout + rs.stderr))
+    output_ok = output_smoke(maic, env, sess_dir)
     rehome_ok = rehome_smoke(maic, env, home)
     # `maic settings read diction`: {} without the file, the table as JSON, a refused call with file:line.
     diction_lua = os.path.join(home, "config", "maic", "diction.lua")
@@ -216,7 +234,58 @@ def main():
     trust_ok = trust_smoke(maic, port)
     trail_ok = audit_trail_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and rehome_ok and read_ok and models_ok else 1)
+    sys.exit(0 if ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok else 1)
+
+
+def output_smoke(maic, env, sess_dir):
+    """`maic sessions output` on a kept output written by hand: the list, the plain print with its label on stderr,
+    and --replay: stdout and stderr interleaved in the original order, each progress redraw its own write, on time."""
+    import selectors
+    sid = "20260101-130000-tui-2"
+    side = os.path.join(sess_dir, sid + ".d")
+    os.makedirs(side, mode=0o700)
+    chunks = [("o", "building\n", 0), ("e", "warning: slow\n", 300), ("o", "progress 10%\r", 600), ("o", "progress 100%\r\n", 900), ("e", "done\n", 1200)]
+    data, idx = "", ""
+    for stream, text, ms in chunks:
+        idx += "%s %d %d %d\n" % (stream, len(data), len(text), ms)
+        data += text
+    with open(os.path.join(side, "call_7.out"), "w") as f:
+        f.write(data)
+    with open(os.path.join(side, "call_7.idx"), "w") as f:
+        f.write(idx)
+    with open(os.path.join(sess_dir, sid + ".jsonl"), "w") as f:
+        for rec in ({"type": "start", "workspace": sess_dir, "model": "fake/fake", "mode": "manual", "host": "h", "pid": 1},
+                    {"type": "tool", "tool": "run_shell", "arguments": {"command": "make"}, "result": "exit code 0", "ok": True,
+                     "full_output": {"path": sid + ".d/call_7.out", "bytes": len(data), "sha256": "", "delivered_to_model": False}}):
+            f.write(json.dumps(dict(rec, time="2026-01-01T13:00:00+0000")) + "\n")
+    ls = subprocess.run([maic, "sessions", "output", sid], capture_output=True, text=True, env=env, timeout=60)
+    plain = subprocess.run([maic, "sessions", "output", sid, "call_7"], capture_output=True, env=env, timeout=60)  # bytes: text mode would turn \r into \n
+    p = subprocess.Popen([maic, "sessions", "output", sid, "call_7", "--replay"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    sel = selectors.DefaultSelector()
+    sel.register(p.stdout, selectors.EVENT_READ, "o")
+    sel.register(p.stderr, selectors.EVENT_READ, "e")
+    seen, start, label = [], None, b""
+    while sel.get_map():
+        for key, _ in sel.select(timeout=10):
+            got = os.read(key.fileobj.fileno(), 65536)
+            if not got:
+                sel.unregister(key.fileobj)
+                continue
+            start = start or time.monotonic()  # the clock starts with the first thing out, the label or the first chunk
+            if key.data == "e" and not label:
+                label, _, got = got.partition(b"\n")  # the label is stderr's first line
+                if not got:
+                    continue
+            seen.append((key.data, got.decode(), (time.monotonic() - start) * 1000))
+    p.wait(timeout=30)
+    order = [(s, t) for s, t, _ in seen] == [(s, t) for s, t, _ in chunks]
+    timing = len(seen) == len(chunks) and all(abs(at - ms) < 200 for (_, _, at), (_, _, ms) in zip(seen, chunks))
+    ok = (ls.returncode == 0 and "call_7  %d bytes  run_shell: make" % len(data) in ls.stdout
+          and plain.returncode == 0 and plain.stdout == data.encode() and b"full output, display only: the model saw the capped result" in plain.stderr
+          and p.returncode == 0 and b"full output, display only" in label and order and timing)
+    print(("ok" if ok else "FAIL") + ": maic sessions output lists, prints with its label, and replays in order and on time" +
+          ("" if ok else "\n" + ls.stdout + ls.stderr + repr(plain.stdout) + repr(plain.stderr) + repr(seen) + repr(label)))
+    return ok
 
 
 def rehome_smoke(maic, env, home):

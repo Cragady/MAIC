@@ -2,9 +2,12 @@
 // ~/.local/state/maic is never touched: XDG_STATE_HOME points under ~/.cache for the whole run.
 #include "check.hpp"
 
+#include "maic/artifacts.hpp"
+#include "maic/full_output.hpp"
 #include "maic/import.hpp"
 #include "maic/redact.hpp"
 #include "maic/session.hpp"
+#include "maic/vendor.hpp"
 
 #include <signal.h>
 #include <sys/stat.h>
@@ -918,6 +921,82 @@ int main() {
         waitpid(live, nullptr, 0);
         expect(error.find("20261001-140000-tui-81 is running (pid " + std::to_string(live) + ")") != std::string::npos && fs::exists(running),
                "a running session is refused with the reason, and stays");
+    }
+
+    section("kept outputs: read, redacted, moved and cleaned with their session");
+    {
+        fs::path proj = ws / "proj-kept";
+        fs::create_directories(proj);
+        std::string secret = "export GITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef0123\n";
+        std::string first = "building\n" + secret, rest = std::string(40000, '.') + "\ndone\n";
+        fs::path path;
+        json kept;
+        {
+            SessionLog log("keeper");
+            log.write("start", {{"workspace", proj.string()}});
+            FullOutputWriter w(full_output_path(log.path(), "call_1"), 64 << 20);
+            w.add(OutputStream::Stdout, first);
+            w.add(OutputStream::Stderr, "warning: slow\n");
+            w.add(OutputStream::Stdout, rest);
+            kept = *w.finish(log.path().parent_path());
+            log.write("tool", {{"tool", "run_shell"}, {"arguments", {{"command", "make"}}}, {"result", "exit code 0\n(capped)"}, {"ok", true}, {"full_output", kept}});
+            path = log.path();
+        }
+        std::string id = path.stem().string(), whole = first + "warning: slow\n" + rest;
+        fs::path out = side_dir(path) / "call_1.out";
+        expect(side_dir(path) == path.parent_path() / (id + ".d") && read_whole(out) == whole, "the kept output sits in <id>.d beside the session");
+        std::string text = render_text(load_session(path), 0, 0, true);
+        expect(text.find("[result]\nexit code 0\n(capped)\n\n[full output, display only: the model saw the capped result] " + std::to_string(whole.size()) +
+                         " bytes: maic sessions output " + id + " call_1") != std::string::npos,
+               "maic sessions read shows the model's result, then the label and how to see the rest");
+        auto info = find_session(id);
+        expect(info && export_markdown(*info, load_session(path)).find("_[full output, display only: the model saw the capped result]") != std::string::npos,
+               "so does the markdown export");
+
+        fs::path copy = ws / "kept.redacted.jsonl";
+        redact_session(path, copy);
+        json red = records(copy)[1]["full_output"];
+        fs::path red_out = resolve_full_output(copy, red);
+        std::string red_text = read_whole(red_out);
+        expect(red_out == ws / "kept.redacted.d" / "call_1.out" && red_text.find("ghp_") == std::string::npos && red_text.find("[REDACTED:env-secret]") != std::string::npos &&
+                   read_whole(out) == whole,
+               "a redacted copy gets a redacted copy of the kept output beside it; the original is untouched");
+        auto index = read_output_index(red_out);
+        expect(red["redacted"] == true && red["sha256"] == file_sha256(red_out) && red["bytes"] == red_text.size() && index.size() == 3 && index[1].stream == 'e' &&
+                   red_text.substr(index[1].offset, index[1].length) == "warning: slow\n",
+               "its record says so, with the copy's size and hash, and its index keeps the streams apart");
+
+        auto plan = plan_rehome({{id}}, "kept-b");
+        rehome_session(plan[0]);
+        fs::path moved = sessions_home("kept-b") / path.filename();
+        expect(!fs::exists(side_dir(path)) && read_whole(side_dir(moved) / "call_1.out") == whole && fs::exists(side_dir(moved) / "call_1.idx") &&
+                   resolve_full_output(moved, kept) == side_dir(moved) / "call_1.out",
+               "rehome moves the kept outputs with the session, and the record still finds them");
+
+        fs::path dest = sessions_home("project:" + proj.string());
+        {
+            SessionLog live = SessionLog::reopen(moved);
+            live.relocate(dest, "init");
+        }
+        fs::path relocated = dest / path.filename();
+        expect(!fs::exists(side_dir(moved)) && read_whole(side_dir(relocated) / "call_1.out") == whole, ":init's move takes them along too");
+
+        RedactReport rep;
+        fs::path backup = redact_session_in_place(relocated, "maic sessions redact " + id + " --in-place", rep);
+        expect(read_whole(side_dir(backup) / "call_1.out") == whole && read_whole(side_dir(relocated) / "call_1.out").find("ghp_") == std::string::npos &&
+                   resolve_full_output(relocated, records(relocated)[1]["full_output"]) == side_dir(relocated) / "call_1.out",
+               "redact --in-place: the original kept output goes beside the backup, the redacted one takes its place");
+
+        // `maic artifacts clean --older-than`: a kept output goes when its session goes, by the session's age.
+        Artifact sessions{"maic", "sessions", "", sessions_dir()};
+        auto age = [](const fs::path& p, int days) { fs::last_write_time(p, fs::file_time_type::clock::now() - std::chrono::hours(24 * days)); };
+        age(side_dir(relocated) / "call_1.out", 90);
+        age(side_dir(relocated) / "call_1.idx", 90);
+        clean(sessions, std::chrono::hours(24 * 30));
+        expect(fs::exists(relocated) && fs::exists(side_dir(relocated) / "call_1.out"), "an old kept output of a recent session stays");
+        age(relocated, 90);
+        clean(sessions, std::chrono::hours(24 * 30));
+        expect(!fs::exists(relocated) && !fs::exists(side_dir(relocated)), "and goes with the session once the session is old");
     }
 
     fs::remove_all(ws);

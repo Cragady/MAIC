@@ -82,6 +82,17 @@ The tripwire design for Windows is in [harness.md](harness.md); the rest needs a
 
 Read opencode's `.opencode/agent/*.md` files (frontmatter plus a prompt) as agents, mapping their `mode:` to MAIC's `role`.
 
+## Real-model checks (optional, highly recommended)
+
+Everything below is covered by tests against fake servers; these runs confirm it against real models on the card, in a window Micaiah offers. Each takes minutes. Tick them off here as they are run.
+
+* [ ] The audit trail's enforcement with the real judge: judge-and-hold at a `maic` start, the scheduled run, `judge_thinking` on and off on the 9B, and the fallback when the judge cannot start.
+* [ ] `maic-leak-audit` with thinking on, compared with the thinking-off run of 2026-10-02 (the result line only).
+* [ ] The adapter normalizations against a real llama-server: provoke a mid-stream error and request logprobs once, and keep the real streams as fixtures next to the hand-written ones.
+* [ ] Streamed tool output and the full-output replay with a real model driving a long command.
+* [ ] The system-prompt experiment from the prompt-placement measurements: a replacement Qwen3.5 chat template (`--chat-template-file`) without the tool-call reminder, with MAIC's system text before the tools, and with fewer tool schemas, to see which brings a system-prompt rule back with tools attached.
+* [ ] `claude-cli` as the reviewer and title model in a real session (the provider was checked live once with `--setting-sources ""`).
+
 ## Parked
 
 * Compaction through a Lua hook from a helper script: the storyboard steps are small enough that a 4B does not need it; revisit if a helper ever does.
@@ -91,6 +102,7 @@ Read opencode's `.opencode/agent/*.md` files (frontmatter plus a prompt) as agen
 * Restrictiveness tiers for settings Lua, configurable: more tiers and their definitions (Micaiah, 2026-10-01).
 * Audit the Lua sandbox and the `maic` API by trust level (Micaiah, 2026-10-01): list everything each Lua runtime can reach (settings, themes, diction.lua, Lua tools, hooks) and give the `maic` API tiers: the whole API only for fully trusted code, a defined subset for sandboxed and restricted code, and refusal with no trust. Fold in docs/limits.md's Lua tools entry.
 * Text to speech (Micaiah, 2026-10-01): MAIC speaking replies aloud, the counterpart to diction; local first, as a service beside whisper. To be discussed.
+* Ask llama.cpp upstream to emit `param: null` in errors and `refusal: null` in logprobs (and a string error `code`), or revisit if the standards change; forking llama.cpp is an option held back for now (Micaiah, 2026-10-02).
 
 ## Done
 

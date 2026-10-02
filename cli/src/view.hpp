@@ -19,6 +19,8 @@ struct Entry {
     std::string text;        // the full text; tool results show a preview while collapsed
     bool collapsed = false;
     time_t when = 0;  // appended at; shown when timestamps are on
+    bool live = false;  // a running command's last lines, until its result takes their place
+    std::string full;   // a result whose whole output was kept: that output, labelled, shown when the fold is open
 };
 
 // The conversation window. Appends are thread-safe; everything else runs on the UI thread. When focused
@@ -34,6 +36,10 @@ public:
     bool collapse_default() const { return collapse_default_; }
     void set_all_collapsed(bool on);  // zR / zM
     void append_to_last(Kind kind, std::string_view delta);  // streaming: extends the last entry if it has this kind
+    // A running command's output: extends the live entry (made under the tool call on the first chunk), which
+    // keeps only the last kLiveLines lines. finish_live appends the result and drops the live entry.
+    void live_output(std::string_view text);
+    void finish_live(Kind kind, std::string text, std::string full = {});
     void clear();
     size_t size() const;
 

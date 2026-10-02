@@ -725,7 +725,7 @@ ToolResult make_dir(const fs::path& p) {
     return {true, "created " + p.string()};
 }
 
-ToolResult run_shell(const Harness& harness, const nlohmann::json& args, bool read_only, const std::atomic<bool>& cancel) {
+ToolResult run_shell(const Harness& harness, const nlohmann::json& args, bool read_only, const std::atomic<bool>& cancel, const OutputTaps& taps) {
     int secs = std::clamp(args.value("timeout_seconds", kDefaultShellTimeout), 1, kMaxShellTimeout);
     fs::path workdir;
     if (args.contains("workdir") && args["workdir"].is_string() && !args["workdir"].get<std::string>().empty()) {
@@ -733,7 +733,7 @@ ToolResult run_shell(const Harness& harness, const nlohmann::json& args, bool re
         std::error_code ec;
         if (!fs::is_directory(workdir, ec)) return {false, "workdir is not a directory: " + workdir.string()};
     }
-    auto r = run_sandboxed(arg(args, "command"), harness.workspace(), read_only, std::chrono::seconds(secs), cancel, workdir);
+    auto r = run_sandboxed(arg(args, "command"), harness.workspace(), read_only, std::chrono::seconds(secs), cancel, workdir, taps);
     std::string status;
     if (r.timed_out) {
         status = "terminated: the command exceeded its timeout of " + std::to_string(secs) + " s. If it is expected to take longer and is not "
@@ -1054,7 +1054,7 @@ std::string tool_summary(const std::string& name, const nlohmann::json& args) {
 }
 
 ToolResult run_tool(const Harness& harness, const std::string& name, const nlohmann::json& args,
-                    bool read_only_sandbox, const std::atomic<bool>& cancel) {
+                    bool read_only_sandbox, const std::atomic<bool>& cancel, const OutputTaps& taps) {
     try {
         if (name == "read_file") return read_file(harness.resolve(arg(args, "path")), args);
         if (name == "list_dir") return list_dir(harness, harness.resolve(arg(args, "path")), args);
@@ -1077,7 +1077,7 @@ ToolResult run_tool(const Harness& harness, const std::string& name, const nlohm
         if (name == "copy_file") return copy_tool(harness.resolve(arg(args, "from")), harness.resolve(arg(args, "to")));
         if (name == "delete_file") return delete_file(harness, harness.resolve(arg(args, "path")), flag(args, "recursive"));
         if (name == "make_dir") return make_dir(harness.resolve(arg(args, "path")));
-        if (name == "run_shell") return run_shell(harness, args, read_only_sandbox, cancel);
+        if (name == "run_shell") return run_shell(harness, args, read_only_sandbox, cancel, taps);
         return {false, "unknown tool: " + name + " (the tools are " + tool_names() + ")"};
     } catch (const std::exception& e) {
         return {false, e.what()};

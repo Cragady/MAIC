@@ -5,6 +5,7 @@
 #include "setup.hpp"
 #include "maic/artifacts.hpp"
 #include "maic/harness.hpp"
+#include "maic/full_output.hpp"
 #include "maic/import.hpp"
 #include "maic/lazy_lock.hpp"
 #include "maic/nvim_keymaps.hpp"
@@ -156,6 +157,8 @@ void usage(std::ostream& out = std::cerr) {
                  "  sessions redact ID|FILE [--in-place | -o FILE]   a copy with credential material replaced by [REDACTED:kind]\n"
                  "                             (default: ./<id>.redacted.jsonl, outside the sessions tree)\n"
                  "  sessions read ID [--range A-B] [--tools]   the conversation as plain text (user turns A to B), for piping\n"
+                 "  sessions output ID [CALL] [--replay]   a command's whole output, kept when the model got it capped (display\n"
+                 "                             only; no CALL: the list); --replay plays it back with its timing, stderr apart\n"
                  "  sessions state ID          one screen: turns, tool calls per tool, files touched, tokens and budget,\n"
                  "                             compactions, forks and subagents\n"
                  "  sessions time ID [--slowest N]   how long each turn took, and the slowest tool calls\n"
@@ -912,6 +915,11 @@ int cmd_sessions_state(const std::vector<std::string>& args) {
     }
     if (st.context) std::cout << "; context window " << st.context;
     std::cout << "\n";
+    if (!st.normalized.empty()) {
+        std::cout << "adapter normalizations (docs/standards.md):";
+        for (const auto& [rule, n] : st.normalized) std::cout << " " << rule << " " << n << ";";
+        std::cout << "\n";
+    }
     if (!st.compactions.empty() || st.clears || st.undos) {
         std::cout << "compactions:";
         for (const auto& [stage, n] : st.compactions) std::cout << " " << stage << " " << n;
@@ -1042,6 +1050,55 @@ int cmd_sessions_read(const std::vector<std::string>& args) {
         }
     }
     std::cout << maic::render_text(maic::load_session(s.path), from, to, o.count("--tools"));
+    return 0;
+}
+
+// maic sessions output ID [CALL] [--replay]: a tool call's kept output (docs/sessions.md, Full output). The label goes
+// to stderr so the output itself can be piped; --replay plays it back as it ran, stdout and stderr each to its own.
+int cmd_sessions_output(const std::vector<std::string>& args) {
+    const std::string use = "maic sessions output ID [CALL] [--replay]";
+    std::vector<std::string> plain;
+    bool replay = false;
+    for (size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "--replay") replay = true;
+        else if (args[i][0] != '-' && plain.size() < 2) plain.push_back(args[i]);
+        else throw std::runtime_error(use);
+    }
+    if (plain.empty()) throw std::runtime_error(use);
+    auto s = need_session(plain[0]);
+    struct Kept {
+        std::filesystem::path file;
+        nlohmann::json record;
+    };
+    std::vector<Kept> kept;
+    maic::walk_records(s.path, ~size_t(0), [&](const nlohmann::json& j) {
+        if (j.value("type", "") != "tool" || !j.contains("full_output")) return;
+        kept.push_back({maic::resolve_full_output(s.path, j["full_output"]), j});
+    });
+    auto name_of = [](const nlohmann::json& j) { return std::filesystem::path(j["full_output"].value("path", "")).stem().string(); };
+    if (plain.size() == 1) {
+        if (kept.empty()) std::cout << "no output of " << s.id << " was kept whole (only outputs over the model's cap are)\n";
+        for (const auto& k : kept) {
+            std::string args_text = k.record.value("arguments", nlohmann::json::object()).value("command", k.record.value("tool", ""));
+            std::cout << name_of(k.record) << "  " << k.record["full_output"].value("bytes", size_t(0)) << " bytes" << (k.file.empty() ? " (file missing)" : "") << "  "
+                      << k.record.value("tool", "") << ": " << args_text.substr(0, 80) << "\n";
+        }
+        return 0;
+    }
+    auto it = std::find_if(kept.begin(), kept.end(), [&](const Kept& k) { return name_of(k.record) == plain[1]; });
+    if (it == kept.end()) throw std::runtime_error("no kept output named " + plain[1] + " in " + s.id + " (maic sessions output " + s.id + " lists them)");
+    if (it->file.empty()) throw std::runtime_error("the kept output " + plain[1] + " of " + s.id + " is missing from " + maic::side_dir(s.path).string());
+    std::cerr << "maic: " << maic::kFullOutputLabel << " (" << it->record["full_output"].value("bytes", size_t(0)) << " bytes, " << it->file.string() << ")\n";
+    if (!replay) {
+        std::ifstream in(it->file, std::ios::binary);
+        std::cout << in.rdbuf() << std::flush;
+        return 0;
+    }
+    maic::replay_full_output(it->file, [](char stream, std::string_view bytes) {
+        FILE* to = stream == 'o' ? stdout : stderr;
+        fwrite(bytes.data(), 1, bytes.size(), to);
+        fflush(to);
+    });
     return 0;
 }
 
@@ -1688,6 +1745,7 @@ int main(int argc, char** argv) {
             if (!cargs.empty() && cargs[0] == "time") return cmd_sessions_time(cargs);
             if (!cargs.empty() && cargs[0] == "name") return cmd_sessions_name(cargs);
             if (!cargs.empty() && cargs[0] == "read") return cmd_sessions_read(cargs);
+            if (!cargs.empty() && cargs[0] == "output") return cmd_sessions_output(cargs);
             if (!cargs.empty() && cargs[0] == "rehome") return cmd_sessions_rehome(cargs);
             if (cargs.size() >= 2 && (cargs[0] == "path" || cargs[0] == "export")) {
                 auto s = maic::find_session(cargs[1]);

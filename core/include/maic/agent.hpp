@@ -8,6 +8,7 @@
 #include "maic/lua_tools.hpp"
 #include "maic/agent_def.hpp"
 #include "maic/nvim_host.hpp"
+#include "maic/sandbox.hpp"
 #include "maic/script_tools.hpp"
 #include "maic/session.hpp"
 #include "maic/settings.hpp"
@@ -51,7 +52,7 @@ struct TodoItem {
 };
 
 // What a front end (the CLI now, the server later) implements to follow and steer a turn.
-// Every method is called from the agent's worker thread.
+// Every method is called from the agent's worker thread, except on_tool_output (below).
 class AgentEvents {
 public:
     virtual ~AgentEvents() = default;
@@ -76,6 +77,17 @@ public:
     // A tool call that changed this file finished without error (a write, an edit, a patch, a move's two ends,
     // a delete; a Lua tool's maic.write).
     virtual void on_file_written(const std::filesystem::path& path, const std::string& tool) { (void)path, (void)tool; }
+    // A running command's output, for display only (the model gets the result): run_shell's output, a script
+    // tool's stderr, what a Lua tool's maic.shell prints. `chunk` starts at byte `offset` of the call's stream; a
+    // gap between two chunks is output dropped because the front end fell behind. Called between on_tool_call
+    // and on_tool_result, in order, from the sandbox's delivery thread while the worker waits for the tool. A
+    // subagent's calls arrive as "<agent>:<call id>".
+    virtual void on_tool_output(const std::string& call_id, OutputStream stream, std::string_view chunk, size_t offset) {
+        (void)call_id, (void)stream, (void)chunk, (void)offset;
+    }
+    // Right before on_tool_result, when the call's whole output outgrew the model's cap and was kept beside the
+    // session (`file`, its .out; Agent::full_output). Display only: the result is what the model got.
+    virtual void on_tool_full_output(const std::filesystem::path& file) { (void)file; }
 };
 
 // An action that would change which directories are trusted or at what tier (a write to <state>/trust*, a
@@ -114,6 +126,12 @@ public:
 
     // Every turn is also written here when set.
     void set_log(SessionLog* log);
+
+    // A command's whole output (run_shell, a script tool), kept beside the session file when it outgrows what the
+    // model is given, at most full_output_max_mb of it (FullOutputWriter); settings `full_output` and
+    // `full_output_max_mb`. Only with a log.
+    bool full_output = true;
+    size_t full_output_max_mb = 64;
 
     // Continues an earlier session: its messages become the history, and the model is told it resumed.
     void restore(std::vector<Message> messages);
@@ -252,6 +270,7 @@ public:
         long total_input = 0;
         long total_output = 0;
         int calls = 0;
+        std::map<std::string, int> normalized;  // adapter rules applied to what the providers sent (normalize_openai), by rule
     };
     UsageReport usage() const;
 
@@ -299,6 +318,9 @@ private:
     // the first turn are appended as system messages instead of rewriting the system prompt.
     void start_or_update_conversation();
     void push(Message m);  // appends to the history and the session log
+    // ChatOptions::normalized for a call to `provider`: counts the rule in usage_ and writes a `normalized` record
+    // {rule, provider, count}, so a server's departure from OpenAI's shapes is never silent.
+    std::function<void(const std::string&, int)> count_normalized(const std::string& provider);
 
     Harness harness_;
     std::vector<Message> messages_;

@@ -6,6 +6,7 @@
 
 #include "maic/agent.hpp"
 #include "maic/audit_trail.hpp"
+#include "maic/jsonschema.hpp"
 #include "maic/settings.hpp"
 #include "maic/tripwire.hpp"
 #include "maic/trust.hpp"
@@ -20,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <set>
 #include <thread>
 
 using namespace maic;
@@ -64,7 +66,23 @@ struct FakeServer {
         }
         return out;
     }
-    static std::string event(const json& j) { return "data: " + j.dump() + "\n\n"; }
+    // One chunk as OpenAI's CreateChatCompletionStreamResponse shapes it, and as llama-server sends it: id, object,
+    // created and model on every chunk, finish_reason null until the last. Every distinct chunk any FakeServer sends
+    // is kept in `sent`, and the suite checks them against the pinned schema at the end.
+    static inline std::mutex sent_mu;
+    static inline std::set<std::string> sent;
+    static std::string event(const std::string& model, const json& delta, const json& finish = nullptr, const json& usage = nullptr) {
+        json c = {{"id", "chatcmpl-fake"}, {"object", "chat.completion.chunk"}, {"created", 1767225600}, {"model", model},
+                  {"choices", json::array({{{"index", 0}, {"delta", delta}, {"finish_reason", finish}}})}};
+        if (!usage.is_null()) c["usage"] = usage;
+        std::string line = c.dump();
+        {
+            std::lock_guard lock(sent_mu);
+            sent.insert(line);
+        }
+        return "data: " + line + "\n\n";
+    }
+    static json usage_of(int input) { return {{"prompt_tokens", input}, {"completion_tokens", 5}, {"total_tokens", input + 5}}; }
 
     void wait_streaming(int n) {
         std::unique_lock lock(mu);
@@ -108,7 +126,8 @@ struct FakeServer {
                 --calls_left;
                 call = tool_call;
             }
-            res.set_chunked_content_provider("text/event-stream", [this, echo, hold, usage, call, call_usage](size_t, httplib::DataSink& sink) {
+            std::string model = body.value("model", "");
+            res.set_chunked_content_provider("text/event-stream", [this, echo, hold, usage, call, call_usage, model](size_t, httplib::DataSink& sink) {
                 auto write = [&](const std::string& s) { return sink.write(s.data(), s.size()); };
                 // The first chunk is out: tell a waiting test, and idle here while held.
                 auto started = [&] {
@@ -119,29 +138,25 @@ struct FakeServer {
                     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
                     while (std::chrono::steady_clock::now() < deadline) {
                         cv.wait_for(lock, std::chrono::milliseconds(20));
-                        if (!write(event({{"choices", {{{"index", 0}, {"delta", json::object()}}}}}))) return false;
+                        if (!write(event(model, json::object()))) return false;
                     }
                     return true;
                 };
                 if (!call.is_null()) {
                     json tc = {{"index", 0}, {"id", "call_1"}, {"type", "function"},
                                {"function", {{"name", call["name"]}, {"arguments", call["arguments"].dump()}}}};
-                    write(event({{"choices", {{{"index", 0}, {"delta", {{"content", ""}, {"tool_calls", {tc}}}}}}}}));
+                    write(event(model, {{"content", ""}, {"tool_calls", {tc}}}));
                     if (!started()) return false;
-                    json done = {{"choices", {{{"index", 0}, {"delta", json::object()}, {"finish_reason", "tool_calls"}}}}};
-                    if (usage && call_usage) done["usage"] = {{"prompt_tokens", usage}, {"completion_tokens", 5}};
-                    write(event(done));
+                    write(event(model, json::object(), "tool_calls", usage && call_usage ? usage_of(usage) : json()));
                     write("data: [DONE]\n\n");
                     sink.done();
                     return true;
                 }
                 for (size_t i = 0; i < echo.size(); i += 4) {
-                    if (!write(event({{"choices", {{{"index", 0}, {"delta", {{"content", echo.substr(i, 4)}}}}}}}))) return false;
+                    if (!write(event(model, {{"content", echo.substr(i, 4)}}))) return false;
                     if (i == 0 && !started()) return false;
                 }
-                json done = {{"choices", {{{"index", 0}, {"delta", json::object()}, {"finish_reason", "stop"}}}}};
-                if (usage) done["usage"] = {{"prompt_tokens", usage}, {"completion_tokens", 5}};
-                write(event(done));
+                write(event(model, json::object(), "stop", usage ? usage_of(usage) : json()));
                 write("data: [DONE]\n\n");
                 sink.done();
                 return true;
@@ -182,6 +197,26 @@ struct Recorder : AgentEvents {
     }
     std::vector<std::vector<TodoItem>> todos;
     void on_todo(const std::vector<TodoItem>& items) override { todos.push_back(items); }
+    struct Output {
+        std::string call;
+        OutputStream stream;
+        std::string chunk;
+        size_t offset;
+        size_t results_before;  // tool results already in when it came
+    };
+    std::vector<Output> outputs;
+    void on_tool_output(const std::string& call, OutputStream stream, std::string_view chunk, size_t offset) override {
+        outputs.push_back({call, stream, std::string(chunk), offset, results.size()});
+    }
+    std::vector<fs::path> kept;
+    void on_tool_full_output(const fs::path& file) override { kept.push_back(file); }
+    std::string streamed(OutputStream s) const {
+        std::string all;
+        for (const auto& o : outputs) {
+            if (o.stream == s) all += o.chunk;
+        }
+        return all;
+    }
 };
 
 std::error_code& ec_ignore() {
@@ -1212,6 +1247,123 @@ int main() {
         unsetenv("XDG_CONFIG_HOME");
     }
 
+    section("a running command's output reaches the front end");
+    {
+        fs::path cfg = ws / "cfg";
+        fs::create_directories(cfg);
+        setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
+        fs::create_directories(ws / ".maic" / "tools" / "noisy");
+        std::ofstream(ws / ".maic" / "tools" / "noisy" / "tool.json")
+            << R"({"name": "noisy", "description": "says how it is going", "parameters": {"type": "object", "properties": {}}, "run": ["sh", "main.sh"]})";
+        std::ofstream(ws / ".maic" / "tools" / "noisy" / "main.sh") << "#!/bin/sh\necho the result\necho working on it >&2\n";
+        std::ofstream(ws / ".maic" / "tools" / "shells.lua") << "return {\n"
+                                                                 "  name = 'shells', description = 'runs two commands',\n"
+                                                                 "  parameters = { type = 'object', properties = {} },\n"
+                                                                 "  run = function() return maic.shell('echo first') .. maic.shell('echo second') end,\n"
+                                                                 "}\n";
+        FakeServer fake;
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        agent.review_with_model = false;
+        agent.agents.push_back({"fast", Mode::Auto});
+        auto all_before_result = [](const Recorder& r, const std::string& call) {
+            return std::all_of(r.outputs.begin(), r.outputs.end(), [&](const Recorder::Output& o) { return o.results_before == 0 && o.call == call; });
+        };
+
+        Recorder r;
+        r.reply = {Approval::Yes, ""};
+        fake.tool_call = json{{"name", "run_shell"}, {"arguments", {{"command", "echo out; echo err >&2"}}}};
+        fake.calls_left = 1;
+        agent.submit("run it", Origin::Local, r, no_cancel);
+        expect(!r.outputs.empty() && all_before_result(r, "call_1") && r.streamed(OutputStream::Stdout) == "out\nerr\n" && r.outputs[0].offset == 0,
+               "run_shell's output, stderr interleaved as stdout, arrives under its call id before the result");
+        expect(r.results.size() == 1 && r.results[0] == "exit code 0\nout\nerr", "the result is what it always was: " + (r.results.empty() ? "" : r.results[0]));
+
+        Recorder s;
+        fake.tool_call = json{{"name", "noisy"}, {"arguments", json::object()}};
+        fake.calls_left = 1;
+        agent.submit("noisy", Origin::Local, s, no_cancel);
+        expect(all_before_result(s, "call_1") && s.streamed(OutputStream::Stderr) == "working on it\n" && s.streamed(OutputStream::Stdout).empty(),
+               "a script tool streams its stderr only");
+        expect(s.results.size() == 1 && s.results[0] == "the result", "its stdout is still the result");
+
+        Recorder l;
+        l.reply = {Approval::Yes, ""};
+        fake.tool_call = json{{"name", "shells"}, {"arguments", json::object()}};
+        fake.calls_left = 1;
+        agent.submit("shells", Origin::Local, l, no_cancel);
+        expect(all_before_result(l, "call_1") && l.streamed(OutputStream::Stdout) == "first\nsecond\n" && l.outputs.size() == 2 && l.outputs[1].offset == 6,
+               "a Lua tool's maic.shell commands stream as one stream, the second continuing the first's offsets");
+
+        Recorder c;
+        c.reply = {Approval::Yes, ""};
+        int parent_calls = 0, child_calls = 0;
+        fake.tool_call_for = [&](const json& b) -> json {
+            if (!from_child(b)) return ++parent_calls == 1 ? json{{"name", "task"}, {"arguments", {{"agent", "fast"}, {"prompt", "say hi"}}}} : json();
+            return ++child_calls == 1 ? json{{"name", "run_shell"}, {"arguments", {{"command", "echo from the child"}}}} : json();
+        };
+        agent.submit("delegate", Origin::Local, c, no_cancel);
+        fake.tool_call_for = nullptr;
+        expect(!c.outputs.empty() && all_before_result(c, "fast:call_1") && c.streamed(OutputStream::Stdout) == "from the child\n",
+               "a subagent's command streams to the parent's front end, labelled with the agent: " + (c.outputs.empty() ? "" : c.outputs[0].call));
+        for (const auto& sub : list_sessions(ws)) {
+            if (sub.kind == "sub") fs::remove(sub.path);
+        }
+        fs::remove_all(ws / ".maic");
+        unsetenv("XDG_CONFIG_HOME");
+    }
+
+    section("a command's whole output is kept beside the session, the model's result unchanged");
+    {
+        FakeServer fake;
+        SessionLog log("agent-test");
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        agent.review_with_model = false;
+        agent.set_log(&log);
+        std::string full;
+        for (int i = 1; full.size() < 2 * 1024 * 1024; ++i) full += std::to_string(i) + "\n";
+        full.resize(2 * 1024 * 1024);
+        Recorder r;
+        r.reply = {Approval::Yes, ""};
+        fake.tool_call = json{{"name", "run_shell"}, {"arguments", {{"command", "seq 1 400000 | head -c 2097152"}}}};
+        fake.calls_left = 1;
+        agent.submit("run it", Origin::Local, r, no_cancel);
+        std::string model = full.substr(0, 24 * 1024) + "\n... [" + std::to_string(full.size() - 32 * 1024) + " bytes omitted] ...\n" + full.substr(full.size() - 8 * 1024);
+        while (!model.empty() && model.back() == '\n') model.pop_back();
+        expect(r.results.size() == 1 && r.results[0] == "exit code 0\n" + model, "the model's result is the capped one it always was: " + (r.results.empty() ? "" : r.results[0].substr(0, 60) + " ... " + std::to_string(r.results[0].size()) + " bytes"));
+        json rec;
+        std::ifstream in(log.path());
+        for (std::string line; std::getline(in, line);) {
+            json j = json::parse(line, nullptr, false);
+            if (j.is_object() && j.value("type", "") == "tool") rec = j;
+        }
+        fs::path file = log.path().parent_path() / rec["full_output"].value("path", "");
+        std::ifstream kept_in(file, std::ios::binary);
+        std::string kept((std::istreambuf_iterator<char>(kept_in)), std::istreambuf_iterator<char>());
+        expect(rec["full_output"]["path"] == log.path().stem().string() + ".d/call_1.out" && rec["full_output"]["bytes"] == full.size() &&
+                   rec["full_output"]["delivered_to_model"] == false && kept == full,
+               "the tool record names the kept file, beside the session, and it holds all 2 MiB: " + rec.dump().substr(0, 300));
+        expect(r.kept.size() == 1 && r.kept[0] == file, "the front end is told where, before the result");
+        std::string read = render_text(load_session(log.path()), 0, 0, true);
+        expect(read.find("[full output, display only: the model saw the capped result] 2097152 bytes: maic sessions output " + log.path().stem().string() + " call_1") != std::string::npos,
+               "maic sessions read labels it display only");
+        bool in_history = false;
+        for (const auto& m : agent.messages()) in_history = in_history || m.content.find("full output") != std::string::npos;
+        expect(!in_history, "and nothing of it reaches the model");
+
+        agent.full_output = false;
+        Recorder off;
+        off.reply = {Approval::Yes, ""};
+        fake.calls_left = 1;
+        agent.submit("again", Origin::Local, off, no_cancel);
+        expect(off.kept.empty() && !fs::exists(file.parent_path() / "call_1-2.out"), "full_output = false keeps nothing");
+        fs::remove_all(file.parent_path());
+        fs::remove(log.path());
+    }
+
     section("operator instructions set mid-conversation");
     {
         FakeServer fake;
@@ -1541,6 +1693,8 @@ int main() {
         b.providers = {p};
         b.restore(hist);
         b.compaction.at = 0;  // no proactive compaction, so the 400 path is what saves it
+        SessionLog blog("agent-test");
+        b.set_log(&blog);
         fake.fail_left = 1;
         fake.fail_body = R"({"error":{"code":400,"message":"request (27847 tokens) exceeds the available context size (16384 tokens), try increasing it","type":"invalid_request_error"}})";
         Recorder rb;
@@ -1553,6 +1707,13 @@ int main() {
         bool threw = false;
         try { b.submit("again", Origin::Local, rc, no_cancel); } catch (const std::exception& e) { threw = std::string(e.what()).find("exceeds") != std::string::npos; }
         expect(threw, "after two compact-and-retry rounds the error is reported");
+        // llama.cpp's error has an integer code and no param: the adapter rules rewrote it, and said so.
+        auto counted = b.usage().normalized;
+        expect(counted["error_code_string"] >= 1 && counted["error_code_string"] == counted["error_param_null"],
+               "the usage report counts the adapter rules applied to llama.cpp's error bodies");
+        SessionStats st = session_stats(blog.path());
+        expect(st.normalized["fake error_code_string"] == static_cast<size_t>(counted["error_code_string"]) && st.normalized["fake error_param_null"] == static_cast<size_t>(counted["error_param_null"]),
+               "each application is a `normalized` record naming the rule and the provider, summed by session_stats");
     }
 
     section("string and token bans");
@@ -2036,6 +2197,29 @@ int main() {
             if (j.is_object() && j.value("type", "") == "workspace") rec = j;
         }
         expect(rec.value("from", "") == fs::weakly_canonical(a).string() && rec.value("to", "") == fs::weakly_canonical(b).string(), "the transcript gets a workspace record {from, to}");
+    }
+
+    section("FakeServer's chunks against OpenAI's pinned CreateChatCompletionStreamResponse");
+    {
+        std::ifstream in(std::string(MAIC_PROTOCOL) + "/openai/subset.json");
+        json subset = json::parse(in);
+        const json chunk = {{"$ref", "#/components/schemas/CreateChatCompletionStreamResponse"}};
+        std::string first;
+        int bad = 0;
+        std::set<std::string> kinds;
+        std::lock_guard lock(FakeServer::sent_mu);
+        for (const auto& line : FakeServer::sent) {
+            json c = json::parse(line);
+            if (std::string e = schema_error(subset, chunk, c); !e.empty() && bad++ == 0) first = e + " in " + line;
+            const json& choice = c["choices"][0];
+            if (c.contains("usage")) kinds.insert("usage");
+            if (choice["finish_reason"].is_string()) kinds.insert("finish " + choice["finish_reason"].get<std::string>());
+            for (const auto& [k, v] : choice["delta"].items()) kinds.insert(k);
+            if (choice["delta"].empty()) kinds.insert("empty");
+        }
+        expect(kinds == std::set<std::string>{"content", "empty", "finish stop", "finish tool_calls", "tool_calls", "usage"},
+               "the suite sent every kind of chunk: text, a tool call, an empty keepalive, both finishes, usage (" + std::to_string(FakeServer::sent.size()) + " distinct)");
+        expect(bad == 0, "every chunk FakeServer sent fits the schema" + (first.empty() ? "" : ": " + std::to_string(bad) + " do not, first " + first));
     }
 
     fs::remove_all(ws);
