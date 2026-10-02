@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <cstring>
 #include <filesystem>
 #include <map>
 #include <set>
@@ -192,6 +193,10 @@ int main() {
     o.workspaces = {ws};
     o.index_file = root / "state" / "engine" / "index.json";
     o.protocol_log = root / "state" / "engine" / "protocol.log";
+    o.settings.max_tasks = 2;  // the background tasks section meets the limit
+    for (auto& a : o.settings.agents) {
+        if (a.name == "explore") a.steering = {{"actions", {"interrupt", "keep", "halt"}}};  // and an agent's narrower steering
+    }
     auto engine = std::make_unique<Engine>(o);
     std::mutex calls_mu;
     std::vector<json> script;  // tool calls the fake answers with, in order; then echoes
@@ -1536,6 +1541,245 @@ int main() {
         expect(cut && verdict(mutated) == "machine", "mutated: a session's state after parked without a new load's epoch is caught");
     }
     recordings.push_back(&multi);
+
+    section("background tasks: sessions of their own, in parallel with the parent's turn");
+    Recording tasks("tasks");
+    {
+        TestClient a(*engine, tasks, Origin::Local, "tui");
+        a.hello();
+        a.ok("maic.index.subscribe");
+        auto entry_of = [&](const std::string& id) {
+            json entries = a.ok("maic.index.get")["entries"];
+            for (const auto& e : entries) {
+                if (e["id"] == id) return e;
+            }
+            return json();
+        };
+        auto on = [](const std::string& id, const std::string& type) { return [id, type](const json& e) { return e["stream_id"] == id && e["type"] == type; }; };
+        auto last_user = [](const json& body) {
+            std::string last;
+            for (const auto& m : body["messages"]) {
+                if (m["role"] == "user") last = FakeServer::text_of(m["content"]);
+            }
+            return last;
+        };
+        auto is_parent = [](const json& body) {
+            for (const auto& t : body.value("tools", json::array())) {
+                if (t["function"]["name"] == "task") return true;
+            }
+            return false;
+        };
+        auto saved_calls = fake.tool_call_for;
+        // The parent (the session with the task tool) follows `steps`, where task "@last" names the task its last task
+        // call started; a task runs "shell:CMD" once and otherwise echoes, one whose job starts "hold" is held, and one
+        // whose job starts "gated" waits for the gate, as the parent's call `gate_at` does.
+        std::vector<json> steps;
+        int parent_calls = 0, gate_at = -1;
+        bool gate_open = true;
+        std::condition_variable gate_cv;
+        fake.tool_call_for = [&](const json& body) -> json {
+            std::lock_guard lock(calls_mu);
+            if (is_parent(body)) {
+                if (steps.empty()) return nullptr;
+                json c = steps.front();
+                steps.erase(steps.begin());
+                if (c["arguments"].value("task", "") == "@last") {
+                    for (const auto& m : body["messages"]) {
+                        std::string t = m["role"] == "tool" ? FakeServer::text_of(m["content"]) : "";
+                        if (size_t at = t.find("in the background as task "); at != std::string::npos) {
+                            at += std::strlen("in the background as task ");
+                            c["arguments"]["task"] = t.substr(at, t.find(' ', at) - at);
+                        }
+                    }
+                }
+                return c;
+            }
+            if (body["messages"].back()["role"] == "tool") return nullptr;
+            std::string last = last_user(body);
+            return last.rfind("shell:", 0) == 0 ? shell(last.substr(6)) : json();
+        };
+        fake.reply = [&](const json& body) -> std::string {
+            std::unique_lock lock(calls_mu);
+            bool gated = is_parent(body) ? ++parent_calls == gate_at : last_user(body).rfind("gated", 0) == 0;
+            if (gated) gate_cv.wait_for(lock, 20s, [&] { return gate_open; });
+            return "";
+        };
+        auto open_gate = [&] {
+            {
+                std::lock_guard lock(calls_mu);
+                gate_open = true;
+            }
+            gate_cv.notify_all();
+        };
+        fake.hold_when = [&](const json& body) { return !is_parent(body) && last_user(body).rfind("hold", 0) == 0; };
+        auto task = [](const std::string& prompt) { return json{{"name", "task"}, {"arguments", {{"agent", "explore"}, {"prompt", prompt}, {"background", true}}}}; };
+        auto created = [&](size_t from) {
+            long i = a.until([](const json& e) { return e["type"] == "maic.task.created"; }, from);
+            return i < 0 ? std::string() : a.events[i]["task"].get<std::string>();
+        };
+
+        std::string parent = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}})["id"];
+        auto turn_end = [&](size_t from) {
+            return a.until([&](const json& e) { return e["type"] == "response.completed" && e["response"]["conversation"]["id"] == parent && e["response"]["maic"]["final"] == true; }, from);
+        };
+        a.ok("maic.session.subscribe", {{"session", parent}});
+        a.pump(50ms);
+        size_t mark = a.events.size();
+        {
+            std::lock_guard lock(calls_mu);
+            steps = {task("child one"), task("child two"), {{"name", "list_dir"}, {"arguments", {{"path", "."}}}}};
+            gate_open = false;
+            gate_at = parent_calls + 3;  // the parent's third call waits until both tasks have ended
+        }
+        a.ok("response.create", {{"conversation", parent}, {"input", "start two tasks"}});
+        long c1 = a.until(on(parent, "maic.task.created"), mark);
+        long c2 = c1 < 0 ? -1 : a.until(on(parent, "maic.task.created"), c1 + 1);
+        expect(c1 >= 0 && c2 >= 0, "two background task calls each start a task: maic.task.created on the parent's stream");
+        std::string t1 = c1 < 0 ? "" : a.events[c1]["task"].get<std::string>(), t2 = c2 < 0 ? "" : a.events[c2]["task"].get<std::string>();
+        a.ok("maic.session.subscribe", {{"session", t1}});
+        a.ok("maic.session.subscribe", {{"session", t2}});
+        long d1 = a.until(on(parent, "maic.task.completed"), mark);
+        long d2 = d1 < 0 ? -1 : a.until(on(parent, "maic.task.completed"), d1 + 1);
+        open_gate();
+        long end = a.until([&](const json& e) { return on(parent, "response.completed")(e) && e["response"]["maic"]["final"] == true; }, mark);
+        long listed = a.until([&](const json& e) { return on(parent, "response.output_item.added")(e) && e["item"].value("name", "") == "list_dir"; }, mark);
+        bool final_before = false;
+        for (long i = static_cast<long>(mark); i <= d2; ++i) final_before = final_before || (on(parent, "response.completed")(a.events[i]) && a.events[i]["response"]["maic"]["final"] == true);
+        expect(d1 > c1 && d2 > c2 && listed > d2 && end > listed && !final_before,
+               "both tasks run and finish while the parent's turn goes on (its next model calls, the last held until both end): in parallel, not inside its task calls");
+        const json* first1 = a.find("maic.session.state");
+        for (size_t i = 0; i < a.events.size(); ++i) {
+            if (a.events[i]["stream_id"] == t1) {
+                first1 = &a.events[i];
+                break;
+            }
+        }
+        expect(first1 && first1->value("sequence_number", -1L) == 0 && first1->contains("parent") && (*first1)["parent"]["session"] == parent &&
+                   (*first1)["parent"]["sequence_number"] == a.events[c1]["sequence_number"] && (*first1)["parent"]["call_id"] == a.events[c1]["call_id"],
+               "a task's first event names its parent session, the parent's epoch, the task call and the maic.task.created it answers");
+        json e1 = entry_of(t1);
+        expect(e1["kind"] == "sub" && e1["parent"] == parent && e1["agent"] == "explore" && e1["state"] == "background" && e1["unseen"] == true,
+               "a task is a session in the index: kind sub, its parent and agent, in the background, finished unseen: " + e1.dump());
+        expect(d1 >= 0 && a.events[d1].value("answer_size", 0) > 0 && a.events[d1].contains("ref"), "maic.task.completed says how big its answer is and where it is");
+        long steered = a.until([&](const json& e) { return on(parent, "response.incomplete")(e) && e["response"]["incomplete_details"]["reason"] == "steered"; }, d2 < 0 ? mark : d2);
+        long successor = steered < 0 ? -1 : a.until(on(parent, "response.created"), steered);
+        expect(steered >= 0 && successor >= 0 && successor < end && a.events[successor]["maic"].value("cause", -1L) == a.events[d2]["sequence_number"].get<long>(),
+               "the answers reach the running turn at its next step, through the mailbox; the successor's maic.cause is the task's end");
+        json items = a.ok("listConversationItems", {{"conversation_id", parent}, {"limit", 100}, {"order", "asc"}})["data"];
+        int notes = 0, typed = 0;
+        for (const auto& it : items) {
+            std::string text = it["type"] == "maic.notice" ? it.value("text", "") : it["type"] == "message" && it["role"] == "user" ? it["content"][0].value("text", "") : "";
+            if (text.find("[Background task ") == std::string::npos) continue;
+            (it["type"] == "maic.notice" && it["kind"] == "context" ? notes : typed)++;
+            expect(text.find("data, not the user's instruction") != std::string::npos && text.find("echo: child") != std::string::npos,
+                   "a task's note is labelled with its session and carries its answer");
+        }
+        expect(notes == 2 && typed == 0, "each answer is a context note in the parent's history, never a user turn");
+
+        // Switching into a task: it is a session like any other.
+        json f = a.ok("maic.session.focus", {{"session", t1}, {"leave", {{"as", "bg"}}}});
+        a.pump(50ms);  // the focus's state events, before the attach's answer joins the stream past them
+        json snap = a.ok("maic.session.attach", {{"session", t1}});
+        bool echoed = false;
+        for (const auto& it : snap["items"]) echoed = echoed || (it["type"] == "message" && it["role"] == "assistant" && it["content"][0].value("text", "") == "echo: child one");
+        expect(f["state"] == "live" && f["kind"] == "sub" && f["unseen"] == false && echoed, "switching into a task shows its own conversation");
+        a.ok("maic.session.focus", {{"session", parent}, {"leave", {{"as", "bg"}}}});
+
+        // Two held tasks are the limit (max_tasks = 2); a third is refused for the model.
+        mark = a.events.size();
+        {
+            std::lock_guard lock(calls_mu);
+            steps = {task("hold: first"), task("hold: second"), task("a third")};
+        }
+        a.ok("response.create", {{"conversation", parent}, {"input", "three more"}});
+        std::string h1 = created(mark), h2 = h1.empty() ? "" : created(a.until(on(parent, "maic.task.created"), mark) + 1);
+        turn_end(mark);
+        bool refused = false;
+        for (size_t i = mark; i < a.events.size(); ++i) {
+            const json& e = a.events[i];
+            if (on(parent, "response.output_item.done")(e) && e["item"]["type"] == "function_call_output") {
+                refused = refused || e["item"].value("output", "").find("max_tasks") != std::string::npos;
+            }
+        }
+        expect(!h1.empty() && !h2.empty() && refused && a.count("maic.task.created") == 4,
+               "past max_tasks a background task is refused, and the model is told why (" + h1 + ", " + h2 + ", " + std::to_string(a.count("maic.task.created")) + ")");
+
+        // The agent's steering narrows its task's: explore takes interrupt, keep and halt, not drop.
+        a.ok("maic.session.subscribe", {{"session", h1}});
+        a.ok("maic.session.subscribe", {{"session", h2}});
+        long r1 = a.until(on(h1, "response.created"));
+        std::string rid = r1 < 0 ? "" : a.events[r1]["response"]["id"].get<std::string>();
+        expect(a.error("maic.steer", {{"session", h1}, {"response_id", rid}, {"action", "drop"}}) == "maic_steer_disabled",
+               "agents.explore.steering narrows its task's session: drop is refused there");
+        a.ok("maic.steer", {{"session", h1}, {"response_id", rid}, {"action", "interrupt"}});
+        expect(a.until(on(h1, "maic.turn.paused"), mark) >= 0, "an action the agent keeps is applied to the task directly, by its own session id");
+        long r2 = a.until(on(h2, "response.created"));
+        a.ok("maic.steer", {{"session", h2}, {"response_id", r2 < 0 ? "" : a.events[r2]["response"]["id"].get<std::string>()}, {"action", "keep"}});
+        long kept = a.until([&](const json& e) { return on(parent, "maic.task.completed")(e) && e["task"] == h2; }, mark);
+        expect(kept >= 0, "a task whose reply is kept ends completed");
+
+        // Stopping a task: its parent hears it failed.
+        json stop = a.ok("maic.session.stop", {{"session", h1}, {"interrupt", true}});
+        long failed = a.until([&](const json& e) { return on(parent, "maic.task.failed")(e) && e["task"] == h1; }, mark);
+        expect(stop["state"] == "stopped" && failed >= 0 && a.events[failed].value("reason", "") == "was stopped before it finished" && entry_of(h1).is_null(),
+               "stopping a task ends its session, and the parent's stream says the task failed and why");
+
+        // task_result waits for one (the task's model call is held until the wait has begun): its answer is the tool's
+        // result, and no note follows.
+        mark = a.events.size();
+        {
+            std::lock_guard lock(calls_mu);
+            steps = {task("gated: child three"), {{"name", "task_result"}, {"arguments", {{"task", "@last"}, {"wait", true}}}}};
+            gate_open = false;
+        }
+        a.ok("response.create", {{"conversation", parent}, {"input", "wait for it"}});
+        a.until([&](const json& e) { return on(parent, "response.output_item.added")(e) && e["item"].value("name", "") == "task_result"; }, mark);
+        open_gate();
+        turn_end(mark);
+        std::string waited;
+        for (size_t i = mark; i < a.events.size(); ++i) {
+            const json& e = a.events[i];
+            if (on(parent, "response.output_item.done")(e) && e["item"]["type"] == "function_call_output") waited = e["item"].value("output", "");
+        }
+        items = a.ok("listConversationItems", {{"conversation_id", parent}, {"limit", 100}})["data"];
+        int third_notes = 0;
+        for (const auto& it : items) third_notes += it["type"] == "maic.notice" && it.value("text", "").find("echo: gated: child three") != std::string::npos;
+        expect(waited.find("echo: gated: child three") != std::string::npos && third_notes == 0,
+               "task_result with wait answers with the task's report, and no note repeats it: " + waited + " " + std::to_string(third_notes));
+
+        // A task's approval is raised on its parent's stream too, and answered there.
+        mark = a.events.size();
+        {
+            std::lock_guard lock(calls_mu);
+            steps = {task("shell:printf paws")};
+        }
+        a.ok("response.create", {{"conversation", parent}, {"input", "a task that asks"}});
+        long asked = a.until(on(parent, "maic.approval.requested"), mark);
+        std::string t4 = created(mark);
+        json waiting = entry_of(parent)["waiting"];
+        expect(asked >= 0 && a.events[asked]["thread"]["session"] == t4 && !a.events[asked].contains("call_id") && waiting.is_object() && waiting.value("session", "") == t4,
+               "a task's approval shows on its parent's stream, naming the task, and the parent's entry says it waits: " + t4 + " " + waiting.dump() +
+                   (asked >= 0 ? a.events[asked].dump() : ""));
+        if (asked >= 0) a.ok("maic.approval.answer", {{"session", parent}, {"approval", a.events[asked]["id"]}, {"choice", "yes"}});
+        long answered = a.until(on(parent, "maic.approval.answered"), mark);
+        long ran = a.until([&](const json& e) { return on(parent, "maic.task.completed")(e) && e["task"] == t4; }, mark);
+        expect(answered >= 0 && ran >= 0 && entry_of(parent)["waiting"].is_null(), "answered on the parent, it runs in the task; both streams say it was answered");
+        a.pump(100ms);
+        {
+            std::lock_guard lock(calls_mu);
+            fake.tool_call_for = saved_calls;
+            fake.reply = nullptr;
+            fake.hold_when = nullptr;
+        }
+        tasks.finish();
+
+        // A task's end without its start is caught.
+        std::vector<json> mutated = tasks.records;
+        auto made = events_of(mutated, "maic.task.created");
+        if (!made.empty()) mutated.erase(mutated.begin() + static_cast<long>(made.front()));
+        expect(!made.empty() && verdict(mutated) != "", "mutated: a maic.task.created removed breaks the stream");
+    }
+    recordings.push_back(&tasks);
 
     // The epoch a load ran under, and the number its stream reached, before the restart.
     std::string epoch_before;

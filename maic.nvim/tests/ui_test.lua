@@ -233,6 +233,27 @@ vim.cmd("MaicFork")
 local fork = landed(held.session)
 conv = fork.conversation
 expect(fork.session ~= held.session and wait_for("❯ hold on"), ":MaicFork goes to a fork that starts with its parent's history")
+
+io.write("background tasks\n")
+idle()
+send("bg:explore:look around")
+expect(wait_for("the explore agent works in the background: look around") and wait_for("the explore task finished"),
+  "a background task's start and end show in its parent's conversation")
+local task, second_line
+vim.ui.select = function(items, _, cb)
+  second_line = items[2]
+  for _, it in ipairs(items) do
+    if it.kind == "sub" and it.parent == fork.session then
+      task = it
+      return cb(it)
+    end
+  end
+end
+vim.cmd("MaicSwitch")
+vim.wait(30000, function() return task ~= nil and ui.state().session == task.id and ui.state().model ~= nil end, 20)
+conv = ui.state().conversation
+expect(task ~= nil and second_line == task and wait_for("echo: look around") and wait_for("❯ look around"),
+  ":MaicSwitch lists the task first, under this session, and goes into its own conversation")
 vim.ui.select = function(items, _, cb)
   for _, it in ipairs(items) do
     if it.id == first.session then return cb(it) end

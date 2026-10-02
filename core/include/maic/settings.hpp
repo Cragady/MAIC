@@ -118,6 +118,9 @@ struct SteeringSettings {
 // Reads one `steering` table over `into`: `narrow_only` for a project layer or an agent (actions and ban_actions
 // only lose entries), `global` for the file that may set `clients`. `where` names it in errors and warnings.
 void read_steering(SteeringSettings& into, const nlohmann::json& table, const std::string& where, bool global, bool narrow_only, std::vector<std::string>& warnings);
+// A session's steering as it runs as agent `name`: `agent` (AgentDef::steering, checked when settings loaded) over
+// `session`, the lists only losing entries.
+SteeringSettings agent_steering(const SteeringSettings& session, const nlohmann::json& agent, const std::string& name);
 
 struct Settings {
     std::string model = "llamacpp/current";  // the vendored llama-server serves the linked GGUF as `current`
@@ -136,6 +139,7 @@ struct Settings {
     std::string highlight = "builtin";  // the input's highlighter: "builtin", or "nvim" (an embedded nvim --embed, when it is installed)
     bool enter_sends = false;           // Enter sends a one-line input in insert mode (Shift+Enter / Alt+Enter then insert a newline)
     std::string session_leave = "default";  // what :new, :switch and :fork do with the session left: default, ask, bg, park, stop
+    int max_tasks = 4;  // background tasks (task with background = true) one session may have running at once; a project layer only lowers it
     std::string models_dir;
     int context = 16384;       // the local server's context window in tokens (--ctx-size for llama.cpp) and the readout
     int context_2 = 8192;      // the same for the side server (services/llamacpp-2.json, ${MAIC_CONTEXT_2})

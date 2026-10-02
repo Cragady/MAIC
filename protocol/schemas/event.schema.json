@@ -113,6 +113,15 @@
     },
     {
       "$ref": "#/$defs/maic.usage.updated"
+    },
+    {
+      "$ref": "#/$defs/maic.task.created"
+    },
+    {
+      "$ref": "#/$defs/maic.task.completed"
+    },
+    {
+      "$ref": "#/$defs/maic.task.failed"
     }
   ],
   "$defs": {
@@ -889,7 +898,7 @@
       ]
     },
     "maic.approval.requested": {
-      "description": "An action waits for a person. Raised on the top-level session's stream, `thread` naming a subagent's.",
+      "description": "An action waits for a person. A foreground subagent's names it in `thread` (agent only); a background task's is raised on its own stream and on its parent's, `thread` naming the task's session there, and an answer on either settles both.",
       "allOf": [
         {
           "$ref": "#/$defs/Envelope"
@@ -1136,7 +1145,7 @@
       ]
     },
     "maic.notice": {
-      "description": "A line for the person. A subagent's call and its result come as notices too, `kind` saying which, until its own stream (step 14).",
+      "description": "A line for the person. A foreground task's calls and their results come as notices too, `kind` saying which; a background task has a stream of its own (maic.task.created).",
       "allOf": [
         {
           "$ref": "#/$defs/Envelope"
@@ -1158,7 +1167,7 @@
               ]
             },
             "kind": {
-              "description": "A subagent's tool call (`tool` and `path` as the call names them) or its result (`ok`, and `full_output` when its whole output was kept).",
+              "description": "A foreground subagent's tool call (`tool` and `path` as the call names them) or its result (`ok`, and `full_output` when its whole output was kept).",
               "enum": [
                 "tool_call",
                 "tool_result"
@@ -1212,7 +1221,7 @@
       ]
     },
     "maic.session.state": {
-      "description": "The session's lifecycle and activity. The first event of every load is one, and it carries the stream's header: the epoch, the protocol hash and, for a new epoch, what it replaced.",
+      "description": "The session's lifecycle and activity. The first event of every load is one, and it carries the stream's header: the epoch, the protocol hash and, for a new epoch, what it replaced, forked from, or (a background task) the parent and call that started it.",
       "allOf": [
         {
           "$ref": "#/$defs/Envelope"
@@ -1300,6 +1309,31 @@
               "required": [
                 "session",
                 "records"
+              ]
+            },
+            "parent": {
+              "description": "A background task's first epoch: the session whose task call started it, that session's epoch, the call, and the sequence_number of the maic.task.created on its stream.",
+              "type": "object",
+              "properties": {
+                "session": {
+                  "type": "string"
+                },
+                "epoch": {
+                  "type": "string"
+                },
+                "call_id": {
+                  "type": "string"
+                },
+                "sequence_number": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "session",
+                "epoch",
+                "call_id",
+                "sequence_number"
               ]
             }
           },
@@ -1458,6 +1492,161 @@
             "calls",
             "context",
             "last_input"
+          ]
+        }
+      ]
+    },
+    "maic.task.created": {
+      "description": "A background task started (the task tool with background = true): a session of its own, kind sub, whose first event names this session, its epoch and the task call. On the parent's stream; a client that wants the task's own events subscribes to `task`.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.task.created"
+            },
+            "task": {
+              "description": "The task's session id: its handle, and its stream_id.",
+              "type": "string",
+              "minLength": 1
+            },
+            "agent": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "model_reason": {
+              "type": "string"
+            },
+            "background": {
+              "type": "boolean"
+            },
+            "prompt_head": {
+              "description": "The first line of its job, at most 80 characters.",
+              "type": "string"
+            },
+            "call_id": {
+              "description": "The parent's task call that started it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "task",
+            "agent",
+            "model",
+            "model_reason",
+            "background",
+            "prompt_head"
+          ]
+        }
+      ]
+    },
+    "maic.task.completed": {
+      "description": "A background task's first turn ended with a report: its job is done. Its session stays loaded, in the background, until it is parked or stopped.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.task.completed"
+            },
+            "task": {
+              "type": "string",
+              "minLength": 1
+            },
+            "agent": {
+              "type": "string"
+            },
+            "steps": {
+              "description": "Model calls the task made.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "tokens": {
+              "description": "Input and output tokens it spent; they count against this session's budget from now on.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "answer_size": {
+              "description": "Bytes of its report, which reaches this conversation as a note unless task_result waited for it.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "ref": {
+              "description": "The item of its last reply in the task's own history, `<file id>#<line>`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "task",
+            "agent",
+            "steps",
+            "tokens",
+            "answer_size"
+          ]
+        }
+      ]
+    },
+    "maic.task.failed": {
+      "description": "A background task's first turn ended without a report, `reason` saying why; what it said last is in the note.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "maic.task.failed"
+            },
+            "task": {
+              "type": "string",
+              "minLength": 1
+            },
+            "agent": {
+              "type": "string"
+            },
+            "steps": {
+              "description": "Model calls the task made.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "tokens": {
+              "description": "Input and output tokens it spent; they count against this session's budget from now on.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "answer_size": {
+              "description": "Bytes of its report, which reaches this conversation as a note unless task_result waited for it.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "ref": {
+              "description": "The item of its last reply in the task's own history, `<file id>#<line>`.",
+              "type": "string"
+            },
+            "reason": {
+              "description": "How it ended: failed with an error, was interrupted, halted, parked or stopped, the harness tripped, or no final answer.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "task",
+            "agent",
+            "steps",
+            "tokens",
+            "answer_size",
+            "reason"
           ]
         }
       ]

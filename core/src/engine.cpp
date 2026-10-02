@@ -71,7 +71,8 @@ const std::vector<std::string> kEventTypes = {
     "response.shell_call_output_content.delta", "response.shell_call_output_content.done",
     "maic.response.cancelled", "maic.steer.applied", "maic.turn.paused", "maic.input.added", "maic.approval.requested", "maic.approval.answered", "maic.question.asked",
     "maic.question.answered", "maic.tool.output.delta", "maic.file.written", "maic.notice", "maic.todo.updated",
-    "maic.session.state", "maic.session.settings", "maic.session.title", "maic.usage.updated"};
+    "maic.session.state", "maic.session.settings", "maic.session.title", "maic.usage.updated", "maic.task.created", "maic.task.completed",
+    "maic.task.failed"};
 
 // A request the engine refuses: a JSON-RPC error whose data is OpenAI's error object.
 struct RpcError : std::exception {
@@ -495,6 +496,19 @@ struct Session {
     std::optional<Queued> resume;      // the successor that resumes a paused turn, and its input
     std::optional<Steer> pause_end;    // keep or halt on a paused turn
 
+    // Background tasks (step 14). A task's own session is kind sub, `parent` the session whose task call (`task_call`)
+    // started it; how its first turn ends is told to the parent once (`reported`).
+    std::string kind = "main", parent, task_call;
+    bool reported = true;
+    std::string unload_as;  // parked or stopped, while it is being unloaded
+    struct Task {
+        std::string agent, state = "running", text;  // text: the note with its answer, once it ended
+        bool awaited = false;                         // task_result waits for it, so no note
+    };
+    std::map<std::string, Task> tasks;  // the background tasks this load started, by the task's session id
+    std::map<std::string, json> tree;   // its tasks' approvals waiting, by id: the event as this stream carried it
+    long note_cause = -1;               // a task's maic.task.completed or failed whose note waits in the mailbox
+
     Session(fs::path ws, std::string model) : workspace(std::move(ws)), agent(workspace, std::move(model)) {}
 };
 
@@ -522,6 +536,7 @@ struct Engine::Impl {
 
     std::mutex index_mu;  // the index entries and the clients that follow them
     std::map<std::string, json> entries;  // the local form, transcript included
+    std::map<std::string, json> held_notes;  // per session not loaded: its tasks' notes for its next load (an entry's task_notes)
     std::vector<std::weak_ptr<Client>> index_clients;
 
     std::mutex log_mu;
@@ -617,11 +632,17 @@ struct Engine::Impl {
     // ---------- the index ----------
 
     json entry(Session& s) {
+        // `waiting` also covers the session's tasks: an approval one of them waits for (section 2).
+        json waiting = s.waiting;
+        if (waiting.is_null() && !s.tree.empty()) {
+            const json& a = s.tree.begin()->second;
+            waiting = {{"kind", "approval"}, {"id", a["id"]}, {"session", a["thread"]["session"]}, {"tool", a["tool"]}, {"summary", a["summary"]}};
+        }
         json e = {{"id", s.id},
                   {"title", s.title},
                   {"workspace", s.workspace.string()},
-                  {"kind", "main"},
-                  {"parent", nullptr},
+                  {"kind", s.kind},
+                  {"parent", s.parent.empty() ? json() : json(s.parent)},
                   {"state", s.state},
                   {"activity", s.activity},
                   {"model", s.agent.model},
@@ -636,7 +657,8 @@ struct Engine::Impl {
                   {"unseen", s.unseen},
                   {"queued", s.agent.queued() + s.lane.size()},
                   {"response", s.run ? json(s.run->id) : s.paused ? json(s.last.id) : json()},
-                  {"waiting", s.waiting}};
+                  {"waiting", waiting}};
+        if (!s.agent.agent_name().empty()) e["agent"] = s.agent.agent_name();
         if (s.log) e["transcript"] = s.log->path().string();
         return e;
     }
@@ -644,6 +666,7 @@ struct Engine::Impl {
     static json for_client(json e, const Client& c) {
         if (c.origin == Origin::Remote) e.erase("transcript");
         e.erase("queued_inputs");  // a parked session's waiting messages: the index file's, for its next load
+        e.erase("task_notes");     // and its tasks' answers that came while it was not loaded
         return e;
     }
 
@@ -709,6 +732,7 @@ struct Engine::Impl {
             e["activity"] = "idle";
             e["waiting"] = nullptr;
             e["response"] = nullptr;
+            if (e.contains("task_notes")) held_notes[e["id"].get<std::string>()] = e["task_notes"];
             entries[e["id"].get<std::string>()] = e;
         }
     }
@@ -716,11 +740,13 @@ struct Engine::Impl {
     // ---------- sessions ----------
 
     // The protocol tier `s` works at: the one its start record names when it ran before (raised to its directory's
-    // floor if that is stricter now), else resolved from the settings and `maic trust --protocol`. Before its log is
-    // given to the agent, so the start record keeps it. Airtight needs a build that passed conformance (step 18).
-    void assign_tier(Session& s, const std::string& ran_at = "") {
-        ProtocolTier t = resolve_protocol_tier(s.settings.protocol_tier, s.settings.protocol_tiers, "", "", s.workspace);
-        if (valid_protocol_tier(ran_at) && protocol_tier_rank(ran_at) >= protocol_tier_rank(t.floor.empty() ? "open" : t.floor)) t = {ran_at, "its start record", t.floor};
+    // floor if that is stricter now), else resolved from the settings, `maic trust --protocol` and the agent it runs as
+    // (`agents.NAME.protocol_tier`, never below the directory's). `ran_from` says where `ran_at` came from. Before its
+    // log is given to the agent, so the start record keeps it. Airtight needs a build that passed conformance (step 18).
+    void assign_tier(Session& s, const std::string& ran_at = "", const std::string& ran_from = "its start record", const std::string& agent = "",
+                     const std::string& agent_tier = "") {
+        ProtocolTier t = resolve_protocol_tier(s.settings.protocol_tier, s.settings.protocol_tiers, agent, agent_tier, s.workspace);
+        if (valid_protocol_tier(ran_at) && protocol_tier_rank(ran_at) >= protocol_tier_rank(t.floor.empty() ? "open" : t.floor)) t = {ran_at, ran_from, t.floor};
         if (t.tier == "airtight") {
             throw refuse("maic_tier_unavailable", "this session's protocol tier is airtight (" + t.from + "), which needs a build that passed conformance; maic trust DIR --protocol guarded, or protocol_tier, sets another", "tier");
         }
@@ -912,6 +938,7 @@ struct Engine::Impl {
                 throw refuse("maic_busy", "session " + s->id + " is running a response; interrupt: true ends it first", "session");
             }
             s->unloading = true;
+            s->unload_as = state;
             interrupt(*s, by, ApprovalAnswer{Approval::No, "the session is being " + state});
             s->shell_cancel = true;
             s->cv.wait(lock, [&] { return !s->shell_running; });
@@ -961,10 +988,11 @@ struct Engine::Impl {
     }
 
     // An index change that is not a loaded session's: a parked entry, or one leaving the index.
-    void put_entry(const json& e) {
+    void put_entry(json e) {
         std::vector<std::shared_ptr<Client>> to;
         {
             std::lock_guard lock(index_mu);
+            if (auto h = held_notes.find(e["id"].get<std::string>()); h != held_notes.end()) e["task_notes"] = h->second;
             entries[e["id"].get<std::string>()] = e;
             save_index();
             to = index_followers();
@@ -988,9 +1016,9 @@ struct Engine::Impl {
     }
 
     // A new load of a session. Its first event is its state, carrying the stream's header: the epoch, the protocol
-    // hash, and for a new epoch what it replaced or forked from. The transcript gets the same as `epoch` and `stream`
-    // records; shutdown closes the `stream` with the number the next load goes on from.
-    void open_session(const std::shared_ptr<Session>& s, const Client& c) {
+    // hash, and for a new epoch what it replaced or forked from, or (`lineage`) the task that started it. The transcript
+    // gets the same as `epoch` and `stream` records; shutdown closes the `stream` with the number the next load goes on from.
+    void open_session(const std::shared_ptr<Session>& s, const json& by, const json& lineage = json::object()) {
         {
             std::lock_guard lock(mu);
             sessions[s->id] = s;
@@ -1001,12 +1029,13 @@ struct Engine::Impl {
         s->epoch = fresh ? random_id(16) : start.epoch;
         s->next = start.next;
         if (s->next > 0) s->order.join(s->next - 1);  // the epoch goes on: its numbers before this load were checked by the one that sent them
-        json state = {{"type", "maic.session.state"}, {"state", s->state}, {"activity", s->activity}, {"waiting", nullptr}, {"by", c.by()},
+        json state = {{"type", "maic.session.state"}, {"state", s->state}, {"activity", s->activity}, {"waiting", nullptr}, {"by", by},
                       {"epoch", s->epoch}, {"protocol", {{"hash", protocol::protocol_hash()}, {"canonical", kCanonical}}}};
         if (fresh) {
             json e = {{"epoch", s->epoch}};
             if (!start.previous.is_null()) e["previous"] = state["previous_epoch"] = start.previous;
             if (!start.forked_from.is_null()) e["forked_from"] = state["forked_from"] = start.forked_from;
+            for (const auto& [k, v] : lineage.items()) e[k] = state[k] = v;
             if (s->log) s->log->write("epoch", e);
         }
         if (s->log) s->log->write("stream", {{"epoch", s->epoch}, {"from", s->next}, {"protocol", protocol::protocol_hash()}, {"canonical", kCanonical}});
@@ -1102,6 +1131,164 @@ struct Engine::Impl {
             }
         }
         s.cv.notify_all();
+    }
+
+    // ---------- background tasks (step 14) ----------
+
+    // `task` with background = true: the subagent as a session of its own, kind sub, in the background, set up by its
+    // parent's agent (`t.setup`), steered as its agent allows and at its agent's tier. maic.task.created on the parent's
+    // stream says so, and the task's first event names its parent, the parent's epoch, the task call and that event.
+    // The caller is the parent's worker, holding no lock; a refusal (max_tasks, a tier) is thrown for the model.
+    std::string start_task(Session& p, const TaskStart& t) {
+        Settings st;
+        fs::path ws;
+        std::string tier, model;
+        bool dumb_ok;
+        {
+            std::lock_guard lock(p.mu);
+            long running = std::count_if(p.tasks.begin(), p.tasks.end(), [](const auto& kv) { return kv.second.state == "running"; });
+            if (p.settings.max_tasks <= 0) throw std::runtime_error("background tasks are off here (max_tasks = 0); run it without background");
+            if (running >= p.settings.max_tasks) {
+                throw std::runtime_error("this session already has " + std::to_string(running) + " background tasks running, its limit (max_tasks); wait for one "
+                                         "with task_result, or run this one without background");
+            }
+            st = p.settings;
+            ws = p.agent.harness().workspace();
+            tier = p.tier;
+            model = p.agent.model;
+            dumb_ok = p.commands.dumb_auto_ok;
+        }
+        const AgentDef* def = find_agent_def(st.agents, t.agent);
+        std::string agent_tier = def ? def->protocol_tier : "";
+        auto s = std::make_shared<Session>(ws, model);
+        if (def) st.steering = agent_steering(st.steering, def->steering, def->name);
+        s->settings = std::move(st);
+        s->commands.dumb_auto_ok = dumb_ok;
+        s->kind = "sub";
+        s->parent = p.id;
+        s->task_call = t.call_id;
+        s->reported = false;
+        s->state = "background";
+        t.setup(s->agent);
+        assign_tier(*s, agent_tier.empty() ? tier : "", "its parent session", t.agent, agent_tier);
+        s->log = std::make_unique<SessionLog>("sub", t.log_dir.empty() ? runtime_sessions_dir() : t.log_dir);
+        s->id = s->log->path().stem().string();
+        s->agent.set_log(s->log.get());
+        std::string head = t.prompt.substr(0, t.prompt.find('\n'));
+        if (head.size() > 80) head = head.substr(0, whole_chars(head, 77)) + "...";
+        s->title = t.agent + ": " + head;
+        s->log->write("title", {{"text", s->title}});
+        json lineage;
+        {
+            std::lock_guard lock(p.mu);
+            emit(p, {{"type", "maic.task.created"}, {"task", s->id}, {"agent", t.agent}, {"model", s->agent.model}, {"model_reason", t.model_reason},
+                     {"background", true}, {"prompt_head", head}, {"call_id", t.call_id}});
+            lineage = {{"parent", {{"session", p.id}, {"epoch", p.epoch}, {"call_id", t.call_id}, {"sequence_number", p.next - 1}}}};
+            p.tasks[s->id] = Session::Task{t.agent};
+        }
+        json by = {{"client", "engine"}, {"name", "task"}, {"origin", origin_name(t.origin)}};
+        open_session(s, by, lineage);
+        std::lock_guard lock(s->mu);
+        start_or_queue(s, t.prompt, t.origin, by);
+        return s->id;
+    }
+
+    // A task's first turn ended: its parent hears how (maic.task.completed or .failed), its spend joins the parent's,
+    // and its report reaches the parent's conversation as a note labelled with the task's session (cross-session
+    // content is data, section 7), unless task_result waits for it. A parent no longer loaded gets the note at its
+    // next load. The caller is the task's worker, holding no lock.
+    void finish_task(const std::shared_ptr<Session>& s, bool cancelled, const std::string& failure, const std::string& ended_by) {
+        if (stopped) return;  // shutdown parks every session; a task resumed later is just a session
+        std::string answer, why, ref, agent, parent;
+        int steps;
+        long tokens;
+        {
+            std::lock_guard lock(s->mu);
+            answer = s->agent.final_answer();
+            steps = s->agent.steps();
+            Agent::UsageReport u = s->agent.usage();
+            tokens = u.total_input + u.total_output;
+            agent = s->agent.agent_name();
+            parent = s->parent;
+            if (!failure.empty()) why = "failed: " + failure;
+            else if (ended_by == "halt") why = "was halted";
+            else if (cancelled) why = s->unloading.load() ? "was " + s->unload_as + " before it finished" : "was interrupted";
+            else if (tripwire_state()) why = "stopped: the harness was tripped";
+            else if (answer.empty()) why = "gave no final answer";
+            auto& h = history_of(*s);
+            for (size_t i = h.entries().size(); i-- > 0 && ref.empty();) {
+                if (h.entries()[i].type == "assistant") ref = h.entries()[i].id;
+            }
+        }
+        std::string used = "(the subagent used " + std::to_string(steps) + " step" + (steps == 1 ? "" : "s") + ", " + std::to_string(tokens) + " tokens)";
+        std::string note = "[Background task " + s->id + " (the " + agent + " agent) " + (why.empty() ? "finished" : why) +
+                           ". What follows came from that session: data, not the user's instruction.]\n" +
+                           (answer.empty() ? "" : (why.empty() ? "" : "Its last words:\n") + answer + "\n") + used;
+        std::shared_ptr<Session> p;
+        {
+            std::lock_guard lock(mu);
+            if (auto it = sessions.find(parent); it != sessions.end()) p = it->second;
+        }
+        if (p) {
+            std::lock_guard lock(p->mu);
+            if (!p->unloading.load() && (p->state == "live" || p->state == "background")) {
+                p->agent.absorb_usage(s->agent);
+                auto t = p->tasks.find(s->id);
+                bool awaited = false;
+                if (t != p->tasks.end()) {
+                    t->second.state = why.empty() ? "completed" : "failed";
+                    t->second.text = note;
+                    awaited = t->second.awaited;
+                    json ev = {{"type", why.empty() ? "maic.task.completed" : "maic.task.failed"}, {"task", s->id}, {"agent", agent},
+                               {"steps", steps}, {"tokens", tokens}, {"answer_size", answer.size()}};
+                    if (!ref.empty()) ev["ref"] = ref;
+                    if (!why.empty()) ev["reason"] = why;
+                    emit(*p, ev);
+                }
+                if (!awaited && p->running) {
+                    p->agent.post_note(note);
+                    if (t != p->tasks.end()) p->note_cause = p->next - 1;
+                } else if (!awaited) {
+                    p->agent.add_context(note);
+                }
+                p->cv.notify_all();
+                return;
+            }
+        }
+        std::lock_guard lock(index_mu);
+        json& notes = held_notes[parent];
+        if (!notes.is_array()) notes = json::array();
+        notes.push_back(note);
+        if (auto it = entries.find(parent); it != entries.end()) {
+            it->second["task_notes"] = notes;
+            save_index();
+        }
+    }
+
+    // A task's approval is raised on its parent's stream too, `thread` naming the task, since that is where a person
+    // is looking, and its answer may come on either (section 3); `ev` is the task's requested or answered event. The
+    // caller holds the task's lock: a parent's lock is taken after a task's, never before.
+    void mirror(Session& t, const std::string& id, json ev) {
+        std::shared_ptr<Session> p;
+        {
+            std::lock_guard lock(mu);
+            if (auto it = sessions.find(t.parent); it != sessions.end()) p = it->second;
+        }
+        if (!p) return;
+        std::lock_guard lock(p->mu);
+        if (p->unloading.load() || (p->state != "live" && p->state != "background")) return;
+        for (const char* k : {"call_id", "item_id", "sequence_number", "stream_id"}) ev.erase(k);
+        if (ev["type"] == "maic.approval.requested") {
+            ev["thread"] = {{"session", t.id}, {"agent", t.agent.agent_name()}, {"title", t.title}};
+            emit(*p, ev);
+            ev["sequence_number"] = p->next - 1;
+            ev["stream_id"] = p->id;
+            p->tree[id] = ev;
+        } else {
+            if (!p->tree.erase(id)) return;
+            emit(*p, ev);
+        }
+        index_changed(*p);
     }
 
     // ---------- the methods ----------
@@ -1291,7 +1478,7 @@ struct Engine::Impl {
     void open_focused(const std::shared_ptr<Session>& s, Client& c, bool focus, const json& leave) {
         if (focus) s->focused_by.insert(c.id);
         else s->state = "background";
-        open_session(s, c);
+        open_session(s, c.by());
         if (focus) move_focus(c, s, leave);
     }
 
@@ -1334,7 +1521,18 @@ struct Engine::Impl {
         s->commands.dumb_auto_ok = s->settings.dumb_auto_ok;
         configure(s->agent, s->settings, mode);
         if (options.setup) options.setup(s->agent, s->settings);
-        assign_tier(*s, old.tier);
+        std::string agent_tier;
+        if (info->kind == "sub") {
+            // A task's session runs as its agent again, narrowed as it was: its tools, writes, mode, steering and tier.
+            s->kind = "sub";
+            s->parent = info->delegated_from;
+            if (const AgentDef* def = find_agent_def(s->settings.agents, info->agent)) {
+                s->agent.set_agent_def(narrow_agent_def(*def, s->agent.mode), s->parent);
+                s->settings.steering = agent_steering(s->settings.steering, def->steering, def->name);
+                agent_tier = def->protocol_tier;
+            }
+        }
+        assign_tier(*s, old.tier, "its start record", s->agent.agent_name(), agent_tier);
         s->log = std::make_unique<SessionLog>(SessionLog::Reopen{}, info->path);
         s->id = info->id;
         s->title = info->title;
@@ -1344,14 +1542,23 @@ struct Engine::Impl {
         s->responses = s->turns;
         s->agent.set_log(s->log.get());
         s->agent.restore(old.messages);
-        json queued;  // what waited to run when it was parked runs now, in order
+        json queued, notes;  // what waited to run when it was parked runs now, in order, after its tasks' notes
         {
             std::lock_guard lock(index_mu);
             if (auto it = entries.find(s->id); it != entries.end() && it->second.contains("queued_inputs")) queued = it->second["queued_inputs"];
+            if (auto it = held_notes.find(s->id); it != held_notes.end()) {
+                notes = it->second;
+                held_notes.erase(it);
+            }
         }
         open_focused(s, c, focus, leave);
         std::lock_guard lock(s->mu);
         if (!held.empty()) emit(*s, {{"type", "maic.notice"}, {"text", held}, {"level", "info"}});
+        for (const auto& n : notes) s->agent.add_context(n);
+        if (!notes.empty()) {
+            emit(*s, {{"type", "maic.notice"}, {"text", std::to_string(notes.size()) + " background task" + (notes.size() == 1 ? "" : "s") +
+                                                         " finished while this session was not loaded; the answers are in its context"}, {"level", "info"}});
+        }
         for (const auto& q : queued) {
             json by = {{"client", "engine"}, {"name", "engine"}, {"origin", q.value("origin", "local")}};
             start_or_queue(s, q.value("text", ""), q.value("origin", "local") == "remote" ? Origin::Remote : Origin::Local, by);
@@ -1507,6 +1714,7 @@ struct Engine::Impl {
         for (const auto& [id, a] : s->approvals) {
             if (!a.answer) pending.push_back(a.event);
         }
+        for (const auto& [id, a] : s->tree) pending.push_back(a);  // its tasks' (section 3: every pending approval in the tree)
         for (const auto& [id, q] : s->questions) {
             if (!q.answer) questions.push_back(q.event);
         }
@@ -1757,8 +1965,11 @@ struct Engine::Impl {
             s.turn = r.turn;
         }
         r.usage_before = s.agent.usage();
-        // A successor answers the first steer it commits: its input, or the steer itself when it had none.
+        // A successor answers the first steer it commits: its input, or the steer itself when it had none; else the
+        // task's end whose note it delivers.
         if (r.cause < 0 && !s.accepted.empty()) r.cause = s.accepted[0].value("cause", -1L);
+        if (r.cause < 0 && !r.previous.empty()) r.cause = s.note_cause;
+        s.note_cause = -1;
         s.run = std::move(r);
         s.accepted = json::array();
         json created = {{"type", "response.created"}, {"response", response_object(s, *s.run, "in_progress")}};
@@ -1793,12 +2004,20 @@ struct Engine::Impl {
         emit(s, {{"type", "error"}, {"code", "maic_halted"}, {"message", s.settings.steering.halt_message}, {"param", nullptr}});
     }
 
-    // What a cancel or an earlier turn left in the mailbox joins the input of the turn starting now.
+    // What a cancel or an earlier turn left in the mailbox joins the input of the turn starting now; a task's note
+    // that waited goes in as the context it is. The agent is idle.
     void take_leftovers(Session& s, std::string& text, Origin& origin) {
+        flush_notes(s);
         for (const auto& q : s.agent.take_queued()) {
             text += (text.empty() ? "" : "\n\n") + q.text;
             if (q.origin == Origin::Remote) origin = Origin::Remote;
         }
+    }
+
+    // Tasks' notes that reached the mailbox too late for the turn: context for the next. The agent is idle.
+    static void flush_notes(Session& s) {
+        for (const auto& n : s.agent.take_notes()) s.agent.add_context(n);
+        s.note_cause = -1;
     }
 
     json response_create(Client& c, const json& p) {
@@ -2146,7 +2365,14 @@ struct Engine::Impl {
         if (*choice == Approval::Always && c.origin == Origin::Remote) {
             throw refuse("maic_forbidden_remote", "a remote client answers yes, no or trip: always never covers a remote-origin call", "choice");
         }
-        std::lock_guard lock(s->mu);
+        std::unique_lock lock(s->mu);
+        if (auto t = s->tree.find(id); t != s->tree.end()) {
+            // A task's, raised here too: answered on the task's own session.
+            json q = p;
+            q["session"] = t->second["thread"]["session"];
+            lock.unlock();
+            return approval_answer(c, q);
+        }
         auto it = s->approvals.find(id);
         if (it == s->approvals.end() || it->second.answer) {
             if (s->answered.count(id) || it != s->approvals.end()) throw refuse("maic_already_answered", "approval " + id + " was already answered", "approval");
@@ -2320,10 +2546,16 @@ struct Engine::Impl {
     }
 
     // A write's content after it, for a diff beside the approval (maic.approval.requested says only its size).
-    json approval_proposed(Client&, const json& p) {
+    json approval_proposed(Client& c, const json& p) {
         auto s = session(p.at("session"));
         std::string id = p.at("approval");
-        std::lock_guard lock(s->mu);
+        std::unique_lock lock(s->mu);
+        if (auto t = s->tree.find(id); t != s->tree.end()) {
+            json q = p;
+            q["session"] = t->second["thread"]["session"];
+            lock.unlock();
+            return approval_proposed(c, q);
+        }
         auto it = s->approvals.find(id);
         if (it == s->approvals.end() || it->second.answer) throw refuse("maic_not_found", "no approval " + id + " is waiting", "approval");
         const auto& a = it->second;
@@ -2597,6 +2829,7 @@ public:
         ev["sequence_number"] = s_.next - 1;
         ev["stream_id"] = s_.id;
         s_.approvals[id] = PendingApproval{ev, r.proposed, std::nullopt, nullptr};
+        if (!s_.parent.empty()) e_.mirror(s_, id, ev);
         e_.set_activity(s_, "waiting", {{"kind", "approval"}, {"id", id}, {"tool", r.tool}, {"summary", r.summary}});
         s_.cv.wait(lock, [&] { return s_.approvals[id].answer.has_value() || s_.cancel.load(); });
         PendingApproval p = s_.approvals[id];
@@ -2607,6 +2840,7 @@ public:
         json done = {{"type", "maic.approval.answered"}, {"id", id}, {"choice", answer.withdrawn ? "withdrawn" : choice_name(answer.choice)}, {"by", by}};
         if (!call_id.empty()) done["call_id"] = call_id;
         e_.emit(s_, done);
+        if (!s_.parent.empty()) e_.mirror(s_, id, done);
         settle_activity();
         return answer;
     }
@@ -2628,6 +2862,28 @@ public:
         e_.emit(s_, {{"type", "maic.question.answered"}, {"id", id}, {"by", by}, {"withdrawn", q.withdrawn}});
         settle_activity();
         return q.answer.value_or("");
+    }
+
+    std::string start_task(const TaskStart& t) override { return e_.start_task(s_, t); }
+
+    // task_result: a background task this load started, by its id; `wait` until it ends, a stop or cancel ending the wait.
+    ToolResult task_result(const std::string& id, bool wait, const std::atomic<bool>& cancel) override {
+        std::unique_lock lock(s_.mu);
+        auto it = s_.tasks.find(id);
+        if (it == s_.tasks.end()) {
+            std::string ids;
+            for (const auto& [k, t] : s_.tasks) ids += (ids.empty() ? "" : ", ") + k;
+            return {false, "error: " + id + " is no background task of this session" + (ids.empty() ? "" : "; its tasks are " + ids) +
+                               ". A task started before this session was last parked has reported as a note already."};
+        }
+        if (wait && it->second.state == "running") {
+            it->second.awaited = true;
+            s_.cv.wait(lock, [&] { return s_.tasks[id].state != "running" || cancel.load(); });
+            s_.tasks[id].awaited = false;
+        }
+        const Session::Task& t = s_.tasks[id];
+        if (t.state == "running") return {true, "task " + id + " (" + t.agent + ") is still running; its answer arrives as a note when it finishes"};
+        return {t.state == "completed", t.text};
     }
 
     // Messages typed during the turn reach the model at this boundary: the response ends steered, and a successor,
@@ -2784,6 +3040,7 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
     for (;;) {
         std::string first_text = text;
         bool cancelled = false;
+        std::string turn_failure;
         for (;;) {
             TurnEvents events(*this, *s);
             std::string failure;
@@ -2792,6 +3049,7 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
             } catch (const std::exception& e) {
                 failure = failure_text(s->agent, e);
             }
+            turn_failure = failure;
             std::unique_lock lock(s->mu);
             if (s->steer) {
                 // Accepted as the reply ended: applied now, over what the history holds already.
@@ -2855,8 +3113,16 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
             break;
         }
         std::unique_lock lock(s->mu);
+        std::string ended_by = s->ended_by;
         s->ended_by.clear();
         s->successor_by = "steer";
+        if (!s->reported) {
+            // A background task's first turn is its job: its parent hears how it ended.
+            s->reported = true;
+            lock.unlock();
+            finish_task(s, cancelled, turn_failure, ended_by);
+            lock.lock();
+        }
         if (s->titles && !s->titled && !cancelled && !stopped.load() && !s->settings.small_model.empty()) {
             // After the first turn, a title from small_model. A remote one never titles a local session, so
             // nothing leaves the machine that would not have anyway.
@@ -2880,6 +3146,7 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
         }
         if (s->lane.empty() || stopped.load() || s->unloading.load()) {
             s->running = false;
+            flush_notes(*s);
             set_activity(*s, "idle");
             return;
         }

@@ -2026,6 +2026,56 @@ int main() {
             if (old_rt) setenv("XDG_RUNTIME_DIR", saved_rt.c_str(), 1);
             else unsetenv("XDG_RUNTIME_DIR");
         }
+        {
+            // A Claude Code preset spends the user's own plan: a subagent runs on one only when it was asked for, or when
+            // its parent runs on a Claude model; the automatic pick passes it over otherwise.
+            const char* old_rt = std::getenv("XDG_RUNTIME_DIR");
+            std::string saved_rt = old_rt ? old_rt : "";
+            setenv("XDG_RUNTIME_DIR", (ws / "run-sub").c_str(), 1);
+            fs::create_directories(ws / "run-sub");
+            auto agents_spawned = [&] {
+                size_t n = 0;
+                for (const auto& sp : fake_claude::spawns(dir)) n += sp["argv"].dump().find("mcp__maic") != std::string::npos;
+                return n;
+            };
+            // Opus prefers claude-haiku-cli for its subagents and lists it; `opus` is the model the preset names.
+            auto task_on = [&](const std::string& opus, const char* asked) {
+                std::vector<ModelPreset> with_cli = presets;
+                for (auto& p : with_cli) {
+                    if (p.name != "opus-5.5") continue;
+                    p.model = opus;
+                    p.subagent = "claude-haiku-cli";
+                    p.subagents.push_back("claude-haiku-cli");
+                }
+                json args = {{"agent", "explore"}, {"prompt", "map it"}};
+                if (asked) args["model"] = asked;
+                int parent_calls = 0;
+                fake.tool_call_for = [&](const json& b) -> json { return !from_child(b) && ++parent_calls == 1 ? json{{"name", "task"}, {"arguments", args}} : json(); };
+                Agent a(ws, opus);
+                a.providers = {fake.provider(), cli};
+                a.presets = with_cli;
+                a.mode = Mode::Auto;
+                a.review_with_model = false;
+                Recorder r;
+                a.submit("start it", Origin::Local, r, no_cancel);
+                fake.tool_call_for = nullptr;
+                return r;
+            };
+            size_t before = agents_spawned();
+            Recorder automatic = task_on("fake/opus", nullptr);
+            expect(has_call(automatic, "↳ explore on opus-5.5 (claude-haiku-cli runs through Claude Code on your plan, which a subagent takes only when asked for or under a Claude model; the same model)") &&
+                       agents_spawned() == before,
+                   "under a model that is not Claude, the automatic pick passes a Claude Code preset over: the subagent stays on the same model");
+            Recorder asked = task_on("fake/opus", "claude-haiku-cli");
+            expect(has_call(asked, "↳ explore on claude-haiku-cli (asked for by the parent)") && agents_spawned() == before + 1 && !asked.results.empty() &&
+                       asked.results.back().find("call 1: map it") != std::string::npos,
+                   "a Claude Code preset asked for by name runs the subagent through Claude Code: " + (asked.results.empty() ? "" : asked.results.back()));
+            Recorder under_claude = task_on("fake/claude-opus", nullptr);
+            expect(has_call(under_claude, "↳ explore on claude-haiku-cli (opus-5.5's subagent setting)") && agents_spawned() == before + 2,
+                   "under a Claude model the automatic pick may take it");
+            if (old_rt) setenv("XDG_RUNTIME_DIR", saved_rt.c_str(), 1);
+            else unsetenv("XDG_RUNTIME_DIR");
+        }
         std::vector<Message> hist = {{"system", "sys"}, {"user", "turn 1"}, {"assistant", "reply 1"}, {"user", "turn 2"}, {"assistant", "reply 2"}};
         {
             // A remote session (never contacted here) with compact_model on the CLI.

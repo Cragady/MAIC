@@ -12,7 +12,8 @@ class Fake(http.server.BaseHTTPRequestHandler):
     """Answers every chat with "echo: " plus the first line of the last user message, streamed as SSE. A message
     starting with "hold" gets a reply that idles for 10 s instead, for the interrupt tests; one starting "slow:" is
     answered after three seconds, for a test that needs the agent busy; "shell:CMD" is a run_shell call of CMD,
-    answered "ran it" once its result is in; "ask:QUESTION|OPTION|..." is a question call, answered "ran it" too."""
+    answered "ran it" once its result is in; "ask:QUESTION|OPTION|..." is a question call, answered "ran it" too;
+    "bg:AGENT:JOB" is a task call that runs JOB as AGENT in the background, answered "ran it" too."""
 
     def log_message(self, *a):
         pass
@@ -36,6 +37,9 @@ class Fake(http.server.BaseHTTPRequestHandler):
             elif last.startswith("ask:"):
                 q = last[4:].split("|")
                 self.call("question", {"question": q[0], "options": q[1:]}, answered)
+            elif last.startswith("bg:"):
+                agent, _, job = last[3:].partition(":")
+                self.call("task", {"agent": agent, "prompt": job, "background": True}, answered)
             else:
                 self.reply(last)
         except (BrokenPipeError, ConnectionResetError):

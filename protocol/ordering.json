@@ -582,6 +582,47 @@
       ]
     },
     {
+      "name": "task",
+      "description": "A background task on its parent's stream, by the task's session id: created, then completed or failed once, whenever its first turn ends, the parent's own turns notwithstanding.",
+      "key": [
+        "/task"
+      ],
+      "initial": "-",
+      "terminal": [
+        "completed",
+        "failed"
+      ],
+      "transitions": [
+        {
+          "from": [
+            "-"
+          ],
+          "on": [
+            "maic.task.created"
+          ],
+          "to": "running"
+        },
+        {
+          "from": [
+            "running"
+          ],
+          "on": [
+            "maic.task.completed"
+          ],
+          "to": "completed"
+        },
+        {
+          "from": [
+            "running"
+          ],
+          "on": [
+            "maic.task.failed"
+          ],
+          "to": "failed"
+        }
+      ]
+    },
+    {
       "name": "steer",
       "description": "One steer, by its id: accepted (response.steer, and maic.steer's steer, drop and further), applied (the six actions), or failed when a keep or halt ends the turn before its successor commits it. Its commit is the successor's response.created, which names no steer.",
       "key": [
