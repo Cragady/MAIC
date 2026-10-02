@@ -83,6 +83,21 @@ class TuiTest(unittest.TestCase):
         tui.send("iping<m-cr>", settle=False)
         tui.wait_for("echo: ping")
 
+    def test_ctrl_u_scrolls_up_and_ctrl_d_down(self):
+        tui = self.start()
+        tui.send("i" + "<cr>".join("scroll%02d" % n for n in range(1, 61)))
+        tui.send("<esc>:w<cr>", settle=False)
+        tui.wait_for("echo: scroll01")
+        tui.settle()
+        self.assertNotIn("scroll05", tui.text())
+        for _ in range(4):
+            tui.send("<c-u>")
+        self.assertIn("scroll05", tui.text(), "Ctrl-U scrolls up, toward older lines, as in vim")
+        self.assertNotIn("echo: scroll01", tui.text())
+        for _ in range(4):
+            tui.send("<c-d>")
+        self.assertIn("echo: scroll01", tui.text(), "Ctrl-D scrolls back down")
+
     def test_help_opens(self):
         tui = self.start()
         tui.send(":help<cr>")

@@ -1498,8 +1498,8 @@ bool App::handle(Event e) {
         return true;
     }
     if (editor_.mode() != Editor::Mode::Insert) {
-        if (raw == "\x04") return view_.half_page(-1), true;
-        if (raw == "\x15") return view_.half_page(1), true;
+        if (raw == "\x04") return view_.half_page(1), true;   // Ctrl-D: down, toward newer lines, as in vim
+        if (raw == "\x15") return view_.half_page(-1), true;  // Ctrl-U: up
         if (raw == "\x06" || e == Event::PageDown) return view_.page(1), true;
         if (raw == "\x02" || e == Event::PageUp) return view_.page(-1), true;
         if (raw == "\x05") return view_.scroll_by(-1), true;
