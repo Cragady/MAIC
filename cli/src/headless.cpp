@@ -4,6 +4,7 @@
 
 #include "maic/agent.hpp"
 #include "maic/engine.hpp"
+#include "maic/protocol.hpp"
 #include "maic/status.hpp"
 #include "maic/session.hpp"
 #include "maic/settings.hpp"
@@ -16,14 +17,18 @@
 #include <atomic>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <stdexcept>
 
 namespace maic {
 
 namespace {
+
+using nlohmann::json;
 
 std::atomic<bool> g_cancel{false};
 
@@ -31,88 +36,181 @@ void on_sigint(int) {
     g_cancel = true;
 }
 
-class Printer : public AgentEvents {
-public:
-    explicit Printer(bool json) : json_(json) {}
+// A context file that cannot be attached ends the run before the turn, with exit status 2.
+struct ContextError : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
 
-    void on_text(std::string_view delta, bool thinking) override {
-        if (json_) emit({{"type", thinking ? "thinking" : "text"}, {"text", std::string(delta)}});
+// One turn through an in-process engine connection: the reply on stdout, tool activity on stderr, or every event as
+// a JSON line (--json). Approvals and the question tool are asked on the terminal when stdin is one, else denied
+// and left unanswered.
+class Printer {
+public:
+    Printer(Engine& engine, std::string client, bool json) : engine_(engine), client_(std::move(client)), json_(json) {
+        // MAIC_PROTOCOL_RECORD=DIR keeps the exchange for `maic protocol check`, as the TUI does.
+        if (const char* dir = std::getenv("MAIC_PROTOCOL_RECORD"); dir && *dir) {
+            recorder_ = std::make_unique<protocol::Recorder>(std::filesystem::path(dir) / ("headless-" + std::to_string(getpid()) + ".jsonl"));
+        }
+    }
+
+    json call(const std::string& method, json params) {
+        json msg = {{"jsonrpc", "2.0"}, {"id", next_++}, {"method", method}, {"params", std::move(params)}};
+        json reply = engine_.call(client_, msg);
+        record("in", msg);
+        record("out", reply);
+        return reply;
+    }
+
+    // Follows the session until its turn is over (idle after the response that ends it): "" when it ended, the
+    // failure's text when it failed. Ctrl-C cancels the running response.
+    std::string follow() {
+        bool cancel_sent = false, final = false;
+        for (;;) {
+            if (g_cancel && !cancel_sent && !response.empty()) {
+                cancel_sent = true;
+                call("cancelResponse", {{"response_id", response}});
+            }
+            for (const auto& m : engine_.take(client_, std::chrono::milliseconds(100))) {
+                record("out", m);
+                if (m.value("method", "") != "maic.event") continue;
+                const json& e = m["params"];
+                std::string type = e.value("type", "");
+                if (type == "response.completed" || type == "response.failed" || type == "maic.response.cancelled") {
+                    final = e["response"].contains("maic") && e["response"]["maic"].value("final", false);
+                    if (type == "response.failed") failure_ = e["response"]["error"].value("message", "the turn failed");
+                }
+                if (type == "maic.session.state" && e.value("activity", "") == "idle" && final) return failure_;
+                on_event(e);
+            }
+            if (!engine_.closed(client_).empty()) return failure_;
+        }
+    }
+
+    std::string session;   // the one this connection follows
+    std::string response;  // the running response, for Ctrl-C
+    json usage;            // the last maic.usage.updated
+
+private:
+    void record(const char* dir, const json& msg) {
+        if (!recorder_) return;
+        if (auto v = recorder_->add(dir, client_, msg)) fprintf(stderr, "maic: protocol: %s\n", protocol::describe(*v).c_str());
+    }
+
+    void on_event(const json& e) {
+        std::string type = e.value("type", "");
+        if (type == "response.created") {
+            response = e["response"].value("id", "");
+        } else if (type == "response.output_text.delta" || type == "response.reasoning_text.delta") {
+            text(e.value("delta", ""), type == "response.reasoning_text.delta");
+        } else if (type == "response.output_item.added") {
+            std::string kind = e["item"].value("type", "");
+            if (kind == "function_call" || kind == "shell_call") tool_call(e["item"].contains("maic") ? e["item"]["maic"].value("summary", "") : "");
+        } else if (type == "response.output_item.done") {
+            const json& item = e["item"];
+            std::string kind = item.value("type", "");
+            if ((kind != "function_call_output" && kind != "shell_call_output") || !item.contains("maic")) return;
+            tool_result(kind == "function_call_output" ? item.value("output", "") : item["output"].empty() ? "" : item["output"][0].value("stdout", ""),
+                        item["maic"].value("ok", false));
+        } else if (type == "maic.notice") {
+            std::string kind = e.value("kind", "");
+            if (kind == "tool_call") tool_call(e.value("text", ""));
+            else if (kind == "tool_result") tool_result(e.value("text", ""), e.value("ok", false));
+            else notice(e.value("text", ""));
+        } else if (type == "maic.todo.updated") {
+            todo(e.value("items", json::array()));
+        } else if (type == "maic.approval.requested") {
+            ask(e);
+        } else if (type == "maic.question.asked") {
+            question(e);
+        } else if (type == "maic.usage.updated") {
+            usage = e;
+        }
+    }
+
+    void text(const std::string& delta, bool thinking) {
+        if (json_) emit({{"type", thinking ? "thinking" : "text"}, {"text", delta}});
         else if (thinking) fprintf(stderr, "%.*s", static_cast<int>(delta.size()), delta.data());
         else fwrite(delta.data(), 1, delta.size(), stdout), fflush(stdout);
     }
-    void on_tool_call(const std::string& summary) override {
+    void tool_call(const std::string& summary) {
         if (json_) emit({{"type", "tool_call"}, {"summary", summary}});
         else fprintf(stderr, "▸ %s\n", summary.c_str());
     }
-    void on_tool_result(const std::string& text, bool ok) override {
+    void tool_result(const std::string& text, bool ok) {
         if (json_) emit({{"type", "tool_result"}, {"ok", ok}, {"text", text}});
         else fprintf(stderr, "  ⎿ %s\n", text.substr(0, text.find('\n')).c_str());
     }
-    void on_notice(const std::string& text) override {
+    void notice(const std::string& text) {
         if (json_) emit({{"type", "notice"}, {"text", text}});
         else fprintf(stderr, "※ %s\n", text.c_str());
     }
-    std::string question(const std::string& text, const std::vector<std::string>& options) override {
-        if (json_) emit({{"type", "question"}, {"text", text}, {"options", options}});
-        if (!isatty(STDIN_FILENO)) {
-            if (!json_) fprintf(stderr, "? %s\n  (no terminal to answer on)\n", text.c_str());
-            return "";
-        }
-        fprintf(stderr, "\n? %s\n", text.c_str());
-        for (size_t i = 0; i < options.size(); ++i) fprintf(stderr, "  [%zu] %s\n", i + 1, options[i].c_str());
-        fprintf(stderr, options.empty() ? "answer (empty = none): " : "answer (a number, or your own words; empty = none): ");
-        fflush(stderr);
-        std::string line;
-        if (!std::getline(std::cin, line)) return "";
-        if (!options.empty() && !line.empty() && line.find_first_not_of("0123456789") == std::string::npos) {
-            size_t n = std::stoul(line);
-            if (n >= 1 && n <= options.size()) return options[n - 1];
-        }
-        return line;
-    }
-    void on_todo(const std::vector<TodoItem>& items) override {
+    void todo(const json& items) {
         if (json_) {
-            nlohmann::json list = nlohmann::json::array();
-            for (const auto& t : items) list.push_back({{"text", t.text}, {"done", t.done}});
-            emit({{"type", "todo"}, {"items", list}});
+            emit({{"type", "todo"}, {"items", items}});
             return;
         }
         size_t done = 0;
-        for (const auto& t : items) done += t.done;
+        for (const auto& t : items) done += t.value("done", false);
         fprintf(stderr, "※ todo %zu/%zu done\n", done, items.size());
-        for (const auto& t : items) fprintf(stderr, "  %s %s\n", t.done ? "[x]" : "[ ]", t.text.c_str());
-    }
-    ApprovalAnswer ask(const ApprovalRequest& r) override {
-        if (!isatty(STDIN_FILENO)) {
-            if (json_) emit({{"type", "denied"}, {"summary", r.summary}, {"reason", "no terminal to ask on"}});
-            else fprintf(stderr, "✗ denied (no terminal to ask on): %s\n", r.summary.c_str());
-            return {Approval::No, ""};
-        }
-        if (!r.preview.empty()) fprintf(stderr, "\n%s", r.preview.c_str());
-        fprintf(stderr, "\napprove? %s\n  why asking: %s\n  [y] yes  [n] no  [n: reason] no, with a reason for the model  [a] always: %s (this session)  [t] trip the harness: ",
-                r.summary.c_str(), r.reason.c_str(), r.always_covers.c_str());
-        fflush(stderr);
-        std::string line;
-        if (!std::getline(std::cin, line) || line.empty()) return {Approval::No, ""};
-        switch (line[0]) {
-            case 'y': case 'Y': return {Approval::Yes, ""};
-            case 'a': case 'A': return {Approval::Always, ""};
-            case 't': case 'T': return {Approval::Trip, ""};
-            default: {
-                std::string why;
-                if (auto c = line.find(':'); c != std::string::npos) why = line.substr(c + 1);
-                while (!why.empty() && why.front() == ' ') why.erase(0, 1);
-                return {Approval::No, why};
-            }
-        }
+        for (const auto& t : items) fprintf(stderr, "  %s %s\n", t.value("done", false) ? "[x]" : "[ ]", t.value("text", "").c_str());
     }
 
-private:
-    void emit(nlohmann::json j) {
-        fprintf(stdout, "%s\n", j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace).c_str());
+    void question(const json& e) {
+        std::string text = e.value("text", "");
+        std::vector<std::string> options = e.value("options", std::vector<std::string>{});
+        if (json_) emit({{"type", "question"}, {"text", text}, {"options", options}});
+        std::string answer;
+        if (!isatty(STDIN_FILENO)) {
+            if (!json_) fprintf(stderr, "? %s\n  (no terminal to answer on)\n", text.c_str());
+        } else {
+            fprintf(stderr, "\n? %s\n", text.c_str());
+            for (size_t i = 0; i < options.size(); ++i) fprintf(stderr, "  [%zu] %s\n", i + 1, options[i].c_str());
+            fprintf(stderr, options.empty() ? "answer (empty = none): " : "answer (a number, or your own words; empty = none): ");
+            fflush(stderr);
+            if (std::getline(std::cin, answer) && !options.empty() && !answer.empty() && answer.find_first_not_of("0123456789") == std::string::npos) {
+                size_t n = std::stoul(answer);
+                if (n >= 1 && n <= options.size()) answer = options[n - 1];
+            }
+        }
+        call("maic.question.reply", {{"session", session}, {"question", e.value("id", "")}, {"text", answer}});
+    }
+
+    void ask(const json& r) {
+        std::string summary = r.value("summary", ""), choice = "no", why;
+        if (!isatty(STDIN_FILENO)) {
+            if (json_) emit({{"type", "denied"}, {"summary", summary}, {"reason", "no terminal to ask on"}});
+            else fprintf(stderr, "✗ denied (no terminal to ask on): %s\n", summary.c_str());
+        } else {
+            if (std::string preview = r.value("preview", ""); !preview.empty()) fprintf(stderr, "\n%s", preview.c_str());
+            fprintf(stderr, "\napprove? %s\n  why asking: %s\n  [y] yes  [n] no  [n: reason] no, with a reason for the model  [a] always: %s (this session)  [t] trip the harness: ",
+                    summary.c_str(), r.value("reason", "").c_str(), r.value("always_covers", "").c_str());
+            fflush(stderr);
+            std::string line;
+            if (std::getline(std::cin, line) && !line.empty()) {
+                switch (line[0]) {
+                    case 'y': case 'Y': choice = "yes"; break;
+                    case 'a': case 'A': choice = "always"; break;
+                    case 't': case 'T': choice = "trip"; break;
+                    default:
+                        if (auto c = line.find(':'); c != std::string::npos) why = line.substr(c + 1);
+                        while (!why.empty() && why.front() == ' ') why.erase(0, 1);
+                }
+            }
+        }
+        call("maic.approval.answer", {{"session", session}, {"approval", r.value("id", "")}, {"choice", choice}, {"feedback", why}});
+    }
+
+    void emit(const json& j) {
+        fprintf(stdout, "%s\n", j.dump(-1, ' ', false, json::error_handler_t::replace).c_str());
         fflush(stdout);
     }
+
+    Engine& engine_;
+    std::string client_;
     bool json_;
+    long next_ = 1;
+    std::string failure_;
+    std::unique_ptr<protocol::Recorder> recorder_;
 };
 
 }  // namespace
@@ -135,7 +233,9 @@ int run_headless(const HeadlessOptions& options) {
     settings.rules.insert(settings.rules.end(), options.rules.begin(), options.rules.end());
     if (options.load_instructions) settings.load_instructions = *options.load_instructions;
     settings.bans.strings.insert(settings.bans.strings.end(), options.bans.begin(), options.bans.end());
+    settings.bans.patterns.insert(settings.bans.patterns.end(), options.ban_patterns.begin(), options.ban_patterns.end());
     if (options.harness) settings.harness = *options.harness;
+    if (options.think) settings.think = true;
     if (settings.harness != "smart" && settings.harness != "dumb") {
         fprintf(stderr, "maic: --harness must be smart or dumb\n");
         return 2;
@@ -166,26 +266,18 @@ int run_headless(const HeadlessOptions& options) {
     if (options.append && options.resume) log = std::make_unique<SessionLog>(SessionLog::Reopen{}, *options.resume);
     else if (options.resume) log = std::make_unique<SessionLog>(SessionLog::Fork{}, *options.resume, options.fork_at.value_or(count_records(*options.resume)), "headless", where);
     else log = std::make_unique<SessionLog>("headless", where);
-    Agent agent(std::filesystem::current_path(), settings.model);
-    agent.providers = settings.providers;
-    set_context(agent.providers, settings.context);
-    set_context(agent.providers, settings.context_2, "llamacpp-2");
+    std::string transcript = log->path().string();
     if (options.ctx) {
+        set_context(settings.providers, settings.context);
         std::string r = restart_llamacpp_if_changed();
         if (!r.empty()) fprintf(stderr, "※ %s\n", r.c_str());
     }
     if (options.ctx2) {
+        set_context(settings.providers, settings.context_2, "llamacpp-2");
         std::string r = restart_llamacpp_if_changed("llamacpp-2");
         if (!r.empty()) fprintf(stderr, "※ %s\n", r.c_str());
     }
-    agent.mode = *mode;
-    agent.review_with_model = settings.harness != "dumb";
-    agent.audit = settings.audit;
-    agent.reviewer_model = settings.reviewer_model;
-    agent.small_model = settings.small_model;
-    agent.reviewer_budget_tokens = settings.reviewer_budget_tokens;
-    agent.presets = settings.presets;
-    if (*mode == Mode::Auto && !agent.review_with_model && !settings.dumb_auto_ok && !options.accept_dumb_auto) {
+    if (*mode == Mode::Auto && settings.harness == "dumb" && !settings.dumb_auto_ok && !options.accept_dumb_auto) {
         fprintf(stderr, "dumb harness + auto mode: no model reads the conversation before the agent acts; only the rule list stands between it and your shell.\n");
         if (isatty(STDIN_FILENO) && options.prompt != "-") {
             fprintf(stderr, "continue into auto mode? [y/N] ");
@@ -200,83 +292,88 @@ int run_headless(const HeadlessOptions& options) {
             return 2;
         }
     }
-    agent.think = options.think || settings.think;
-    agent.compaction.at = settings.compact_at;
-    agent.compaction.keep_results = settings.compact_keep_results;
-    agent.budget_tokens = settings.budget_tokens;
-    agent.full_output = settings.full_output;
-    agent.full_output_max_mb = static_cast<size_t>(settings.full_output_max_mb);
-    agent.set_instruction_options(settings.instructions);
-    agent.load_instruction_files = settings.load_instructions;
-    agent.system_prefix = resolve_system_prompt(settings.system_prompt);
-    agent.prefill = resolve_system_prompt(settings.prefill);
-    agent.rules = settings.rules;
-    agent.set_permission(settings.permission);
-    agent.agents = settings.agents;
-    agent.set_forbid(settings.forbid);
     if (settings.tripwire == "isolated" && !settings.allow_isolated) {
         fprintf(stderr, "maic: tripwire = \"isolated\" is not allowed: set allow_isolated = true in settings to permit it\n");
         return 2;
     }
-    set_tripwire_scope(settings.tripwire, log->path().string() + ".tripped");
-    if (settings.tripwire == "isolated") agent.set_confined(true);
-    agent.reload_instructions();
-    for (const auto& p : agent.pending_imports()) {
-        fprintf(stderr, "※ %s imports %s from outside your trusted directories: not read until you approve it (%s); maic trust imports --approve asks at a terminal\n",
-                p.importer.c_str(), p.target.c_str(), p.changed ? "it changed since you did" : "not approved yet");
-    }
-    agent.bans = settings.bans;
-    {
-        auto [provider, name] = resolve_model(agent.providers, agent.model);
-        nlohmann::json s = settings.sampling.is_object() ? settings.sampling : nlohmann::json::object();
-        nlohmann::json per_provider = provider.options.value("sampling", nlohmann::json::object());
-        for (const auto& [k, v] : per_provider.items()) s[k] = v;
-        for (const auto& [k, v] : options.sampling.items()) s[k] = v;  // the command line wins
-        agent.sampling = s;
-        agent.operator_note_in_turn = provider.options.value("operator_note", provider.kind != "anthropic");
-    }
-    settings.bans.patterns.insert(settings.bans.patterns.end(), options.ban_patterns.begin(), options.ban_patterns.end());
-    agent.bans = settings.bans;
-    agent.set_log(log.get());
-    if (options.resume) {
-        LoadedSession old = load_session(*options.resume, options.fork_at.value_or(~size_t(0)));
-        agent.restore(old.messages);
-        std::string at = options.fork_at ? ", forked at record " + std::to_string(*options.fork_at) : "";
-        fprintf(stderr, "※ resumed %s (%zu messages%s)%s\n", options.resume->stem().string().c_str(), old.messages.size(), at.c_str(),
-                options.append ? ", appending to it" : options.record ? ", writing to a new file that points at it" : ", temporary transcript");
-    }
-    if (agent.remote()) fprintf(stderr, "※ REMOTE model %s: prompts and tool output leave this machine\n", agent.model.c_str());
-    for (const auto& n : agent.tool_notices()) fprintf(stderr, "※ %s\n", n.c_str());
-    for (const auto& im : options.images) agent.attach_image(im);
-    for (const auto& c : options.context) {
-        try {
-            fprintf(stderr, "※ %s\n", agent.add_context_file(c).c_str());
-        } catch (const std::exception& e) {
-            fprintf(stderr, "maic: %s\n", e.what());
-            return 2;
+    set_tripwire_scope(settings.tripwire, transcript + ".tripped");
+
+    // The turn runs in an in-process engine, as the TUI's do (docs/design/engine-protocol.md, build step 6).
+    EngineOptions eo;
+    eo.settings = settings;
+    eo.kind = "headless";
+    Engine engine(eo);
+    std::string client = engine.connect(Origin::Local, "maic -p", "in-process");
+    Printer printer(engine, client, options.json);
+    printer.call("maic.hello", {{"protocol", 1}, {"client", {{"name", "maic -p"}, {"version", MAIC_VERSION}}}});
+    LocalSession ls;
+    ls.workspace = std::filesystem::current_path();
+    ls.settings = settings;
+    ls.log = std::move(log);
+    ls.titles = false;  // a one-shot is not titled (maic sessions name does it on request)
+    ls.setup = [&](Agent& agent, SessionLog& l) {
+        configure_agent(agent, settings);
+        apply_sampling(agent, settings, options.sampling);  // the command line wins
+        agent.mode = *mode;
+        if (settings.tripwire == "isolated") agent.set_confined(true);
+        agent.reload_instructions();
+        for (const auto& p : agent.pending_imports()) {
+            fprintf(stderr, "※ %s imports %s from outside your trusted directories: not read until you approve it (%s); maic trust imports --approve asks at a terminal\n",
+                    p.importer.c_str(), p.target.c_str(), p.changed ? "it changed since you did" : "not approved yet");
         }
+        agent.set_log(&l);
+        if (options.resume) {
+            LoadedSession old = load_session(*options.resume, options.fork_at.value_or(~size_t(0)));
+            agent.restore(old.messages);
+            std::string at = options.fork_at ? ", forked at record " + std::to_string(*options.fork_at) : "";
+            fprintf(stderr, "※ resumed %s (%zu messages%s)%s\n", options.resume->stem().string().c_str(), old.messages.size(), at.c_str(),
+                    options.append ? ", appending to it" : options.record ? ", writing to a new file that points at it" : ", temporary transcript");
+        }
+        if (agent.remote()) fprintf(stderr, "※ REMOTE model %s: prompts and tool output leave this machine\n", agent.model.c_str());
+        for (const auto& n : agent.tool_notices()) fprintf(stderr, "※ %s\n", n.c_str());
+        for (const auto& im : options.images) agent.attach_image(im);
+        for (const auto& c : options.context) {
+            try {
+                fprintf(stderr, "※ %s\n", agent.add_context_file(c).c_str());
+            } catch (const std::exception& e) {
+                throw ContextError(e.what());
+            }
+        }
+    };
+    try {
+        printer.session = engine.open_local(client, std::move(ls));
+    } catch (const ContextError& e) {
+        fprintf(stderr, "maic: %s\n", e.what());
+        return 2;
     }
+    printer.call("maic.session.attach", {{"session", printer.session}});
 
     std::signal(SIGINT, on_sigint);
-    Printer printer(options.json);
-    try {
-        agent.submit(prompt, Origin::Local, printer, g_cancel);
-    } catch (const std::exception& e) {
-        fprintf(stderr, "maic: %s\n", failure_text(agent, e).c_str());
+    json reply = printer.call("response.create", {{"conversation", printer.session}, {"input", prompt}});
+    if (reply.contains("error")) {
+        fprintf(stderr, "maic: %s\n", reply["error"].value("message", "the engine refused the prompt").c_str());
+        return 1;
+    }
+    printer.response = reply["result"].value("id", "");
+    if (std::string failure = printer.follow(); !failure.empty()) {
+        fprintf(stderr, "maic: %s\n", failure.c_str());
         return 1;
     }
     if (!options.json) fprintf(stdout, "\n");
     fflush(stdout);
-    auto u = agent.usage();
-    if (u.calls) {
-        nlohmann::json usage = {{"type", "usage"}, {"input", u.total_input}, {"output", u.total_output}, {"calls", u.calls}, {"context", u.last.context}};
-        if (!u.normalized.empty()) usage["normalized"] = u.normalized;
+    const json& u = printer.usage;
+    if (u.value("calls", 0) > 0) {
+        json total = u.value("total", json::object());
+        long in = total.value("input", 0L), out = total.value("output", 0L), last_input = u.value("last_input", 0L), context = u.value("context", 0L);
+        int calls = u.value("calls", 0);
+        json usage = {{"type", "usage"}, {"input", in}, {"output", out}, {"calls", calls}, {"context", context}};
+        if (u.contains("normalized")) usage["normalized"] = u["normalized"];
         if (options.json) fprintf(stdout, "%s\n", usage.dump().c_str());
-        else fprintf(stderr, "※ tokens: %ld in, %ld out over %d call%s%s\n", u.total_input, u.total_output, u.calls, u.calls == 1 ? "" : "s",
-                     u.last.context ? (" (context " + std::to_string(u.last.input) + "/" + std::to_string(u.last.context) + ")").c_str() : "");
-        if (!options.json && !u.normalized.empty()) fprintf(stderr, "※ adapter normalizations: %s\n", usage["normalized"].dump().c_str());
+        else fprintf(stderr, "※ tokens: %ld in, %ld out over %d call%s%s\n", in, out, calls, calls == 1 ? "" : "s",
+                     context ? (" (context " + std::to_string(last_input) + "/" + std::to_string(context) + ")").c_str() : "");
+        if (!options.json && u.contains("normalized")) fprintf(stderr, "※ adapter normalizations: %s\n", usage["normalized"].dump().c_str());
     }
-    fprintf(stderr, "※ transcript%s: %s\n", options.record ? "" : " (temporary; --record keeps one)", log->path().string().c_str());
+    fprintf(stderr, "※ transcript%s: %s\n", options.record ? "" : " (temporary; --record keeps one)", transcript.c_str());
     return g_cancel ? 130 : 0;
 }
 

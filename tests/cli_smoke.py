@@ -105,6 +105,16 @@ def main():
     print(("ok" if ok else "FAIL") + ": exit %d, stdout %r" % (r.returncode, r.stdout.strip()[:80]))
     if not ok:
         print(r.stderr[-3000:])
+    # The same turn as JSON lines, through the in-process engine, its connection recorded: `maic protocol check` passes it.
+    rec = os.path.join(home, "headless-streams")
+    os.makedirs(rec)
+    j = subprocess.run([maic, "-p", "ping", "--no-instructions", "--json"], capture_output=True, text=True, env=dict(env, MAIC_PROTOCOL_RECORD=rec), cwd=home, timeout=120)
+    c = subprocess.run([maic, "protocol", "check", rec], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    lines = [json.loads(l) for l in j.stdout.splitlines() if l.strip()]
+    stream_ok = (j.returncode == 0 and "".join(l["text"] for l in lines if l["type"] == "text") == "echo: ping" and lines[-1]["type"] == "usage"
+                 and c.returncode == 0 and "1 stream, 0 with a violation" in c.stdout)
+    print(("ok" if stream_ok else "FAIL") + ": maic -p --json through the engine, its recorded stream passes maic protocol check" +
+          ("" if stream_ok else "\n" + j.stdout[-1500:] + j.stderr[-1500:] + c.stdout[-1500:]))
     # maic setup off a terminal: the plan and exit 2, nothing done (the settings file exists, so that step is not on it).
     s = subprocess.run([maic, "setup"], capture_output=True, text=True, env=env, cwd=home, timeout=120, stdin=subprocess.DEVNULL)
     setup_ok = s.returncode == 2 and "plan (each a yes/no in a terminal)" in s.stdout and "Build llama.cpp" in s.stdout and "Write the global settings" not in s.stdout and "AddressSanitizer" not in s.stderr
@@ -243,7 +253,7 @@ def main():
     trust_ok = trust_smoke(maic, port)
     trail_ok = audit_trail_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok else 1)
+    sys.exit(0 if ok and stream_ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok else 1)
 
 
 def output_smoke(maic, env, sess_dir):
