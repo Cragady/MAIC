@@ -51,7 +51,10 @@ add_test(NAME panel_check COMMAND python3 -m unittest -q test_panel_check
 # cases that run maic itself (model resolve, the diction pass-through).
 add_test(NAME diction COMMAND python3 -m unittest -q diction.test_diction WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 set_tests_properties(diction PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;MAIC_BIN=$<TARGET_FILE:maic>")
-set_tests_properties(comfy_node workflow_edit storyboard danbooru_tags panel_check PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
+# The leak audit against made-up sessions and a fake local judge (docs/leak-audit.md); never a real transcript.
+add_test(NAME leak_audit COMMAND python3 -m unittest -q test_leak_audit
+         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/tools/audit)
+set_tests_properties(comfy_node workflow_edit storyboard danbooru_tags panel_check leak_audit PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
 # cai-tools, ported whole as tools/cai (docs/cai.md): its own suite as written, plus the MAIC tests beside it, through its runner.
 add_test(NAME cai_tools COMMAND python3 ${PROJECT_SOURCE_DIR}/tools/cai/run_tests.py)
 set_tests_properties(cai_tools PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1 TIMEOUT 900)
@@ -61,6 +64,7 @@ install(PROGRAMS tools/comfyui/workflow_edit.py DESTINATION bin RENAME maic-work
 install(PROGRAMS tools/comfyui/storyboard.py DESTINATION bin RENAME maic-storyboard)
 install(PROGRAMS tools/comfyui/danbooru_tags.py DESTINATION bin RENAME maic-danbooru-tags)
 install(PROGRAMS tools/comfyui/panel_check.py DESTINATION bin RENAME maic-panel-check)
+install(PROGRAMS tools/audit/leak_audit.py DESTINATION bin RENAME maic-leak-audit)
 # cai-tools (docs/cai.md): the `cai` wrapper, `maic-cai` a link to it, and the package under share/maic/tools/cai as in the tree.
 install(PROGRAMS tools/cai/bin/cai DESTINATION bin)
 install(CODE "file(CREATE_LINK cai \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bin/maic-cai\" SYMBOLIC)")
