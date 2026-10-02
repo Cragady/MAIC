@@ -512,7 +512,8 @@ struct Server::Impl {
         srv->Post("/api/trust", [this](const httplib::Request& req, httplib::Response& res) {
             json body = body_of(req);
             try {
-                std::string done = remote_trust_change(token_name(req).value_or("-"), body.value("step_up", ""), body.value("action", ""), body.value("path", ""), body.value("level", ""));
+                std::string done = remote_trust_change(token_name(req).value_or("-"), body.value("step_up", ""), body.value("action", ""), body.value("path", ""), body.value("level", ""),
+                                                       body.value("lua", ""));
                 reply(res, {{"done", done}});
             } catch (const std::runtime_error& e) {
                 throw HttpError{403, e.what()};

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <filesystem>
+#include "maic/lua.hpp"
+
 #include <functional>
 #include <iosfwd>
 #include <map>
@@ -86,13 +88,17 @@ bool trusted(const std::filesystem::path& dir);
 // Remembers the directory as trusted with its current contents, keeping its tier unless `level` names one.
 // The record decides from then on; settle_trust or grant_trust fix it for the process.
 // A remote origin cannot grant trust here: throws (remote_trust_change is the stepped-up way).
-void trust_dir(const ProjectDir& p, Origin origin, const std::string& level = "");
+// `lua` is the directory's Lua level, how its settings.lua runs (full, sandbox, restricted); "" keeps what it
+// had, and a new directory is full: "trust it" means as yourself.
+void trust_dir(const ProjectDir& p, Origin origin, const std::string& level = "", const std::string& lua = "");
+// How a trusted directory's settings.lua runs: this process's --trust=LEVEL, else its remembered level, else full.
+LuaTier trust_lua_tier(const std::filesystem::path& dir);
 // Remembers it as untrusted (asked never again). A remote origin cannot decide this here either.
 void never_trust(const std::filesystem::path& dir, Origin origin);
 // Forgets what was remembered; the directory is untrusted for this process and asked about at the next start.
 void untrust(const std::filesystem::path& dir);
 // For this process only: trusted (`--trust`) or untrusted without asking again ("not now").
-void trust_for_session(const std::filesystem::path& dir);
+void trust_for_session(const std::filesystem::path& dir, LuaTier lua = LuaTier::Full);
 void not_now(const std::filesystem::path& dir);
 // Fixes each project directory's answer for this process, so a file edited mid-session does not switch it.
 // Changes a directory's tier let pass are recorded as its new contents; one line each says which files.
@@ -107,28 +113,31 @@ std::vector<std::string> trust_notices(const std::filesystem::path& workspace);
 std::string describe_project(const ProjectDir& p, const std::string& indent);
 // "standard; `maic trust DIR --level relaxed` to stop asking about your own edits, ..."
 std::string tier_hint(const std::filesystem::path& dir, const std::string& level);
+// "Lua full: its settings.lua runs as you; `maic trust DIR --lua sandbox` ..."
+std::string lua_hint(const std::filesystem::path& dir);
 
 // `:trust [PATH] [--level L]`, `maic trust [PATH] [--level L]`: trusts PATH's directory, or every untrusted
 // project directory of the workspace; returns what was done. `:untrust [PATH]`, `maic untrust PATH`.
 // `maic trust --list`.
-std::string grant_trust(const std::filesystem::path& workspace, const std::string& path, Origin origin, const std::string& level = "");
+std::string grant_trust(const std::filesystem::path& workspace, const std::string& path, Origin origin, const std::string& level = "", const std::string& lua = "");
 std::string revoke_trust(const std::filesystem::path& workspace, const std::string& path);
 std::string trust_listing();
 // The whole command as typed at this machine: "trust" with [PATH] [--level L] or --list, "untrust" with [PATH].
 std::string trust_command(const std::string& command, const std::vector<std::string>& args, const std::filesystem::path& workspace);
 
 // Asks about each project directory trust_to_ask finds, once, on `in`/`out` (the terminal before the TUI draws):
-// what it holds, why it asks, its tier, and t (trust it), n (not now: untrusted this session) or v (never).
+// what it holds, why it asks, its tier, and t (trust fully: its Lua runs as you), s (trust sandboxed: its Lua
+// runs in a child process), n (not now: untrusted this session) or v (never).
 // Anything else, or the end of input, is "not now".
 void ask_trust(const std::filesystem::path& workspace, std::istream& in, std::ostream& out);
 
 // A remote device changing trust (POST /api/trust): only with a step-up proof the registered verifier accepts.
 // Until accounts exist (docs/design/accounts.md) none is registered and every request is refused. `action` is
-// trust, untrust, never or level; `path` is absolute. Each request, done or refused, is a line in
+// trust, untrust, never, level or lua (`lua`: full, sandbox or restricted); `path` is absolute. Each request, done or refused, is a line in
 // trust_audit_path() naming the device. Returns what was done; throws with the reason otherwise.
 using StepUpVerifier = std::function<bool(const std::string& device, const std::string& proof)>;
 void set_step_up_verifier(StepUpVerifier verifier);
 std::string remote_trust_change(const std::string& device, const std::string& proof, const std::string& action,
-                                const std::string& path, const std::string& level);
+                                const std::string& path, const std::string& level, const std::string& lua = "");
 
 }  // namespace maic

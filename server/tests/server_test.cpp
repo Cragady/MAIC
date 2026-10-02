@@ -448,14 +448,17 @@ int main() {
         expect(status == 403 && r.value("error", "") == "step-up verification failed" && !trusted(dir), "a wrong proof is refused");
         r = api.post("/api/trust", {{"path", dir.string()}, {"action", "trust"}}, &status);
         expect(status == 403 && r.value("error", "").find("a step_up proof is required") != std::string::npos, "no proof is refused");
-        r = api.post("/api/trust", {{"path", dir.string()}, {"action", "trust"}, {"level", "relaxed"}, {"step_up", "123456"}}, &status);
-        expect(status == 200 && r.value("done", "") == "trusted " + dir.string() && trusted(dir) && trust_status(project_dir(dir)).level == "relaxed",
-               "a verified device trusts it, with a tier");
+        r = api.post("/api/trust", {{"path", dir.string()}, {"action", "trust"}, {"level", "relaxed"}, {"lua", "sandbox"}, {"step_up", "123456"}}, &status);
+        expect(status == 200 && r.value("done", "") == "trusted " + dir.string() + " (Lua sandbox)" && trusted(dir) && trust_status(project_dir(dir)).level == "relaxed" &&
+                   trust_lua_tier(dir) == LuaTier::Sandbox,
+               "a verified device trusts it, with a tier and a Lua level");
+
         r = api.post("/api/trust", {{"path", dir.string()}, {"action", "untrust"}, {"step_up", "123456"}}, &status);
         expect(status == 200 && !trusted(dir), "and can take it back");
         std::string audit = slurp(trust_audit_path());
         expect(audit.find("device=phone action=trust path=" + dir.string() + " refused: " + unavailable) != std::string::npos &&
-                   audit.find("device=phone action=trust path=" + dir.string() + " level=relaxed done") != std::string::npos &&
+                   audit.find("device=phone action=trust path=" + dir.string() + " level=relaxed lua=sandbox done") != std::string::npos &&
+
                    audit.find("device=phone action=untrust path=" + dir.string() + " done") != std::string::npos,
                "each request is an audit line naming the device");
         set_step_up_verifier({});

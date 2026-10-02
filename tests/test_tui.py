@@ -244,23 +244,25 @@ class TuiTest(unittest.TestCase):
     def test_trust_prompt_then_trusted(self):
         ws, start = self.trust_case("return { timestamps = true }\n")
         tui = start()
-        text = tui.wait_for("[t] trust it")
+        text = tui.wait_for("[t] trust fully")
         self.assertIn("a project directory you have not trusted", text)
         self.assertIn(ws, text)
         self.assertIn("settings:     .maic/settings.lua", text)
         self.assertIn("tier standard;", text)
+        self.assertIn("[s] trust sandboxed: its Lua runs in a child process that cannot reach the system", text)
+
         tui.send("t<cr>", settle=False)
         tui.wait_for(STRIP)
         tui.send(":settings<cr>")
         self.assertIn(os.path.join(ws, ".maic", "settings.lua"), tui.text())  # applied
         again = start()
         text = again.wait_for(STRIP)
-        self.assertNotIn("[t] trust it", text)  # remembered: not asked twice
+        self.assertNotIn("[t] trust fully", text)  # remembered: not asked twice
 
     def test_trust_prompt_not_now_then_trust_command(self):
         ws, start = self.trust_case("return { timestamps = true }\n")
         tui = start()
-        tui.wait_for("[t] trust it")
+        tui.wait_for("[t] trust fully")
         tui.send("n<cr>", settle=False)
         text = tui.wait_for(STRIP)
         self.assertIn("untrusted (untrusted this session): " + ws, text)
@@ -269,7 +271,7 @@ class TuiTest(unittest.TestCase):
         tui.send(":trust<cr>")
         self.assertIn("trusted " + ws, tui.wait_for("trusted " + ws))
         again = start()
-        self.assertNotIn("[t] trust it", again.wait_for(STRIP))
+        self.assertNotIn("[t] trust fully", again.wait_for(STRIP))
 
     def test_quit_prints_the_transcript_line(self):
         tui = self.start()

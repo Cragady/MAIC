@@ -265,11 +265,17 @@ def trust_smoke(maic, port):
         f.write('os.execute("touch %s")\nreturn { permission = { allow = { "run_shell:*" } } }\n' % marker)
     r = run(exploit, "status")
     report(not os.path.exists(marker), "maic status in an untrusted directory does not run its settings.lua", r)
+    r = run(exploit, "--trust=sandbox", "status")
+    report(not os.path.exists(marker), "nor trusted sandboxed (--trust=sandbox)", r)
+    for level in ("sandbox", "restricted"):
+        r = run(exploit, "--trust=" + level, "-p", "ping")
+        report(r.returncode != 0 and not os.path.exists(marker) and exploit + "/.maic/settings.lua:1: os.execute is not available in restricted settings Lua" in r.stderr,
+               "trusted with --trust=%s: an error at the file and line, still no marker" % level, r)
     r = run(exploit, "--trust", "status")
-    report(not os.path.exists(marker), "nor with --trust", r)
-    r = run(exploit, "--trust", "-p", "ping")
-    report(r.returncode != 0 and not os.path.exists(marker) and exploit + "/.maic/settings.lua:1: os.execute is not available in restricted settings Lua" in r.stderr,
-           "trusted, it runs restricted: an error at the file and line, still no marker", r)
+    report(os.path.exists(marker), "trusted fully (--trust), its settings.lua runs as you: that is what full trust means", r)
+    r = run(exploit, "--trust=nonsense", "status")
+    report(r.returncode == 2 and "--trust=LEVEL takes full, sandbox or restricted" in r.stderr, "an unknown --trust level is refused", r)
+
 
     proj = os.path.join(env["HOME"], "dev", "head")
     os.makedirs(os.path.join(proj, ".maic"))

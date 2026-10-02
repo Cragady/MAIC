@@ -270,20 +270,25 @@ fs::path settings_path() {
 
 namespace {
 
-// The global file's own choice of Lua, read from its text: it has to be known before the file runs, so it counts
-// only when written literally (global_lua = "restricted").
-bool asks_restricted(const fs::path& lua_path) {
+// The global file's own tier and memory cap, read from its text: they have to be known before the file runs, so
+// they count only when written literally (global_lua = "sandbox", lua_memory_mb = 512).
+std::pair<std::string, size_t> literal_lua_choice(const fs::path& lua_path) {
     std::ifstream in(lua_path, std::ios::binary);
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    static const std::regex re(R"((^|[\s,{;])global_lua\s*=\s*["']restricted["'])");
-    return std::regex_search(text, re);
+    static const std::regex tier(R"((^|[\s,{;])global_lua\s*=\s*["'](full|sandbox|restricted)["'])");
+    static const std::regex memory(R"((^|[\s,{;])lua_memory_mb\s*=\s*([0-9]+))");
+    std::smatch m;
+    std::pair<std::string, size_t> out{"", 0};
+    if (std::regex_search(text, m, tier)) out.first = m[2].str();
+    if (std::regex_search(text, m, memory)) out.second = std::stoul(m[2].str());
+    return out;
 }
 
 // Applies one settings location over `s`: `<stem>.lua` when it exists (a chunk returning a table), else
 // `<stem>.json`. Scalars replace, providers merge by name, styles merge by role. `global` is the user's own
-// file: its Lua has the full library unless it says global_lua = "restricted", and only it sets global_lua and
-// the trust_* keys. A project's file always runs in restricted Lua (a settings file is data).
-void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspace, bool global) {
+// file: its Lua runs at the tier it names literally (full by default), and only it sets global_lua,
+// lua_memory_mb and the trust_* keys. A project's file runs at its directory's trust level (`tier`).
+void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspace, bool global, LuaTier tier, size_t memory_mb) {
     fs::path lua_path = json_path;
     lua_path.replace_extension(".lua");
     json j;
@@ -291,16 +296,20 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
     std::error_code ec;
     if (fs::is_regular_file(lua_path, ec)) {
         path = lua_path;
-        bool restricted = !global || asks_restricted(lua_path);
+        std::pair<std::string, size_t> literal;
+        if (global) {
+            literal = literal_lua_choice(lua_path);
+            tier = parse_lua_tier(literal.first).value_or(LuaTier::Full);
+            if (literal.second) memory_mb = literal.second;
+        }
         try {
-            Lua lua(workspace, {}, restricted ? LuaLibs::Restricted : LuaLibs::Full);
-            j = lua.eval_table_file(lua_path);
+            j = eval_lua_data_file(lua_path, workspace, tier, memory_mb, &s.warnings);
         } catch (const std::exception& e) {
             std::string what = e.what();
             throw std::runtime_error("settings: " + (what.find(lua_path.string()) == std::string::npos ? lua_path.string() + ": " : "") + what);
         }
-        if (global && j.is_object() && j.value("global_lua", "") == "restricted" && !restricted) {
-            throw std::runtime_error(lua_path.string() + ": global_lua = \"restricted\" counts only written literally, since it decides how the file runs");
+        if (global && j.is_object() && j.contains("global_lua") && j["global_lua"] != (literal.first.empty() ? json("full") : json(literal.first))) {
+            throw std::runtime_error(lua_path.string() + ": global_lua counts only written literally (global_lua = \"sandbox\"), since it decides how the file runs");
         }
     } else {
         std::ifstream in(json_path);
@@ -316,7 +325,9 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
     try {
         if (global) {
             s.global_lua = j.value("global_lua", s.global_lua);
-            if (s.global_lua != "full" && s.global_lua != "restricted") throw std::runtime_error(path.string() + ": global_lua must be \"full\" or \"restricted\"");
+            if (!parse_lua_tier(s.global_lua)) throw std::runtime_error(path.string() + ": global_lua must be \"full\", \"sandbox\" or \"restricted\"");
+            s.lua_memory_mb = j.value("lua_memory_mb", s.lua_memory_mb);
+            if (s.lua_memory_mb < 16) throw std::runtime_error(path.string() + ": lua_memory_mb must be at least 16");
             s.trust_strictness = j.value("trust_strictness", s.trust_strictness);
             if (!valid_trust_level(s.trust_strictness)) throw std::runtime_error(path.string() + ": trust_strictness must be \"strict\", \"standard\" or \"relaxed\"");
             if (j.contains("trust_identities") && j["trust_identities"].is_array()) s.trust_identities = j["trust_identities"].get<std::vector<std::string>>();
@@ -334,7 +345,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             if (s.instructions_bound != "project" && s.instructions_bound != "home") throw std::runtime_error(path.string() + ": instructions.bound must be \"project\" or \"home\"");
         } else if (j.is_object()) {
             for (const auto& [key, v] : j.items()) {
-                if (key == "global_lua" || key.rfind("trust_", 0) == 0) s.warnings.push_back(path.string() + ": " + key + " is ignored: only your global settings file sets it");
+                if (key == "global_lua" || key == "lua_memory_mb" || key.rfind("trust_", 0) == 0) s.warnings.push_back(path.string() + ": " + key + " is ignored: only your global settings file sets it");
             }
             json chain = j.value("instructions", json::object());
             for (const char* key : {"project_markers", "bound"}) {
@@ -543,14 +554,16 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
 
 Settings load_settings(const fs::path& workspace) {
     Settings s;
-    apply_file(s, settings_path(), workspace, true);
+    apply_file(s, settings_path(), workspace, true, LuaTier::Full, s.lua_memory_mb);
     set_trust_config({s.trust_strictness, s.trust_identities, s.trust_levels, s.project_markers, s.instructions_bound});
+    set_lua_data_limits({*parse_lua_tier(s.global_lua), size_t(s.lua_memory_mb)});
     // Project layers: the config chain (the project root, or just under $HOME, down to the workspace), like
     // instruction files, each only once its directory is trusted (docs/harness.md, Trust).
     for (const auto& d : config_chain(workspace)) {
         if (!trusted(d)) continue;
-        apply_file(s, d / ".maic" / "settings.json", workspace, false);
-        apply_file(s, d / ".maic" / "settings.local.json", workspace, false);
+        LuaTier tier = trust_lua_tier(d);
+        apply_file(s, d / ".maic" / "settings.json", workspace, false, tier, s.lua_memory_mb);
+        apply_file(s, d / ".maic" / "settings.local.json", workspace, false, tier, s.lua_memory_mb);
     }
     // An agent's model, small_model and the names inside presets may be preset names; presets from every
     // layer are known only now.

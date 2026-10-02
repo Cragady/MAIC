@@ -170,7 +170,8 @@ struct Settings {
     long reviewer_budget_tokens = 0;  // the reviewer's own token cap; past it, what it would review is asked. 0 = none
     bool dumb_auto_ok = false;      // true: no warning when entering auto mode under a dumb harness
     // Read from the global file only (a project's copy is ignored with a warning; docs/settings.md):
-    std::string global_lua = "full";         // "restricted": the global settings.lua runs like a project's (written literally)
+    std::string global_lua = "full";         // the tier of your own Lua data files: full, sandbox or restricted (written literally)
+    int lua_memory_mb = 256;                 // the memory cap of settings Lua below full trust
     std::string trust_strictness = "standard";  // the default trust tier: strict, standard, relaxed (docs/harness.md, Trust)
     std::vector<std::string> trust_identities;  // author emails that are yours; empty: git config --global user.email
     std::map<std::string, std::string> trust_levels;  // a tier per directory ("~/dev2/app" = "relaxed")

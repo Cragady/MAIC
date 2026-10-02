@@ -80,8 +80,9 @@ void usage(std::ostream& out = std::cerr) {
                  "                                          unless --record, which forks, or --append)\n"
                  "       --fork-at N                        with -c/-r: continue from the old session's first N records only, in a\n"
                  "                                          new file that points at them (the old file is never changed)\n"
-                 "       --trust                            trust this directory's project files for this run only (headless runs\n"
-                 "                                          and runs off a terminal use untrusted ones otherwise; maic help trust)\n"
+                 "       --trust[=sandbox]                  trust this directory's project files for this run only, fully or with\n"
+                 "                                          their Lua in the sandbox (headless runs and runs off a terminal use\n"
+                 "                                          untrusted ones otherwise; maic help trust)\n"
                  "\n"
                  "  vendor                     the services MAIC can install for itself (ComfyUI, llama.cpp), pinned versions\n"
                  "  vendor add NAME            fetch, verify, build and link one (network; asks nothing else)\n"
@@ -167,8 +168,9 @@ void usage(std::ostream& out = std::cerr) {
                  "  server token new|list|revoke [NAME]   per-device bearer tokens for it\n"
                  "  server pair | pairs | unpair NAME     a phone's pairing for the relay (server.relay in settings)\n"
                  "  server status              its configuration, the relay link, and whether it is up (maic help server)\n"
-                 "  trust [PATH] [--level strict|standard|relaxed]   trust a project directory (default: every untrusted one\n"
-                 "                             from under $HOME down to here), with its tier; trust --list shows what is\n"
+                 "  trust [PATH] [--lua full|sandbox|restricted] [--level strict|standard|relaxed]   trust a project directory\n"
+                 "                             (default: every untrusted one on the chain down to here): how its settings Lua\n"
+                 "                             runs (default full) and how often to ask again; trust --list shows what is\n"
                  "                             remembered; untrust [PATH] forgets it (maic help trust)\n"
                  "  trip [reason]              trip the harness lock now (blocks all actions until unlocked)\n"
                  "  unlock [machine|session ID|all-sessions|all]\n"
@@ -986,13 +988,20 @@ int cmd_settings(const std::vector<std::string>& args) {
 int main(int argc, char** argv) {
     // --trust first: it decides which project settings the loads below may apply. The global settings are read
     // before it, for where the chain of project directories ends (instructions.bound).
-    if (std::find(argv + 1, argv + argc, std::string("--trust")) != argv + argc) {
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a != "--trust" && a.rfind("--trust=", 0) != 0) continue;
+        auto lua = maic::parse_lua_tier(a == "--trust" ? "full" : a.substr(8));
+        if (!lua) {
+            std::cerr << "maic: --trust=LEVEL takes full, sandbox or restricted\n";
+            return 2;
+        }
         try {
             maic::load_settings();
         } catch (const std::exception&) {
             // reported by whichever command loads the settings properly
         }
-        for (const auto& p : maic::project_dirs(std::filesystem::current_path())) maic::trust_for_session(p.dir);
+        for (const auto& p : maic::project_dirs(std::filesystem::current_path())) maic::trust_for_session(p.dir, *lua);
     }
     // Service files reach the models directory as ${MAIC_MODELS}; it comes from settings.
     try {
@@ -1079,7 +1088,7 @@ int main(int argc, char** argv) {
             else if (a == "--interactive" || a == "-i") interactive = true;
             else if (a == "--system" || a == "-S") tui.system = headless.system = value("--system");
             else if (a == "--no-instructions") tui.load_instructions = headless.load_instructions = false;
-            else if (a == "--trust") continue;  // read before anything else, at the top of main
+            else if (a == "--trust" || a.rfind("--trust=", 0) == 0) continue;  // read before anything else, at the top of main
             else if (a == "--prefill" || a == "--prefix") tui.prefill = headless.prefill = value(a.c_str());
             else if (a == "--rule") {
                 std::string r = value("--rule");

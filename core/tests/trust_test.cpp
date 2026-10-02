@@ -8,13 +8,18 @@
 #include "maic/instructions.hpp"
 #include "maic/paths.hpp"
 #include "maic/settings.hpp"
+#include "maic/theme.hpp"
 #include "maic/trust.hpp"
 
+#include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -70,11 +75,11 @@ fs::path project(const std::string& name, bool git) {
     return dir;
 }
 
-// The settings error for a project file whose second line is `line`, with the project trusted (restricted Lua).
-std::string restricted_error(const std::string& name, const std::string& line) {
-    fs::path dir = g_home / "dev" / ("lua-" + name);
+// The settings error for a project file whose second line is `line`, with the project trusted at Lua level `lua`.
+std::string lua_error(const std::string& name, const std::string& line, const std::string& lua) {
+    fs::path dir = g_home / "dev" / ("lua-" + lua + "-" + name);
     write_file(dir / ".maic" / "settings.lua", "local x = 1\n" + line + "\nreturn { mode = 'edit' }\n");
-    trust_dir(project_dir(dir), Origin::Local);
+    trust_dir(project_dir(dir), Origin::Local, "", lua);
     try {
         load_settings(dir);
     } catch (const std::exception& e) {
@@ -83,9 +88,14 @@ std::string restricted_error(const std::string& name, const std::string& line) {
     return "";
 }
 
-bool names_file_and_line(const std::string& err, const std::string& name) {
-    return contains(err, (g_home / "dev" / ("lua-" + name) / ".maic" / "settings.lua").string() + ":2:");
+std::string lua_file(const std::string& name, const std::string& lua) {
+    return (g_home / "dev" / ("lua-" + lua + "-" + name) / ".maic" / "settings.lua").string();
 }
+
+bool names_file_and_line(const std::string& err, const std::string& name, const std::string& lua) {
+    return contains(err, lua_file(name, lua) + ":2:");
+}
+
 
 }  // namespace
 
@@ -124,24 +134,36 @@ int main() {
                "the notice names the directory, what was skipped and how to trust it");
     }
 
-    section("the 2026-10-01 exploit, trusted: restricted Lua");
-    {
-        fs::path dir = g_home / "dev" / "exploit-trusted";
+    section("the 2026-10-01 exploit, trusted sandboxed or restricted: refused");
+    for (const char* lua : {"sandbox", "restricted"}) {
+        fs::path dir = g_home / "dev" / (std::string("exploit-") + lua);
         write_file(dir / ".maic" / "settings.lua", exploit);
-        trust_dir(project_dir(dir), Origin::Local);
+        trust_dir(project_dir(dir), Origin::Local, "", lua);
         std::string err;
         try {
             load_settings(dir);
         } catch (const std::exception& e) {
             err = e.what();
         }
-        expect(!fs::exists(marker), "trusted, the shell command still does not run: no marker");
+        expect(!fs::exists(marker), std::string(lua) + ": the shell command does not run: no marker");
         expect(contains(err, (dir / ".maic" / "settings.lua").string() + ":1:") && contains(err, "os.execute is not available"),
-               "loading fails naming the file, the line and os.execute: " + err);
+               std::string(lua) + ": loading fails naming the file, the line and os.execute, so nothing from it applies: " + err);
     }
 
-    section("restricted settings Lua");
+    section("the 2026-10-01 exploit, trusted fully: it runs as the user (the deliberate trade-off)");
     {
+        fs::path dir = g_home / "dev" / "exploit-full";
+        write_file(dir / ".maic" / "settings.lua", exploit);
+        trust_dir(project_dir(dir), Origin::Local);
+        expect(trust_lua_tier(dir) == LuaTier::Full, "trusting with no --lua is trusting fully");
+        Settings s = load_settings(dir);
+        expect(fs::exists(marker) && allows_everything(s), "a fully trusted settings.lua runs as you: the command ran and its allow entry applies");
+        fs::remove(marker);
+    }
+
+    section("restricted settings Lua, in the sandbox and in process");
+    for (const std::string lua : {"sandbox", "restricted"}) {
+
         struct Case {
             const char* name;
             const char* line;
@@ -159,69 +181,197 @@ int main() {
                               Case{"os-remove", "os.remove('/tmp/x')", "os.remove is not available"},
                               Case{"bytecode", "local f = load('\\27LJ\\2 rest')", "bytecode is not allowed"},
                               Case{"dump", "local b = string.dump(function() end)", "attempt to call field 'dump'"}}) {
-            std::string err = restricted_error(c.name, c.line);
-            expect(names_file_and_line(err, c.name) && contains(err, c.says), std::string(c.name) + ": an error at the file and line: " + err);
+            std::string err = lua_error(c.name, c.line, lua);
+            expect(names_file_and_line(err, c.name, lua) && contains(err, c.says), lua + ": " + c.name + ": an error at the file and line: " + err);
         }
         auto t0 = std::chrono::steady_clock::now();
-        std::string err = restricted_error("loop", "while true do x = x + 1 end");
+        std::string err = lua_error("loop", "while true do x = x + 1 end", lua);
         double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-        expect(names_file_and_line(err, "loop") && contains(err, "may run for 2 s") && took < 10, "an endless loop is stopped at its line, not a hang: " + err);
+        expect(names_file_and_line(err, "loop", lua) && contains(err, "may run for 2 s") && took < 10, lua + ": an endless loop is stopped at its line, not a hang: " + err);
 
-        fs::path dir = g_home / "dev" / "lua-ok";
+        err = lua_error("rep", "local s = string.rep('x', 2^31)", lua);
+        expect(names_file_and_line(err, "rep", lua) && contains(err, "string.rep would make a 2048 MB string, over the memory limit (256 MB)"),
+               lua + ": string.rep('x', 2^31) is refused before it allocates: " + err);
+        err = lua_error("grow", "local t = {} for i = 1, 1e9 do t[i] = string.rep('x', 1048576) .. i end", lua);
+        expect(contains(err, lua_file("grow", lua)) && contains(err, "memory limit (256 MB)"), lua + ": a growing table is stopped at the memory limit: " + err);
+        err = lua_error("concat", "local t = {} for i = 1, 200 do t[i] = string.rep('x', 1048576) end local s = table.concat(t, string.rep('y', 1048576))", lua);
+        expect(contains(err, lua_file("concat", lua)) && contains(err, "memory limit (256 MB)"), lua + ": table.concat over the limit is refused: " + err);
+        err = lua_error("format", "local s = string.format('%999999999s', 'x')", lua);
+        expect(names_file_and_line(err, "format", lua) && contains(err, "invalid option"), lua + ": string.format with a huge width is refused by LuaJIT itself: " + err);
+        fs::path fdir = g_home / "dev" / ("lua-" + lua + "-fn");
+        write_file(fdir / ".maic" / "settings.lua", "return { mode = 'edit', providers = { lab = { kind = 'openai', base_url = 'http://x', hook = function() end } } }\n");
+        trust_dir(project_dir(fdir), Origin::Local, "", lua);
+        err.clear();
+        try {
+            load_settings(fdir);
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
+        expect(contains(err, "`providers.lab.hook` is a function"), lua + ": a function in the table is an error naming its key: " + err);
+
+        fs::path dir = g_home / "dev" / ("lua-" + lua + "-ok");
+
         setenv("MAIC_TEST_MODEL", "lab/from-env", 1);
         write_file(dir / ".maic" / "settings.lua", "return { model = os.getenv('MAIC_TEST_MODEL'), small_model = load('return \"lab/' .. string.upper('x') .. '\"')(), "
                                                    "leader = tostring(math.floor(os.time() / os.time())) .. (maic.workspace and ',' or '') }\n");
-        trust_dir(project_dir(dir), Origin::Local);
+        trust_dir(project_dir(dir), Origin::Local, "", lua);
         Settings s = load_settings(dir);
-        expect(s.model == "lab/from-env" && s.small_model == "lab/X" && s.leader == "1,", "os.getenv, os.time, load of text, string, math and maic.workspace still work");
+        expect(s.model == "lab/from-env" && s.small_model == "lab/X" && s.leader == "1,", lua + ": os.getenv, os.time, load of text, string, math and maic.workspace still work");
 
-        fs::path bc = g_home / "dev" / "lua-bytecode-file";
+        fs::path bc = g_home / "dev" / ("lua-" + lua + "-bytecode-file");
         write_file(bc / ".maic" / "settings.lua", std::string("\x1bLJ\x02\x00garbage", 11));
-        trust_dir(project_dir(bc), Origin::Local);
+        trust_dir(project_dir(bc), Origin::Local, "", lua);
+
         err.clear();
         try {
             load_settings(bc);
         } catch (const std::exception& e) {
             err = e.what();
         }
-        expect(contains(err, (bc / ".maic" / "settings.lua").string()) && contains(err, "bytecode is not allowed"), "a settings file that is bytecode does not load: " + err);
+        expect(contains(err, (bc / ".maic" / "settings.lua").string()) && contains(err, "bytecode is not allowed"), lua + ": a settings file that is bytecode does not load: " + err);
     }
 
-    section("the global settings file: full Lua unless it asks");
+    section("the sandbox's child process: the real caps");
+    {
+        std::string err;
+        try {
+            run_in_child([] {
+                std::vector<char*> blocks;
+                for (int i = 0; i < 64; ++i) {
+                    char* b = static_cast<char*>(std::malloc(16 << 20));
+                    if (!b) throw std::bad_alloc();
+                    std::memset(b, 1, 16 << 20);
+                    blocks.push_back(b);
+                }
+                return std::string("allocated 1 GB");
+            }, "probe.lua", 64, 2);
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
+        expect(err == "probe.lua exceeded its memory limit (64 MB)", "RLIMIT_AS stops a child that allocates past its cap: " + err);
+        err.clear();
+        try {
+            run_in_child([]() -> std::string { raise(SIGSEGV); return ""; }, "probe.lua", 64, 2);
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
+        expect(err == "probe.lua crashed with signal 11", "a crash is an error naming the file and the signal: " + err);
+        err.clear();
+        auto t0 = std::chrono::steady_clock::now();
+        try {
+            run_in_child([] {
+                volatile unsigned long n = 0;
+                for (;;) n = n + 1;
+                return std::string();
+            }, "probe.lua", 64, 1);
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
+        double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        expect(err == "probe.lua exceeded its time limit (1 s)" && took < 8, "RLIMIT_CPU stops a child that spins: " + err);
+        expect(run_in_child([] { return std::string("data"); }, "probe.lua", 64, 2) == "data", "and MAIC carries on, getting what a good child returns");
+
+        // An open session file in the parent (no CLOEXEC, like an ofstream) is not in the child.
+        int session = ::open((root / "session.jsonl").c_str(), O_WRONLY | O_CREAT, 0600);
+        std::string fds = run_in_child([] {
+            std::string out;
+            DIR* d = opendir("/proc/self/fd");
+            for (dirent* e; (e = readdir(d));) {
+                if (e->d_name[0] != '.' && std::atoi(e->d_name) != dirfd(d)) out += std::string(e->d_name) + " ";
+            }
+            closedir(d);
+            char null[64] = "";
+            if (readlink("/proc/self/fd/0", null, sizeof(null) - 1) < 0) null[0] = 0;
+            return out + null;
+        }, "probe.lua", 64, 2);
+        expect(fds == "0 1 2 3 /dev/null", "the child sees stdio on /dev/null and its result pipe, not the session file (fd " + std::to_string(session) + "): " + fds);
+        ::close(session);
+
+        fs::path small = g_home / "dev" / "timing" / "settings.lua";
+        write_file(small, "return { model = os.getenv('HOME') .. '/m', style = { user = { fg = '#ff8800' } }, rules = { 'a', 'b' } }\n");
+        eval_lua_data_file(small, small.parent_path(), LuaTier::Sandbox, 256);
+        const int runs = 20;
+        auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < runs; ++i) eval_lua_data_file(small, small.parent_path(), LuaTier::Sandbox, 256);
+        double sandbox_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count() / runs;
+        start = std::chrono::steady_clock::now();
+        for (int i = 0; i < runs; ++i) eval_lua_data_file(small, small.parent_path(), LuaTier::Full, 256);
+        double full_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count() / runs;
+        std::cout << "  (a small file: " << sandbox_ms << " ms in the sandbox, " << full_ms << " ms in process, over " << runs << " runs)\n";
+        expect(sandbox_ms - full_ms < 50, "the sandbox adds well under 50 ms to a small file");
+    }
+
+    section("the global settings file: full Lua by default, a stricter tier when it says so");
     {
         fs::path global = g_home / ".config" / "maic" / "settings.lua";
         write_file(global, "local f = io.open('" + (root / "probe").string() + "', 'w') f:write('x') f:close()\nreturn { model = 'lab/global' }\n");
         Settings s = load_settings(g_home / "dev");
         expect(s.model == "lab/global" && fs::exists(root / "probe") && s.global_lua == "full", "the user's own settings.lua keeps the full library by default");
-        write_file(global, "os.execute('touch " + marker.string() + "')\nreturn { global_lua = \"restricted\" }\n");
-        std::string err;
-        try {
-            load_settings(g_home / "dev");
-        } catch (const std::exception& e) {
-            err = e.what();
+        write_file(global, "return { models_dir = os.getenv('HOME') .. '/models', model = string.format('%s/%s', 'lab', ('x'):upper()), rules = { 'be brief' } }\n");
+        s = load_settings(g_home / "dev");
+        expect(s.models_dir == g_home.string() + "/models" && s.model == "lab/X", "a plain-data global file works as before");
+        for (const char* tier : {"sandbox", "restricted"}) {
+            write_file(global, "os.execute('touch " + marker.string() + "')\nreturn { global_lua = \"" + tier + "\" }\n");
+            std::string err;
+            try {
+                load_settings(g_home / "dev");
+            } catch (const std::exception& e) {
+                err = e.what();
+            }
+            expect(!fs::exists(marker) && contains(err, global.string() + ":1:") && contains(err, "os.execute is not available"),
+                   std::string("global_lua = \"") + tier + "\" makes your own file run that way: " + err);
+            write_file(global, std::string("return { global_lua = '") + tier + "', models_dir = os.getenv('HOME') .. '/m', lua_memory_mb = 64 }\n");
+            s = load_settings(g_home / "dev");
+            expect(s.models_dir == g_home.string() + "/m" && lua_data_limits().tier == *parse_lua_tier(tier) && lua_data_limits().memory_mb == 64,
+                   std::string(tier) + ": data still works, and the tier and cap carry to the user's other files");
         }
-        expect(!fs::exists(marker) && contains(err, global.string() + ":1:") && contains(err, "os.execute is not available"), "global_lua = \"restricted\" makes it run restricted: " + err);
-        write_file(global, "local k = 'restricted'\nreturn { global_lua = k }\n");
-        err.clear();
+        std::string err;
+        write_file(global, "local k = 'full'\nlocal j = 'sandbox'\nreturn { global_lua = j }\n");
+
         try {
             load_settings(g_home / "dev");
         } catch (const std::exception& e) {
             err = e.what();
         }
         expect(contains(err, "counts only written literally"), "a computed global_lua is an error, not a silent full run: " + err);
+
+        // Themes are the user's own data files too: they run at global_lua.
+        fs::path theme = g_home / ".config" / "maic" / "themes" / "probe.lua";
+        write_file(theme, "local f = io.open('" + (root / "theme-probe").string() + "', 'w') f:write('x') f:close()\nreturn { name = 'probe', styles = { error = { fg = '#ff0000' } } }\n");
         fs::remove(global);
+        load_settings(g_home / "dev");
+        expect(load_theme("probe").styles.at("error").fg == "#ff0000" && fs::exists(root / "theme-probe"), "a theme runs with full Lua by default");
+        write_file(global, "return { global_lua = 'sandbox' }\n");
+        load_settings(g_home / "dev");
+        err.clear();
+        try {
+            load_theme("probe");
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
+        expect(contains(err, theme.string() + ":1:") && contains(err, "io is not available"), "and in the sandbox under global_lua = \"sandbox\": " + err);
+        write_file(theme, "return { name = 'probe', styles = { error = { fg = '#00ff00' } } }\n");
+        expect(load_theme("probe").styles.at("error").fg == "#00ff00" && load_theme("gruvbox-dark").name == "gruvbox-dark", "a data theme and a shipped theme load in the sandbox");
+        fs::remove(global);
+        load_settings(g_home / "dev");
     }
+
 
     section("trust_* and global_lua in a project are ignored");
     {
         fs::path dir = g_home / "dev" / "sneaky";
-        write_file(dir / ".maic" / "settings.lua", "return { trust_strictness = 'relaxed', trust_identities = { 'evil@example.com' }, trust_levels = { ['~/dev/sneaky'] = 'relaxed' }, global_lua = 'full', mode = 'plan' }\n");
-        trust_dir(project_dir(dir), Origin::Local);
+        write_file(dir / ".maic" / "settings.lua", "return { trust_strictness = 'relaxed', trust_identities = { 'evil@example.com' }, trust_levels = { ['~/dev/sneaky'] = 'relaxed' }, global_lua = 'full', lua_memory_mb = 99999, mode = 'plan' }\n");
+        trust_dir(project_dir(dir), Origin::Local, "", "sandbox");
+
         Settings s = load_settings(dir);
         std::string w = joined(s.warnings);
-        expect(s.trust_strictness == "standard" && s.trust_identities.empty() && s.trust_levels.empty() && s.mode == "plan", "the keys have no effect; the rest of the file applies");
+        expect(s.trust_strictness == "standard" && s.trust_identities.empty() && s.trust_levels.empty() && s.mode == "plan" && s.lua_memory_mb == 256 &&
+                   trust_lua_tier(dir) == LuaTier::Sandbox,
+               "the keys have no effect (a project asking for full Lua stays sandboxed); the rest of the file applies");
+
         expect(contains(w, (dir / ".maic" / "settings.lua").string() + ": trust_strictness is ignored") && contains(w, ": global_lua is ignored") &&
-                   contains(w, ": trust_identities is ignored") && contains(w, ": trust_levels is ignored"),
+                   contains(w, ": trust_identities is ignored") && contains(w, ": trust_levels is ignored") && contains(w, ": lua_memory_mb is ignored"),
+
                "each is a warning naming the file:\n" + w);
         expect(trust_status(project_dir(dir)).level == "standard", "the directory's tier is still the global default");
     }
@@ -296,7 +446,8 @@ int main() {
         fs::remove_all(top);
     }
 
-    section("the prompt: trust it, not now, never");
+    section("the prompt: trust fully, trust sandboxed, not now, never");
+
     {
         fs::path a = project("ask-trust", false), b = project("ask-notnow", false), c = project("ask-never", false);
         write_file(c / ".maic" / "tools" / "hello.lua", "return { name = 'hello', description = 'x', run = function() return 'hi' end }\n");
@@ -306,11 +457,19 @@ int main() {
         std::ostringstream out;
         ask_trust(a, in, out);
         expect(contains(out.str(), "a project directory you have not trusted\n  " + a.string()) && contains(out.str(), "settings:     .maic/settings.lua") &&
-                   contains(out.str(), "instructions: MAIC.md") && contains(out.str(), "[t] trust it   [n] not now (this session)   [v] never (remember)") &&
-                   contains(out.str(), "tier standard;"),
-               "the prompt lists the files, the tier and the three answers");
+                   contains(out.str(), "instructions: MAIC.md") && contains(out.str(), "[t] trust fully: its Lua runs as you\n") &&
+                   contains(out.str(), "[s] trust sandboxed: its Lua runs in a child process that cannot reach the system\n") &&
+                   contains(out.str(), "[n] not now (untrusted this session)   [v] never (remember)") && contains(out.str(), "tier standard;"),
+               "the prompt lists the files, the tier and the four answers, each explained");
         expect(contains(out.str(), "MAIC used this directory before this check existed."), "a directory MAIC used before says so (and is not trusted by it)");
-        expect(trusted(a) && trust_status(project_dir(a)).trust == Trust::Trusted, "t: trusted");
+        expect(trusted(a) && trust_status(project_dir(a)).trust == Trust::Trusted && trust_lua_tier(a) == LuaTier::Full, "t: trusted fully");
+        fs::path sb = project("ask-sandbox", false);
+        std::istringstream ins("s\n");
+        std::ostringstream outs;
+        ask_trust(sb, ins, outs);
+        expect(trusted(sb) && trust_lua_tier(sb) == LuaTier::Sandbox && json::parse(read_file(trust_path()))["dirs"][sb.string()]["lua"] == "sandbox",
+               "s: trusted sandboxed, the level kept in trust.json");
+
         struct stat st{};
         stat(trust_path().c_str(), &st);
         expect((st.st_mode & 0777) == 0600, "trust.json is 0600");
@@ -431,17 +590,25 @@ int main() {
         fs::path dir = project("relaxed", false);
         write_file(dir / ".maic" / "tools" / "pick" / "tool.json", R"({"name": "pick", "description": "x", "run": ["sh", "main.sh"], "writes": []})");
         write_file(dir / ".maic" / "tools" / "pick" / "main.sh", "echo hi\n");
-        trust_dir(project_dir(dir), Origin::Local, "relaxed");
+        trust_dir(project_dir(dir), Origin::Local, "relaxed", "sandbox");
         write_file(dir / "MAIC.md", "# a text edit\n");
+
         write_file(dir / ".maic" / "tools" / "pick" / "main.sh", "echo hello\n");
         write_file(dir / ".maic" / "settings.lua", "return { mode = 'manual', rules = { 'be brief' } }\n");
         TrustStatus s = trust_status(project_dir(dir));
         expect(s.trust == Trust::Trusted && s.level == "relaxed" && s.changed.size() == 3, "text, script and narrowing edits pass under relaxed (not a git tree, no matter)");
         expect(contains(joined(settle_trust(dir)), "edits that widen nothing passed in " + dir.string()), "with a notice");
+        fs::path full = project("relaxed-full", false);
+        trust_dir(project_dir(full), Origin::Local, "relaxed");
+        write_file(full / ".maic" / "settings.lua", "return { mode = 'manual' }\n");
+        expect(contains(joined(trust_status(project_dir(full)).reasons), ".maic/settings.lua changed, and it runs with full Lua"),
+               "a fully trusted directory's changed settings.lua asks even under relaxed: its code runs as you");
+
         auto widened = [&](const std::string& settings, const std::string& says) {
             fs::path w = project("relaxed-" + std::to_string(std::hash<std::string>{}(says) % 100000), false);
-            trust_dir(project_dir(w), Origin::Local, "relaxed");
+            trust_dir(project_dir(w), Origin::Local, "relaxed", "sandbox");
             write_file(w / ".maic" / "settings.lua", settings);
+
             TrustStatus t = trust_status(project_dir(w));
             expect(t.trust == Trust::Changed && contains(joined(t.reasons), says), "relaxed asks: " + says + " (" + joined(t.reasons) + ")");
         };
@@ -470,6 +637,13 @@ int main() {
         expect(json::parse(read_file(trust_path()))["dirs"][dir.string()]["level"] == "relaxed" && trust_status(project_dir(dir)).level == "relaxed", "kept in trust.json");
         trust_dir(project_dir(dir), Origin::Local);
         expect(trust_status(project_dir(dir)).level == "relaxed", "trusting again keeps the tier");
+        out = trust_command("trust", {dir.string(), "--lua", "restricted"}, g_home);
+        expect(contains(out, "Lua restricted:") && trust_lua_tier(dir) == LuaTier::Restricted && trust_status(project_dir(dir)).level == "relaxed",
+               "maic trust PATH --lua restricted sets the Lua level, a separate axis from the tier: " + out);
+        expect(contains(trust_listing(), "trusted  " + dir.string() + "  (relaxed, Lua restricted,"), "maic trust --list shows both");
+        trust_for_session(dir, LuaTier::Sandbox);
+        expect(trust_lua_tier(dir) == LuaTier::Sandbox, "--trust=sandbox overrides the level for this run");
+
         fs::path other = project("by-settings", false);
         write_file(g_home / ".config" / "maic" / "settings.lua", "return { trust_strictness = 'strict', trust_levels = { ['~/dev/by-settings'] = 'relaxed' } }\n");
         Settings s = load_settings(g_home / "dev");
@@ -520,12 +694,18 @@ int main() {
             err = e.what();
         }
         expect(contains(err, "step-up verification failed") && !trusted(dir), "a wrong proof is refused");
-        expect(remote_trust_change("phone", "123456", "trust", dir.string(), "relaxed") == "trusted " + dir.string() && trusted(dir) &&
-                   trust_status(project_dir(dir)).level == "relaxed",
-               "a verified device may trust, with a tier");
+        expect(remote_trust_change("phone", "123456", "trust", dir.string(), "relaxed", "sandbox") == "trusted " + dir.string() + " (Lua sandbox)" && trusted(dir) &&
+                   trust_status(project_dir(dir)).level == "relaxed" && trust_lua_tier(dir) == LuaTier::Sandbox,
+               "a verified device may trust, with a tier and a Lua level");
+        expect(remote_trust_change("phone", "123456", "lua", dir.string(), "", "restricted") == dir.string() + " now runs its settings Lua restricted" &&
+                   trust_lua_tier(dir) == LuaTier::Restricted,
+               "and change the Lua level alone");
+
         std::string audit = read_file(trust_audit_path());
         expect(contains(audit, "device=phone action=trust path=" + dir.string() + " refused: step-up verification is not available") &&
-                   contains(audit, "device=phone action=trust path=" + dir.string() + " level=relaxed done"),
+                   contains(audit, "device=phone action=trust path=" + dir.string() + " level=relaxed lua=sandbox done") &&
+                   contains(audit, "device=phone action=lua path=" + dir.string() + " lua=restricted done"),
+
                "every request is an audit line naming the device:\n" + audit);
         set_step_up_verifier({});
     }

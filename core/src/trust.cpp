@@ -68,6 +68,12 @@ void set_session_answer(const fs::path& dir, bool trusted) {
     session_answers()[dir.string()] = trusted;
 }
 
+// --trust=sandbox and the like: this process's Lua level for a directory, over the remembered one.
+std::map<std::string, LuaTier>& session_lua() {
+    static std::map<std::string, LuaTier> levels;
+    return levels;
+}
+
 fs::path home_path() {
     const char* home = std::getenv("HOME");
     std::error_code ec;
@@ -245,9 +251,10 @@ std::string level_for(const fs::path& dir, const json& entry) {
     return config().strictness;
 }
 
-// A settings file as data, in the restricted Lua a project's settings always run in.
+// A settings file as data, for judging what it can do: always in the sandbox, whatever the directory's level,
+// since a changed file has not been approved yet.
 json settings_json(const fs::path& file, const fs::path& dir) {
-    if (file.extension() == ".lua") return Lua(dir, {}, LuaLibs::Restricted).eval_table_file(file);
+    if (file.extension() == ".lua") return eval_lua_data_file(file, dir, LuaTier::Sandbox, lua_data_limits().memory_mb);
     std::ifstream in(file);
     return json::parse(in, nullptr, true, true);
 }
@@ -412,11 +419,15 @@ std::pair<std::string, json> contents(const ProjectDir& p) {
     return {sha256(parts), files};
 }
 
-// The record trust.json keeps for a trusted directory.
-json record(const ProjectDir& p, const std::string& level) {
+// The record trust.json keeps for a trusted directory: its strictness tier and Lua level are `level` and `lua`
+// when given, else what `old` had (the Lua level defaults to full: "trust it" means as yourself).
+json record(const ProjectDir& p, const json& old, const std::string& level, const std::string& lua) {
     auto [hash, files] = contents(p);
     json e = {{"state", "trusted"}, {"hash", hash}, {"files", files}, {"caps", capabilities(p)}, {"at", utc_now()}};
-    if (!level.empty()) e["level"] = level;
+    std::string keep_level = !level.empty() ? level : old.is_object() ? old.value("level", "") : "";
+    if (!keep_level.empty()) e["level"] = keep_level;
+    std::string keep_lua = !lua.empty() ? lua : old.is_object() ? old.value("lua", "full") : "full";
+    e["lua"] = parse_lua_tier(keep_lua) ? keep_lua : "full";
     if (work_tree(p.dir)) {
         json untracked = json::array();
         for (const auto& f : p.files()) {
@@ -576,7 +587,15 @@ TrustStatus trust_status(const ProjectDir& p) {
     }
     std::sort(s.changed.begin(), s.changed.end());
     if (s.level == "strict") s.reasons = {"strict: every change is asked about"};
-    else if (s.level == "relaxed") s.reasons = widenings(entry.value("caps", json()), capabilities(p));
+    else if (s.level == "relaxed") {
+        s.reasons = widenings(entry.value("caps", json()), capabilities(p));
+        // A fully trusted directory's settings.lua runs as you: its code can't be judged as data.
+        for (const auto& f : s.changed) {
+            if (f.extension() == ".lua" && f.parent_path() == p.dir / ".maic" && trust_lua_tier(p.dir) == LuaTier::Full) {
+                s.reasons.push_back(rel(p.dir, f) + " changed, and it runs with full Lua (trusted fully)");
+            }
+        }
+    }
     else s.reasons = not_own(p, entry, s.changed);
     s.trust = s.reasons.empty() ? Trust::Trusted : Trust::Changed;
     return s;
@@ -589,13 +608,22 @@ bool trusted(const fs::path& dir) {
     return trust_status(project_dir(d)).trust == Trust::Trusted;
 }
 
-void trust_dir(const ProjectDir& p, Origin origin, const std::string& level) {
+void trust_dir(const ProjectDir& p, Origin origin, const std::string& level, const std::string& lua) {
     require_local(origin);
     if (never_project(p.dir)) throw std::runtime_error(p.dir.string() + " is never a project (it is $HOME or /)");
     if (!level.empty() && !valid_trust_level(level)) throw std::runtime_error("--level takes strict, standard or relaxed");
-    json old = store_entry(p.dir);
-    std::string keep = !level.empty() ? level : old.is_object() ? old.value("level", "") : "";
-    store_record(p.dir, record(p, keep));
+    if (!lua.empty() && !parse_lua_tier(lua)) throw std::runtime_error("--lua takes full, sandbox or restricted");
+    store_record(p.dir, record(p, store_entry(p.dir), level, lua));
+}
+
+LuaTier trust_lua_tier(const fs::path& dir) {
+    fs::path d = absolute_dir(dir);
+    {
+        std::lock_guard lock(g_mu);
+        if (auto it = session_lua().find(d.string()); it != session_lua().end()) return it->second;
+    }
+    json e = store_entry(d);
+    return parse_lua_tier(e.is_object() ? e.value("lua", "full") : "full").value_or(LuaTier::Full);
 }
 
 void never_trust(const fs::path& dir, Origin origin) {
@@ -610,8 +638,10 @@ void untrust(const fs::path& dir) {
     set_session_answer(d, false);
 }
 
-void trust_for_session(const fs::path& dir) {
+void trust_for_session(const fs::path& dir, LuaTier lua) {
     set_session_answer(absolute_dir(dir), true);
+    std::lock_guard lock(g_mu);
+    session_lua()[absolute_dir(dir).string()] = lua;
 }
 
 void not_now(const fs::path& dir) {
@@ -624,8 +654,7 @@ std::vector<std::string> settle_trust(const fs::path& workspace) {
         if (session_answer(p.dir)) continue;
         TrustStatus s = trust_status(p);
         if (s.trust == Trust::Trusted && !s.changed.empty()) {
-            json old = store_entry(p.dir);
-            store_record(p.dir, record(p, old.value("level", "")));
+            store_record(p.dir, record(p, store_entry(p.dir), "", ""));
             notes.push_back(std::string(s.level == "relaxed" ? "edits that widen nothing" : "your own edits") + " passed in " + p.dir.string() + ": " +
                             file_list(p.dir, s.changed) + " (" + tier_hint(p.dir, s.level) + ")");
         }
@@ -659,6 +688,16 @@ std::string describe_project(const ProjectDir& p, const std::string& indent) {
     return out;
 }
 
+std::string lua_hint(const fs::path& dir) {
+    std::string cmd = "`maic trust " + dir.string() + " --lua ";
+    switch (trust_lua_tier(dir)) {
+        case LuaTier::Full: return "Lua full: its settings.lua runs as you; " + cmd + "sandbox` runs it in a child process that cannot reach the system";
+        case LuaTier::Sandbox: return "Lua sandbox: its settings.lua runs in a child process that cannot reach the system; " + cmd + "full` runs it as you";
+        case LuaTier::Restricted: return "Lua restricted: its settings.lua runs in a restricted state in MAIC's own process; " + cmd + "sandbox` for the child process";
+    }
+    return "";
+}
+
 std::string tier_hint(const fs::path& dir, const std::string& level) {
     std::string cmd = "`maic trust " + dir.string() + " --level ";
     if (level == "strict") return "tier strict: every change is asked about; " + cmd + "standard` lets your own edits pass";
@@ -689,9 +728,10 @@ std::vector<std::string> trust_notices(const fs::path& workspace) {
     return out;
 }
 
-std::string grant_trust(const fs::path& workspace, const std::string& path, Origin origin, const std::string& level) {
+std::string grant_trust(const fs::path& workspace, const std::string& path, Origin origin, const std::string& level, const std::string& lua) {
     require_local(origin);
     if (!level.empty() && !valid_trust_level(level)) throw std::runtime_error("--level takes strict, standard or relaxed");
+    if (!lua.empty() && !parse_lua_tier(lua)) throw std::runtime_error("--lua takes full, sandbox or restricted");
     std::vector<ProjectDir> dirs;
     if (!path.empty()) {
         ProjectDir p = project_dir(project_arg(workspace, path));
@@ -699,7 +739,7 @@ std::string grant_trust(const fs::path& workspace, const std::string& path, Orig
         dirs.push_back(std::move(p));
     } else {
         for (auto& p : project_dirs(workspace)) {
-            if (!level.empty() || trust_status(p).trust != Trust::Trusted) dirs.push_back(std::move(p));
+            if (!level.empty() || !lua.empty() || trust_status(p).trust != Trust::Trusted) dirs.push_back(std::move(p));
         }
         if (dirs.empty()) {
             std::string out = "nothing to trust here:";
@@ -710,9 +750,10 @@ std::string grant_trust(const fs::path& workspace, const std::string& path, Orig
     }
     std::string out;
     for (const auto& p : dirs) {
-        trust_dir(p, origin, level);
+        trust_dir(p, origin, level, lua);
         set_session_answer(p.dir, true);  // a file edited later in this session does not undo what was just granted
-        out += (out.empty() ? "" : "\n") + std::string("trusted ") + p.dir.string() + "\n" + describe_project(p, "  ") + "\n  " + tier_hint(p.dir, trust_status(p).level);
+        out += (out.empty() ? "" : "\n") + std::string("trusted ") + p.dir.string() + "\n" + describe_project(p, "  ") + "\n  " + lua_hint(p.dir) + "\n  " +
+               tier_hint(p.dir, trust_status(p).level);
     }
     return out + "\nsettings and tools apply when MAIC next starts there; instructions from the next turn";
 }
@@ -742,7 +783,7 @@ std::string trust_listing() {
             continue;
         }
         TrustStatus s = trust_status(project_dir(dir));
-        std::string line = "trusted  " + dir + "  (" + s.level + ", " + e.value("at", "") + ")";
+        std::string line = "trusted  " + dir + "  (" + s.level + ", Lua " + lua_tier_name(trust_lua_tier(dir)) + ", " + e.value("at", "") + ")";
         if (s.trust == Trust::Changed) line += "\n         changed since: " + file_list(dir, s.changed);
         else if (!s.changed.empty()) line += "\n         changed, passes its tier: " + file_list(dir, s.changed);
         out += (out.empty() ? "" : "\n") + line;
@@ -751,20 +792,23 @@ std::string trust_listing() {
 }
 
 std::string trust_command(const std::string& command, const std::vector<std::string>& args, const fs::path& workspace) {
-    std::string path, level;
+    std::string path, level, lua;
     bool list = false;
     for (size_t i = 0; i < args.size(); ++i) {
+        bool takes = command == "trust" && (args[i] == "--level" || args[i] == "--lua");
         if (args[i] == "--list" || args[i] == "-l") list = true;
-        else if (args[i] == "--level" && command == "trust") {
-            if (i + 1 >= args.size()) throw std::runtime_error("--level takes strict, standard or relaxed");
-            level = args[++i];
+        else if (takes) {
+            if (i + 1 >= args.size()) throw std::runtime_error(args[i] == "--level" ? "--level takes strict, standard or relaxed" : "--lua takes full, sandbox or restricted");
+            (args[i] == "--level" ? level : lua) = args[i + 1];
+            ++i;
         } else if (args[i].rfind("--level=", 0) == 0 && command == "trust") level = args[i].substr(8);
+        else if (args[i].rfind("--lua=", 0) == 0 && command == "trust") lua = args[i].substr(6);
         else if (path.empty() && (args[i].empty() || args[i][0] != '-')) path = args[i];
-        else throw std::runtime_error("usage: " + command + (command == "trust" ? " [PATH] [--level strict|standard|relaxed] | trust --list" : " [PATH]"));
+        else throw std::runtime_error("usage: " + command + (command == "trust" ? " [PATH] [--lua full|sandbox|restricted] [--level strict|standard|relaxed] | trust --list" : " [PATH]"));
     }
     if (list) return trust_listing();
     if (command == "untrust") return revoke_trust(workspace, path);
-    return grant_trust(workspace, path, Origin::Local, level);
+    return grant_trust(workspace, path, Origin::Local, level, lua);
 }
 
 void ask_trust(const fs::path& workspace, std::istream& in, std::ostream& out) {
@@ -777,13 +821,16 @@ void ask_trust(const fs::path& workspace, std::istream& in, std::ostream& out) {
         for (const auto& r : s.reasons) out << "  asks because: " << r << "\n";
         out << "  " << tier_hint(p.dir, s.level) << "\n"
             << "Untrusted, its settings are not applied, its instructions are not given to the model and its tools are not loaded.\n"
-            << "[t] trust it   [n] not now (this session)   [v] never (remember)  > " << std::flush;
+            << "  [t] trust fully: its Lua runs as you\n"
+            << "  [s] trust sandboxed: its Lua runs in a child process that cannot reach the system\n"
+            << "  [n] not now (untrusted this session)   [v] never (remember)  > " << std::flush;
         std::string answer;
         if (!std::getline(in, answer)) answer.clear();
         answer = lower(trim(answer));
-        if (answer == "t" || answer == "trust" || answer == "y" || answer == "yes") {
-            trust_dir(p, Origin::Local);
-            out << "trusted " << p.dir.string() << "\n";
+        if (answer == "t" || answer == "trust" || answer == "y" || answer == "yes" || answer == "s" || answer == "sandbox") {
+            bool sandboxed = answer == "s" || answer == "sandbox";
+            trust_dir(p, Origin::Local, "", sandboxed ? "sandbox" : "full");
+            out << "trusted " << (sandboxed ? "sandboxed" : "fully") << ": " << p.dir.string() << "\n";
         } else if (answer == "v" || answer == "never") {
             never_trust(p.dir, Origin::Local);
             out << "never: " << p.dir.string() << " stays untrusted (maic trust " << p.dir.string() << " changes that)\n";
@@ -799,9 +846,11 @@ void set_step_up_verifier(StepUpVerifier v) {
     verifier() = std::move(v);
 }
 
-std::string remote_trust_change(const std::string& device, const std::string& proof, const std::string& action, const std::string& path, const std::string& level) {
+std::string remote_trust_change(const std::string& device, const std::string& proof, const std::string& action, const std::string& path, const std::string& level,
+                                const std::string& lua) {
     auto audit = [&](const std::string& outcome) {
-        write_private(trust_audit_path(), utc_now() + " device=" + device + " action=" + action + " path=" + path + (level.empty() ? "" : " level=" + level) + " " + outcome + "\n", true);
+        write_private(trust_audit_path(), utc_now() + " device=" + device + " action=" + action + " path=" + path + (level.empty() ? "" : " level=" + level) +
+                                              (lua.empty() ? "" : " lua=" + lua) + " " + outcome + "\n", true);
     };
     auto refuse = [&](const std::string& why) {
         audit("refused: " + why);
@@ -819,28 +868,29 @@ std::string remote_trust_change(const std::string& device, const std::string& pr
     fs::path dir = absolute_dir(path);
     if (never_project(dir)) refuse(dir.string() + " is never a project (it is $HOME or /)");
     if (!level.empty() && !valid_trust_level(level)) refuse("level must be strict, standard or relaxed");
+    if (!lua.empty() && !parse_lua_tier(lua)) refuse("lua must be full, sandbox or restricted");
     std::string done;
     if (action == "trust") {
         ProjectDir p = project_dir(dir);
         if (p.empty()) refuse("nothing to trust in " + dir.string());
-        json old = store_entry(dir);
-        store_record(dir, record(p, !level.empty() ? level : old.is_object() ? old.value("level", "") : ""));
-        done = "trusted " + dir.string();
+        store_record(dir, record(p, store_entry(dir), level, lua));
+        done = "trusted " + dir.string() + " (Lua " + lua_tier_name(trust_lua_tier(dir)) + ")";
     } else if (action == "untrust") {
         forget(dir);
         done = "untrusted " + dir.string();
     } else if (action == "never") {
         store_record(dir, {{"state", "never"}, {"at", utc_now()}});
         done = "never trusted " + dir.string();
-    } else if (action == "level") {
+    } else if (action == "level" || action == "lua") {
         json e = store_entry(dir);
         if (!e.is_object() || e.value("state", "") != "trusted") refuse(dir.string() + " is not trusted");
-        if (level.empty()) refuse("level is required");
-        e["level"] = level;
+        std::string value = action == "level" ? level : lua;
+        if (value.empty()) refuse(action + " is required");
+        e[action] = value;
         store_record(dir, e);
-        done = dir.string() + " is now tier " + level;
+        done = dir.string() + (action == "level" ? " is now tier " : " now runs its settings Lua ") + value;
     } else {
-        refuse("action must be trust, untrust, never or level");
+        refuse("action must be trust, untrust, never, level or lua");
     }
     audit("done");
     return done;
