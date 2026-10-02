@@ -36,6 +36,10 @@ add_test(NAME comfy_node COMMAND python3 -m unittest -v test_node
          WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/vendor/comfyui-maic-llamacpp)
 add_test(NAME lint_includes COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/lint_includes.py)
 add_test(NAME cli_smoke COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/cli_smoke.py $<TARGET_FILE:maic>)
+# The streams protocol_conformance recorded, through `maic protocol check` and its OpenAI-only view.
+add_test(NAME protocol_check COMMAND $<TARGET_FILE:maic> protocol check ${CMAKE_BINARY_DIR}/protocol-streams)
+add_test(NAME protocol_check_openai COMMAND $<TARGET_FILE:maic> protocol check --openai ${CMAKE_BINARY_DIR}/protocol-streams)
+set_tests_properties(protocol_check protocol_check_openai PROPERTIES FIXTURES_REQUIRED protocol_streams)
 # The TUI through a pty, read back with pyte (tests/test_tui.py). Exit 77 is a skip: no pyte and no uv to fetch it.
 add_test(NAME tui COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/test_tui.py $<TARGET_FILE:maic>)
 set_tests_properties(tui PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
@@ -77,6 +81,9 @@ install(PROGRAMS diction/maic-diction DESTINATION bin)
 file(WRITE ${CMAKE_BINARY_DIR}/diction-VERSION "${MAIC_GIT_VERSION}\n")
 install(FILES ${CMAKE_BINARY_DIR}/diction-VERSION DESTINATION share/maic/diction RENAME VERSION)
 install(DIRECTORY server/web/ DESTINATION share/maic/server/web)
+# The engine protocol's description for clients that read it (maic.nvim, the web client; docs/design/engine-protocol.md
+# section 15): MAIC's files and OpenAI's subset, not the 4.6 MB description it is cut from or the script that cuts it.
+install(DIRECTORY protocol/ DESTINATION share/maic/protocol PATTERN "openapi.json" EXCLUDE PATTERN "extract.py" EXCLUDE)
 install(DIRECTORY services/ DESTINATION share/maic/services)
 # The audit schedule's systemd units, which `maic audit-trail schedule install` fills in (docs/audit-trail.md).
 install(DIRECTORY contrib/systemd/ DESTINATION share/maic/contrib/systemd)

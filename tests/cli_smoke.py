@@ -131,6 +131,15 @@ def main():
     r = subprocess.run([maic, "tools", "check"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
     bad_ok = r.returncode == 1 and "FAIL  " in r.stdout and "per-tool network grants are not implemented yet" in r.stdout
     print(("ok" if bad_ok else "FAIL") + ": maic tools check reports a manifest asking for the network, exit %d" % r.returncode + ("" if bad_ok else "\n" + r.stdout[-1500:]))
+    # `maic protocol check` on a recorded stream that breaks a rule: the first event of a load must be number 0.
+    stream = os.path.join(home, "bad-stream.jsonl")
+    with open(stream, "w") as f:
+        f.write('{"dir":"in","conn":"c1","msg":{"jsonrpc":"2.0","id":1,"method":"maic.session.subscribe","params":{"session":"s1"}}}\n')
+        f.write('{"dir":"out","conn":"c1","msg":{"jsonrpc":"2.0","id":1,"result":{"load":"q7c2","sequence_number":0,"activity":"idle","replay_from":0}}}\n')
+        f.write('{"dir":"out","conn":"c1","msg":{"jsonrpc":"2.0","method":"maic.event","params":{"type":"maic.notice","sequence_number":0,"stream_id":"s1","text":"hi","level":"info"}}}\n')
+    r = subprocess.run([maic, "protocol", "check", stream], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    proto_ok = r.returncode == 1 and "FAIL  " + stream + ": #0 seq.start:" in r.stdout and "1 stream, 1 with a violation" in r.stdout
+    print(("ok" if proto_ok else "FAIL") + ": maic protocol check names the first violation and its rule, exit %d" % r.returncode + ("" if proto_ok else "\n" + r.stdout[-1500:] + r.stderr[-1500:]))
     u = subprocess.run([maic, "tools"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
     r = subprocess.run([maic, "tools", "--trust"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
     list_ok = (r.returncode == 0 and "word_count  (python)" in r.stdout and "reads **; writes nothing; timeout 10 s" in r.stdout
@@ -234,7 +243,7 @@ def main():
     trust_ok = trust_smoke(maic, port)
     trail_ok = audit_trail_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok else 1)
+    sys.exit(0 if ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok else 1)
 
 
 def output_smoke(maic, env, sess_dir):

@@ -413,8 +413,6 @@ struct Engine::Impl {
     // ---------- the index ----------
 
     json entry(Session& s) {
-        Agent::UsageReport u = s.agent.usage();
-        (void)u;
         json e = {{"id", s.id},
                   {"title", s.title},
                   {"workspace", s.workspace.string()},

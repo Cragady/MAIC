@@ -81,7 +81,7 @@ foreach(t agent jsonschema protocol_schema)
 endforeach()
 # protocol_conformance_test records every exchange it drives into build/protocol-streams/ for `maic protocol check`.
 target_compile_definitions(protocol_conformance_test PRIVATE MAIC_PROTOCOL_STREAMS="${CMAKE_BINARY_DIR}/protocol-streams")
-set_tests_properties(protocol_conformance PROPERTIES TIMEOUT 300)
+set_tests_properties(protocol_conformance PROPERTIES TIMEOUT 300 FIXTURES_SETUP protocol_streams)
 # protocol_schema_test checks every JSON example in docs/design/engine-protocol.md.
 target_compile_definitions(protocol_schema_test PRIVATE MAIC_DOCS="${PROJECT_SOURCE_DIR}/docs")
 # subset.json is what extract.py makes of the pinned openapi.json, and openapi.json is the pinned file.
