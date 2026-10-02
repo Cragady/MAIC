@@ -121,7 +121,7 @@ void read_steering(SteeringSettings& into, const nlohmann::json& table, const st
 
 struct Settings {
     std::string model = "llamacpp/current";  // the vendored llama-server serves the linked GGUF as `current`
-    std::string mode = "manual";
+    std::string mode = "auto";  // held at manual at start where auto_held says so (an untrusted workspace)
     bool think = false;
     bool markdown = true;   // render markdown in the conversation window
     bool mouse = true;      // scroll wheel (terminal text selection then needs Shift+drag)
@@ -191,10 +191,10 @@ struct Settings {
     std::string remote;                // a maic-server you subscribe to (https://host:7373); `maic open` prefers its services when it is up
     std::string lazy_lock;             // nvim's lazy-lock.json; "" = $XDG_CONFIG_HOME/$NVIM_APPNAME/lazy-lock.json (docs/lazy-lock.md)
     bool lazy_lock_notice = true;      // the start notice and the status strip's lock≠ when it is out of sync
-    std::string harness = "smart";  // "smart": a model reviews commands and writes the rules would allow; "dumb": rules only
+    std::string harness = "dumb";   // "smart": a model reviews commands and writes the rules would allow; "dumb": rules only
     std::string reviewer_model;     // a pinned reviewer ("" = the preset's reviewer, else small_model; see reviewer_pick)
     long reviewer_budget_tokens = 0;  // the reviewer's own token cap; past it, what it would review is asked. 0 = none
-    bool dumb_auto_ok = false;      // true: no warning when entering auto mode under a dumb harness
+    bool dumb_auto_ok = true;       // false: entering auto mode under a dumb harness warns and asks first
     // Read from the global file only (a project's copy is ignored with a warning; docs/settings.md):
     std::string global_lua = "full";         // the tier of your own Lua data files: full, sandbox or restricted (written literally)
     int lua_memory_mb = 256;                 // the memory cap of settings Lua below full trust

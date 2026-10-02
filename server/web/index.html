@@ -780,7 +780,7 @@ class RelayTunnel {
   $('tokenInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('tokenSave').onclick(); });
   $('sessionsBtn').onclick = () => { loadStatus().catch(() => {}); loadSessions().catch((e) => $('sessionList').textContent = e.message); };
   $('newSession').onclick = async () => {
-    const body = { mode: $('mode').value };
+    const body = $('mode').value === 'auto' ? {} : { mode: $('mode').value };  // auto from a remote client needs a step-up: start as the server's settings say
     const ws = $('newWorkspace').value.trim();
     if (ws) body.workspace = ws;
     try { const s = await json('/api/sessions', { method: 'POST', body }); await openSession(s.id); }

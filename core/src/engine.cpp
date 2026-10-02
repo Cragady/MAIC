@@ -11,6 +11,7 @@
 #include "maic/status.hpp"
 #include "maic/service.hpp"
 #include "maic/tripwire.hpp"
+#include "maic/trust.hpp"
 #include "maic/vendor.hpp"
 
 #include <fcntl.h>
@@ -650,6 +651,23 @@ struct Engine::Impl {
         a.set_instruction_options(st.instructions);
     }
 
+    // Decision 9: a remote client tightens freely and loosens up to edit; auto needs a step-up, which fails until
+    // accounts register a verifier. Creating a session in auto counts as loosening to it.
+    static void remote_auto_step_up(const Client& c, Mode to, Mode now) {
+        if (c.origin == Origin::Remote && to == Mode::Auto && now != Mode::Auto) {
+            throw refuse("maic_step_up_required", "a remote client loosens a session to auto only after a step-up check, which needs accounts", "mode");
+        }
+    }
+
+    // Auto that no one asked for in this call (the settings', or the transcript's on resume) starts only where
+    // auto_held allows, and never for a remote client; `mode` becomes manual otherwise and the line returned says why.
+    static std::string auto_held_mode(Mode& mode, const fs::path& ws, const Client& c) {
+        if (mode != Mode::Auto) return "";
+        std::string why = c.origin == Origin::Remote ? "auto mode waits: a remote client's session starts in manual unless it asks for auto" : auto_held(ws);
+        if (!why.empty()) mode = Mode::Manual;
+        return why;
+    }
+
     fs::path workspace_for(const Client& c, const std::string& given) {
         std::error_code ec;
         fs::path ws = fs::weakly_canonical(given, ec);
@@ -923,6 +941,8 @@ struct Engine::Impl {
         std::string mode_str = m.value("mode", options.settings.mode);
         auto mode = parse_mode(mode_str);
         if (!mode) throw bad_params("unknown mode '" + mode_str + "' (manual, auto-read, edit, auto, plan)", "mode");
+        if (m.contains("mode")) remote_auto_step_up(c, *mode, Mode::Manual);  // a new session asked into auto loosens from nothing
+        std::string held = m.contains("mode") || options.mode_asked ? "" : auto_held_mode(*mode, ws, c);
         auto s = std::make_shared<Session>(ws, m.value("model", options.settings.model));
         s->settings = options.settings;
         s->commands.dumb_auto_ok = options.settings.dumb_auto_ok;
@@ -937,6 +957,7 @@ struct Engine::Impl {
         }
         open_session(s, c);
         std::lock_guard lock(s->mu);
+        if (!held.empty()) emit(*s, {{"type", "maic.notice"}, {"text", held}, {"level", "info"}});
         return conversation(*s, c);
     }
 
@@ -963,6 +984,7 @@ struct Engine::Impl {
         fs::path ws = workspace_for(c, info->workspace);
         LoadedSession old = load_session(info->path);
         auto mode = parse_mode(old.mode).value_or(parse_mode(options.settings.mode).value_or(Mode::Manual));
+        std::string held = auto_held_mode(mode, ws, c);
         auto s = std::make_shared<Session>(ws, old.model.empty() ? options.settings.model : old.model);
         s->settings = options.settings;
         s->commands.dumb_auto_ok = options.settings.dumb_auto_ok;
@@ -977,6 +999,7 @@ struct Engine::Impl {
         s->agent.restore(old.messages);
         open_session(s, c);
         std::lock_guard lock(s->mu);
+        if (!held.empty()) emit(*s, {{"type", "maic.notice"}, {"text", held}, {"level", "info"}});
         return for_client(entry(*s), c);
     }
 
@@ -1061,11 +1084,7 @@ struct Engine::Impl {
             auto mode = parse_mode(name);
             if (!mode) throw bad_params("unknown mode '" + name + "' (manual, auto-read, edit, auto, plan)", "mode");
             Mode now = s->agent.mode;
-            // Decision 9: a remote client tightens freely and loosens up to edit; auto needs a step-up, which fails
-            // until accounts register a verifier.
-            if (c.origin == Origin::Remote && *mode == Mode::Auto && now != Mode::Auto) {
-                throw refuse("maic_step_up_required", "a remote client loosens a session to auto only after a step-up check, which needs accounts", "mode");
-            }
+            remote_auto_step_up(c, *mode, now);
             if (*mode == Mode::Auto && now != Mode::Auto && !s->agent.review_with_model && !s->commands.dumb_auto_ok) {
                 if (!p.value("confirm", false)) {
                     throw refuse("maic_confirm_required", "auto mode under a dumb harness: no model reads the conversation before the agent acts, so only the rule list "

@@ -254,6 +254,13 @@ int run_headless(const HeadlessOptions& options) {
         fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
         return 2;
     }
+    if (!options.mode && *mode == Mode::Auto) {
+        if (std::string why = auto_held(std::filesystem::current_path()); !why.empty()) {
+            fprintf(stderr, "※ %s\n", why.c_str());
+            mode = Mode::Manual;
+            settings.mode = "manual";
+        }
+    }
     bool stdin_for_context = false;
     for (const auto& c : options.context) stdin_for_context = stdin_for_context || c == "-";
     std::string prompt = options.prompt;

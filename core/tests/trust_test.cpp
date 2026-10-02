@@ -494,10 +494,10 @@ int main() {
     section("which directories are projects; $HOME and / never");
     {
         write_file(g_home / "MAIC.md", "home rules\n");
-        write_file(g_home / ".maic" / "settings.lua", "return { mode = 'auto' }\n");
+        write_file(g_home / ".maic" / "settings.lua", "return { mode = 'plan' }\n");
         expect(project_dirs(g_home).empty() && project_dirs("/").empty(), "$HOME and / are never offered");
         expect(contains(joined(trust_notices(g_home)), "is $HOME, never a project: its files are ignored"), "with $HOME as the workspace, a notice says its files are ignored");
-        expect(load_settings(g_home).mode == "manual", "$HOME's .maic/settings.lua is not applied");
+        expect(load_settings(g_home).mode == "auto", "$HOME's .maic/settings.lua is not applied");
         bool home_md = false;
         for (const auto& f : load_instructions(g_home)) home_md = home_md || f.path == g_home / "MAIC.md";
         expect(!home_md, "$HOME's MAIC.md is not given to the model");
@@ -528,7 +528,7 @@ int main() {
         git_as(repo, "me@example.com", "init -q");
         auto chain = config_chain(ws);
         expect(chain.size() == 2 && chain[0] == repo && chain[1] == ws, "a workspace in a .git project two levels below $HOME reads up to the root only");
-        expect(load_settings(ws).mode == "manual", "a settings file above the root is not applied");
+        expect(load_settings(ws).mode == "auto", "a settings file above the root is not applied");
         bool above = false;
         for (const auto& f : load_instructions(ws)) above = above || f.path == top / "MAIC.md";
         expect(!above, "nor its instructions");
@@ -823,6 +823,23 @@ int main() {
 
                "every request is an audit line naming the device:\n" + audit);
         set_step_up_verifier({});
+    }
+
+    section("auto at start: only where every project directory is trusted fully");
+    {
+        fs::path plain = g_home / "autostart" / "plain", proj = g_home / "autostart" / "proj", sub = proj / "src";
+        fs::create_directories(plain);
+        fs::create_directories(sub);
+        write_file(proj / "MAIC.md", "rules\n");
+        expect(contains(auto_held(plain), "nothing here is trusted"), "a directory with nothing to trust starts in manual");
+        expect(contains(auto_held(g_home), "nothing here is trusted"), "so does $HOME");
+        expect(contains(auto_held(sub), proj.string() + " is not trusted"), "an untrusted project directory holds auto, named");
+        trust_dir(project_dir(proj), Origin::Local, "", "sandbox");
+        expect(contains(auto_held(sub), "trusted with sandbox Lua, not fully"), "trusted sandboxed is not trusted fully");
+        trust_dir(project_dir(proj), Origin::Local, "", "full");
+        expect(auto_held(sub).empty() && auto_held(proj).empty(), "trusted fully: auto starts");
+        write_file(sub / "AGENTS.md", "nested\n");
+        expect(contains(auto_held(sub), " is not trusted"), "a new instruction file below holds auto again until it is trusted");
     }
 
     section("the agent can't reach any of it");

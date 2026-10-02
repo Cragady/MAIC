@@ -300,7 +300,8 @@ struct Server::Impl {
                 id = c.call("maic.session.resume", {{"session", body["resume"].get<std::string>()}})["id"];
                 if (body.contains("mode")) c.call("maic.session.set", {{"session", id}, {"mode", body["mode"]}});
             } else {
-                json m = {{"mode", body.value("mode", options.settings.mode)}};
+                json m = json::object();  // no mode: the engine starts the settings' own, held at manual where auto waits
+                if (body.contains("mode")) m["mode"] = body["mode"];
                 if (body.contains("workspace")) m["workspace"] = body["workspace"];
                 if (body.contains("model")) m["model"] = body["model"];
                 id = c.call("createConversation", {{"maic", m}})["id"];
