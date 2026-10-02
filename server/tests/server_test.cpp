@@ -311,19 +311,22 @@ int main() {
         expect(origin_check["messages"][0]["content"].get<std::string>().find("inside MAIC") != std::string::npos, "the model gets the normal briefing");
     }
 
-    section("approval round trip: a remote request is asked even in auto mode");
+    section("approval round trip: a remote request is asked even in edit mode");
     {
         {
             std::lock_guard lock(fake.mu);
             fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", "note.txt"}, {"content", "hello"}}}};
             fake.calls_left = 1;
         }
-        json s = api.post("/api/sessions", {{"mode", "auto"}});
+        int refused = 0;
+        api.post("/api/sessions", {{"mode", "auto"}}, &refused);
+        expect(refused == 403, "a remote client cannot create a session in auto without a step-up");
+        json s = api.post("/api/sessions", {{"mode", "edit"}});  // edit already applies a local write unasked
         std::string sid = s["id"];
         std::vector<json> events;
         std::thread streaming([&] { events = api.stream("POST", "/api/sessions/" + sid + "/messages", {{"text", "make a note"}}); });
         json approval = wait_for_approval(api, sid);
-        expect(approval.is_object() && approval["tool"] == "write_file" && approval["origin"] == "remote", "auto mode still asks, because the origin is remote");
+        expect(approval.is_object() && approval["tool"] == "write_file" && approval["origin"] == "remote", "edit mode still asks, because the origin is remote");
         expect(approval["preview"].get<std::string>().find("new file") != std::string::npos, "the request carries the write preview");
         int status = 0;
         api.post("/api/sessions/" + sid + "/approvals/wrong", {{"choice", "yes"}}, &status);
