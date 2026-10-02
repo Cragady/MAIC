@@ -39,7 +39,6 @@ Your global file runs with LuaJIT and the standard library; `maic.home`, `maic.h
   "mouse": true,
   "sessions_home": "auto",
   "leader": "space",
-  "instruction_files": ["MAIC.md", "AGENTS.md"],
   "providers": { ... },
   "style": { ... }
 }
@@ -52,7 +51,6 @@ Your global file runs with LuaJIT and the standard library; `maic.home`, `maic.h
 | `think` | Ask the model to reason before answering. Slower; better on hard problems. |
 | `markdown` | Render markdown in the conversation window (`:set markdown off` for raw text). The input box always highlights markdown. |
 | `mouse` | Scroll wheel support. With it on, the terminal's own text selection needs Shift+drag; `:set mouse off` turns it off for a session. |
-| `instruction_files` | File names looked for on the chain (the project root, or just under `$HOME`, down to the workspace), like CLAUDE.md. See [Instructions](#instructions). |
 | `record` | Keep transcripts of interactive sessions (default `true`). `false` writes them to the runtime directory instead, where they vanish at logout; `--record` / `--no-record` override per session. |
 | `compact_at` | Auto-compact when the last model call used this share of the context window (default `0.75`; `0` disables). Old tool results are stubbed first; the oldest turns are summarised only if that was not enough. See `:h compact`. |
 | `compact_keep_results` | Tool results that are never stubbed, counting from the most recent (default `4`). |
@@ -67,7 +65,7 @@ Your global file runs with LuaJIT and the standard library; `maic.home`, `maic.h
 | `rules` | Standing one-line instructions (`{ "always answer in French" }`) carried with `system_prompt` at both ends of the system prompt and in the per-turn note; layers add up. `--rule` and `:rule` at run time. A rule is a request; `prefill` is a guarantee. |
 | `prefill` | Text every reply starts with, sent as the opening of the assistant turn so the model continues it (a guarantee, where `system_prompt` is a request). `--prefill` and `:prefill` override. A prefilled turn rarely calls tools. |
 | `system_prompt` | Operator text placed first in every system prompt, before MAIC's briefing and any instruction file; `"@~/path"` reads a file. `--system` and `:system` override. Front-loads behaviour. |
-| `load_instructions` | `false` loads no `MAIC.md` / `AGENTS.md` anywhere (default `true`); `--no-instructions` and `:instructions off` do it per session. Independent of `system_prompt`; combine them to run on your own text alone. |
+| `load_instructions` | `false` loads no instruction file anywhere (default `true`); `--no-instructions` and `:instructions off` do it per session. Independent of `system_prompt`; combine them to run on your own text alone. |
 | `tripwire` | `"machine"` (default): a trip sets the root-owned lock every MAIC process respects; `maic unlock` asks for sudo. `"session"`: a trip locks that session only, in a file beside its transcript, and `:unlock` removes it without sudo. Nearer settings files win, so a project can choose per project. |
 | `allow_isolated` | `true` permits `tripwire = "isolated"`, a session that opts out of the machine lock (default `false`). Such a session is confined: no reads outside its directory, no remote requests, no server work. |
 | `browser` | What `maic open SERVICE` / `:open` uses: `default` (the system's browser), `firefox`, `chrome`. |
@@ -98,8 +96,8 @@ Your global file runs with LuaJIT and the standard library; `maic.home`, `maic.h
 | `trust_strictness` | Global file only. The default trust tier for a trusted directory whose files change: `"strict"`, `"standard"` (default) or `"relaxed"`. See [Project layers, trust and the chain](#project-layers-trust-and-the-chain). |
 | `trust_identities` | Global file only. The author emails that are yours, for the standard tier (`{ "me@example.com", "work@example.com" }`). Empty (default): `git config --global user.email`. Never read from a repository. |
 | `trust_levels` | Global file only. A tier per directory, `{ ["~/dev2/app"] = "relaxed" }`. A tier set with `maic trust PATH --level L` (kept in `<state>/trust.json`) comes first. |
-| `instructions` | Global file only. `{ project_markers = { ".git", ".maic", "MAIC.md" }, bound = "project" }`: where the chain of project directories ends. `bound = "project"` (default) stops at the project root, the nearest directory at or above the workspace holding a marker; `"home"` goes up to just under `$HOME` as MAIC did before. |
-| `sessions_home` | Where new transcripts go. `auto` (default): under `sessions/projects/<encoded workspace>/` when the workspace has a `MAIC.md` (or one is in effect from a parent directory), else `sessions/general/`. Or force it: `general`, `project`, or any name (`sessions/<name>/`). A project can set this in its `.maic/settings.json`; `maic sessions rehome` moves existing transcripts. |
+| `instructions` | Global file only. Which instruction files the model sees and where the chain ends: `files` (the classes, lowest priority first; default `{ "CLAUDE.md", "AGENTS.md", "MAIC.md" }`), `read` (`"all"` or `"highest"`), `local_files` (`MAIC.local.md` and the like, default `true`), `imports = { depth = 4 }` (`@path` imports; `0` turns them off), `extra_dirs` (default `false`), `project_markers` (default `{ ".git", ".maic", "MAIC.md" }`) and `bound`: `"project"` (default) stops at the project root, the nearest directory at or above the workspace holding a marker; `"home"` goes up to just under `$HOME` as MAIC did before. Every option, the reading order and why: [instructions.md](instructions.md). The old `instruction_files` key is replaced by `instructions.files` and only warned about. |
+| `sessions_home` | Where new transcripts go. `auto` (default): under `sessions/projects/<encoded workspace>/` when the workspace has an instruction file (a name in `instructions.files`; or one is on the chain above it), else `sessions/general/`. Or force it: `general`, `project`, or any name (`sessions/<name>/`). A project can set this in its `.maic/settings.json`; `maic sessions rehome` moves existing transcripts. |
 | `init_move_outside_reads` | `:init` moves the running session into the project's home without asking when it wrote nothing outside the project and read at most this many files outside it (default `3`); with more, it asks. See [sessions.md](sessions.md#homes). |
 
 ## Model presets and tiers
@@ -181,7 +179,7 @@ Where models come from. MAIC ships with `llamacpp` (local, the default), `llamac
 
 Use a provider with `:model anthropic/claude-opus-5-5`, `:model deepseek/deepseek-chat`, `:model lmstudio/whatever-it-serves`, or `maic --model openrouter/some/model`. A bare name with no known prefix goes to the first provider, `llamacpp` (model names can contain `/`).
 
-**Remote providers send data off this machine**: your prompts, every file the agent reads, and every command's output. MAIC says so when you switch to one and shows `REMOTE` in the status line. A provider is local when its `base_url` is on 127.0.0.1, localhost or ::1.
+**Remote providers send data off this machine**: your prompts, every file the agent reads, and every command's output. MAIC says so when you switch to one and shows `REMOTE` in the status line. A provider is local only when its `base_url`, parsed (scheme, userinfo, host, port), is an `http` or `https` URL whose host is exactly a loopback address (`127.0.0.0/8` as a dotted quad, `::1`, `localhost`), or a unix socket (`unix:PATH`); anything else is remote, including a URL that merely contains `://127.` in its path or query, a host such as `127.0.0.1.example.com`, or `127.0.0.1@host` userinfo.
 
 Anthropic models get thinking on by default with `effort` controlling depth, streamed tool input, and refusal fallbacks. Their history is replayed exactly as received (thinking blocks included) and never edited, which the newer models require; mode changes and instruction updates are appended as system messages instead.
 
@@ -276,8 +274,8 @@ Normal, StatusLineNC, PmenuSel, Todo and DiffChange are read too but no role tak
 
 **The chain.** Project settings and instruction files are read from the workspace up to the project root: the nearest directory at or above the workspace that holds a project marker (`.git`, `.maic/` or `MAIC.md`; `instructions.project_markers` changes the list). Nothing above the root is read or asked about. With no marker anywhere above the workspace the chain goes up to just under `$HOME`, as before; `instructions.bound = "home"` makes that the rule everywhere. Outside `$HOME` the chain is the workspace alone. `$HOME` and `/` are never on it.
 
-**Trust.** A directory on the chain that holds `.maic/`, `MAIC.md` or `AGENTS.md` is a project directory, and nothing from it is used until you trust it: its `.maic/settings.*` are not applied, its instruction files are not given to the model, its `.maic/tools/` are not loaded, and an `AGENTS.md` below the workspace is attached only when the workspace itself is trusted. MAIC asks once per directory on the terminal before the screen is drawn (and in a modal when `:cd` reaches one): trust fully, trust sandboxed, not now (untrusted this session) or never (remembered). Headless runs and runs off a terminal ask nothing and stay untrusted unless `--trust` (fully) or `--trust=sandbox` is given. `:trust`, `maic trust [PATH] [--lua L] [--level L]`, `maic trust --list` and `maic untrust PATH` manage it;
- the record is `<state>/trust.json` (0600), per absolute path, with a SHA-256 over every settings, instruction and tool file. Your global files (`~/.config/maic/`) are always trusted. The details, and why, are in [harness.md](harness.md#directory-trust-and-restricted-settings-lua-built).
+**Trust.** A directory on the chain that holds `.maic/` or an instruction file (a name in `instructions.files` or its `.local.md` variant) is a project directory, and so is a workspace with instruction files in its subdirectories that no project directory above it covers. Nothing from it is used until you trust it: its `.maic/settings.*` are not applied, its instruction files are not given to the model, its `.maic/tools/` are not loaded, and an instruction file below the workspace is attached only when a trusted directory's hash covers it ([instructions.md, Trust](instructions.md#trust)). MAIC asks once per directory on the terminal before the screen is drawn (and in a modal when `:cd` reaches one): trust fully, trust sandboxed, not now (untrusted this session) or never (remembered). Headless runs and runs off a terminal ask nothing and stay untrusted unless `--trust` (fully) or `--trust=sandbox` is given. `:trust`, `maic trust [PATH] [--lua L] [--level L]`, `maic trust --list` and `maic untrust PATH` manage it;
+ the record is `<state>/trust.json` (0600), per absolute path, with a SHA-256 over every settings, instruction and tool file, nested instruction files and the files they import inside it included. Your global files (`~/.config/maic/`) are always trusted. The details, and why, are in [harness.md](harness.md#directory-trust-and-restricted-settings-lua-built).
 
 **Tiers.** When a trusted directory's files change:
 
@@ -287,7 +285,7 @@ Normal, StatusLineNC, PmenuSel, Todo and DiffChange are read too but no role tak
 | `standard` (default) | it is yours: an uncommitted edit in a git working tree, or commits whose author email is one of `trust_identities` (else your global git email) | a commit by anyone else (a pull, a merge), a checkout or reset that moved the history, a new untracked file, any change outside a git working tree |
 | `relaxed` | it widens nothing | a new `permission.allow` (or `allow`) entry, a removed `ask` or `deny` entry, a looser `mode`, `harness = "dumb"`, a `tripwire` other than `machine`, `allow_isolated`, `dumb_auto_ok`, a new or changed provider, settings that no longer load, a new tool or a manifest whose `run`, `reads` or `writes` changed, a new instruction file |
 
-Under `relaxed`, a changed `settings.lua` in a directory trusted fully is always asked about: its code runs as you, so it can't be judged as data. A change that passes is named in a one-line notice at start, and the record takes the new contents. The tier comes only from you: `trust_strictness`, `trust_levels`, and `maic trust PATH --level L` / `:trust --level L`. In a project's own file `trust_*`, `global_lua`, `lua_memory_mb`, `instructions.project_markers` and `instructions.bound` are ignored, each with a warning naming the file.
+Under `relaxed`, a changed `settings.lua` in a directory trusted fully is always asked about: its code runs as you, so it can't be judged as data. A change that passes is named in a one-line notice at start, and the record takes the new contents. The tier comes only from you: `trust_strictness`, `trust_levels`, and `maic trust PATH --level L` / `:trust --level L`. In a project's own file `trust_*`, `global_lua`, `lua_memory_mb` and every `instructions` key are ignored, each with a warning naming the file.
 
 ### Lua levels
 
@@ -307,9 +305,13 @@ The environment of the sandbox and restricted levels: base,
 
 ## Instructions
 
-Standing instructions the model sees on every turn, like CLAUDE.md:
+Standing instructions the model sees on every turn, like CLAUDE.md, in this order, the later taking precedence where two conflict:
 
-1. `~/.config/maic/MAIC.md` (global; `$XDG_CONFIG_HOME` respected)
-2. every `MAIC.md` or `AGENTS.md` on the [chain](#project-layers-trust-and-the-chain) (the project root, or just under `$HOME`, down to the workspace), outermost first, from trusted directories only
+1. `/etc/maic/` (a system-wide slot, empty by default)
+2. `~/.config/maic/` (`$XDG_CONFIG_HOME` respected)
+3. each trusted directory on the [chain](#project-layers-trust-and-the-chain) (the project root, or just under `$HOME`, down to the workspace), outermost first
+4. on demand, the instruction files between a file the agent reads and the workspace, once per session
+
+In each directory `CLAUDE.md`, `AGENTS.md` and `MAIC.md` (lowest priority first), then their `.local.md` variants; `@path` imports another file. The classes, `read = "highest"`, local files, imports and extra directories are set in the global `instructions` table: [instructions.md](instructions.md) has every option, the comparison with Claude Code and opencode, and why MAIC's defaults are what they are.
 
 Files are re-read at the start of each turn, so edits apply to the next message. Each is capped at 32 KB. `:instructions` shows what is in effect. The model is told to follow them and never to infer your name or pronouns from paths, usernames or commit authors.

@@ -35,6 +35,19 @@ constexpr const char* kPassedEnv[] = {
     "XDG_CONFIG_HOME", "XDG_STATE_HOME",
 };
 
+// Where the system's /run and /nix are: /, or for tests only MAIC_SANDBOX_ROOT under MAIC_TESTING=1, so fake
+// NixOS trees in a temporary directory stand in for the real ones.
+fs::path system_root() {
+    const char* testing = std::getenv("MAIC_TESTING");
+    const char* root = std::getenv("MAIC_SANDBOX_ROOT");
+    if (testing && std::string_view(testing) == "1" && root && *root) return fs::weakly_canonical(root);
+    return "/";
+}
+
+// The program trees NixOS keeps under /run, bound back read-only over the empty /run: the system's software,
+// its setuid wrappers (inert here: bwrap runs everything with no_new_privs) and the GPU userspace drivers.
+constexpr const char* kRunPrograms[] = {"current-system", "booted-system", "wrappers", "opengl-driver", "opengl-driver-32"};
+
 bool inside(const fs::path& p, const fs::path& dir) {
     auto [d, _] = std::mismatch(dir.begin(), dir.end(), p.begin(), p.end());
     return d == dir.end();
@@ -49,10 +62,11 @@ bool inside(const fs::path& p, const fs::path& dir) {
 // wherever they are. A socket whose directory is $HOME, an ancestor of it or / has /dev/null bound over it instead.
 // The workspace is bound in between, writable unless `read_only`.
 void bind_workspace_hiding_sockets(std::vector<std::string>& args, const fs::path& workspace, bool read_only) {
-    fs::path home = fs::weakly_canonical(std::getenv("HOME")), ws = fs::weakly_canonical(workspace);
+    fs::path home = fs::weakly_canonical(std::getenv("HOME")), ws = fs::weakly_canonical(workspace), root = system_root();
     std::vector<fs::path> dirs, files;
     std::error_code ec;
-    for (const char* run : {"/run", "/var/run"}) {
+    fs::path sys_run = fs::weakly_canonical(root / "run", ec);
+    for (const fs::path& run : {fs::path("/run"), fs::path("/var/run"), sys_run}) {
         fs::path p = fs::canonical(run, ec);
         if (!ec && std::find(dirs.begin(), dirs.end(), p) == dirs.end()) dirs.push_back(p);
     }
@@ -82,6 +96,24 @@ void bind_workspace_hiding_sockets(std::vector<std::string>& args, const fs::pat
         if (inside(d, ws)) continue;
         args.insert(args.end(), {"--tmpfs", d.string()});
         if (d == "/run") args.insert(args.end(), {"--ro-bind-try", "/run/media", "/run/media"});
+        if (d == sys_run) {
+            // Only these exact paths come back, each followed to its tree; a socket inside one is masked.
+            for (const char* name : kRunPrograms) {
+                fs::path p = d / name;
+                if (!fs::is_directory(p, ec)) continue;
+                args.insert(args.end(), {"--ro-bind", fs::canonical(p, ec).string(), p.string()});
+                fs::path real = fs::canonical(p, ec);
+                for (fs::recursive_directory_iterator it(real, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+                    if (it->is_socket(ec)) files.push_back(p / it->path().lexically_relative(real));
+                }
+                ec.clear();
+            }
+        }
+    }
+    // The Nix daemon's socket lives outside /run: through it a command could build any derivation, a fixed-output
+    // one fetching from the network included. Its directory becomes an empty tmpfs.
+    if (fs::path nix = root / "nix" / "var" / "nix" / "daemon-socket"; fs::is_directory(nix, ec) && !inside(fs::weakly_canonical(nix), ws)) {
+        args.insert(args.end(), {"--tmpfs", fs::weakly_canonical(nix).string()});
     }
     args.insert(args.end(), {read_only ? "--ro-bind" : "--bind", workspace.string(), workspace.string()});
     for (const auto& d : dirs) {

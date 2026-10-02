@@ -131,11 +131,18 @@ std::string Agent::instructions_text() const {
            "The user wrote the files below about themselves and about how they want you to work. Follow them. "
            "In them, \"I\", \"me\" and \"my\" mean the user, never you: they describe the person you are talking to. "
            "You are MAIC's agent, a separate thing from the user. Their contents are included right here; do not "
-           "read these files with a tool.\n";
+           "read these files with a tool. They run from the most general (system-wide, then the user's own) to the "
+           "most specific (the directory closest to the workspace); where two conflict, the later one takes precedence.\n";
     for (const auto& f : instructions_) {
-        out += "\n## " + f.path.string() + "\n" + f.text + "\n";
+        out += "\n## " + f.path.string() + (f.imported_by.empty() ? "" : " (imported by " + f.imported_by.string() + ")") + "\n" + f.text + "\n";
     }
     return out;
+}
+
+void Agent::reload_instructions() {
+    pending_imports_.clear();
+    instructions_ = load_instruction_files ? load_instructions(harness_.workspace(), instruction_options_, {}, &pending_imports_) : std::vector<InstructionFile>{};
+    nested_allowed_ = load_instruction_files ? nested_allowed(harness_.workspace()) : std::set<std::filesystem::path>{};
 }
 
 // The operator instructions again, at the end of the user's turn. Measured with a 4B against this very
@@ -371,6 +378,7 @@ void Agent::clear() {
     messages_.clear();
     always_allowed_.clear();
     todo_.clear();
+    attached_instructions_.clear();  // the new conversation has not seen them
     if (log_) log_->write("clear", {});
 }
 
@@ -1063,6 +1071,11 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     Decision d = harness_.check(action, mode, origin);
     if (action.kind != Action::Kind::Read && touches_harness(action) && d.verdict == Verdict::Allow) d = {Verdict::Ask, "changes the harness's own files"};
     if (touches_trust(action) && d.verdict != Verdict::Trip) d = {Verdict::Deny, "trust is the user's alone: only they grant it, at the terminal (:trust, maic trust PATH)"};
+    // A file the user's own instructions import with their approval would change their standing instructions.
+    if (d.verdict != Verdict::Trip && d.verdict != Verdict::Deny && changes_approved_import(action)) {
+        if (!review_with_model) d = {Verdict::Deny, "it is a file your own instructions import (an approved import); the dumb harness never lets the agent change it"};
+        else if (d.verdict == Verdict::Allow) d = {Verdict::Ask, "changes a file your own instructions import (an approved import)"};
+    }
     record["decision"] = verdict_name(d.verdict);
     record["reason"] = d.reason;
     bool user_allowed = false;
@@ -1186,7 +1199,7 @@ ToolResult Agent::run_task(const nlohmann::json& args, Origin origin, AgentEvent
     child.bans = bans;
     child.operator_note_in_turn = operator_note_in_turn;
     child.load_instruction_files = load_instruction_files;
-    child.instruction_names_ = instruction_names_;
+    child.instruction_options_ = instruction_options_;
     child.system_prefix = system_prefix;
     child.rules = rules;
     child.compaction = compaction;
@@ -1299,6 +1312,17 @@ bool touches_trust(const Action& action) {
     return std::regex_search(action.command, re);
 }
 
+// A write to a target `maic trust imports` lists, or a command that is not read-only and names one.
+bool changes_approved_import(const Action& action) {
+    if (action.kind == Action::Kind::Read) return false;
+    if (action.kind == Action::Kind::Shell && is_read_only_command(action.command)) return false;
+    std::error_code ec;
+    for (const auto& t : import_exception_targets()) {
+        if (action.kind == Action::Kind::Shell ? action.command.find(t.string()) != std::string::npos : std::filesystem::weakly_canonical(action.path, ec) == t) return true;
+    }
+    return false;
+}
+
 bool Agent::touches_harness(const Action& action) const {
     if (touches_trust(action)) return true;
     std::error_code ec;
@@ -1322,8 +1346,8 @@ bool Agent::touches_harness(const Action& action) const {
     return false;
 }
 
-void Agent::set_instruction_names(std::vector<std::string> names) {
-    instruction_names_ = std::move(names);
+void Agent::set_instruction_options(InstructionOptions options) {
+    instruction_options_ = std::move(options);
 }
 
 Agent::ReviewerInfo Agent::reviewer() const {
@@ -1507,26 +1531,16 @@ std::string Agent::undo(size_t count) {
 }
 
 std::string Agent::nested_instructions(const std::filesystem::path& file) {
-    if (!load_instruction_files || !trusted(harness_.workspace())) return "";  // nested files come with a trusted workspace only
+    if (!load_instruction_files) return "";
     std::error_code ec;
-    std::filesystem::path ws = std::filesystem::weakly_canonical(harness_.workspace(), ec);
-    std::filesystem::path dir = std::filesystem::weakly_canonical(file, ec).parent_path();
-    auto rel = dir.lexically_relative(ws);
-    if (rel.empty() || *rel.begin() == "..") return "";  // outside the workspace: nothing extra
+    std::set<std::filesystem::path> seen = attached_instructions_;
+    for (const auto& f : instructions_) seen.insert(std::filesystem::weakly_canonical(f.path, ec));
     std::string out;
-    for (std::filesystem::path d = dir; d != ws && d != d.parent_path(); d = d.parent_path()) {
-        for (const auto& fname : instruction_names_) {
-            std::filesystem::path f = d / fname;
-            if (!std::filesystem::is_regular_file(f, ec) || attached_instructions_.count(f.string())) continue;
-            bool at_top = false;
-            for (const auto& top : instructions_) at_top = at_top || top.path == f;
-            if (at_top) continue;
-            std::ifstream in(f);
-            std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-            if (text.size() > 32 * 1024) text = text.substr(0, 32 * 1024) + "\n[truncated]";
-            attached_instructions_.insert(f.string());
-            out += "[Instructions from " + f.string() + " apply to files under " + d.string() + "; follow them]\n" + text + "\n";
-        }
+    for (const auto& f : maic::nested_instructions(harness_.workspace(), file, instruction_options_, nested_allowed_, seen)) {
+        attached_instructions_.insert(std::filesystem::weakly_canonical(f.path, ec));
+        std::string from = f.imported_by.empty() ? "" : ", imported by " + f.imported_by.string();
+        out += "[MAIC system note: standing instructions from " + f.path.string() + from + ". They apply to the files under " +
+               (f.imported_by.empty() ? f.path : f.imported_by).parent_path().string() + " and take precedence over the earlier ones there; follow them]\n" + f.text + "\n";
     }
     return out;
 }

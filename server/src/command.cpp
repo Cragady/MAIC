@@ -132,7 +132,7 @@ int cmd_status(const Settings& settings, const fs::path& state) {
     size_t colon = listen.rfind(':');
     std::string host = colon == std::string::npos ? listen : listen.substr(0, colon);
     std::string port = colon == std::string::npos ? "7373" : listen.substr(colon + 1);
-    bool loopback = host == "localhost" || host == "::1" || host.rfind("127.", 0) == 0;
+    bool loopback = loopback_host(host);
     TokenStore store(state / "tokens.json");
     std::cout << "listen:     " << listen << (loopback ? "  (loopback, plain HTTP)" : "  (TLS)") << "\n";
     if (!loopback) {

@@ -81,6 +81,8 @@ public:
 // `maic trust` / `maic untrust` / `maic ... --trust` command). The agent's authorise step never lets one run:
 // the smart harness trips on it, the dumb one refuses it.
 bool touches_trust(const Action& action);
+// Whether the action writes a file the user's own instructions import with their approval (maic trust imports).
+bool changes_approved_import(const Action& action);
 
 class Agent {
 public:
@@ -192,8 +194,8 @@ public:
     void set_agent_def(const AgentDef& def);
     const std::string& agent_name() const { return agent_name_; }  // "" for a session
 
-    // Names of instruction files (MAIC.md, AGENTS.md, ...) looked for beside files the model reads.
-    void set_instruction_names(std::vector<std::string> names);
+    // Which instruction files are read and how (the global settings' `instructions`; docs/instructions.md).
+    void set_instruction_options(InstructionOptions options);
 
     // The harness's second reader. When on ("smart" harness), a model reads the recent conversation and the
     // action before any command or write that the rules would let through without asking, and answers
@@ -237,7 +239,7 @@ public:
     // prompt itself is never rewritten (append-only history).
     void set_system_prefix(const std::string& text);
     void set_rules(std::vector<std::string> new_rules);
-    // When false, no MAIC.md / AGENTS.md is loaded or attached, anywhere.
+    // When false, no instruction file is loaded or attached, anywhere.
     bool load_instruction_files = true;
 
     // Token accounting: the last model call and this session's running totals. Thread-safe.
@@ -256,11 +258,12 @@ public:
     // subagents get the same host.
     void set_nvim_host(std::shared_ptr<NvimHost> host) { nvim_ = std::move(host); }
 
-    // MAIC.md / AGENTS.md files in effect. Re-read from disk at the start of every turn.
+    // Instruction files in effect. Re-read from disk at the start of every turn, with the nested files on-demand
+    // loading may attach.
     const std::vector<InstructionFile>& instructions() const { return instructions_; }
-    void reload_instructions() {
-        instructions_ = load_instruction_files ? load_instructions(harness_.workspace(), instruction_names_) : std::vector<InstructionFile>{};
-    }
+    void reload_instructions();
+    // Imports of your own files waiting for your approval, as of the last reload (read it while idle).
+    const std::vector<PendingImport>& pending_imports() const { return pending_imports_; }
 
     // The model's current plan, replaced whole by every todo call; cleared with the conversation.
     const std::vector<TodoItem>& todo() const { return todo_; }
@@ -329,8 +332,10 @@ private:
     std::vector<ScriptTool> script_tools_;
     std::vector<std::string> tool_notices_;
     nlohmann::json schemas_;  // the built-ins, then the Lua tools, then the script tools
-    std::vector<std::string> instruction_names_ = {"MAIC.md", "AGENTS.md"};
-    std::set<std::string> attached_instructions_;
+    InstructionOptions instruction_options_;
+    std::vector<PendingImport> pending_imports_;
+    std::set<std::filesystem::path> nested_allowed_;        // nested files trusted chain directories hash (nested_allowed)
+    std::set<std::filesystem::path> attached_instructions_;  // nested files attached in this conversation
     std::string last_call_;
     int repeats_ = 0;
     int denials_ = 0;

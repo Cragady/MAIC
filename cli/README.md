@@ -150,7 +150,7 @@ The input is highlighted as markdown by MAIC's own renderer. `highlight = "nvim"
 
 ### After every turn
 
-A footer line shows the model, how long the turn took and how many tools ran (`▣ qwen3.5:4b · 12.3s · 3 tool calls`, `· interrupted` when you stopped it). `run_shell` takes a `workdir` argument, so the approval prompt shows `pytest` in `services/api` rather than a `cd` chain; a workdir outside the workspace is asked about. Reading a file under a directory with its own `AGENTS.md` (or any name in `instruction_files`) attaches those instructions to the result once.
+A footer line shows the model, how long the turn took and how many tools ran (`▣ qwen3.5:4b · 12.3s · 3 tool calls`, `· interrupted` when you stopped it). `run_shell` takes a `workdir` argument, so the approval prompt shows `pytest` in `services/api` rather than a `cd` chain; a workdir outside the workspace is asked about. Reading a file under a directory with its own `AGENTS.md` (or any name in `instructions.files`) attaches those instructions to the result once, when a trusted directory covers them ([docs/instructions.md](../docs/instructions.md)).
 
 ### Messages while the agent works
 

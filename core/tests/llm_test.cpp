@@ -75,6 +75,21 @@ int main() {
     auto by_name = [&](const std::string& n) { return *std::find_if(provs.begin(), provs.end(), [&](const Provider& p) { return p.name == n; }); };
     expect(!by_name("llamacpp").remote() && by_name("anthropic").remote(), "llamacpp is local, anthropic is remote");
     {
+        // Local means the URL's host, parsed, is loopback; text that only looks local anywhere else is remote.
+        auto remote = [](const std::string& url) { return Provider{"p", "openai", url, "", "", json::object()}.remote(); };
+        for (const char* url : {"http://127.0.0.1:8081/v1", "http://localhost:8082", "http://[::1]:8081/v1", "http://127.1.2.3/v1", "HTTP://LocalHost:9/x",
+                                "http://user@127.0.0.1:8081/v1", "unix:/run/user/1000/llama.sock"}) {
+            expect(!remote(url), std::string("local: ") + url);
+        }
+        for (const char* url : {"https://api.anthropic.com", "https://example.com/x?y=://127.0.0.1", "http://127.0.0.1.attacker.example/",
+                                "http://127.0.0.1@evil.example/", "http://localhost.evil.example/", "http://evil.example/://localhost", "http://evil.example#://[::1]",
+                                "http://0177.0.0.1/", "http://2130706433/", "http://127.0.0.1\\@evil.example/", "ftp://127.0.0.1/", "http://[::1]evil/", ""}) {
+            expect(remote(url), std::string("remote: ") + url);
+        }
+        expect(loopback_host("127.0.0.1") && loopback_host("[::1]") && !loopback_host("127.0.0.1.attacker.example") && !loopback_host("128.0.0.1"),
+               "loopback_host: a dotted quad in 127.0.0.0/8, ::1 or localhost only");
+    }
+    {
         const Provider& side = by_name("llamacpp-2");
         expect(side.kind == "openai" && side.base_url == "http://127.0.0.1:8082/v1" && !side.remote() && side.options.value("thinking_controls", false) && side.options.value("context_window", 0) == 8192,
                "llamacpp-2 is shipped: OpenAI-compatible on 8082, local, thinking controls, an 8k window");

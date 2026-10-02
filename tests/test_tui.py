@@ -83,6 +83,21 @@ class TuiTest(unittest.TestCase):
         tui.send("iping<m-cr>", settle=False)
         tui.wait_for("echo: ping")
 
+    def test_ctrl_u_scrolls_up_and_ctrl_d_down(self):
+        tui = self.start()
+        tui.send("i" + "<cr>".join("scroll%02d" % n for n in range(1, 61)))
+        tui.send("<esc>:w<cr>", settle=False)
+        tui.wait_for("echo: scroll01")
+        tui.settle()
+        self.assertNotIn("scroll05", tui.text())
+        for _ in range(4):
+            tui.send("<c-u>")
+        self.assertIn("scroll05", tui.text(), "Ctrl-U scrolls up, toward older lines, as in vim")
+        self.assertNotIn("echo: scroll01", tui.text())
+        for _ in range(4):
+            tui.send("<c-d>")
+        self.assertIn("echo: scroll01", tui.text(), "Ctrl-D scrolls back down")
+
     def test_help_opens(self):
         tui = self.start()
         tui.send(":help<cr>")
@@ -355,6 +370,42 @@ class TuiTest(unittest.TestCase):
         self.assertIn("trusted " + ws, tui.wait_for("trusted " + ws))
         again = start()
         self.assertNotIn("[t] trust fully", again.wait_for(STRIP))
+
+    def test_own_import_from_outside_is_asked_once(self):
+        # A config of its own: instruction files on, and a MAIC.md that imports a file outside every trusted directory.
+        base = os.path.join(self.home, "own-import")
+        cfg = os.path.join(base, "config", "maic")
+        os.makedirs(cfg)
+        os.makedirs(os.path.join(base, "outside"))
+        target = os.path.join(base, "outside", "style.md")
+        with open(target, "w") as f:
+            f.write("write like a heron\n")
+        with open(os.path.join(self.home, "config", "maic", "settings.lua")) as f:
+            settings = f.read().replace("load_instructions = false", "load_instructions = true")
+        with open(os.path.join(cfg, "settings.lua"), "w") as f:
+            f.write(settings)
+        with open(os.path.join(cfg, "MAIC.md"), "w") as f:
+            f.write("Follow @%s please.\n" % target)
+        env = dict(self.env, XDG_CONFIG_HOME=os.path.join(base, "config"), XDG_STATE_HOME=os.path.join(base, "state"))
+
+        def start():
+            tui = Tui([MAIC, "--no-record", "--harness", "dumb"], env=env, cwd=self.ws)
+            self.addCleanup(tui.close)
+            return tui
+
+        tui = start()
+        text = tui.wait_for("import from outside?")
+        self.assertIn("target:         " + target, text)
+        self.assertIn("size:           19 bytes", text)
+        self.assertIn("it becomes standing instructions for every agent in every project", text)
+        self.assertIn("its contents are sent to whatever model provider a session uses, cloud included", text)
+        self.assertIn("every session pays its tokens", text)
+        self.assertIn("if an agent or another tool can write that file, it can change future instructions", text)
+        tui.send("y", settle=False)
+        tui.wait_for("approved import: " + target)
+        self.assertEqual(os.stat(os.path.join(base, "state", "maic", "trust-imports.json")).st_mode & 0o777, 0o600)
+        again = start()
+        self.assertNotIn("import from outside?", again.wait_for(STRIP))  # remembered: never asked again
 
     def test_quit_prints_the_transcript_line(self):
         tui = self.start()

@@ -1,6 +1,7 @@
 #include "maic/trust.hpp"
 
 #include "maic/harness.hpp"
+#include "maic/instructions.hpp"
 #include "maic/lua.hpp"
 #include "maic/paths.hpp"
 #include "maic/session.hpp"
@@ -39,6 +40,7 @@ using nlohmann::json;
 namespace {
 
 std::mutex g_mu;  // the session answers, the config and the verifier
+constexpr size_t kMaxNestedDirs = 4096;  // directories below a project directory searched for nested instruction files
 
 // This process's own answers: --trust, "not now", and what settle_trust fixed at start.
 std::map<std::string, bool>& session_answers() {
@@ -298,7 +300,9 @@ json capabilities(const ProjectDir& p) {
         std::set<std::string> s(caps[kind].begin(), caps[kind].end());
         caps[kind] = s;
     }
-    for (const auto& f : p.instructions) caps["instructions"].push_back(rel(p.dir, f));
+    for (const auto& list : {p.instructions, p.nested, p.imports}) {
+        for (const auto& f : list) caps["instructions"].push_back(rel(p.dir, f));
+    }
     std::error_code ec;
     for (const auto& e : fs::directory_iterator(p.dir / ".maic" / "tools", ec)) {
         if (e.is_regular_file(ec) && e.path().extension() == ".lua") caps["lua_tools"].push_back(e.path().filename().string());
@@ -489,6 +493,8 @@ std::string file_list(const fs::path& dir, const std::vector<fs::path>& files) {
 std::vector<fs::path> ProjectDir::files() const {
     std::vector<fs::path> all = settings;
     all.insert(all.end(), instructions.begin(), instructions.end());
+    all.insert(all.end(), nested.begin(), nested.end());
+    all.insert(all.end(), imports.begin(), imports.end());
     all.insert(all.end(), tools.begin(), tools.end());
     std::sort(all.begin(), all.end());
     return all;
@@ -523,9 +529,55 @@ ProjectDir project_dir(const fs::path& dir) {
     for (const char* name : {"settings.lua", "settings.json", "settings.local.lua", "settings.local.json"}) {
         if (fs::is_regular_file(p.dir / ".maic" / name, ec)) p.settings.push_back(p.dir / ".maic" / name);
     }
-    for (const char* name : {"MAIC.md", "AGENTS.md"}) {
+    InstructionOptions options;
+    {
+        std::lock_guard lock(g_mu);
+        options = config().instructions;
+    }
+    std::vector<std::string> names = instruction_names(options);
+    for (const auto& name : names) {
         if (fs::is_regular_file(p.dir / name, ec)) p.instructions.push_back(p.dir / name);
     }
+    // Nested files, which on-demand loading attaches: breadth first in name order, so the same tree always gives
+    // the same list, without hidden directories, node_modules or links to directories, and at most
+    // kMaxNestedDirs directories.
+    std::vector<fs::path> queue;
+    if (!never_project(p.dir)) queue.push_back(p.dir);  // $HOME and / are never searched
+    for (size_t i = 0; i < queue.size() && queue.size() <= kMaxNestedDirs; ++i) {
+        std::vector<fs::path> subdirs;
+        for (fs::directory_iterator it(queue[i], fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+            std::string name = it->path().filename().string();
+            if (name[0] == '.' || name == "node_modules" || it->is_symlink(ec) || !it->is_directory(ec)) continue;
+            subdirs.push_back(it->path());
+        }
+        ec.clear();
+        std::sort(subdirs.begin(), subdirs.end());
+        for (const auto& d : subdirs) {
+            if (queue.size() > kMaxNestedDirs) break;
+            queue.push_back(d);
+            for (const auto& name : names) {
+                if (fs::is_regular_file(d / name, ec)) p.nested.push_back(d / name);
+            }
+        }
+    }
+    // Imports that land inside the directory, followed as deep as loading follows them.
+    std::set<fs::path> listed(p.instructions.begin(), p.instructions.end());
+    listed.insert(p.nested.begin(), p.nested.end());
+    std::vector<std::pair<fs::path, int>> todo;
+    for (const auto& f : listed) todo.emplace_back(f, 0);
+    while (!todo.empty()) {
+        auto [f, depth] = todo.back();
+        todo.pop_back();
+        if (depth >= options.import_depth) continue;
+        for (const auto& t : import_targets(f, read_all(f))) {
+            fs::path target = fs::weakly_canonical(t, ec);
+            if (ec || !fs::is_regular_file(target, ec) || target.lexically_relative(p.dir).empty() || *target.lexically_relative(p.dir).begin() == "..") continue;
+            if (!listed.insert(target).second) continue;
+            p.imports.push_back(target);
+            todo.emplace_back(target, depth + 1);
+        }
+    }
+    std::sort(p.imports.begin(), p.imports.end());
     fs::path tools = p.dir / ".maic" / "tools";
     p.tool_dir = fs::is_directory(tools, ec);
     if (p.tool_dir) {
@@ -562,8 +614,20 @@ std::vector<fs::path> config_chain(const fs::path& workspace) {
 
 std::vector<ProjectDir> project_dirs(const fs::path& workspace) {
     std::vector<ProjectDir> out;
-    for (const auto& d : config_chain(workspace)) {
-        if (ProjectDir p = project_dir(d); !p.empty()) out.push_back(std::move(p));
+    std::vector<fs::path> chain = config_chain(workspace);
+    for (const auto& d : chain) {
+        ProjectDir p = project_dir(d);
+        if (p.empty()) continue;
+        // Nested files are read only below the workspace, so they make a project directory of the workspace
+        // alone, and only when no project directory above it hashes them already.
+        bool own = !p.settings.empty() || !p.instructions.empty() || p.tool_dir;
+        bool covered = true;
+        for (const auto& f : p.nested) {
+            bool above = false;
+            for (const auto& o : out) above = above || std::find(o.nested.begin(), o.nested.end(), f) != o.nested.end();
+            covered = covered && above;
+        }
+        if (own || (d == chain.back() && !covered)) out.push_back(std::move(p));
     }
     return out;
 }
@@ -605,6 +669,7 @@ bool trusted(const fs::path& dir) {
     fs::path d = absolute_dir(dir);
     if (never_project(d)) return false;
     if (auto a = session_answer(d)) return *a;
+    if (json e = store_entry(d); !e.is_object() || e.value("state", "") != "trusted") return false;  // never trusted: nothing to hash
     return trust_status(project_dir(d)).trust == Trust::Trusted;
 }
 
@@ -676,6 +741,8 @@ std::string describe_project(const ProjectDir& p, const std::string& indent) {
     std::string out;
     if (!p.settings.empty()) out += indent + "settings:     " + file_list(p.dir, p.settings) + "\n";
     if (!p.instructions.empty()) out += indent + "instructions: " + file_list(p.dir, p.instructions) + "\n";
+    if (!p.nested.empty()) out += indent + "nested:       " + file_list(p.dir, p.nested) + "\n";
+    if (!p.imports.empty()) out += indent + "imported:     " + file_list(p.dir, p.imports) + "\n";
     if (p.tool_dir) {
         std::vector<fs::path> top;
         std::error_code ec;
@@ -735,7 +802,7 @@ std::string grant_trust(const fs::path& workspace, const std::string& path, Orig
     std::vector<ProjectDir> dirs;
     if (!path.empty()) {
         ProjectDir p = project_dir(project_arg(workspace, path));
-        if (p.empty()) throw std::runtime_error("nothing to trust in " + p.dir.string() + ": no .maic/settings.*, MAIC.md, AGENTS.md or .maic/tools/");
+        if (p.empty()) throw std::runtime_error("nothing to trust in " + p.dir.string() + ": no .maic/settings.*, instruction files or .maic/tools/");
         dirs.push_back(std::move(p));
     } else {
         for (auto& p : project_dirs(workspace)) {
@@ -744,7 +811,7 @@ std::string grant_trust(const fs::path& workspace, const std::string& path, Orig
         if (dirs.empty()) {
             std::string out = "nothing to trust here:";
             for (const auto& p : project_dirs(workspace)) out += "\n  " + p.dir.string() + "  (" + trust_name(trust_status(p).trust) + ")";
-            if (project_dirs(workspace).empty()) out += " no directory from under $HOME down to " + absolute_dir(workspace).string() + " holds .maic/, MAIC.md or AGENTS.md";
+            if (project_dirs(workspace).empty()) out += " no directory from under $HOME down to " + absolute_dir(workspace).string() + " holds .maic/ or an instruction file";
             return out;
         }
     }
@@ -791,7 +858,135 @@ std::string trust_listing() {
     return out;
 }
 
+namespace {
+
+json read_imports() {
+    std::ifstream in(import_exceptions_path());
+    json j = in ? json::parse(in, nullptr, false) : json::object();
+    if (!j.is_object()) j = json::object();
+    if (!j.contains("imports") || !j["imports"].is_array()) j["imports"] = json::array();
+    return j;
+}
+
+std::string canonical_string(const fs::path& p) {
+    std::error_code ec;
+    fs::path c = fs::weakly_canonical(p, ec);
+    return (ec ? p : c).string();
+}
+
+// The record for a pair: the target's hash, and where it is a git working tree its HEAD and whether it is
+// tracked, which the standard tier reads as for a trusted directory.
+json import_record(const fs::path& importer, const fs::path& target) {
+    json e = {{"importer", canonical_string(importer)}, {"target", canonical_string(target)}, {"sha256", sha256({read_all(target)})}, {"at", utc_now()}};
+    fs::path dir = target.parent_path();
+    if (work_tree(dir)) {
+        std::string name = target.filename().string();
+        e["git"] = {{"head", git_head(dir)}, {"untracked", git_tracked(dir, name) ? json::array() : json::array({name})}};
+    }
+    return e;
+}
+
+void store_import(const json& entry) {
+    json j = read_imports();
+    json kept = json::array();
+    for (const auto& e : j["imports"]) {
+        if (e.value("importer", "") != entry["importer"].get<std::string>() || e.value("target", "") != entry["target"].get<std::string>()) kept.push_back(e);
+    }
+    kept.push_back(entry);
+    j["imports"] = kept;
+    write_private(import_exceptions_path(), j.dump(2) + "\n", false);
+}
+
+}  // namespace
+
+fs::path import_exceptions_path() {
+    return state_dir() / "trust-imports.json";
+}
+
+TrustStatus import_exception_status(const fs::path& importer, const fs::path& target) {
+    TrustStatus s;
+    {
+        std::lock_guard lock(g_mu);
+        s.level = config().strictness;
+    }
+    std::string imp = canonical_string(importer), tgt = canonical_string(target);
+    json entry, all = read_imports();
+    for (const auto& e : all["imports"]) {
+        if (e.value("importer", "") == imp && e.value("target", "") == tgt) entry = e;
+    }
+    if (!entry.is_object()) return s;
+    if (sha256({read_all(tgt)}) == entry.value("sha256", "")) return s.trust = Trust::Trusted, s;
+    s.changed = {tgt};
+    if (s.level == "strict") s.reasons = {"strict: every change is asked about"};
+    else if (s.level == "standard") {
+        ProjectDir p;
+        p.dir = fs::path(tgt).parent_path();
+        s.reasons = not_own(p, entry, s.changed);
+    }
+    s.trust = s.reasons.empty() ? Trust::Trusted : Trust::Changed;
+    if (s.trust == Trust::Trusted) store_import(import_record(imp, tgt));  // the change passed: it is the new record
+    return s;
+}
+
+void approve_import(const fs::path& importer, const fs::path& target, Origin origin) {
+    require_local(origin);
+    store_import(import_record(importer, target));
+}
+
+std::vector<fs::path> import_exception_targets() {
+    std::vector<fs::path> out;
+    json all = read_imports();
+    for (const auto& e : all["imports"]) out.push_back(e.value("target", ""));
+    return out;
+}
+
+std::vector<std::string> import_prompt(const fs::path& importer, const fs::path& target, const TrustStatus& status) {
+    std::error_code ec;
+    auto size = fs::file_size(target, ec);
+    std::vector<std::string> lines = {"importing file: " + importer.string(), "target:         " + target.string(),
+                                      "size:           " + (ec ? std::string("unknown") : std::to_string(size) + " bytes")};
+    if (status.trust == Trust::Changed) {
+        for (const auto& r : status.reasons) lines.push_back("changed since you approved it: " + r);
+    }
+    lines.insert(lines.end(), {
+        "approving it means:",
+        "  it becomes standing instructions for every agent in every project",
+        "  its contents are sent to whatever model provider a session uses, cloud included",
+        "  every session pays its tokens",
+        "  if an agent or another tool can write that file, it can change future instructions",
+    });
+    return lines;
+}
+
+std::string trust_imports_command(const std::vector<std::string>& args) {
+    json j = read_imports();
+    if (args.empty()) {
+        if (j["imports"].empty()) return "no approved imports (" + import_exceptions_path().string() + ")";
+        std::string out = "approved imports from your own instruction files (" + import_exceptions_path().string() + "):";
+        for (const auto& e : j["imports"]) {
+            TrustStatus s = import_exception_status(e.value("importer", ""), e.value("target", ""));
+            out += "\n  " + e.value("importer", "") + " -> " + e.value("target", "") + "  (" + e.value("at", "") + (s.trust == Trust::Changed ? ", changed: asked again" : "") + ")";
+        }
+        return out;
+    }
+    if (args.size() != 2 || args[0] != "--remove") throw std::runtime_error("usage: trust imports [--remove PATH | --approve]");
+    std::string path = args[1];
+    if (!path.empty() && path[0] == '~') path = expand_home(path);
+    std::string c = canonical_string(fs::absolute(path));
+    json kept = json::array();
+    std::string out;
+    for (const auto& e : j["imports"]) {
+        if (e.value("importer", "") == c || e.value("target", "") == c) out += (out.empty() ? "" : "\n") + ("removed " + e.value("importer", "") + " -> " + e.value("target", ""));
+        else kept.push_back(e);
+    }
+    if (out.empty()) return "no approved import names " + c;
+    j["imports"] = kept;
+    write_private(import_exceptions_path(), j.dump(2) + "\n", false);
+    return out;
+}
+
 std::string trust_command(const std::string& command, const std::vector<std::string>& args, const fs::path& workspace) {
+    if (command == "trust" && !args.empty() && args[0] == "imports") return trust_imports_command({args.begin() + 1, args.end()});
     std::string path, level, lua;
     bool list = false;
     for (size_t i = 0; i < args.size(); ++i) {

@@ -25,20 +25,23 @@ class Fake(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(n) or b"{}")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.end_headers()
         last = [m for m in body.get("messages", []) if m.get("role") == "user"][-1]["content"]
         if isinstance(last, list):  # text parts beside an image
             last = "".join(p.get("text", "") for p in last if p.get("type") == "text")
+        try:
+            self.reply(last)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # MAIC hung up mid-reply (an interrupt does): that is the end of this reply
+
+    def reply(self, last):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
         if last.startswith("hold"):  # a reply that never ends: only an interrupt brings the turn back
-            try:
-                self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {"content": "holding"}}]}) + "\n\n").encode())
-                for _ in range(500):
-                    time.sleep(0.02)
-                    self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {}}]}) + "\n\n").encode())
-            except (BrokenPipeError, ConnectionResetError):
-                pass
+            self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {"content": "holding"}}]}) + "\n\n").encode())
+            for _ in range(500):
+                time.sleep(0.02)
+                self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {}}]}) + "\n\n").encode())
             return
         if last.startswith("slow:"):
             time.sleep(3)

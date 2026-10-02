@@ -344,15 +344,30 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             }
             s.instructions_bound = chain.value("bound", s.instructions_bound);
             if (s.instructions_bound != "project" && s.instructions_bound != "home") throw std::runtime_error(path.string() + ": instructions.bound must be \"project\" or \"home\"");
+            InstructionOptions& o = s.instructions;
+            if (chain.contains("files")) {
+                o.files = chain["files"].get<std::vector<std::string>>();
+                for (const auto& f : o.files) {
+                    if (f.empty() || f.find('/') != std::string::npos || f == "." || f == "..") throw std::runtime_error(path.string() + ": instructions.files holds file names, not \"" + f + "\"");
+                }
+            }
+            std::string read = chain.value("read", o.highest ? "highest" : "all");
+            if (read != "all" && read != "highest") throw std::runtime_error(path.string() + ": instructions.read must be \"all\" or \"highest\"");
+            o.highest = read == "highest";
+            o.local_files = chain.value("local_files", o.local_files);
+            o.import_depth = chain.value("imports", json::object()).value("depth", o.import_depth);
+            if (o.import_depth < 0) throw std::runtime_error(path.string() + ": instructions.imports.depth must be 0 or more");
+            o.extra_dirs = chain.value("extra_dirs", o.extra_dirs);
         } else if (j.is_object()) {
             for (const auto& [key, v] : j.items()) {
                 if (key == "global_lua" || key == "lua_memory_mb" || key.rfind("trust_", 0) == 0) s.warnings.push_back(path.string() + ": " + key + " is ignored: only your global settings file sets it");
             }
             json chain = j.value("instructions", json::object());
-            for (const char* key : {"project_markers", "bound"}) {
-                if (chain.is_object() && chain.contains(key)) s.warnings.push_back(path.string() + ": instructions." + key + " is ignored: only your global settings file sets it");
+            if (chain.is_object()) {
+                for (const auto& [key, v] : chain.items()) s.warnings.push_back(path.string() + ": instructions." + key + " is ignored: only your global settings file sets it");
             }
         }
+        if (j.is_object() && j.contains("instruction_files")) s.warnings.push_back(path.string() + ": instruction_files is ignored: instructions.files in your global settings file replaces it (docs/instructions.md)");
         s.model = j.value("model", s.model);
         s.mode = j.value("mode", s.mode);
         s.think = j.value("think", s.think);
@@ -379,7 +394,6 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.compact_at = j.value("compact_at", s.compact_at);
         s.compact_keep_results = j.value("compact_keep_results", s.compact_keep_results);
         if (s.leader == "space" || s.leader == "<space>") s.leader = " ";
-        if (j.contains("instruction_files")) s.instruction_files = j["instruction_files"].get<std::vector<std::string>>();
         s.load_instructions = j.value("load_instructions", s.load_instructions);
         s.system_prompt = j.value("system_prompt", s.system_prompt);
         s.prefill = j.value("prefill", s.prefill);
@@ -558,7 +572,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
 Settings load_settings(const fs::path& workspace) {
     Settings s;
     apply_file(s, settings_path(), workspace, true, LuaTier::Full, s.lua_memory_mb);
-    set_trust_config({s.trust_strictness, s.trust_identities, s.trust_levels, s.project_markers, s.instructions_bound});
+    set_trust_config({s.trust_strictness, s.trust_identities, s.trust_levels, s.project_markers, s.instructions_bound, s.instructions});
     set_lua_data_limits({*parse_lua_tier(s.global_lua), size_t(s.lua_memory_mb)});
     // Project layers: the config chain (the project root, or just under $HOME, down to the workspace), like
     // instruction files, each only once its directory is trusted (docs/harness.md, Trust).
@@ -616,7 +630,7 @@ fs::path resolve_sessions_home(const Settings& settings, const fs::path& workspa
         bool project = false;
         std::error_code ec;
         for (const auto& d : config_chain(workspace)) {
-            for (const auto& name : settings.instruction_files) project = project || fs::is_regular_file(d / name, ec);
+            for (const auto& name : settings.instructions.files) project = project || fs::is_regular_file(d / name, ec);
         }
         home = project ? "project" : "general";
     }
@@ -701,7 +715,8 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"compact_at", d.compact_at},
         {"compact_keep_results", d.compact_keep_results},
         {"//sessions_home", "auto: a project's transcripts (it has a MAIC.md) go under sessions/projects/, others under sessions/general/. Or: general, project, a name."},
-        {"instruction_files", d.instruction_files},
+        {"instructions", {{"files", d.instructions.files}, {"read", "all"}, {"local_files", d.instructions.local_files}, {"imports", {{"depth", d.instructions.import_depth}}}, {"extra_dirs", d.instructions.extra_dirs}}},
+        {"//instructions", "which instruction files the model sees, global settings only: files are the classes, lowest priority first; read = \"highest\" takes only the top class in each directory; local_files reads MAIC.local.md and the like; imports.depth is how far @path imports go (0: none); extra_dirs lets extra directories add theirs. Also project_markers and bound. docs/instructions.md"},
         {"load_instructions", d.load_instructions},
         {"system_prompt", d.system_prompt},
         {"prefill", d.prefill},

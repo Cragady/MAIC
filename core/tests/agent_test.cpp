@@ -433,8 +433,8 @@ int main() {
         fake.tool_call = json{{"name", "read_file"}, {"arguments", {{"path", "svc/a.txt"}}}};
         fake.calls_left = 1;
         agent.submit("read it", Origin::Local, r, no_cancel);
-        expect(!r.results.empty() && r.results[0].find("svc rules: use tabs") != std::string::npos && r.results[0].find("Instructions from") != std::string::npos,
-               "reading a file attaches the AGENTS.md above it");
+        expect(!r.results.empty() && r.results[0].find("svc rules: use tabs") != std::string::npos && r.results[0].find("[MAIC system note: standing instructions from " + (ws / "svc" / "AGENTS.md").string()) != std::string::npos,
+               "reading a file attaches the AGENTS.md above it, as a marked system note naming the file");
         fake.calls_left = 1;
         r.results.clear();
         agent.submit("read again", Origin::Local, r, no_cancel);
@@ -1294,6 +1294,87 @@ int main() {
         expect(sys2.find("pelican") == std::string::npos && sys2.find("Operator") == std::string::npos, "with the switch off no instruction file is loaded");
         expect(!rb.results.empty() && rb.results[0].find("deep rule") == std::string::npos, "and none is attached on read");
         fs::remove(ws / "MAIC.md");
+    }
+
+    section("instruction files in the prompt: most general first, the workspace last");
+    {
+        FakeServer fake;
+        fs::path cfg = ws / "prec-cfg", sys = ws / "prec-sys";
+        fs::create_directories(cfg / "maic");
+        fs::create_directories(sys);
+        fs::create_directories(ws / "prec" / "sub");
+        std::ofstream(cfg / "maic" / "MAIC.md") << "user rule: herons";
+        std::ofstream(sys / "MAIC.md") << "system rule: egrets";
+        std::ofstream(ws / "CLAUDE.md") << "claude rule: storks";
+        std::ofstream(ws / "MAIC.md") << "maic rule: cranes";
+        std::ofstream(ws / "prec" / "sub" / "AGENTS.md") << "sub rule: ibises";
+        std::ofstream(ws / "prec" / "sub" / "f.txt") << "x";
+        setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
+        setenv("MAIC_TESTING", "1", 1);
+        setenv("MAIC_SYSTEM_CONFIG_DIR", sys.c_str(), 1);
+        trust_for_session(ws);
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Auto;
+        agent.review_with_model = false;
+        Recorder r;
+        agent.submit("hi", Origin::Local, r, no_cancel);
+        std::string sys_prompt = fake.requests[0]["messages"][0]["content"];
+        size_t egrets = sys_prompt.find("egrets"), herons = sys_prompt.find("herons"), storks = sys_prompt.find("storks"), cranes = sys_prompt.find("cranes");
+        expect(egrets != std::string::npos && egrets < herons && herons < storks && storks < cranes && cranes != std::string::npos,
+               "system-wide, then yours, then the workspace's CLAUDE.md, then its MAIC.md");
+        expect(sys_prompt.find("where two conflict, the later one takes precedence") != std::string::npos, "a header says the later ones take precedence");
+        fake.tool_call = json{{"name", "read_file"}, {"arguments", {{"path", "prec/sub/f.txt"}}}};
+        fake.calls_left = 1;
+        agent.submit("read", Origin::Local, r, no_cancel);
+        expect(!r.results.empty() && r.results.back().find("[MAIC system note: standing instructions from " + (ws / "prec" / "sub" / "AGENTS.md").string()) != std::string::npos &&
+                   r.results.back().find("ibises") != std::string::npos,
+               "a read in a subdirectory attaches its instruction file as a marked system note");
+        fake.calls_left = 1;
+        agent.submit("read again", Origin::Local, r, no_cancel);
+        expect(r.results.back().find("ibises") == std::string::npos, "once per session");
+        agent.clear();
+        fake.tool_call = json{{"name", "read_file"}, {"arguments", {{"path", "./prec/sub/f.txt"}}}};  // not the same call a third time
+        fake.calls_left = 1;
+        agent.submit("read after clear", Origin::Local, r, no_cancel);
+        expect(r.results.back().find("ibises") != std::string::npos, "and again in a cleared conversation, which no longer has it");
+        unsetenv("XDG_CONFIG_HOME");
+        unsetenv("MAIC_TESTING");
+        unsetenv("MAIC_SYSTEM_CONFIG_DIR");
+        fs::remove_all(cfg);
+        fs::remove_all(sys);
+        fs::remove_all(ws / "prec");
+        fs::remove(ws / "CLAUDE.md");
+        fs::remove(ws / "MAIC.md");
+    }
+
+    section("a file your own instructions import is self-protected");
+    {
+        FakeServer fake;
+        fs::path target = ws / "approved-style.md";
+        std::ofstream(target) << "style\n";
+        approve_import(ws / "cfg-MAIC.md", target, Origin::Local);
+        fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", "approved-style.md"}, {"content", "changed"}}}};
+        Agent dumb(ws, "test");
+        dumb.providers = {fake.provider()};
+        dumb.mode = Mode::Auto;
+        dumb.review_with_model = false;
+        Recorder rd;
+        fake.calls_left = 1;
+        dumb.submit("change it", Origin::Local, rd, no_cancel);
+        expect(rd.asked.empty() && !rd.results.empty() && rd.results[0].find("an approved import") != std::string::npos, "the dumb harness refuses the agent's write to it");
+        Agent smart(ws, "test");
+        smart.providers = {fake.provider()};
+        smart.mode = Mode::Auto;
+        Recorder rs;
+        fake.calls_left = 1;
+        smart.submit("change it", Origin::Local, rs, no_cancel);
+        expect(rs.asked.size() == 1, "the smart harness asks you, even in auto mode");
+        std::ifstream in(target);
+        std::string kept((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        expect(kept == "style\n", "and nothing was written");
+        trust_imports_command({"--remove", target.string()});
+        fs::remove(target);
     }
 
     section("a request over the context window");

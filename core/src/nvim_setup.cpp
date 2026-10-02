@@ -137,7 +137,8 @@ std::string paste_by_hand() {
     return "\nThe spec from docs/models.md (Code completion), to add by hand:\n\n" + indent(llama_vim_spec());
 }
 
-// Lua and Vim files under the config directory (not hidden ones) that name llama.vim, apart from `skip`.
+// Lua and Vim files under the config directory (not hidden ones) that name llama.vim, apart from `skip`: where to
+// look for a spec lazy.nvim could not trace, and otherwise only worth a warning.
 std::vector<std::string> files_naming_llama(const fs::path& config, const fs::path& skip) {
     std::vector<std::string> out;
     std::error_code ec;
@@ -271,14 +272,16 @@ LlamaVimPlan plan_llama_vim(bool remove, const std::string& config, const std::s
     if (exists && !ours) {
         return {LlamaVimPlan::Kind::Refuse, tilde(file) + " exists and MAIC did not write it (it does not start with " + kMarker + "). MAIC leaves it alone; nothing was written. Rename it to let MAIC write its own, or merge the spec into it by hand." + paste_by_hand(), {}, {}};
     }
+    // Only lazy.nvim's resolved spec decides: a file that merely names llama.vim (a comment, a note) is a warning.
+    std::vector<std::string> mentions = files_naming_llama(nvim_config, file);
     if (j.contains("llama") && j["llama"].is_object()) {
         const json& l = j["llama"];
         std::set<std::string> where;
         for (const auto& f : l.value("files", json::array())) {
             if (f.is_string() && fs::weakly_canonical(f.get<std::string>(), ec) != fs::weakly_canonical(file, ec)) where.insert(f.get<std::string>());
         }
-        for (const auto& f : files_naming_llama(nvim_config, file)) where.insert(f);
         if (!ours || !where.empty() || l.value("fragments", 1) > 1) {
+            if (where.empty()) where.insert(mentions.begin(), mentions.end());  // an untraced spec: the files naming it are where to look
             std::string from;
             for (const auto& w : where) from += "\n  " + tilde(w);
             if (from.empty()) from = "\n  a spec MAIC cannot trace to a file in " + tilde(nvim_config) + " (a plugin's or a distribution's own spec, perhaps)";
@@ -289,6 +292,10 @@ LlamaVimPlan plan_llama_vim(bool remove, const std::string& config, const std::s
         }
     }
 
+    std::string warnings;
+    for (const auto& m : mentions) warnings += fs::path(m).lexically_relative(nvim_config).string() + " mentions llama.vim; it is not loaded as a plugin, continuing\n";
+    if (!warnings.empty()) warnings += "\n";
+
     LlamaVimPlan p;
     p.kind = LlamaVimPlan::Kind::Write;
     p.file = file;
@@ -296,11 +303,11 @@ LlamaVimPlan plan_llama_vim(bool remove, const std::string& config, const std::s
     std::string before = ours ? read_all(file) : "";
     p.content = llama_vim_file(today());
     if (ours && without_first_line(before) == without_first_line(p.content)) {
-        return {LlamaVimPlan::Kind::UpToDate, tilde(file) + " is MAIC's and already holds this spec; nothing to write.", file, {}};
+        return {LlamaVimPlan::Kind::UpToDate, warnings + tilde(file) + " is MAIC's and already holds this spec; nothing to write.", file, {}};
     }
     std::string relies = "It relies on the import { import = \"" + module + "\" } in your lazy.nvim spec, which loads every file in " + tilde(import_dir) + ".";
-    if (ours) p.text = "Update " + tilde(file) + ", which MAIC wrote:\n\n" + indent(change_lines(before, p.content, 60)) + "\n" + relies + " No other file is touched.";
-    else p.text = "Write " + tilde(file) + " (a new file):\n\n" + indent(p.content) + "\n" + relies + " No other file is touched.";
+    if (ours) p.text = warnings + "Update " + tilde(file) + ", which MAIC wrote:\n\n" + indent(change_lines(before, p.content, 60)) + "\n" + relies + " No other file is touched.";
+    else p.text = warnings + "Write " + tilde(file) + " (a new file):\n\n" + indent(p.content) + "\n" + relies + " No other file is touched.";
     return p;
 }
 

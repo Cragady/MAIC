@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include "maic/instructions.hpp"
 #include "maic/lua.hpp"
 
 #include <functional>
@@ -14,7 +15,8 @@ namespace maic {
 enum class Origin;
 
 // Directory trust (docs/harness.md, Trust). A project directory is one on the config chain (from the project
-// root, or just under $HOME, down to the workspace; config_chain) that holds .maic/, MAIC.md or AGENTS.md. Until it is trusted
+// root, or just under $HOME, down to the workspace; config_chain) that holds .maic/ or instruction files (its own,
+// or nested ones below it that no project directory above it already covers). Until it is trusted
 // its .maic/settings.* are not applied, its instruction files are not given to the model and its .maic/tools/
 // are not loaded. $HOME and / are never project directories. The user's global config is always trusted.
 //
@@ -32,10 +34,12 @@ enum class Origin;
 struct ProjectDir {
     std::filesystem::path dir;
     std::vector<std::filesystem::path> settings;      // .maic/settings{,.local}.{lua,json}
-    std::vector<std::filesystem::path> instructions;  // MAIC.md, AGENTS.md
+    std::vector<std::filesystem::path> instructions;  // the instruction files in it: instructions.files and their local variants
+    std::vector<std::filesystem::path> nested;        // the same names in its subdirectories (on-demand loading), bounded
+    std::vector<std::filesystem::path> imports;       // files inside it that those import (@path)
     std::vector<std::filesystem::path> tools;         // every file under .maic/tools/
     bool tool_dir = false;                            // .maic/tools/ exists
-    bool empty() const { return settings.empty() && instructions.empty() && tools.empty() && !tool_dir; }
+    bool empty() const { return settings.empty() && instructions.empty() && nested.empty() && tools.empty() && !tool_dir; }
     std::vector<std::filesystem::path> files() const;  // the hashed files, sorted
 };
 
@@ -62,6 +66,7 @@ struct TrustConfig {
     std::map<std::string, std::string> levels;        // directory (~ expanded) -> tier
     std::vector<std::string> project_markers = {".git", ".maic", "MAIC.md"};  // instructions.project_markers
     std::string bound = "project";                    // instructions.bound: "project" or "home"
+    InstructionOptions instructions;                  // which files count as instruction files, for the hash
 };
 void set_trust_config(TrustConfig config);
 bool valid_trust_level(const std::string& level);
@@ -134,6 +139,24 @@ void ask_trust(const std::filesystem::path& workspace, std::istream& in, std::os
 // carried out (t, s, v; anything else is not now), returning what was done.
 std::vector<std::string> trust_prompt(const ProjectDir& p);
 std::string answer_trust(const ProjectDir& p, const std::string& answer);
+
+// Imports your own instruction files (the system directory and ~/.config/maic) make from outside the trusted
+// directories (docs/instructions.md, Imports from your own files). Each one is read only once you approved the
+// (importer, target) pair; <state>/trust-imports.json (0600) keeps the pairs with the target's SHA-256. A changed
+// target is asked about again under the global trust_strictness: strict asks, standard lets your own edit or
+// commit pass (as for trust), relaxed lets it pass. The agent never reaches the file (touches_trust).
+std::filesystem::path import_exceptions_path();
+// Trusted (approved, and unchanged or changed in a way the tier lets pass, then recorded), Changed (with the
+// reasons) or Unknown.
+TrustStatus import_exception_status(const std::filesystem::path& importer, const std::filesystem::path& target);
+// Remembers the pair with the target's current contents. A remote origin cannot: throws.
+void approve_import(const std::filesystem::path& importer, const std::filesystem::path& target, Origin origin);
+// Every approved target, for self-protection: an agent's write to one is asked (smart) or refused (dumb).
+std::vector<std::filesystem::path> import_exception_targets();
+// The question for one pair: the importing file, the target, its size, what approving means, one line each.
+std::vector<std::string> import_prompt(const std::filesystem::path& importer, const std::filesystem::path& target, const TrustStatus& status);
+// `maic trust imports` (the list), `--remove PATH` (every pair whose importer or target is PATH).
+std::string trust_imports_command(const std::vector<std::string>& args);
 
 // A remote device changing trust (POST /api/trust): only with a step-up proof the registered verifier accepts.
 // Until accounts exist (docs/design/accounts.md) none is registered and every request is refused. `action` is

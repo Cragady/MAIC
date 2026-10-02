@@ -552,9 +552,9 @@ int main() {
         }
         expect(threw, "a broken settings file throws instead of silently using defaults");
         // A settings.lua beside the json wins, and it is code.
-        write_file(proj / ".maic" / "settings.lua", "return { mode = os.getenv('HOME') and 'plan' or 'manual', leader = ',', instruction_files = {'A.md','B.md'}, style = { user = { fg = 'blue' } } }");
+        write_file(proj / ".maic" / "settings.lua", "return { mode = os.getenv('HOME') and 'plan' or 'manual', leader = ',', rules = {'rule A','rule B'}, style = { user = { fg = 'blue' } } }");
         Settings ls = load_settings(proj);
-        expect(ls.mode == "plan" && ls.leader == "," && ls.instruction_files.size() == 2 && ls.instruction_files[1] == "B.md", "settings.lua is evaluated as code, arrays included");
+        expect(ls.mode == "plan" && ls.leader == "," && ls.rules.size() == 2 && ls.rules[1] == "rule B", "settings.lua is evaluated as code, arrays included");
         expect(ls.style("user").fg == "blue" && ls.style("user").bold, "lua styles merge over earlier layers");
         bool lua_seen = false;
         for (const auto& src : ls.sources) lua_seen = lua_seen || src.extension() == ".lua";

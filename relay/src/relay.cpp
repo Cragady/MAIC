@@ -24,6 +24,26 @@ using Clock = std::chrono::steady_clock;
 
 namespace {
 
+// localhost, ::1 or 127.0.0.0/8 as a plain dotted quad, the rule of maic::loopback_host (core/src/llm.cpp), which
+// the relay does not link: a name that only starts with "127." is not loopback.
+bool loopback_host(const std::string& host) {
+    if (host == "localhost" || host == "::1") return true;
+    int octets = 0, value = -1;
+    for (size_t i = 0; i <= host.size(); ++i) {
+        if (i == host.size() || host[i] == '.') {
+            if (value < 0 || (octets == 0 && value != 127)) return false;
+            ++octets;
+            value = -1;
+        } else if (host[i] >= '0' && host[i] <= '9' && value != 0) {
+            value = (value < 0 ? 0 : value * 10) + (host[i] - '0');
+            if (value > 255) return false;
+        } else {
+            return false;
+        }
+    }
+    return octets == 4;
+}
+
 std::string utc_now() {
     std::time_t t = std::time(nullptr);
     char buf[32];
@@ -290,7 +310,7 @@ int Relay::bind() {
     int port = std::stoi(listen.substr(colon + 1));
     if (im.host.empty()) im.host = "0.0.0.0";
 
-    bool loopback = im.host == "localhost" || im.host == "::1" || im.host.rfind("127.", 0) == 0;
+    bool loopback = loopback_host(im.host);
     if (o.cert.empty() != o.key.empty()) throw std::runtime_error("--cert and --key go together");
     if (loopback && o.cert.empty()) {
         im.srv = std::make_unique<httplib::Server>();

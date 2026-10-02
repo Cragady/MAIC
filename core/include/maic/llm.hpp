@@ -46,6 +46,13 @@ struct Message {
 nlohmann::json message_to_json(const Message& m);
 Message message_from_json(const nlohmann::json& j);
 
+// Whether `host` (a URL's host; [brackets] allowed) is this machine's loopback: localhost, ::1, or 127.0.0.0/8
+// written as a plain dotted quad. Anything else is not, a name that merely starts with "127." included.
+bool loopback_host(std::string host);
+// Whether `url` reaches only this machine: an http(s) URL whose host, once the scheme, userinfo and port are
+// parsed off, is a loopback host, or a unix socket (unix:PATH). Everything else is remote.
+bool local_url(const std::string& url);
+
 // Where a model lives. Model strings are "<provider>/<model>", e.g. "anthropic/claude-opus-5-5".
 struct Provider {
     std::string name;
