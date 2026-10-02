@@ -138,7 +138,7 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
         std::string id, name, args;
     };
     std::map<int, PartialCall> calls;
-    std::string finish, error, reasoning;
+    std::string finish, error, reasoning, stray;
     std::map<std::string, int> normalized;
     auto normalize = [&](nlohmann::json& j) {
         for (const auto& rule : normalize_openai(j, provider.upstream_name())) ++normalized[rule];
@@ -146,7 +146,14 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
 
     LineSplitter lines;
     auto on_line = [&](const std::string& line) {
-        if (line.rfind("data:", 0) != 0) return;
+        if (line.rfind("data:", 0) != 0) {
+            // A stray line is skipped, unless the stream ends on it: llama-server's router ends a proxied stream it lost
+            // with a bare "proxy error: ..." line, with no data: and no [DONE].
+            std::string field = line.substr(0, line.find(':'));
+            if (!line.empty() && line[0] != ':' && field != "event" && field != "id" && field != "retry") stray = line;
+            return;
+        }
+        stray.clear();
         std::string data = line.substr(5);
         if (data.find("[DONE]") != std::string::npos) return;
         auto j = nlohmann::json::parse(data, nullptr, false);
@@ -201,6 +208,7 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
         for (const auto& [rule, n] : normalized) options.normalized(rule, n);
     }
     if (r.status != 200) throw_api_error(provider.name, r);
+    if (error.empty()) error = stray;
     if (!error.empty()) throw std::runtime_error(provider.name + ": " + error);
 
     reply.usage.context = provider.options.value("context_window", 0);

@@ -235,5 +235,22 @@ int main() {
         normalized_case(param_only, {"error_param_null"}, "/error/param: is required", "a missing param alone");
     }
 
+    section("llama-server b11284 captured live");
+    {
+        // The streams of 2026-10-02 against the real server: after the adapter rules every chunk fits OpenAI's schema,
+        // and the only rule a chunk needs is logprobs_refusal_null. The proxy error is no chunk at all (llm_test).
+        std::map<std::string, int> rules;
+        size_t n = 0;
+        for (const char* name : {"llamacpp-b11284-captured-chat.sse", "llamacpp-b11284-captured-logprobs.sse", "llamacpp-b11284-captured-proxy-error.sse"}) {
+            for (json chunk : sse_data(fixtures + "/" + name)) {
+                for (const auto& r : normalize_openai(chunk, "llamacpp")) ++rules[r];
+                std::string err = against("CreateChatCompletionStreamResponse", chunk);
+                expect(err.empty(), std::string(name) + " chunk " + std::to_string(n) + " fits once normalized" + (err.empty() ? "" : ": " + err));
+                ++n;
+            }
+        }
+        expect(n > 50 && rules == std::map<std::string, int>{{"logprobs_refusal_null", 1}}, "the captured chunks need logprobs_refusal_null once and nothing else");
+    }
+
     return finish();
 }

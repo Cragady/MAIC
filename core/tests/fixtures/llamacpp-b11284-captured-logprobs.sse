@@ -1,0 +1,13 @@
+: llama-server b11284 (25747b08e) in router mode, Qwen3.5-9B-Q4_K_M-text with thinking off, "logprobs": true and
+: "top_logprobs": 2. Captured 2026-10-02 with curl, unedited.
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"role":"assistant","content":null}}],"created":1790937366,"id":"chatcmpl-yERcnR0o3qpuDCDx4oZpVwWJ5kv9TdJ6","model":"Qwen3.5-9B-Q4_K_M-text","system_fingerprint":"b11284-25747b08e","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":"Red"},"logprobs":{"content":[{"id":5844,"token":"Red","bytes":[82,101,100],"logprob":-1.8090200424194336,"top_logprobs":[{"id":10025,"token":"Blue","bytes":[66,108,117,101],"logprob":-0.18844319880008698},{"id":5844,"token":"Red","bytes":[82,101,100],"logprob":-1.8090200424194336}]}]}}],"created":1790937366,"id":"chatcmpl-yERcnR0o3qpuDCDx4oZpVwWJ5kv9TdJ6","model":"Qwen3.5-9B-Q4_K_M-text","system_fingerprint":"b11284-25747b08e","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":"stop","index":0,"delta":{}}],"created":1790937366,"id":"chatcmpl-yERcnR0o3qpuDCDx4oZpVwWJ5kv9TdJ6","model":"Qwen3.5-9B-Q4_K_M-text","system_fingerprint":"b11284-25747b08e","object":"chat.completion.chunk"}
+
+data: {"choices":[],"created":1790937366,"id":"chatcmpl-yERcnR0o3qpuDCDx4oZpVwWJ5kv9TdJ6","model":"Qwen3.5-9B-Q4_K_M-text","system_fingerprint":"b11284-25747b08e","object":"chat.completion.chunk","usage":{"completion_tokens":2,"prompt_tokens":19,"total_tokens":21,"prompt_tokens_details":{"cached_tokens":0}},"timings":{"cache_n":0,"prompt_n":19,"prompt_ms":81.953,"prompt_per_token_ms":4.313315789473684,"prompt_per_second":231.84020109086913,"predicted_n":2,"predicted_ms":23.795,"predicted_per_token_ms":23.795,"predicted_per_second":42.025635637739015}}
+
+data: [DONE]
+

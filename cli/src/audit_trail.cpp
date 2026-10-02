@@ -398,8 +398,9 @@ int schedule(const AuditSettings& a, const std::vector<std::string>& args) {
     return ok ? 0 : 1;
 }
 
-// judge-and-hold with start_services: the judge's local service, started when it is down. Anything that keeps it
-// from starting is said and left to the audit, which then refuses and the scan stands in.
+// judge-and-hold with start_services: the judge's local service, started when it is stopped (a port another server
+// holds is left for the audit to try). Anything that keeps it from starting is said and left to the audit, which then
+// refuses and the scan stands in.
 void start_judge_service(const Settings& settings, const std::string& judge) {
     std::string model = judge;
     if (auto p = find_preset(settings.presets, model)) model = p->model;
@@ -410,14 +411,16 @@ void start_judge_service(const Settings& settings, const std::string& judge) {
         return;
     }
     for (const auto& def : load_services(root_dir() / "services")) {
-        if (def.name != provider || service_status(def).state == ServiceState::Running) continue;
+        if (def.name != provider || service_status(def).state != ServiceState::Stopped) continue;
+        bool said = false;
         try {
             require_armed("start services");
             std::cerr << "audit trail: starting " << def.name << " for the judge..." << std::flush;
+            said = true;
             bool ready = start_service(def);
             std::cerr << (ready ? " ready\n" : " still starting\n");
         } catch (const std::exception& e) {
-            std::cerr << "audit trail: " << def.name << " did not start: " << e.what() << "\n";
+            std::cerr << (said ? " failed\n" : "") << "audit trail: " << def.name << " did not start: " << e.what() << "\n";
         }
     }
 }
@@ -459,8 +462,8 @@ void audit_gate(const Settings& settings) {
     if (std::string exe = self_exe(); !exe.empty()) setenv("MAIC_BIN", exe.c_str(), 1);
     std::string line;
     if (a.enforce == "judge-and-hold") {
-        if (a.start_services) start_judge_service(settings, a.judge);
         say(due.why + "; auditing with the local judge (" + a.judge + ") before the session opens, everything else on hold...");
+        if (a.start_services) start_judge_service(settings, a.judge);
         int rc = run({exec, "--model", a.judge}, &line);
         say(first_line(line));
         if (rc == 0) return;
