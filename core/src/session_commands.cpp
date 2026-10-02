@@ -102,7 +102,7 @@ bool SessionCommands::remote_allowed(const std::string& line, Mode current, std:
     std::istringstream in(line);
     std::string typed, arg;
     in >> typed;
-    std::getline(in >> std::ws, arg);
+    std::getline(in >> std::ws, arg, '\0');
     std::string cmd = command_name(typed);
     why = "`:" + typed + "` is not available to a remote client";
     static const std::set<std::string> open = {"model", "think", "compact", "rename", "todo", "tools", "status", "trip"};
@@ -352,7 +352,7 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
     std::istringstream in(line);
     std::string typed, arg;
     in >> typed;
-    std::getline(in >> std::ws, arg);
+    std::getline(in >> std::ws, arg, '\0');  // the rest, newlines and all: a :lua chunk can be several lines
     std::string cmd = command_name(typed);
     Agent& agent = s.agent;
     auto idle = [&] {

@@ -4,6 +4,9 @@
 #include "maic/jsonschema.hpp"
 #include "protocol_files.hpp"
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <fstream>
 #include <functional>
@@ -599,6 +602,24 @@ std::optional<Violation> Conformance::finish() {
         for (const auto& [id, req] : reqs) return fail({-1, "request.answered", req.method + " " + id + " on " + conn + " was never answered"});
     }
     return std::nullopt;
+}
+
+Recorder::Recorder(const std::filesystem::path& file) : fd_(open(file.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600)) {}
+
+Recorder::~Recorder() {
+    if (fd_ >= 0) close(fd_);
+}
+
+std::optional<Violation> Recorder::add(const std::string& dir, const std::string& conn, const json& msg) {
+    if (fd_ < 0) return std::nullopt;
+    json r = {{"dir", dir}, {"conn", conn}, {"msg", msg}};
+    std::string line = r.dump(-1, ' ', false, json::error_handler_t::replace) + "\n";
+    ssize_t n = write(fd_, line.data(), line.size());  // one write per record: a killed process leaves whole lines
+    (void)n;
+    if (violated_) return std::nullopt;
+    auto v = check_.feed(r);
+    violated_ = v.has_value();
+    return v;
 }
 
 std::optional<Violation> check_file(const std::string& path, bool openai_only, size_t* events) {

@@ -70,6 +70,10 @@ bool is_simple_command(const std::string& command);
 // Allowed ones still run in a fully read-only sandbox, so a wrong guess can't change anything.
 bool is_read_only_command(const std::string& command);
 
+// `path` as a tool or a person gives it, against `workspace`: `~` is the home directory, a relative path is under
+// the workspace, and symlinks and `..` are followed.
+std::filesystem::path resolve_path(const std::filesystem::path& workspace, const std::string& path);
+
 class Harness {
 public:
     explicit Harness(std::filesystem::path workspace);
@@ -82,7 +86,7 @@ public:
     // directory it started in; outside it this throws with the reason.
     void set_workspace(const std::filesystem::path& dir);
 
-    // Resolves a tool-supplied path against the workspace, following symlinks and `..`.
+    // Resolves a tool-supplied path against the workspace, following symlinks and `..` (resolve_path).
     std::filesystem::path resolve(const std::string& path) const;
 
     Decision check(const Action& action, Mode mode, Origin origin) const;

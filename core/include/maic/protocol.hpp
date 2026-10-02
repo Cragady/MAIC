@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <filesystem>
+
 #include <map>
 #include <optional>
 #include <set>
@@ -129,6 +131,23 @@ private:
     std::map<std::string, std::map<std::string, Request>> pending_;      // conn -> request id -> request
     std::map<std::string, std::map<std::string, StreamChecker>> streams_;  // conn -> session -> its view
     size_t events_ = 0;
+};
+
+// A connection's exchange written as it happens, in the records above (`maic protocol check` reads the file), and
+// checked as it is written. Nothing is written when the file cannot be opened.
+class Recorder {
+public:
+    explicit Recorder(const std::filesystem::path& file);
+    ~Recorder();
+    Recorder(const Recorder&) = delete;
+    Recorder& operator=(const Recorder&) = delete;
+    // The exchange's first violation, returned once, by the record that made it.
+    std::optional<Violation> add(const std::string& dir, const std::string& conn, const nlohmann::json& msg);
+
+private:
+    int fd_ = -1;
+    Conformance check_;
+    bool violated_ = false;
 };
 
 // Checks a recorded stream file (JSON lines as above). The first violation, or nullopt when it conforms;

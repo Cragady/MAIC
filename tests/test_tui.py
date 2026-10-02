@@ -4,8 +4,12 @@
     python3 tests/test_tui.py [PATH_TO_MAIC] [-v]           (re-runs itself under `uv run --offline --with pyte` if pyte is missing)
 
 Exit 77 when neither pyte nor uv is available, which ctest reports as a skip. Every case starts its own maic in
-a throwaway home (XDG_* under a temp dir, --no-record, the dumb harness, no instruction files), 120x40."""
-import os, shutil, subprocess, sys, tempfile, time, unittest
+a throwaway home (XDG_* under a temp dir, --no-record, the dumb harness, no instruction files), 120x40.
+
+The protocol is checked in every case: each maic records its engine connection (MAIC_PROTOCOL_RECORD) and the case
+fails when `maic protocol check` finds a violation in it, or when the engine's own guarded checks logged one
+(protocol.log)."""
+import json, os, shutil, subprocess, sys, tempfile, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAIC = os.environ.get("MAIC_BIN", os.path.join(HERE, "..", "build", "cli", "maic"))
@@ -43,6 +47,28 @@ class TuiTest(unittest.TestCase):
         cls.home, cls.env = cli_smoke.make_home(port)
         cls.ws = os.path.join(cls.home, "ws")
         os.makedirs(cls.ws)
+        cls.streams = os.path.join(cls.home, "protocol-streams")
+        os.makedirs(cls.streams)
+        cls.env["MAIC_PROTOCOL_RECORD"] = cls.streams
+
+    def setUp(self):
+        self.addCleanup(self.check_protocol)  # the first cleanup runs last, after every maic of the case is gone
+
+    def check_protocol(self):
+        """Turns what the guarded tier logs, and what the recorded streams break, into this case's failure."""
+        logs = [os.path.join(d, "protocol.log") for d, _, files in os.walk(self.home) if "protocol.log" in files]
+        faults = ""
+        for log in logs:
+            with open(log) as f:
+                faults += f.read()
+            os.remove(log)
+        streams = [os.path.join(self.streams, f) for f in os.listdir(self.streams)]
+        r = subprocess.run([MAIC, "protocol", "check", self.streams], capture_output=True, text=True, env=self.env, timeout=60) if streams else None
+        for f in streams:
+            os.remove(f)
+        self.assertEqual(faults, "", "the engine's guarded checks logged faults")
+        if r is not None:
+            self.assertEqual(r.returncode, 0, "a recorded stream breaks the protocol:\n" + r.stdout + r.stderr)
 
     @classmethod
     def tearDownClass(cls):
@@ -437,6 +463,32 @@ class TuiTest(unittest.TestCase):
         self.assertEqual(os.stat(os.path.join(base, "state", "maic", "trust-imports.json")).st_mode & 0o777, 0o600)
         again = start()
         self.assertNotIn("import from outside?", again.wait_for(STRIP))  # remembered: never asked again
+
+    def test_the_session_stream_passes_the_protocol_check(self):
+        # A turn with a tool call and its approval, a `!cmd`, the engine's `:` commands and a quit: the TUI's own
+        # connection, recorded, passes `maic protocol check` (every case is checked the same way when it ends).
+        tui = self.start()
+        tui.send("ishell:printf 'whisker\\n'<esc>:w<cr>", settle=False)
+        tui.wait_for("[y] yes")
+        tui.send("y", settle=False)
+        tui.wait_for("ran it", timeout=15)
+        tui.send("i!printf 'paw-%s\\n' print<esc>:w<cr>", settle=False)
+        tui.wait_for("paw-print")
+        tui.send(":rename the fluffy tail<cr>")
+        tui.wait_for("titled: the fluffy tail")
+        tui.send(":q<cr>", settle=False)
+        self.assertEqual(tui.wait_exit(), 0)
+        streams = [os.path.join(self.streams, f) for f in os.listdir(self.streams) if f.startswith("tui-")]
+        self.assertEqual(len(streams), 1)
+        r = subprocess.run([MAIC, "protocol", "check", streams[0]], capture_output=True, text=True, env=self.env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("events conform", r.stdout)
+        with open(streams[0]) as f:
+            types = [m["msg"]["params"].get("type") for m in map(json.loads, f) if m["msg"].get("method") == "maic.event"]
+        for t in ("maic.input.added", "maic.approval.requested", "response.shell_call_output_content.delta", "maic.tool.output.delta",
+                  "maic.session.title", "response.completed"):
+            self.assertIn(t, types)
+        self.assertEqual(types[-1], "maic.session.state")  # the quit parks the session
 
     def test_quit_prints_the_transcript_line(self):
         tui = self.start()
