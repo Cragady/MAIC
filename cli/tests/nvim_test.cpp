@@ -35,19 +35,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-bool on_path(const std::string& program) {
-    const char* path = std::getenv("PATH");
-    std::string dirs = path ? path : "";
-    for (size_t start = 0; start <= dirs.size();) {
-        size_t colon = dirs.find(':', start);
-        std::string dir = dirs.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
-        if (!dir.empty() && access((fs::path(dir) / program).c_str(), X_OK) == 0) return true;
-        if (colon == std::string::npos) break;
-        start = colon + 1;
-    }
-    return false;
-}
-
 pid_t spawn(const std::vector<std::string>& argv) {
     pid_t pid = fork();
     if (pid == 0) {
@@ -528,7 +515,7 @@ int main() {
         fs::path typed = tmp / "typed";
         auto mode = [&] { return other->exec_lua("return vim.api.nvim_get_mode().mode", json::array()); };
         other->exec_lua("local out = ... vim.keymap.set('t', '<Esc>', '<C-\\\\><C-n>') "
-                        "require('maic').setup({ keymaps = false, open = 'split', cmd = { 'sh', '-c', 'stty raw -echo; exec cat > ' .. out } }) "
+                        "require('maic').setup({ keymaps = false, ui = 'terminal', open = 'split', cmd = { 'sh', '-c', 'stty raw -echo; exec cat > ' .. out } }) "
                         "vim.cmd('tabnew') vim.cmd('Maic')",
                         json::array({typed.string()}));
         expect(eventually([&] { return fs::exists(typed) && mode() == "t"; }), "MAIC's terminal starts in terminal mode");

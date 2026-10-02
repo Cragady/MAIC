@@ -33,6 +33,8 @@ struct TuiOptions {
     std::optional<std::string> harness;       // --harness smart|dumb
     bool bare = false;                        // --bare: nothing from nvim (also MAIC_BARE=1, bare = true)
     bool accept_dumb_auto = false;            // --accept-dumb-auto                  // sent as the first turn (maic -p "..." --interactive); "-" reads stdin
+    std::optional<std::string> ui;            // --ui tui|nvim, over settings.ui
+    std::vector<std::string> engine_args;     // the agent's flags as given, for `maic --rpc` under nvim
 };
 
 // The interactive agent: full-screen, vim-style input and navigation.

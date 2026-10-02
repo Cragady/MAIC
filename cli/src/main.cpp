@@ -83,6 +83,8 @@ void usage(std::ostream& out = std::cerr) {
                  "       --accept-dumb-auto                 skip the warning when combining --harness dumb with --mode auto\n"
                  "       --bare                             nothing from nvim: no $NVIM host, no nvim highlighter or theme, no lazy-lock\n"
                  "                                          notice or keymap check (also MAIC_BARE=1, bare = true; maic help bare)\n"
+                 "       --ui nvim|tui                      nvim with maic.nvim as the whole interface (your config and mappings), the\n"
+                 "                                          engine its job; or MAIC's own (ui in settings; maic help ui)\n"
                  "       --record / --no-record             keep a transcript or not (interactive: yes by default, or \"record\" in\n"
                  "                                          settings; -p: none by default)\n"
                  "       --append / --no-append             with -c/-r: write into the old session file, or into a new one that\n"
@@ -1350,6 +1352,10 @@ int main(int argc, char** argv) {
             else if (a == "--harness") tui.harness = headless.harness = value("--harness");
             else if (a == "--accept-dumb-auto") tui.accept_dumb_auto = headless.accept_dumb_auto = true;
             else if (a == "--bare") tui.bare = true;
+            else if (a == "--ui") {
+                tui.ui = value("--ui");
+                if (*tui.ui != "tui" && *tui.ui != "nvim") throw std::runtime_error("--ui takes nvim or tui");
+            }
             else if (a == "--xtc") {
                 // --xtc P or --xtc P,T (threshold defaults to 0.1)
                 std::string v = value("--xtc");
@@ -1425,6 +1431,7 @@ int main(int argc, char** argv) {
             tui.append = headless.append = false;
         }
         if (headless.append) headless.record = true;
+        if (tui.ui && (rpc || (print && !interactive))) throw std::runtime_error("--ui chooses the interactive interface; -p and --rpc have none");
         if (rpc) {
             // Sessions are opened over the protocol (createConversation, maic.session.resume), not by flags.
             if (print || interactive || continue_last || resume || !rest.empty() || !tui.context.empty() || !tui.images.empty()) {
@@ -1440,7 +1447,17 @@ int main(int argc, char** argv) {
             return maic::run_tui(tui);
         }
         if (print) return maic::run_headless(headless);
-        if (rest.empty()) return maic::run_tui(tui);
+        if (rest.empty()) {
+            // The agent's flags as given, for `maic --rpc` when nvim is the interface: all but --ui and the session
+            // flags (the interface resumes the session over the protocol).
+            for (size_t i = 0; i < args.size(); ++i) {
+                const std::string& a = args[i];
+                if (a == "--ui") ++i;
+                else if (a == "-r" || a == "--resume") i += i + 1 < args.size() && args[i + 1][0] != '-';
+                else if (a != "-c" && a != "--continue" && a != "--append" && a != "--no-append") tui.engine_args.push_back(a);
+            }
+            return maic::run_tui(tui);
+        }
 
         const std::string& cmd = rest[0];
         std::vector<std::string> cargs(rest.begin() + 1, rest.end());

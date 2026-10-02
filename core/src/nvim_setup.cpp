@@ -86,15 +86,6 @@ std::string tilde(const fs::path& p) {
     return s;
 }
 
-bool on_path(const std::string& program) {
-    if (program.find('/') != std::string::npos) return access(program.c_str(), X_OK) == 0;
-    std::istringstream dirs(std::getenv("PATH") ? std::getenv("PATH") : "");
-    for (std::string dir; std::getline(dirs, dir, ':');) {
-        if (!dir.empty() && access((fs::path(dir) / program).c_str(), X_OK) == 0) return true;
-    }
-    return false;
-}
-
 // lazy.nvim's own directory, as its bootstrap snippet puts it: stdpath("data")/lazy/lazy.nvim.
 fs::path lazy_dir() {
     const char* xdg = std::getenv("XDG_DATA_HOME");
@@ -178,6 +169,15 @@ LlamaVimPlan plan_remove() {
 }
 
 }  // namespace
+
+bool on_path(const std::string& program) {
+    if (program.find('/') != std::string::npos) return access(program.c_str(), X_OK) == 0;
+    std::istringstream dirs(std::getenv("PATH") ? std::getenv("PATH") : "");
+    for (std::string dir; std::getline(dirs, dir, ':');) {
+        if (!dir.empty() && access((fs::path(dir) / program).c_str(), X_OK) == 0) return true;
+    }
+    return false;
+}
 
 std::string llama_vim_spec() {
     return "{\n"

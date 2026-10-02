@@ -18,7 +18,7 @@ vim.fn.mkdir(tmp, "p")
 vim.cmd.cd(tmp)
 
 io.write("commands\n")
-for _, c in ipairs({ "Maic", "MaicSend", "MaicDiagnostics", "MaicQuickfix", "MaicToggle", "MaicInterrupt" }) do
+for _, c in ipairs({ "Maic", "MaicTerminal", "MaicSend", "MaicDiagnostics", "MaicQuickfix", "MaicToggle", "MaicInterrupt", "MaicSteer" }) do
   expect(vim.fn.exists(":" .. c) == 2, ":" .. c .. " is defined")
 end
 
@@ -55,7 +55,7 @@ maic.send_text = real_send
 io.write("the bracketed-paste fallback\n")
 expect(maic.bracketed("hi\nthere") == "\27[200~hi\nthere\27[201~", "the text is wrapped in bracketed-paste markers")
 local out = tmp .. "/pasted"
-maic.setup({ keymaps = false, cmd = { "sh", "-c", "stty raw -echo; exec cat > " .. out }, open = "split" })
+maic.setup({ keymaps = false, ui = "terminal", cmd = { "sh", "-c", "stty raw -echo; exec cat > " .. out }, open = "split" })
 vim.cmd("Maic")
 vim.wait(2000, function() return vim.fn.filereadable(out) == 1 end)
 expect(maic.channel() == nil, "with no MAIC connected there is no channel")
@@ -114,7 +114,7 @@ expect(vim.fn.maparg("<leader>mc", "n"):find("MaicInterrupt") ~= nil and not glo
 
 io.write("Esc in MAIC's terminal\n")
 vim.keymap.set("t", "<Esc>", "<C-\\><C-n>", { desc = "leave the terminal" })
-maic.setup({ keymaps = false, cmd = { "sh", "-c", "sleep 30" }, open = "split", terminal_escape = "<C-q>" })
+maic.setup({ keymaps = false, ui = "terminal", cmd = { "sh", "-c", "sleep 30" }, open = "split", terminal_escape = "<C-q>" })
 vim.cmd("tabnew")
 vim.cmd("Maic")
 local tbuf = vim.api.nvim_get_current_buf()
@@ -132,7 +132,7 @@ local cc, ncc = local_map("<C-C>"), local_map("<C-C>", "n")
 expect(cc and cc.rhs == "<C-C>" and ncc and ncc.rhs == "<Cmd>MaicInterrupt<CR>", "<C-c> interrupts in MAIC's buffer: passed through in terminal mode, :MaicInterrupt in normal mode")
 expect(vim.fn.maparg("<Esc>", "t", false, true).buffer == 1 and vim.api.nvim_get_keymap("t")[1].desc == "leave the terminal",
   "the user's global <Esc> mapping stays as it was")
-maic.setup({ keymaps = false, cmd = { "sh", "-c", "sleep 30" }, open = "split" })
+maic.setup({ keymaps = false, ui = "terminal", cmd = { "sh", "-c", "sleep 30" }, open = "split" })
 local seen = {}
 local real_notify2 = vim.notify
 vim.notify = function(msg) seen[#seen + 1] = msg end

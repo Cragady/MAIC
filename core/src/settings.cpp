@@ -452,6 +452,8 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.theme = j.value("theme", s.theme);
         s.follow_nvim_theme = j.value("follow_nvim_theme", s.follow_nvim_theme);
         s.bare = j.value("bare", s.bare);
+        s.ui = j.value("ui", s.ui);
+        if (s.ui != "tui" && s.ui != "nvim") throw std::runtime_error(path.string() + ": ui must be \"tui\" or \"nvim\", not \"" + s.ui + "\"");
         s.colors = j.value("colors", s.colors);
         if (s.colors != "auto" && s.colors != "truecolor" && s.colors != "256" && s.colors != "16") throw std::runtime_error(path.string() + ": colors must be \"auto\", \"truecolor\", \"256\" or \"16\", not \"" + s.colors + "\"");
         s.enter_sends = j.value("enter_sends", s.enter_sends);
@@ -790,6 +792,8 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"//theme", "a theme by name: default, gruvbox-dark, gruvbox-light, mono, or a file of yours in ~/.config/maic/themes/NAME.lua; `style` entries below override single roles on top of it. :theme lists and switches, :theme nvim:NAME imports a neovim colorscheme. docs/themes.md"},
         {"follow_nvim_theme", d.follow_nvim_theme},
         {"//follow_nvim_theme", "inside nvim with maic.nvim (a connected host): follow its colorscheme live as the session theme nvim:NAME; false keeps `theme`"},
+        {"ui", d.ui},
+        {"//ui", "tui: MAIC's own interface; nvim: nvim with maic.nvim as the whole interface, your config and mappings included, the engine its job (maic --ui nvim; never inside nvim, never with bare). maic help ui"},
         {"bare", d.bare},
         {"//bare", "true: nothing from nvim (no $NVIM host, the built-in highlighter, no theme from nvim, no lazy-lock notice, no keymap check); MAIC's own settings, themes, Lua and tools still load. Also maic --bare and MAIC_BARE=1. :h bare"},
         {"colors", d.colors},

@@ -17,6 +17,7 @@
 #include "maic/vendor.hpp"
 #include "maic/nvim_host.hpp"
 #include "maic/nvim_keymaps.hpp"
+#include "maic/nvim_setup.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
@@ -2243,6 +2244,25 @@ Settings tui_settings(const TuiOptions& options, const std::filesystem::path& wo
     return settings;
 }
 
+namespace {
+
+// `maic --ui nvim`: nvim with this MAIC's maic.nvim as the whole interface and this binary's `maic --rpc`, with the
+// same agent flags, as its job. The user's config loads first; the plugin goes on 'runtimepath' after it (lazy.nvim
+// resets the path at setup). Returns why only when nvim could not be started.
+std::string exec_nvim_ui(const TuiOptions& options) {
+    std::error_code ec;
+    nlohmann::json o = {{"plugin", (root_dir() / "maic.nvim").string()}, {"cmd", std::filesystem::read_symlink("/proc/self/exe", ec).string()}, {"args", options.engine_args}};
+    if (options.resume) o["session"] = options.resume->stem().string();
+    setenv("MAIC_UI", o.dump().c_str(), 1);
+    execlp("nvim", "nvim", "-c",
+           "lua local o = vim.json.decode(vim.env.MAIC_UI); vim.env.MAIC_UI = nil; vim.opt.rtp:prepend(o.plugin); vim.cmd('runtime plugin/maic.lua'); require('maic.ui').main(o)",
+           static_cast<char*>(nullptr));
+    unsetenv("MAIC_UI");
+    return std::string("cannot run nvim: ") + std::strerror(errno);
+}
+
+}  // namespace
+
 int run_tui(const TuiOptions& options) {
     // The host nvim first, so the settings files' Lua can use maic.nvim (docs/nvim.md); never when bare. `bare = true`
     // in a settings file is known only once they are read, so then the host is dropped right after.
@@ -2275,6 +2295,20 @@ int run_tui(const TuiOptions& options) {
         fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
         return 2;
     }
+    // nvim as the interface (--ui nvim, ui = "nvim"), started here with trust settled; the engine holds a due audit.
+    // Never inside nvim (maic.nvim's :Maic is the interface there) and never bare; what it cannot take runs here.
+    std::string ui = options.ui.value_or(settings.ui);
+    if (ui == "nvim") {
+        std::string why = std::getenv("NVIM") ? "inside nvim, where :Maic opens it"
+                          : bare || settings.bare ? "with bare, which takes nothing from nvim"
+                          : !options.context.empty() || !options.images.empty() || !options.initial_prompt.empty() || options.fork_at ? "with --context, --image, -i or --fork-at"
+                                                                                                                                       : exec_nvim_ui(options);
+        if (options.ui) {
+            std::cerr << "maic: --ui nvim: " << why << "\n";
+            return 2;
+        }
+        trust_lines.push_back("ui = \"nvim\": not " + why + "; MAIC's own interface instead");
+    }
     // An audit that is due holds here, before the screen is drawn (docs/audit-trail.md).
     audit_gate(settings);
     set_color_depth(settings.colors);
@@ -2295,6 +2329,11 @@ int run_tui(const TuiOptions& options) {
     }
     app.welcome();
     for (const auto& n : trust_lines) app.startup_notice(n);
+    // nvim as the interface, offered once when nvim is installed (docs/nvim.md).
+    if (ui == "tui" && !options.ui && !bare && !settings.bare && !std::getenv("NVIM") && on_path("nvim") && !std::filesystem::exists(state_dir() / "ui-offered")) {
+        app.startup_notice("nvim is installed: maic --ui nvim runs MAIC with nvim as its interface, your config and mappings included; ui = \"nvim\" in settings makes it the default (maic help ui). Said once.");
+        std::ofstream(state_dir() / "ui-offered");
+    }
     app.attach_context();
     for (const auto& im : options.images) app.attach_image(im);
     if (!first.empty()) app.send(first);

@@ -12,7 +12,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
     """Answers every chat with "echo: " plus the first line of the last user message, streamed as SSE. A message
     starting with "hold" gets a reply that idles for 10 s instead, for the interrupt tests; one starting "slow:" is
     answered after three seconds, for a test that needs the agent busy; "shell:CMD" is a run_shell call of CMD,
-    answered "ran it" once its result is in."""
+    answered "ran it" once its result is in; "ask:QUESTION|OPTION|..." is a question call, answered "ran it" too."""
 
     def log_message(self, *a):
         pass
@@ -30,21 +30,25 @@ class Fake(http.server.BaseHTTPRequestHandler):
         if isinstance(last, list):  # text parts beside an image
             last = "".join(p.get("text", "") for p in last if p.get("type") == "text")
         try:
+            answered = body["messages"][-1].get("role") == "tool"
             if last.startswith("shell:"):
-                self.shell(last[6:], body["messages"][-1].get("role") == "tool")
+                self.call("run_shell", {"command": last[6:]}, answered)
+            elif last.startswith("ask:"):
+                q = last[4:].split("|")
+                self.call("question", {"question": q[0], "options": q[1:]}, answered)
             else:
                 self.reply(last)
         except (BrokenPipeError, ConnectionResetError):
             pass  # MAIC hung up mid-reply (an interrupt does): that is the end of this reply
 
-    def shell(self, command, answered):
+    def call(self, name, args, answered):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         if answered:
             chunks = [{"choices": [{"delta": {"content": "ran it"}}]}, {"choices": [{"delta": {}, "finish_reason": "stop"}]}]
         else:
-            call = {"index": 0, "id": "call_1", "type": "function", "function": {"name": "run_shell", "arguments": json.dumps({"command": command})}}
+            call = {"index": 0, "id": "call_1", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
             chunks = [{"choices": [{"delta": {"tool_calls": [call]}}]}, {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}]
         for c in chunks:
             self.wfile.write(("data: " + json.dumps(c) + "\n\n").encode())
@@ -253,8 +257,9 @@ def main():
     trust_ok = trust_smoke(maic, port)
     trail_ok = audit_trail_smoke(maic, port)
     rpc_ok = rpc_smoke(maic, port)
+    ui_ok = nvim_ui_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if rpc_ok and ok and stream_ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok else 1)
+    sys.exit(0 if rpc_ok and ui_ok and ok and stream_ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok else 1)
 
 
 class RpcClient:
@@ -432,6 +437,48 @@ def rpc_smoke(maic, port):
     report(code == 0, "ends cleanly at SIGTERM (exit %r)" % code, c.stderr.decode(errors="replace"))
     shutil.rmtree(home, ignore_errors=True)
     return all(results)
+
+
+def nvim_ui_smoke(maic, port):
+    """nvim as MAIC's interface: maic.nvim/tests/ui_test.lua drives a headless nvim against `maic --rpc` and the fake
+    (the engine's recording passes `maic protocol check`), then `maic --ui nvim` with a stand-in nvim on PATH that
+    records how it was started, and the runs it refuses. Skipped without nvim."""
+    if not shutil.which("nvim"):
+        print("skip: nvim interface (nvim is not installed)")
+        return True
+    home, env = make_home(port)
+    rec = os.path.join(home, "ui-streams")
+    os.makedirs(rec)
+    test = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "maic.nvim", "tests", "ui_test.lua")
+    r = subprocess.run(["nvim", "--headless", "-u", "NONE", "-i", "NONE", "-n", "-l", test], capture_output=True, text=True, cwd=home, timeout=300,
+                       env=dict(env, MAIC_UI_TEST_BIN=maic, MAIC_PROTOCOL_RECORD=rec))
+    chk = subprocess.run([maic, "protocol", "check", rec], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    ok = r.returncode == 0 and chk.returncode == 0 and "2 streams, 0 with a violation" in chk.stdout
+    print(("ok" if ok else "FAIL") + ": the nvim interface (maic.nvim/tests/ui_test.lua), exit %d; its stream checked" % r.returncode
+          + ("" if ok else "\n" + r.stdout[-6000:] + r.stderr[-2000:] + chk.stdout[-1500:]))
+
+    # `maic --ui nvim` execs nvim with the plugin, this binary and the agent's flags; MAIC_UI never reaches nvim's jobs.
+    bin_dir = os.path.join(home, "bin")
+    os.makedirs(bin_dir)
+    seen = os.path.join(home, "nvim-argv.json")
+    with open(os.path.join(bin_dir, "nvim"), "w") as f:
+        f.write("#!/usr/bin/env python3\nimport json, os, sys\njson.dump({'argv': sys.argv[1:], 'ui': os.environ.get('MAIC_UI')}, open(%r, 'w'))\n" % seen)
+    os.chmod(os.path.join(bin_dir, "nvim"), 0o755)
+    fake_env = dict(env, PATH=bin_dir + os.pathsep + env["PATH"])
+    r = subprocess.run([maic, "--ui", "nvim", "--model", "fake/fake", "--no-instructions"], capture_output=True, text=True, env=fake_env, cwd=home, timeout=60)
+    got = json.load(open(seen)) if os.path.exists(seen) else {}
+    o = json.loads(got.get("ui") or "{}")
+    exec_ok = (r.returncode == 0 and got.get("argv", [""])[0] == "-c" and "require('maic.ui').main(o)" in got["argv"][1]
+               and o.get("args") == ["--model", "fake/fake", "--no-instructions"] and os.path.realpath(o.get("cmd", "")) == os.path.realpath(maic)
+               and os.path.isfile(os.path.join(o.get("plugin", ""), "lua", "maic", "ui.lua")))
+    print(("ok" if exec_ok else "FAIL") + ": maic --ui nvim starts nvim with maic.nvim and the engine's flags" + ("" if exec_ok else "\n%r %r %r" % (got, r.stdout, r.stderr)))
+    refused = [subprocess.run([maic, "--ui", "nvim"] + extra, capture_output=True, text=True, env=dict(fake_env, **more), cwd=home, timeout=60)
+               for extra, more in ((["--bare"], {}), ([], {"NVIM": "/nowhere"}), (["-p", "x"], {}))]
+    refuse_ok = ([x.returncode for x in refused] == [2, 2, 1] and "with bare" in refused[0].stderr and "inside nvim" in refused[1].stderr
+                 and "--ui chooses the interactive interface" in refused[2].stderr)
+    print(("ok" if refuse_ok else "FAIL") + ": --ui nvim is refused with --bare, inside nvim and with -p" + ("" if refuse_ok else "\n" + "\n".join(x.stderr for x in refused)))
+    shutil.rmtree(home, ignore_errors=True)
+    return ok and exec_ok and refuse_ok
 
 
 def output_smoke(maic, env, sess_dir):

@@ -88,6 +88,8 @@ install(DIRECTORY services/ DESTINATION share/maic/services)
 # The audit schedule's systemd units, which `maic audit-trail schedule install` fills in (docs/audit-trail.md).
 install(DIRECTORY contrib/systemd/ DESTINATION share/maic/contrib/systemd)
 install(DIRECTORY themes/ DESTINATION share/maic/themes)
+# maic.nvim, for `maic --ui nvim` and `maic nvim keymaps` from an installed copy.
+install(DIRECTORY maic.nvim/ DESTINATION share/maic/maic.nvim PATTERN "tests" EXCLUDE)
 install(DIRECTORY models/ DESTINATION share/maic/models)
 # Fallback root for a copy installed without the repository: the vendor ledger and scripts, not the checkouts.
 install(FILES vendor/manifest.json vendor/comfyui.sh vendor/llamacpp.sh vendor/whispercpp.sh vendor/VENDORING DESTINATION share/maic/vendor)

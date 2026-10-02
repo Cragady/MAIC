@@ -1,5 +1,6 @@
--- maic.nvim: MAIC in an nvim terminal, and nvim's buffers, selections, diagnostics and quickfix list sent into
--- its input. MAIC's side of the connection (the host, User autocmds, :e, the theme) is in MAIC: docs/nvim.md.
+-- maic.nvim: nvim as MAIC's interface (lua/maic/ui.lua), or MAIC's own TUI in an nvim terminal, and nvim's buffers,
+-- selections, diagnostics and quickfix list sent into its input. MAIC's side of the connection (the host, User
+-- autocmds, :e, the theme) is in MAIC: docs/nvim.md.
 local M = {}
 
 -- Every option and its default, in one table (:h maic-defaults). setup(opts) deep-merges opts over it, which is
@@ -7,6 +8,9 @@ local M = {}
 M.defaults = {
   cmd = "maic", -- the program: a name on PATH, a path, or a list (program and arguments)
   args = {}, -- arguments for every start, before the ones given to :Maic
+  -- "nvim": the conversation and the input as nvim buffers, the engine (`maic --rpc`) as the job; "terminal": MAIC's
+  -- own TUI in a terminal (also what :Maic falls back to for arguments only the TUI takes, and :MaicTerminal)
+  ui = "nvim",
   open = "vsplit", -- "split", "vsplit", "float" or "tab"
   size = nil, -- split: rows, vsplit: columns, float: a fraction of the editor (0.8); nil: a default for the layout
   prefix = "<leader>m", -- the default keys below that start with <leader>m move under it
@@ -22,14 +26,17 @@ M.defaults = {
     quickfix = "<leader>mq",
     interrupt = "<leader>mc",
   },
-  -- name = key, normal mode, buffer-local in MAIC's own buffers only (<C-c> is never mapped globally)
-  buffer_keymaps = { interrupt = "<C-c>" },
+  -- name = key, buffer-local in MAIC's own buffers only (<C-c> is never mapped globally): interrupt in every one,
+  -- pause and resume in the conversation and the input (insert mode too in the input), send in the input
+  buffer_keymaps = { interrupt = "<C-c>", pause = "<C-s>", resume = "<C-q>", send = "<CR>", send_insert = "<M-CR>" },
+  input_height = 6, -- the input's rows under the conversation
+  fold_output = 4, -- a tool's output of at least this many lines is folded (closed) once it is done; false: never
   -- Leaves terminal mode in MAIC's terminal. nvim's own <C-\><C-n> needs no mapping; another key is mapped there.
   terminal_escape = "<C-\\><C-n>",
   -- Keys that reach MAIC in its terminal even when a global terminal-mode mapping holds them (buffer-local, so
   -- the global mapping keeps working everywhere else). key = true; false drops one.
   terminal_passthrough = { ["<Esc>"] = true, ["<C-c>"] = true },
-  filetypes = { terminal = "maic", input = "maic-input" }, -- MAIC's buffers, for plugins to include or exclude
+  filetypes = { conversation = "maic", terminal = "maic", input = "maic-input" }, -- MAIC's buffers, for plugins to include or exclude
 }
 
 M.config = vim.deepcopy(M.defaults)
@@ -58,7 +65,7 @@ local function window_of(buf, tab)
   end
 end
 
--- A window for `buf` (nil: a new empty buffer) in the configured layout; returns the window.
+-- A window for `buf` (nil: a new empty buffer) in the configured layout; returns the window. The interface uses it too.
 local function make_window(buf)
   local c, size = M.config, M.config.size
   if c.open == "float" then
@@ -86,6 +93,8 @@ local function make_window(buf)
   return win
 end
 
+M.make_window = make_window
+
 local function command(extra)
   local cmd = type(M.config.cmd) == "table" and vim.deepcopy(M.config.cmd) or { M.config.cmd }
   vim.list_extend(cmd, M.config.args or {})
@@ -93,7 +102,7 @@ local function command(extra)
   return cmd
 end
 
-local map -- below: sets a keymap unless another mapping holds its key
+local map -- below: sets a keymap unless another mapping holds its key (M.map, for the interface's buffers too)
 
 local function start(extra)
   make_window(nil)
@@ -121,8 +130,36 @@ local function start(extra)
   vim.cmd("startinsert")
 end
 
--- :Maic [args]: focus this tab's MAIC (showing its window again if it was hidden), or start one with `args`.
+-- Arguments `maic --rpc` refuses (sessions, prompts, files and images come over the protocol), and the agent's flags
+-- that take a value. :Maic with any of the first runs MAIC's TUI in a terminal instead.
+local tui_only = { ["-p"] = true, ["--print"] = true, ["-i"] = true, ["--interactive"] = true, ["-c"] = true, ["--continue"] = true,
+  ["-r"] = true, ["--resume"] = true, ["-C"] = true, ["--context"] = true, ["-I"] = true, ["--image"] = true, ["--bare"] = true, ["--fork-at"] = true }
+local valued = { ["-m"] = true, ["--model"] = true, ["--mode"] = true, ["-S"] = true, ["--system"] = true, ["--prefix"] = true, ["--prefill"] = true,
+  ["--rule"] = true, ["--harness"] = true, ["--xtc"] = true, ["--sampling"] = true, ["--ban"] = true, ["--ban-pattern"] = true, ["--ctx"] = true, ["--ctx2"] = true }
+
+local function interface_for(args)
+  if M.config.ui ~= "nvim" then return false end
+  local all = vim.list_extend(vim.deepcopy(M.config.args or {}), args or {})
+  local i = 1
+  while i <= #all do
+    local a = all[i]
+    if tui_only[a] or a:sub(1, 1) ~= "-" then return false end
+    i = i + (valued[a] and 2 or 1)
+  end
+  return true
+end
+
+-- :Maic [args]: focus this tab's MAIC (showing its windows again if they were hidden), or start one with `args`:
+-- the interface (ui = "nvim"), or the TUI in a terminal.
 function M.open(args)
+  local ui = require("maic.ui")
+  if ui.here() then return ui.open() end
+  if interface_for(args) and not term_here() then return ui.open(args) end
+  return M.open_terminal(args)
+end
+
+-- :MaicTerminal [args]: MAIC's TUI in a terminal, whatever `ui` says.
+function M.open_terminal(args)
   local t, tab = term_here()
   if not t then return start(args) end
   if tab ~= vim.api.nvim_get_current_tabpage() then vim.api.nvim_set_current_tabpage(tab) end
@@ -133,6 +170,7 @@ end
 
 -- :MaicToggle: hide this tab's MAIC window (MAIC keeps running), or show it, or start one.
 function M.toggle()
+  if require("maic.ui").here() then return require("maic.ui").toggle() end
   local t, tab = term_here()
   local win = t and tab == vim.api.nvim_get_current_tabpage() and window_of(t.buf)
   if win and #vim.api.nvim_tabpage_list_wins(0) > 1 then
@@ -158,9 +196,15 @@ function M.channel()
   if not pid then return newest end
 end
 
--- Text into MAIC's input, never sent: through MAIC's channel when it is connected, else as a bracketed paste
--- into this tab's terminal. Returns "rpc", "paste", or nil when there is no MAIC.
+-- Text into MAIC's input, never sent: the interface's input buffer, else through MAIC's channel when it is
+-- connected, else as a bracketed paste into this tab's terminal. Returns "input", "rpc", "paste", or nil when
+-- there is no MAIC.
 function M.send_text(text)
+  local ui = require("maic.ui").here()
+  if ui then
+    require("maic.ui").add_input(ui, text)
+    return "input"
+  end
   local chan = M.channel()
   if chan then
     vim.rpcnotify(chan, "maic_send", text)
@@ -174,8 +218,13 @@ function M.send_text(text)
   vim.notify("maic.nvim: no MAIC here; :Maic starts one", vim.log.levels.WARN)
 end
 
--- A command line run in MAIC as if typed (":theme gruvbox-dark"). Needs MAIC connected.
+-- A command line run in MAIC as if typed (":theme gruvbox-dark"). Needs MAIC connected, or the interface.
 function M.command(line)
+  local ui = require("maic.ui").here()
+  if ui then
+    require("maic.ui").command(ui, (line:gsub("^:", "")))
+    return true
+  end
   local chan = M.channel()
   if not chan then
     vim.notify("maic.nvim: no connected MAIC for " .. line, vim.log.levels.WARN)
@@ -185,9 +234,15 @@ function M.command(line)
   return true
 end
 
--- :MaicInterrupt: stops MAIC's running turn as its first Ctrl-C does, from any window. Over MAIC's channel when it
--- is connected (idle, MAIC says so), else Ctrl-C typed into this tab's terminal. Returns "rpc", "key" or nil.
+-- :MaicInterrupt: stops MAIC's running turn as its first Ctrl-C does, from any window. In the interface a cancel to
+-- the engine; over MAIC's channel when it is connected (idle, MAIC says so), else Ctrl-C typed into this tab's
+-- terminal. Returns "engine", "rpc", "key" or nil.
 function M.interrupt()
+  local ui = require("maic.ui").here()
+  if ui then
+    require("maic.ui").interrupt(ui)
+    return "engine"
+  end
   local chan = M.channel()
   if chan then
     vim.rpcnotify(chan, "maic_interrupt")
@@ -297,6 +352,17 @@ local actions = {
   workspace_diagnostics = { "n", "<cmd>MaicDiagnostics!<cr>", "MAIC: send every buffer's diagnostics" },
   quickfix = { "n", "<cmd>MaicQuickfix<cr>", "MAIC: send the quickfix list" },
   interrupt = { "n", "<cmd>MaicInterrupt<cr>", "MAIC: interrupt the running turn" },
+  pause = { "n", "<cmd>MaicSteer interrupt<cr>", "MAIC: pause the running turn" },
+  resume = { "n", "<cmd>MaicSteer steer<cr>", "MAIC: resume the paused turn" },
+  send = { "n", function() require("maic.ui").send() end, "MAIC: send the input" },
+  send_insert = { "i", function() require("maic.ui").send() end, "MAIC: send the input" },
+}
+
+-- The buffer keymaps each of MAIC's buffers gets, and the modes beyond the action's own.
+local buffer_keys = {
+  terminal = { interrupt = {} },
+  conversation = { interrupt = {}, pause = {}, resume = {} },
+  input = { interrupt = {}, pause = { "i" }, resume = { "i" }, send = {}, send_insert = {} },
 }
 
 -- The global keymaps the config asks for: { name, mode, lhs, rhs, desc, explicit }, explicit when opts named the key.
@@ -347,16 +413,25 @@ function map(k, buf)
   vim.keymap.set(k.mode, k.lhs, k.rhs, { desc = k.desc, silent = true, buffer = buf, nowait = buf ~= nil })
   return true
 end
+M.map = function(k, buf) return map(k, buf) end
 
--- The buffer-local keymaps of MAIC's terminal: buffer_keymaps, the passthrough keys, and terminal_escape when it
--- is not nvim's own.
-function M.buffer_planned()
+-- The buffer-local keymaps of one of MAIC's buffers, `kind` "terminal" (the default), "conversation" or "input":
+-- its buffer_keymaps, and in the terminal the passthrough keys and terminal_escape when it is not nvim's own.
+function M.buffer_planned(kind)
   local c, out = M.config, {}
+  kind = kind or "terminal"
   for name, lhs in pairs(c.buffer_keymaps or {}) do
-    if lhs and actions[name] then
-      out[#out + 1] = { name = "buffer_keymaps." .. name, mode = "n", lhs = lhs, rhs = actions[name][2], desc = actions[name][3],
-        explicit = lhs ~= M.defaults.buffer_keymaps[name] }
+    local extra = buffer_keys[kind][name]
+    if lhs and actions[name] and extra then
+      for _, mode in ipairs(vim.list_extend({ actions[name][1] }, extra)) do
+        out[#out + 1] = { name = "buffer_keymaps." .. name, mode = mode, lhs = lhs, rhs = actions[name][2], desc = actions[name][3],
+          explicit = lhs ~= M.defaults.buffer_keymaps[name] }
+      end
     end
+  end
+  if kind ~= "terminal" then
+    table.sort(out, function(a, b) return a.lhs .. a.mode < b.lhs .. b.mode end)
+    return out
   end
   local escape = c.terminal_escape ~= M.defaults.terminal_escape and c.terminal_escape or nil
   for key, on in pairs(c.terminal_passthrough or {}) do
