@@ -6,10 +6,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 namespace maic {
@@ -21,7 +23,74 @@ namespace {
 constexpr size_t kHeadBytes = 24 * 1024;
 constexpr size_t kTailBytes = 8 * 1024;
 
-// Everything before the program: the mounts, the namespaces and the working directory.
+// The environment a sandboxed program gets, and nothing else: bwrap starts it with --clearenv and sets these
+// from MAIC's own environment when they are set, plus every LC_* variable. MAIC sets no variable of its own for
+// commands or script tools. Never here: a way out of the sandbox (DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR,
+// SSH_AUTH_SOCK, GPG_AGENT_INFO, NVIM, DISPLAY, WAYLAND_DISPLAY) or a credential (*_TOKEN, *_KEY, *_SECRET).
+// A variable a tool truly needs is added here with the reason (docs/harness.md, Sandboxed commands).
+constexpr const char* kPassedEnv[] = {
+    "PATH", "HOME", "USER", "LOGNAME", "LANG", "TERM", "TZ", "SHELL",
+    // MAIC's own helpers on the default allow list (maic path, maic status, maic sessions) read the session's
+    // config and state, not the defaults
+    "XDG_CONFIG_HOME", "XDG_STATE_HOME",
+};
+
+bool inside(const fs::path& p, const fs::path& dir) {
+    auto [d, _] = std::mismatch(dir.begin(), dir.end(), p.begin(), p.end());
+    return d == dir.end();
+}
+
+// Host sockets the sandbox must not reach. Path sockets ignore --unshare-all (only abstract ones live in the
+// network namespace), and the read-only bind of / still lets a program connect to one: the session D-Bus in
+// $XDG_RUNTIME_DIR can ask systemd to start anything outside the sandbox, the same directory holds nvim's
+// socket, Wayland, pipewire and gpg-agent, and /run holds the system bus, docker.sock, libvirt, screen and
+// systemd's varlink sockets. So all of /run is an empty tmpfs (removable drives under /run/media are bound back
+// read-only), and so are the runtime directory and the directories of the agent sockets the environment names,
+// wherever they are. A socket whose directory is $HOME, an ancestor of it or / has /dev/null bound over it instead.
+// The workspace is bound in between, writable unless `read_only`.
+void bind_workspace_hiding_sockets(std::vector<std::string>& args, const fs::path& workspace, bool read_only) {
+    fs::path home = fs::weakly_canonical(std::getenv("HOME")), ws = fs::weakly_canonical(workspace);
+    std::vector<fs::path> dirs, files;
+    std::error_code ec;
+    for (const char* run : {"/run", "/var/run"}) {
+        fs::path p = fs::canonical(run, ec);
+        if (!ec && std::find(dirs.begin(), dirs.end(), p) == dirs.end()) dirs.push_back(p);
+    }
+    // Whether `p` is already out of sight: inside the workspace only a mask inside it hides anything.
+    auto covered = [&](const fs::path& p) {
+        auto masks = [&](const fs::path& d) { return inside(p, d) && (!inside(p, ws) || inside(d, ws)); };
+        return (inside(p, "/tmp") && !inside(p, ws)) || (std::any_of(dirs.begin(), dirs.end(), masks) && !inside(p, "/run/media"));
+    };
+    auto hide_dir = [&](const fs::path& p) {
+        if (!fs::is_directory(p) || covered(p) || inside(home, p) || p == ws) return false;
+        dirs.push_back(p);
+        return true;
+    };
+    if (const char* rt = std::getenv("XDG_RUNTIME_DIR"); rt && *rt) hide_dir(fs::weakly_canonical(rt));
+    for (const char* var : {"SSH_AUTH_SOCK", "GPG_AGENT_INFO", "NVIM"}) {
+        const char* v = std::getenv(var);
+        if (!v || *v != '/') continue;  // unset, or not a path (NVIM may be host:port, which the network namespace stops)
+        std::string given = v;
+        if (std::string(var) == "GPG_AGENT_INFO") given = given.substr(0, given.find(':'));  // PATH:PID:1
+        fs::path sock = fs::weakly_canonical(given, ec);
+        if (ec || !fs::exists(sock) || covered(sock)) continue;
+        if (!hide_dir(sock.parent_path())) files.push_back(sock);
+    }
+    // Before the workspace is bound, so a workspace under one of them is still there; one inside the workspace
+    // goes after, or the workspace would cover it again.
+    for (const auto& d : dirs) {
+        if (inside(d, ws)) continue;
+        args.insert(args.end(), {"--tmpfs", d.string()});
+        if (d == "/run") args.insert(args.end(), {"--ro-bind-try", "/run/media", "/run/media"});
+    }
+    args.insert(args.end(), {read_only ? "--ro-bind" : "--bind", workspace.string(), workspace.string()});
+    for (const auto& d : dirs) {
+        if (inside(d, ws)) args.insert(args.end(), {"--tmpfs", d.string()});
+    }
+    for (const auto& f : files) args.insert(args.end(), {"--ro-bind", "/dev/null", f.string()});
+}
+
+// Everything before the program: the mounts, the environment, the namespaces and the working directory.
 std::vector<std::string> bwrap_args(const fs::path& workspace, bool read_only, const fs::path& workdir) {
     std::vector<std::string> args = {
         "bwrap",
@@ -29,13 +98,24 @@ std::vector<std::string> bwrap_args(const fs::path& workspace, bool read_only, c
         "--dev", "/dev",
         "--proc", "/proc",
         "--tmpfs", "/tmp",
-        read_only ? "--ro-bind" : "--bind", workspace.string(), workspace.string(),
     };
+    bind_workspace_hiding_sockets(args, workspace, read_only);
     // Hide secrets behind empty directories. /var/lib/maic stays visible read-only so tools can see the lock.
     fs::path home = std::getenv("HOME");
     for (const char* p : {".ssh", ".gnupg", ".aws", ".kube", ".docker", ".password-store", ".local/share/keyrings", ".ollama"}) {
         if (fs::is_directory(home / p) && !fs::equivalent(home / p, workspace)) {
             args.insert(args.end(), {"--tmpfs", (home / p).string()});
+        }
+    }
+    args.push_back("--clearenv");
+    for (const char* name : kPassedEnv) {
+        if (const char* v = std::getenv(name)) args.insert(args.end(), {"--setenv", name, v});
+    }
+    for (char** e = environ; *e; ++e) {
+        std::string_view kv = *e;
+        size_t eq = kv.find('=');
+        if (kv.rfind("LC_", 0) == 0 && eq != std::string_view::npos) {
+            args.insert(args.end(), {"--setenv", std::string(kv.substr(0, eq)), std::string(kv.substr(eq + 1))});
         }
     }
     args.insert(args.end(), {

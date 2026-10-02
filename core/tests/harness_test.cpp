@@ -7,9 +7,15 @@
 #include "maic/sandbox.hpp"
 #include "maic/tools.hpp"
 
+#include <algorithm>
 #include <fstream>
+#include <vector>
 
 #include <cstdlib>
+#include <cstring>
+#include <sstream>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 #include <filesystem>
 #include <iostream>
@@ -43,6 +49,27 @@ void write(const Harness& h, Mode mode, const std::string& path, Verdict want) {
 void read(const Harness& h, Mode mode, const std::string& path, Verdict want) {
     auto d = h.check({Action::Kind::Read, h.resolve(path), ""}, mode, Origin::Local);
     expect(d.verdict == want, std::string(mode_name(mode)) + " read " + path + " -> " + name(d.verdict) + " (want " + name(want) + ")");
+}
+
+// A Unix socket listening at `path`, for a sandboxed command to try: a connect succeeds on the backlog, no accept needed.
+int listen_at(const fs::path& path) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    std::strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
+    if (fd < 0 || bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || listen(fd, 8) != 0) {
+        if (fd >= 0) close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+bool on_path(const std::string& program) {
+    std::istringstream dirs(std::getenv("PATH") ? std::getenv("PATH") : "");
+    for (std::string d; std::getline(dirs, d, ':');) {
+        if (!d.empty() && access((fs::path(d) / program).c_str(), X_OK) == 0) return true;
+    }
+    return false;
 }
 
 }  // namespace
@@ -481,6 +508,85 @@ int main() {
 
     r = run("sleep 30");
     expect(r.timed_out, "timeout kills a runaway command");
+
+    // The incident behind v0.3.1: the read-only bind of / left $XDG_RUNTIME_DIR in sight and the environment named
+    // its sockets, so a sandboxed command reached the session D-Bus (and through it systemd, outside the sandbox).
+    // Every socket here is this run's own, in a directory under ~/.cache (not /tmp, which the sandbox replaces
+    // anyway, and short enough for a socket path); the user's real ones are never touched.
+    std::cout << "sandbox: host sockets and the environment\n";
+    if (!on_path("bwrap") || !on_path("python3")) {
+        std::cout << "  skipped: needs bwrap and python3 on PATH\n";
+    } else {
+        fs::path rt = fs::path(home) / ".cache" / ("maic-sbx-" + std::to_string(getpid()));
+        fs::path run_dir = rt / "run", agent_dir = rt / "agent", gpg_dir = rt / "gpg", sws = rt / "ws";
+        fs::remove_all(rt);
+        for (const auto& d : {run_dir, agent_dir, gpg_dir, sws}) fs::create_directories(d);
+        std::vector<int> fds;
+        for (const auto& p : {rt / "c.sock", sws / "own.sock", run_dir / "bus", agent_dir / "s", gpg_dir / "S.gpg-agent", sws / "nvim.0"}) fds.push_back(listen_at(p));
+        expect(std::count(fds.begin(), fds.end(), -1) == 0, "the test's own listeners are up");
+        setenv("XDG_RUNTIME_DIR", run_dir.c_str(), 1);
+        setenv("DBUS_SESSION_BUS_ADDRESS", ("unix:path=" + (run_dir / "bus").string()).c_str(), 1);
+        setenv("SSH_AUTH_SOCK", (agent_dir / "s").c_str(), 1);
+        setenv("GPG_AGENT_INFO", ((gpg_dir / "S.gpg-agent").string() + ":1:1").c_str(), 1);
+        setenv("NVIM", (sws / "nvim.0").c_str(), 1);  // in the workspace's own directory: /dev/null goes over the socket itself
+        auto reach = [&](const fs::path& sock) {
+            auto r = run_sandboxed("python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).connect(sys.argv[1])' " + sock.string(), sws, false,
+                                   std::chrono::seconds(20), no);
+            return r.exit_code == 0;
+        };
+        expect(reach(rt / "c.sock"), "control: a socket nothing names, outside the workspace, is reachable through the read-only bind");
+        expect(reach(sws / "own.sock"), "control: a socket inside the workspace is reachable");
+        expect(!reach(run_dir / "bus"), "a listener in $XDG_RUNTIME_DIR (the session bus's place) is not reachable");
+        expect(!reach(agent_dir / "s"), "$SSH_AUTH_SOCK's listener is not reachable");
+        expect(!reach(gpg_dir / "S.gpg-agent"), "GPG_AGENT_INFO's listener is not reachable");
+        expect(!reach(sws / "nvim.0"), "$NVIM's listener in the workspace's own directory is not reachable");
+
+        r = run_sandboxed("find " + run_dir.string() + " /run/user /var/run/user /run/dbus /var/run/dbus -mindepth 1 2>/dev/null | wc -l", sws, false, std::chrono::seconds(20), no);
+        expect(r.output.find('0') == 0, "the runtime directory, /run/user and /run/dbus (and their /var/run names) look empty");
+        r = run_sandboxed("find /run /var/run -mindepth 1 -maxdepth 1 ! -name media | wc -l", sws, false, std::chrono::seconds(20), no);
+        expect(r.output.find('0') == 0, "/run holds nothing but removable drives: no docker.sock, libvirt, screen or systemd sockets");
+
+        setenv("DISPLAY", ":99", 1);
+        setenv("WAYLAND_DISPLAY", "wayland-99", 1);
+        setenv("MAIC_TEST_TOKEN", "t", 1);
+        setenv("MAIC_TEST_API_KEY", "k", 1);
+        setenv("MAIC_TEST_SECRET", "s", 1);
+        setenv("MAIC_TEST_OTHER", "o", 1);
+        setenv("LANG", "C.UTF-8", 1);
+        setenv("LC_TIME", "C", 1);
+        setenv("TZ", "UTC", 1);
+        setenv("TERM", "dumb", 1);
+        setenv("SHELL", "/bin/bash", 1);
+        setenv("USER", std::getenv("USER") ? std::getenv("USER") : "maic-test", 1);
+        setenv("LOGNAME", std::getenv("LOGNAME") ? std::getenv("LOGNAME") : "maic-test", 1);
+        r = run_sandboxed("env", sws, false, std::chrono::seconds(20), no);
+        std::string env = "\n" + r.output;
+        for (const char* v : {"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "SSH_AUTH_SOCK", "GPG_AGENT_INFO", "NVIM", "DISPLAY", "WAYLAND_DISPLAY",
+                              "MAIC_TEST_TOKEN", "MAIC_TEST_API_KEY", "MAIC_TEST_SECRET", "MAIC_TEST_OTHER", "MAIC_TRIPWIRE_FILE"}) {
+            expect(env.find(std::string("\n") + v + "=") == std::string::npos, std::string("env inside the sandbox has no ") + v);
+        }
+        for (const char* v : {"PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_TIME", "TZ", "TERM", "SHELL"}) {
+            expect(env.find(std::string("\n") + v + "=" + std::getenv(v) + "\n") != std::string::npos, std::string("env inside the sandbox keeps ") + v);
+        }
+        r = run_sandboxed_argv({"/usr/bin/env"}, "", sws, true, std::chrono::seconds(20), no);
+        expect(r.exit_code == 0 && r.output.find("SSH_AUTH_SOCK=") == std::string::npos && r.output.find("MAIC_TEST_TOKEN=") == std::string::npos &&
+                   r.output.find("PATH=") != std::string::npos,
+               "a script tool (run_sandboxed_argv) gets the same environment");
+
+        r = run_sandboxed("echo x > written.txt", sws, false, std::chrono::seconds(20), no);
+        expect(r.exit_code == 0 && fs::exists(sws / "written.txt"), "the workspace is still writable");
+        r = run_sandboxed("echo x > ro.txt", sws, true, std::chrono::seconds(20), no);
+        expect(r.exit_code != 0 && !fs::exists(sws / "ro.txt"), "and still read-only when the mode says so");
+
+        for (const char* v : {"XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "GPG_AGENT_INFO", "NVIM", "DISPLAY", "WAYLAND_DISPLAY",
+                              "MAIC_TEST_TOKEN", "MAIC_TEST_API_KEY", "MAIC_TEST_SECRET", "MAIC_TEST_OTHER"}) {
+            unsetenv(v);
+        }
+        for (int fd : fds) {
+            if (fd >= 0) close(fd);
+        }
+        fs::remove_all(rt);
+    }
 
     std::cout << ":cd moves the root\n";
     {
