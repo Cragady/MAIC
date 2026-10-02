@@ -1,6 +1,6 @@
-# Review form
+# comfymaid-review
 
-A page for answering a long stretch of conversation at your own pace: the open decisions first, then every message, with a reply box under each paragraph and each list item. Adopted 2026-10-02 (Micaiah), first used for the ComfyMaid review.
+A page for answering a long stretch of conversation at your own pace: the open decisions first, then every message, with a reply box under each paragraph and each list item. Adopted 2026-10-02 (Micaiah). The name comes from its first use, the ComfyMaid review, and now names the kind: a catch-up page for everything after a pointer in a conversation that has gone unaddressed.
 
 ## Use
 
