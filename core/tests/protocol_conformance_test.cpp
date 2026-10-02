@@ -224,7 +224,7 @@ int main() {
         expect(x.error("maic.hello", {{"protocol", 0}, {"client", {{"name", "old"}}}}) == "maic_unsupported_protocol", "a protocol below 1 is refused");
         expect(bad.first && bad.first->rule == "schema.message", "and the checker flags the request as outside its schema");
         expect(h["protocol"] == 1 && h["origin"] == "local" && h["client"] == a.id && h["tier"] == "guarded" && h["limits"]["always"] == true &&
-                   h["path"]["via"] == "in-process" && h["engine"]["epoch"].get<std::string>().size() == 6,
+                   h["path"]["via"] == "in-process" && h["engine"]["instance"].get<std::string>().size() == 6,
                "the hello answers the version it speaks, the client's id and origin, the tier and the limits");
         json r = a.call("deleteConversation", {{"conversation_id", "x"}});
         expect(r["error"]["code"] == -32601, "a method the engine does not offer is -32601");
@@ -382,10 +382,10 @@ int main() {
         fake.hold_left = 0;
         TestClient b(*engine, resume, Origin::Local, "phone-tab");
         b.hello();
-        expect(b.error("maic.session.subscribe", {{"session", sid}, {"load", "zzzz"}, {"starting_after", held}}) == "maic_resync",
-               "another load answers maic_resync");
-        json again = b.ok("maic.session.subscribe", {{"session", sid}, {"load", sub["load"]}, {"starting_after", held}});
-        expect(again["replay_from"] == held + 1, "the same load resumes after the last number held");
+        expect(b.error("maic.session.subscribe", {{"session", sid}, {"epoch", "zzzz"}, {"starting_after", held}}) == "maic_resync",
+               "another epoch answers maic_resync");
+        json again = b.ok("maic.session.subscribe", {{"session", sid}, {"epoch", sub["epoch"]}, {"starting_after", held}});
+        expect(again["replay_from"] == held + 1, "the same epoch resumes after the last number held");
         // The held reply idles until the agent hangs up; cancel it and keep what came.
         b.pump(200ms);
         std::string rid = a.find("response.created", mark) ? (*a.find("response.created", mark))["response"]["id"].get<std::string>() : "";
@@ -1184,7 +1184,20 @@ int main() {
         asked_rec.finish();
     }
 
-    section("shutdown parks the sessions in the index");
+    // The epoch a load ran under, and the number its stream reached, before the restart.
+    std::string epoch_before;
+    long numbers_before = -1;
+    {
+        Recording live("before-restart");
+        TestClient a(*engine, live, Origin::Local, "tui-last");
+        a.hello();
+        json snap = a.ok("maic.session.attach", {{"session", sid}});
+        epoch_before = snap["epoch"];
+        numbers_before = snap["sequence_number"];
+        live.finish();
+    }
+
+    section("shutdown parks the sessions in the index, and the epoch survives the restart");
     {
         engine->shutdown();
         engine.reset();
@@ -1196,6 +1209,16 @@ int main() {
         expect(entries.size() == 1 && entries[0]["id"] == sid && entries[0]["state"] == "parked", "after a restart the session is listed parked");
         json entry = a.ok("maic.session.resume", {{"session", sid}});
         expect(entry["state"] == "live" && entry["turns"].get<int>() >= 5, "maic.session.resume loads it again, its turns counted from the transcript");
+        // A client that held everything up to the last load's close (shutdown's `parked`, the number after the attach) resumes across the restart.
+        json sub = a.ok("maic.session.subscribe", {{"session", sid}, {"epoch", epoch_before}, {"starting_after", numbers_before + 1}});
+        a.until_type("maic.session.state");
+        const json* found = a.find("maic.session.state");
+        json state = found ? *found : json::object();
+        expect(sub["epoch"] == epoch_before, "the reloaded session keeps its epoch across the restart");
+        expect(found && state["sequence_number"].get<long>() == numbers_before + 2, "its numbers go on from where the last load closed, not back to 0");
+        expect(found && state["epoch"] == epoch_before && state["protocol"]["hash"] == maic::protocol::protocol_hash() && state["protocol"]["canonical"] == "RFC 8785",
+               "the load's first event carries the epoch and the build's protocol hash");
+        expect(!state["maic"].contains("previous_epoch") && !state.contains("previous_epoch"), "no new epoch: nothing was reset");
         after.finish();
     }
 

@@ -119,6 +119,20 @@ def main():
                  and c.returncode == 0 and "1 stream, 0 with a violation" in c.stdout)
     print(("ok" if stream_ok else "FAIL") + ": maic -p --json through the engine, its recorded stream passes maic protocol check" +
           ("" if stream_ok else "\n" + j.stdout[-1500:] + j.stderr[-1500:] + c.stdout[-1500:]))
+    # The recording describes itself: a header names the protocol hash, each event shape has a skeleton before it, and
+    # `--blind` (no built-in schemas, only the file's own skeletons) still passes.
+    recfile = os.path.join(rec, sorted(os.listdir(rec))[0])
+    recs = [json.loads(l) for l in open(recfile) if l.strip()]
+    phash = subprocess.run([maic, "protocol", "hash"], capture_output=True, text=True, env=env, cwd=home, timeout=30).stdout.strip()
+    header = next((r for r in recs if r.get("dir") == "header"), None)
+    skels = [r for r in recs if r.get("dir") == "skeleton"]
+    blind = subprocess.run([maic, "protocol", "check", "--blind", recfile], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    self_ok = (header is not None and header.get("protocol") == phash and header.get("canonical") == "RFC 8785"
+               and phash.startswith("sha256:") and any(k.get("of") == "maic.session.state" for k in skels)
+               and all("hash" in k and "skeleton" in k for k in skels)
+               and blind.returncode == 0 and "0 with a violation" in blind.stdout)
+    print(("ok" if self_ok else "FAIL") + ": the recorded stream describes itself and passes maic protocol check --blind"
+          + ("" if self_ok else "\n" + json.dumps(header) + "\n" + blind.stdout[-1500:] + blind.stderr[-1500:]))
     # maic setup off a terminal: the plan and exit 2, nothing done (the settings file exists, so that step is not on it).
     s = subprocess.run([maic, "setup"], capture_output=True, text=True, env=env, cwd=home, timeout=120, stdin=subprocess.DEVNULL)
     setup_ok = s.returncode == 2 and "plan (each a yes/no in a terminal)" in s.stdout and "Build llama.cpp" in s.stdout and "Write the global settings" not in s.stdout and "AddressSanitizer" not in s.stderr
@@ -149,7 +163,7 @@ def main():
     stream = os.path.join(home, "bad-stream.jsonl")
     with open(stream, "w") as f:
         f.write('{"dir":"in","conn":"c1","msg":{"jsonrpc":"2.0","id":1,"method":"maic.session.subscribe","params":{"session":"s1"}}}\n')
-        f.write('{"dir":"out","conn":"c1","msg":{"jsonrpc":"2.0","id":1,"result":{"load":"q7c2","sequence_number":0,"activity":"idle","replay_from":0}}}\n')
+        f.write('{"dir":"out","conn":"c1","msg":{"jsonrpc":"2.0","id":1,"result":{"epoch":"q7c2","sequence_number":0,"activity":"idle","replay_from":0}}}\n')
         f.write('{"dir":"out","conn":"c1","msg":{"jsonrpc":"2.0","method":"maic.event","params":{"type":"maic.notice","sequence_number":0,"stream_id":"s1","text":"hi","level":"info"}}}\n')
     r = subprocess.run([maic, "protocol", "check", stream], capture_output=True, text=True, env=env, cwd=home, timeout=60)
     proto_ok = r.returncode == 1 and "FAIL  " + stream + ": #0 seq.start:" in r.stdout and "1 stream, 1 with a violation" in r.stdout

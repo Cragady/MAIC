@@ -35,13 +35,13 @@ std::string read_whole(const fs::path& p) {
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
-// Every line of a session file that is a JSON object, in order.
+// Every record of a session file, in order: its JSON object lines but the `skeleton` lines that describe the file.
 std::vector<json> records(const fs::path& p) {
     std::vector<json> out;
     std::ifstream in(p);
     for (std::string line; std::getline(in, line);) {
         auto j = json::parse(line, nullptr, false);
-        if (j.is_object()) out.push_back(j);
+        if (j.is_object() && j.value("type", "") != "skeleton") out.push_back(j);
     }
     return out;
 }

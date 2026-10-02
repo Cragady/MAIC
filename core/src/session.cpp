@@ -4,6 +4,7 @@
 #include "maic/full_output.hpp"
 #include "maic/harness.hpp"
 #include "maic/paths.hpp"
+#include "maic/skeleton.hpp"
 #include "maic/tools.hpp"
 
 #include <fcntl.h>
@@ -26,6 +27,11 @@ namespace maic {
 namespace fs = std::filesystem;
 
 namespace {
+
+// A `skeleton` line describes the file (Self-describing files); it is not a record, so no record count includes it.
+bool is_skeleton_line(const std::string& line) {
+    return line.find("\"type\":\"skeleton\"") != std::string::npos && nlohmann::json::parse(line, nullptr, false).value("type", "") == "skeleton";
+}
 
 std::string now(const char* format) {
     std::time_t t = std::time(nullptr);
@@ -85,10 +91,30 @@ SessionLog::SessionLog(const std::string& kind, const fs::path& home) {
     create(kind, home);
 }
 
+namespace {
+
+// The epoch in force at line `records` of `path` (its own lines): the last `epoch` record before it, or null.
+nlohmann::json epoch_at(const fs::path& path, size_t records) {
+    nlohmann::json epoch;
+    std::ifstream in(path);
+    size_t n = 0;
+    for (std::string line; n < records && std::getline(in, line);) {
+        if (is_skeleton_line(line)) continue;
+        ++n;
+        auto j = nlohmann::json::parse(line, nullptr, false);
+        if (j.is_object() && j.value("type", "") == "epoch") epoch = j.value("epoch", nlohmann::json());
+    }
+    return epoch;
+}
+
+}  // namespace
+
 SessionLog::SessionLog(Fork, const fs::path& parent, size_t records, const std::string& kind, const fs::path& home) {
     if (!fs::is_regular_file(parent)) throw std::runtime_error("no session at " + parent.string());
     create(kind, home);
-    write("resumed_from", {{"id", parent.stem().string()}, {"path", fs::weakly_canonical(parent).string()}, {"records", records}});
+    nlohmann::json pointer = {{"id", parent.stem().string()}, {"path", fs::weakly_canonical(parent).string()}, {"records", records}};
+    if (auto epoch = epoch_at(parent, records); !epoch.is_null()) pointer["epoch"] = epoch;
+    write("resumed_from", pointer);
 }
 
 SessionLog::SessionLog(Reopen, const fs::path& path) : path_(path) {
@@ -100,6 +126,11 @@ SessionLog::SessionLog(Reopen, const fs::path& path) : path_(path) {
     if (!fs::is_regular_file(path_)) throw std::runtime_error("no session at " + path.string());
     out_.open(path_, std::ios::app);
     if (!out_) throw std::runtime_error("can't append to " + path_.string());
+    std::ifstream in(path_);
+    for (std::string line; std::getline(in, line);) {
+        auto j = nlohmann::json::parse(line, nullptr, false);
+        if (j.is_object() && j.value("type", "") == "skeleton") described_.insert(j.value("of", "") + "\x1f" + j.value("hash", ""));
+    }
 }
 
 namespace {
@@ -231,7 +262,7 @@ std::optional<SessionInfo> find_session(const std::string& id_or_path) {
 size_t count_records(const fs::path& path) {
     std::ifstream in(path);
     size_t n = 0;
-    for (std::string line; std::getline(in, line);) ++n;
+    for (std::string line; std::getline(in, line);) n += !is_skeleton_line(line);
     return n;
 }
 
@@ -293,10 +324,22 @@ void walk(const fs::path& path, size_t limit, int depth, const std::function<voi
     std::ifstream in(path);
     if (!in) throw std::runtime_error("can't read " + path.string());
     size_t n = 0;
-    for (std::string line; std::getline(in, line) && n < limit; ++n) {
+    std::set<std::string> must;  // types this file declares must_understand
+    for (std::string line; n < limit && std::getline(in, line);) {
         auto j = nlohmann::json::parse(line, nullptr, false);
+        std::string type = j.is_object() ? j.value("type", "") : "";
+        if (type == "skeleton") {
+            if (j.value("must_understand", false)) must.insert(j.value("of", ""));
+            continue;
+        }
+        ++n;
         if (!j.is_object()) continue;
-        if (j.value("type", "") != "resumed_from") fn(j);
+        if (!known_record_type(type) && must.count(type)) {
+            throw std::runtime_error(path.string() + " record " + std::to_string(n) + " is a `" + type +
+                                     "` record, which this maic does not know and the file marks must_understand: reading on without it would "
+                                     "rebuild the wrong conversation. A newer maic reads it.");
+        }
+        if (type != "resumed_from") fn(j);
         else walk(pointer_target(j), j.value("records", size_t(0)), depth + 1, fn, top);
     }
     if (depth == 0) top = n;
@@ -439,8 +482,9 @@ std::vector<nlohmann::json> conversation_records(const fs::path& path, size_t fi
     if (!in) throw std::runtime_error("can't read " + path.string());
     std::vector<nlohmann::json> out;
     size_t n = 0;
-    for (std::string line; std::getline(in, line) && n < limit; ++n) {
-        if (n < first) continue;
+    for (std::string line; n < limit && std::getline(in, line);) {
+        if (is_skeleton_line(line)) continue;
+        if (n++ < first) continue;
         auto j = nlohmann::json::parse(line, nullptr, false);
         if (!j.is_object()) continue;
         std::string type = j.value("type", "");
@@ -450,6 +494,7 @@ std::vector<nlohmann::json> conversation_records(const fs::path& path, size_t fi
             continue;
         }
         if (type == "start" || type == "title" || type == "imported_from") continue;
+        if (type == "skeleton" || type == "epoch" || type == "stream") continue;  // the source file's own bookkeeping
         if (type == "msg" && j.value("role", "") == "system") continue;
         out.push_back(std::move(j));
     }
@@ -943,12 +988,63 @@ void SessionLog::write(const std::string& type, nlohmann::json data) {
     if (!data.contains("time")) data["time"] = now("%Y-%m-%dT%H:%M:%S%z");
     std::string line = data.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + '\n';
     std::lock_guard lock(mu_);
+    if (type != "skeleton") {
+        nlohmann::json skeleton = skeleton_of(data);
+        std::string hash = skeleton_hash(skeleton);
+        if (described_.insert(type + "\x1f" + hash).second) {
+            nlohmann::json d = {{"type", "skeleton"}, {"time", data["time"]}, {"of", type}, {"hash", hash}, {"canonical", kCanonical}, {"skeleton", skeleton}};
+            if (record_must_understand(type)) d["must_understand"] = true;
+            line = d.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + '\n' + line;
+        }
+    }
     if (pending_fd_ >= 0) {
         write_all(pending_fd_, line);
         return;
     }
     out_ << line;
     out_.flush();
+}
+
+bool known_record_type(const std::string& type) {
+    static const std::set<std::string> known = {"start", "msg", "user", "assistant", "tool", "usage", "normalized", "model", "context", "title",
+                                                "compact", "reset", "clear", "undo", "resumed_from", "imported_from", "inject", "graft",
+                                                "compose", "workspace", "rehomed", "steer", "skeleton", "epoch", "stream", "cai", "rewritten"};
+    return known.count(type) > 0;
+}
+
+bool record_must_understand(const std::string& type) {
+    static const std::set<std::string> must = {"msg", "compact", "reset", "clear", "undo", "resumed_from", "epoch"};
+    return must.count(type) > 0;
+}
+
+StreamStart stream_start(const fs::path& path) {
+    StreamStart out;
+    std::ifstream in(path);
+    nlohmann::json first, epoch, stream;  // the first record, the last `epoch`, the last `stream` after it
+    for (std::string line; std::getline(in, line);) {
+        auto j = nlohmann::json::parse(line, nullptr, false);
+        if (!j.is_object()) continue;
+        std::string type = j.value("type", "");
+        if (first.is_null() && type != "skeleton") first = j;
+        if (type == "epoch") {
+            epoch = j;
+            stream = nullptr;
+        } else if (type == "stream") {
+            stream = j;
+        }
+    }
+    std::string current = epoch.is_object() ? epoch.value("epoch", "") : "";
+    if (!current.empty() && stream.is_null()) {
+        out.epoch = current;  // declared by a tool (trans-fairy), never loaded
+    } else if (!current.empty() && stream.value("closed", false) && stream.value("epoch", "") == current) {
+        out.epoch = current;
+        out.next = stream.value("next", 0L);
+    } else if (!current.empty()) {
+        out.previous = {{"epoch", current}, {"reason", "a load that did not close"}};
+    } else if (first.is_object() && first.value("type", "") == "resumed_from") {
+        out.forked_from = {{"session", first.value("id", "")}, {"epoch", first.value("epoch", nlohmann::json())}, {"records", first.value("records", 0)}};
+    }
+    return out;
 }
 
 }  // namespace maic

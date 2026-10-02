@@ -514,7 +514,8 @@ class TuiTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("events conform", r.stdout)
         with open(streams[0]) as f:
-            types = [m["msg"]["params"].get("type") for m in map(json.loads, f) if m["msg"].get("method") == "maic.event"]
+            # The recording also holds its header and skeleton lines (docs/design/engine-protocol.md section 17); those carry no msg.
+            types = [m["msg"]["params"].get("type") for m in map(json.loads, f) if "msg" in m and m["msg"].get("method") == "maic.event"]
         for t in ("maic.input.added", "maic.approval.requested", "response.shell_call_output_content.delta", "maic.tool.output.delta",
                   "maic.session.title", "response.completed"):
             self.assertIn(t, types)

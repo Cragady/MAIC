@@ -8,6 +8,7 @@
 #include "maic/paths.hpp"
 #include "maic/protocol.hpp"
 #include "maic/session.hpp"
+#include "maic/skeleton.hpp"
 #include "maic/status.hpp"
 #include "maic/service.hpp"
 #include "maic/tripwire.hpp"
@@ -332,6 +333,7 @@ struct Run {
     json output = json::array();
     long next_index = 0;  // the next output_index
     Agent::UsageReport usage_before;
+    long cause = -1;  // the event it answers (maic.input.added), maic.cause on its response.created
 };
 
 // A steer of section 11, from a client or a ban entry.
@@ -354,8 +356,8 @@ struct Session {
 
     std::mutex mu;
     std::condition_variable cv;
-    // The stream: numbered from 0 for each load.
-    std::string load = random_id(4);
+    // The stream: its epoch, and numbers that go on across loads while the epoch holds (stream_start).
+    std::string epoch;
     long next = 0;
     std::deque<std::pair<json, size_t>> ring;
     size_t ring_bytes = 0;
@@ -421,7 +423,7 @@ struct Session {
 }  // namespace
 
 struct Engine::Impl {
-    explicit Impl(EngineOptions o) : options(std::move(o)), epoch(random_id(6)) {
+    explicit Impl(EngineOptions o) : options(std::move(o)), instance(random_id(6)) {
         if (options.tier != "open" && options.tier != "guarded") {
             throw std::runtime_error("protocol tier " + options.tier + " is not available here (airtight needs a build with the conformance stamp)");
         }
@@ -432,7 +434,7 @@ struct Engine::Impl {
     }
 
     EngineOptions options;
-    std::string epoch;
+    std::string instance;
     std::atomic<long> clients_made{0}, approvals_made{0}, questions_made{0}, steers_made{0};
     std::atomic<bool> stopped{false};
 
@@ -684,14 +686,30 @@ struct Engine::Impl {
         }
     }
 
-    // A new load of a session: sequence_number 0 is its state.
+    // A new load of a session. Its first event is its state, carrying the stream's header: the epoch, the protocol
+    // hash, and for a new epoch what it replaced or forked from. The transcript gets the same as `epoch` and `stream`
+    // records; shutdown closes the `stream` with the number the next load goes on from.
     void open_session(const std::shared_ptr<Session>& s, const Client& c) {
         {
             std::lock_guard lock(mu);
             sessions[s->id] = s;
         }
         std::lock_guard lock(s->mu);
-        emit(*s, {{"type", "maic.session.state"}, {"state", s->state}, {"activity", s->activity}, {"waiting", nullptr}, {"by", c.by()}});
+        StreamStart start = s->log ? stream_start(s->log->path()) : StreamStart{};
+        bool fresh = start.epoch.empty();
+        s->epoch = fresh ? random_id(16) : start.epoch;
+        s->next = start.next;
+        if (s->next > 0) s->order.join(s->next - 1);  // the epoch goes on: its numbers before this load were checked by the one that sent them
+        json state = {{"type", "maic.session.state"}, {"state", s->state}, {"activity", s->activity}, {"waiting", nullptr}, {"by", c.by()},
+                      {"epoch", s->epoch}, {"protocol", {{"hash", protocol::protocol_hash()}, {"canonical", kCanonical}}}};
+        if (fresh) {
+            json e = {{"epoch", s->epoch}};
+            if (!start.previous.is_null()) e["previous"] = state["previous_epoch"] = start.previous;
+            if (!start.forked_from.is_null()) e["forked_from"] = state["forked_from"] = start.forked_from;
+            if (s->log) s->log->write("epoch", e);
+        }
+        if (s->log) s->log->write("stream", {{"epoch", s->epoch}, {"from", s->next}, {"protocol", protocol::protocol_hash()}, {"canonical", kCanonical}});
+        emit(*s, state);
         index_changed(*s);
     }
 
@@ -817,7 +835,7 @@ struct Engine::Impl {
             if (std::string name = p["client"].value("name", ""); !name.empty()) c.name = name;
         }
         return {{"protocol", kProtocol},
-                {"engine", {{"version", MAIC_VERSION}, {"epoch", epoch}}},
+                {"engine", {{"version", MAIC_VERSION}, {"instance", instance}}},
                 {"client", c.id},
                 {"origin", origin_name(c.origin)},
                 {"capabilities", {"tool_output", "index"}},
@@ -1023,7 +1041,7 @@ struct Engine::Impl {
                 if (e["sequence_number"].get<long>() >= from) c.event(e, size);
             }
         }
-        return {{"load", s.load}, {"sequence_number", s.next - 1}, {"activity", s.activity}, {"replay_from", from}};
+        return {{"epoch", s.epoch}, {"sequence_number", s.next - 1}, {"activity", s.activity}, {"replay_from", from}};
     }
 
     std::shared_ptr<Client> clients_ptr(const Client& c) {
@@ -1034,7 +1052,7 @@ struct Engine::Impl {
     json session_subscribe(Client& c, const json& p) {
         auto s = session(p.at("session"));
         std::lock_guard lock(s->mu);
-        if (p.contains("load") && p["load"] != s->load) throw refuse("maic_resync", "the session was loaded again since (load " + s->load + "); attach again", "load");
+        if (p.contains("epoch") && p["epoch"] != s->epoch) throw refuse("maic_resync", "the session's history is another epoch now (" + s->epoch + "); attach again", "epoch");
         return subscribe_locked(*s, c, p.value("starting_after", -1L), true);
     }
 
@@ -1062,7 +1080,7 @@ struct Engine::Impl {
         }
         // History comes from the transcript with step 11 (the line-offset index, listConversationItems).
         return {{"entry", for_client(entry(*s), c)},
-                {"load", s->load},
+                {"epoch", s->epoch},
                 {"sequence_number", s->next - 1},
                 {"more_before", false},
                 {"items", json::array()},
@@ -1146,9 +1164,13 @@ struct Engine::Impl {
             s.turn = r.turn;
         }
         r.usage_before = s.agent.usage();
+        // A successor answers the first steer it commits: its input, or the steer itself when it had none.
+        if (r.cause < 0 && !s.accepted.empty()) r.cause = s.accepted[0].value("cause", -1L);
         s.run = std::move(r);
         s.accepted = json::array();
-        emit(s, {{"type", "response.created"}, {"response", response_object(s, *s.run, "in_progress")}});
+        json created = {{"type", "response.created"}, {"response", response_object(s, *s.run, "in_progress")}};
+        if (s.run->cause >= 0) created["maic"] = {{"cause", s.run->cause}};
+        emit(s, created);
         set_activity(s, "working");
         emit(s, {{"type", "response.in_progress"}, {"response", response_object(s, *s.run, "in_progress")}});
     }
@@ -1214,8 +1236,12 @@ struct Engine::Impl {
         if (s->paused) {
             // The paused turn resumes: a successor of its last response carries the input.
             emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", false}, {"by", c.by()}});
-            if (!s->resume) s->resume = Session::Queued{successor(*s, c.origin), text, c.origin};
-            else s->resume->text += "\n\n" + text;
+            if (!s->resume) {
+                s->resume = Session::Queued{successor(*s, c.origin), text, c.origin};
+                s->resume->run.cause = s->next - 1;
+            } else {
+                s->resume->text += "\n\n" + text;
+            }
             s->cv.notify_all();
             json r = response_object(*s, s->resume->run, "in_progress");
             r["maic"]["sequence_number"] = before;
@@ -1226,7 +1252,7 @@ struct Engine::Impl {
             std::string id = "st" + std::to_string(++steers_made);
             emit(*s, {{"type", "response.steer.accepted"}, {"steer", {{"id", id}, {"previous_response_id", s->run->id}}}});
             emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", true}, {"by", c.by()}});
-            s->accepted.push_back({{"id", id}, {"previous_response_id", s->run->id}, {"text", text}});
+            s->accepted.push_back({{"id", id}, {"previous_response_id", s->run->id}, {"text", text}, {"cause", s->next - 1}});
             s->agent.post_message(text, c.origin);
             s->agent.deliver_now();
             index_changed(*s);
@@ -1239,6 +1265,7 @@ struct Engine::Impl {
             // FIFO on the lane: a turn of its own once the running one (and those queued before it) end.
             Run r = reserve_turn(*s, c.origin);
             emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", true}, {"by", c.by()}});
+            r.cause = s->next - 1;
             s->lane.push_back({r, text, c.origin});
             index_changed(*s);
             json resp = response_object(*s, r, "queued");
@@ -1250,6 +1277,7 @@ struct Engine::Impl {
         if (auto pics = s->agent.pending_images(); !pics.empty()) item["maic"] = {{"images", pics}};
         emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", false}, {"by", c.by()}});
         Run run = reserve_turn(*s, c.origin);
+        run.cause = s->next - 1;
         json r = response_object(*s, run, "in_progress");
         start_turn(s, std::move(run), text, c.origin);
         r["maic"]["sequence_number"] = before;
@@ -1372,7 +1400,7 @@ struct Engine::Impl {
         auto accept = [&] {
             if (s.accepted.size() >= kMaxPendingSteers) throw refuse("too_many_pending_steers", "too many steers wait for this response already", "action");
             emit(s, {{"type", "response.steer.accepted"}, {"steer", result["steer"]}});
-            s.accepted.push_back({{"id", st.id}, {"previous_response_id", st.response}, {"text", say}});
+            s.accepted.push_back({{"id", st.id}, {"previous_response_id", st.response}, {"text", say}, {"cause", s.next - 1}});
         };
         if (s.paused) {
             if (st.action == "interrupt") throw refuse("response_not_active", "the turn is paused already", "action");
@@ -1496,7 +1524,7 @@ struct Engine::Impl {
         emit(*s, {{"type", "response.steer.accepted"}, {"steer", steer}});
         json item = {{"id", "~" + std::to_string(s->next)}, {"type", "message"}, {"role", "user"}, {"content", {{{"type", "input_text"}, {"text", text}}}}};
         emit(*s, {{"type", "maic.input.added"}, {"item", item}, {"queued", true}, {"by", c.by()}});
-        s->accepted.push_back({{"id", id}, {"previous_response_id", rid}, {"text", text}});
+        s->accepted.push_back({{"id", id}, {"previous_response_id", rid}, {"text", text}, {"cause", s->next - 1}});
         if (s->paused) {
             if (!s->resume) s->resume = Session::Queued{successor(*s, c.origin), text, c.origin};
             else s->resume->text += "\n\n" + text;
@@ -2332,6 +2360,7 @@ void Engine::shutdown() {
         std::lock_guard lock(s->mu);
         s->state = "parked";
         impl_->emit(*s, {{"type", "maic.session.state"}, {"state", "parked"}, {"activity", "idle"}, {"waiting", nullptr}, {"by", engine}});
+        if (s->log) s->log->write("stream", {{"epoch", s->epoch}, {"next", s->next}, {"closed", true}});
         impl_->index_changed(*s);
     }
     // Every connection ends: a transport waiting in take() returns with what is left.

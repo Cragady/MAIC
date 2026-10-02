@@ -2,9 +2,11 @@
 #include "maic/protocol.hpp"
 
 #include "maic/jsonschema.hpp"
+#include "maic/skeleton.hpp"
 #include "protocol_files.hpp"
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -77,6 +79,39 @@ json ref_to(const std::string& pointer) {
 
 std::string bundle_pointer(const std::string& path) {
     return "/files/" + escape_token(path);
+}
+
+namespace {
+
+json without_prose(const json& v) {
+    if (v.is_array()) {
+        json out = json::array();
+        for (const auto& e : v) out.push_back(without_prose(e));
+        return out;
+    }
+    if (!v.is_object()) return v;
+    static const std::set<std::string> prose = {"description", "title", "summary", "text", "$comment"};
+    json out = json::object();
+    for (const auto& [k, e] : v.items()) {
+        if (e.is_string() && prose.count(k)) continue;
+        out[k] = without_prose(e);
+    }
+    return out;
+}
+
+}  // namespace
+
+const std::string& protocol_hash() {
+    static const std::string hash = [] {
+        json files = json::object();
+        for (const auto& f : embedded_files()) {
+            std::string text;
+            for (const char* c : f.chunks) text += c;
+            files[f.path] = without_prose(json::parse(text));
+        }
+        return sha256_digest(canonical_json(files));
+    }();
+    return hash;
 }
 
 const Schemas& Schemas::get() {
@@ -317,12 +352,20 @@ std::string describe(const Violation& v) {
     return out;
 }
 
-StreamChecker::StreamChecker(bool openai_only) : openai_only_(openai_only) {}
+StreamChecker::StreamChecker(bool openai_only, bool blind) : openai_only_(openai_only), blind_(blind) {}
 
 void StreamChecker::join(long after) {
     joined_ = true;
     started_ = true;
     last_ = after;
+}
+
+std::optional<Violation> StreamChecker::check_numbers(const json& event) {
+    bool was = blind_;
+    blind_ = true;
+    auto v = check(event);
+    blind_ = was;
+    return v;
 }
 
 void StreamChecker::replay_from(long starting_after) {
@@ -356,7 +399,7 @@ std::optional<Violation> StreamChecker::check(const json& event) {
         first = filtered.get<long>();
     }
     if (!started_) {
-        if (!openai_only_ && (n != 0 || type != "maic.session.state")) return fail("seq.start", "the load's first event is #" + std::to_string(n));
+        if (!openai_only_ && (n != 0 || (!blind_ && type != "maic.session.state"))) return fail("seq.start", "the epoch's first event is #" + std::to_string(n));
     } else if (n <= last_) {
         return fail("seq.repeat", "after #" + std::to_string(last_));
     } else if (!openai_only_ && first != last_ + 1) {
@@ -364,6 +407,12 @@ std::optional<Violation> StreamChecker::check(const json& event) {
     }
     if (!event.contains("stream_id") || !event["stream_id"].is_string()) return fail("stream.id", "no stream_id");
     if (!stream_.empty() && event["stream_id"] != stream_) return fail("stream.id", "stream_id " + event["stream_id"].dump() + " on the stream of " + stream_);
+    if (blind_) {
+        started_ = true;
+        last_ = n;
+        if (stream_.empty()) stream_ = event["stream_id"];
+        return std::nullopt;
+    }
 
     // The response, its items and the turn: the rules that are not one machine.
     std::string open = open_response_;
@@ -525,8 +574,19 @@ std::optional<Violation> Conformance::fail(Violation v) {
 std::optional<Violation> Conformance::feed(const json& record) {
     if (first_) return first_;
     const Schemas& schemas = Schemas::get();
-    if (!record.is_object() || !record.contains("msg") || !record["msg"].is_object()) return fail({-1, "schema.message", "a record without msg"});
+    if (!record.is_object()) return fail({-1, "schema.message", "a record that is not an object"});
     std::string dir = record.value("dir", ""), conn = record.value("conn", "");
+    if (dir == "header" || dir == "note") return std::nullopt;
+    if (dir == "skeleton") {
+        const json& skeleton = record.value("skeleton", json());
+        std::string hash = record.value("hash", "");
+        if (!record.value("of", json()).is_string() || skeleton.is_null()) return fail({-1, "skeleton.hash", "a skeleton line without `of` or `skeleton`"});
+        if (skeleton_hash(skeleton) != hash) return fail({-1, "skeleton.hash", "the skeleton of " + record["of"].get<std::string>() + " hashes to " + skeleton_hash(skeleton) + ", not " + hash});
+        described_ = true;
+        declared_[record["of"].get<std::string>() + "\x1f" + hash] = record;
+        return std::nullopt;
+    }
+    if (!record.contains("msg") || !record["msg"].is_object()) return fail({-1, "schema.message", "a record without msg"});
     const json& msg = record["msg"];
     if (msg.value("jsonrpc", "") != "2.0") return fail({-1, "schema.message", "not a JSON-RPC 2.0 message: " + msg.dump().substr(0, 120)});
     if (dir == "in") {
@@ -537,7 +597,7 @@ std::optional<Violation> Conformance::feed(const json& record) {
         if (pending_[conn].count(key)) return fail({-1, "request.answered", conn + " reused request id " + key + " while it was pending"});
         pending_[conn][key] = Request{method, params};
         // An unknown method is answered -32601; that is the engine's answer, not a malformed request.
-        if (schemas.method(method)) {
+        if (!blind_ && schemas.method(method)) {
             if (std::string e = schemas.params_error(method, params); !e.empty()) return fail({-1, "schema.message", method + " params " + e});
         }
         return std::nullopt;
@@ -556,7 +616,7 @@ std::optional<Violation> Conformance::out(const std::string& conn, const json& m
         pending_[conn].erase(it);
         if (msg.contains("error")) {
             const json& err = msg["error"];
-            if (err.contains("data")) {
+            if (!blind_ && err.contains("data")) {
                 if (std::string e = schemas.error_data_error(err["data"]); !e.empty()) return fail({-1, "schema.message", req.method + " error data " + e});
             }
             if (req.method == "maic.session.subscribe" && err.contains("data") && err["data"].value("code", json()) == "maic_resync") {
@@ -567,12 +627,14 @@ std::optional<Violation> Conformance::out(const std::string& conn, const json& m
         if (!msg.contains("result")) return fail({-1, "schema.message", "an answer with neither result nor error"});
         const json& result = msg["result"];
         if (!schemas.method(req.method)) return std::nullopt;
-        if (std::string e = schemas.result_error(req.method, result); !e.empty()) return fail({-1, "schema.message", req.method + " result " + e});
+        if (!blind_) {
+            if (std::string e = schemas.result_error(req.method, result); !e.empty()) return fail({-1, "schema.message", req.method + " result " + e});
+        }
         if (req.method == "maic.hello") {
             exclude_[conn] = result.value("exclude", std::set<std::string>());
             for (auto& [session, c] : streams_[conn]) c.filter(exclude_[conn]);
         } else if (req.method == "maic.session.attach") {
-            StreamChecker c(openai_only_);
+            StreamChecker c(openai_only_, blind_);
             c.filter(exclude_[conn]);
             c.join(result.value("sequence_number", -1L));
             streams_[conn].insert_or_assign(result["entry"]["id"].get<std::string>(), c);
@@ -584,7 +646,7 @@ std::optional<Violation> Conformance::out(const std::string& conn, const json& m
             if (s != streams_[conn].end()) {
                 s->second.replay_from(after);
             } else {
-                StreamChecker c(openai_only_);
+                StreamChecker c(openai_only_, blind_);
                 c.filter(exclude_[conn]);
                 if (from > 0) c.join(from - 1);
                 streams_[conn].emplace(session, c);
@@ -597,6 +659,7 @@ std::optional<Violation> Conformance::out(const std::string& conn, const json& m
     std::string method = msg.value("method", "");
     json params = msg.value("params", json::object());
     if (method != "maic.event") {
+        if (blind_) return std::nullopt;
         if (!schemas.method(method)) return fail({-1, "schema.message", "a notification of no method: " + method});
         if (std::string e = schemas.params_error(method, params); !e.empty()) return fail({-1, "schema.message", method + " params " + e});
         return std::nullopt;
@@ -604,6 +667,23 @@ std::optional<Violation> Conformance::out(const std::string& conn, const json& m
     ++events_;
     long n = params.value("sequence_number", -1L);
     json event = params;
+    std::string type = params.value("type", "");
+    const json* declared = nullptr;
+    if (described_ || blind_) {
+        auto d = declared_.find(type + "\x1f" + skeleton_hash(skeleton_of(params)));
+        if (d == declared_.end()) return fail({n, "skeleton.undeclared", type + ": no skeleton declared before it has this shape"});
+        declared = &d->second;
+    }
+    std::vector<std::string> types = schemas.event_types();
+    bool known = std::find(types.begin(), types.end(), type) != types.end();
+    if (blind_ || (!known && declared)) {
+        if (!blind_ && declared->value("must_understand", false)) return fail({n, "skeleton.must_understand", type + ": this build does not know the type and its skeleton says it must be understood"});
+        std::string session = params.value("stream_id", "");
+        auto s = streams_[conn].find(session);
+        if (s == streams_[conn].end()) return fail({n, "stream.id", "an event of " + session + " on " + conn + ", which did not attach or subscribe to it"});
+        if (auto v = s->second.check_numbers(event)) return fail(*v);
+        return std::nullopt;
+    }
     if (openai_only_) {
         auto view = openai_view(params);
         if (!view) return std::nullopt;
@@ -628,28 +708,46 @@ std::optional<Violation> Conformance::finish() {
     return std::nullopt;
 }
 
-Recorder::Recorder(const std::filesystem::path& file) : fd_(open(file.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600)) {}
+Recorder::Recorder(const std::filesystem::path& file) : fd_(open(file.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600)) {
+    struct stat st{};
+    if (fd_ >= 0 && fstat(fd_, &st) == 0 && st.st_size == 0) put({{"dir", "header"}, {"protocol", protocol_hash()}, {"canonical", kCanonical}});
+}
 
 Recorder::~Recorder() {
     if (fd_ >= 0) close(fd_);
 }
 
-std::optional<Violation> Recorder::add(const std::string& dir, const std::string& conn, const json& msg) {
-    if (fd_ < 0) return std::nullopt;
-    json r = {{"dir", dir}, {"conn", conn}, {"msg", msg}};
+void Recorder::put(const json& r) {
     std::string line = r.dump(-1, ' ', false, json::error_handler_t::replace) + "\n";
     ssize_t n = write(fd_, line.data(), line.size());  // one write per record: a killed process leaves whole lines
     (void)n;
-    if (violated_) return std::nullopt;
-    auto v = check_.feed(r);
-    violated_ = v.has_value();
+}
+
+std::optional<Violation> Recorder::add(const std::string& dir, const std::string& conn, const json& msg) {
+    if (fd_ < 0) return std::nullopt;
+    std::vector<json> lines;
+    if (dir == "out" && msg.value("method", "") == "maic.event" && msg.contains("params")) {
+        json skeleton = skeleton_of(msg["params"]);
+        std::string type = msg["params"].value("type", ""), hash = skeleton_hash(skeleton);
+        if (described_.insert(type + "\x1f" + hash).second) {
+            lines.push_back({{"dir", "skeleton"}, {"of", type}, {"hash", hash}, {"canonical", kCanonical}, {"skeleton", skeleton}});
+        }
+    }
+    lines.push_back({{"dir", dir}, {"conn", conn}, {"msg", msg}});
+    std::optional<Violation> v;
+    for (const auto& r : lines) {
+        put(r);
+        if (violated_ || v) continue;
+        v = check_.feed(r);
+        violated_ = v.has_value();
+    }
     return v;
 }
 
-std::optional<Violation> check_file(const std::string& path, bool openai_only, size_t* events) {
+std::optional<Violation> check_file(const std::string& path, bool openai_only, size_t* events, bool blind) {
     std::ifstream in(path);
     if (!in) throw std::runtime_error("can't read " + path);
-    Conformance c(openai_only);
+    Conformance c(openai_only, blind);
     std::string line;
     size_t n = 0;
     std::optional<Violation> v;
