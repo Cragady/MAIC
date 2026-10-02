@@ -1793,6 +1793,174 @@ int main() {
         fake.reply = nullptr;
     }
 
+    section("the checker panel: combine policies, escalation and judged_by");
+    {
+        // The policies as a table, with fake judgements: what each combine decides, and when it asks the next one.
+        auto J = [](const std::string& judge, const std::string& outcome, Verdict v = Verdict::Ask, const std::string& reason = "") {
+            Judgement j;
+            j.judge = j.model = judge;
+            j.outcome = outcome;
+            j.verdict = v;
+            j.reason = reason;
+            return j;
+        };
+        const Judgement allow = J("qwen", "verdict", Verdict::Allow), ask = J("qwen", "verdict", Verdict::Ask, "unsure"), deny = J("qwen", "verdict", Verdict::Deny, "deletes the tests");
+        const Judgement c_allow = J("claude", "verdict", Verdict::Allow), c_ask = J("claude", "verdict", Verdict::Ask), c_deny = J("claude", "verdict", Verdict::Deny, "destructive");
+        auto settled = [](const std::optional<PanelVerdict>& v, Verdict verdict, const std::string& by) { return v && v->verdict == verdict && v->judged_by == by; };
+        expect(settled(settle_checks("escalate", {allow}, 2), Verdict::Allow, "qwen"), "escalate: the primary's ALLOW settles it; the secondary is never asked");
+        bool asks_next = true;
+        for (const auto& first : {ask, deny, J("qwen", "timeout"), J("qwen", "error"), J("qwen", "garbage"), J("qwen", "limit"), J("qwen", "off")}) {
+            asks_next = asks_next && !settle_checks("escalate", {first}, 2);
+        }
+        expect(asks_next, "escalate: a flag (DENY), unsure (ASK), a timeout, an error, no clear verdict, a usage limit or a checker that is off asks the secondary");
+        expect(settled(settle_checks("escalate", {ask, c_allow}, 2), Verdict::Allow, "claude") && settled(settle_checks("escalate", {J("qwen", "timeout"), c_allow}, 2), Verdict::Allow, "claude"),
+               "escalate: the secondary settles the primary's doubt or failure");
+        auto disagree = settle_checks("escalate", {deny, c_allow}, 2);
+        expect(settled(disagree, Verdict::Ask, "user") && disagree->reason.find("the checkers disagree (qwen deny, deletes the tests in 0.0 s; claude allow in 0.0 s)") == 0,
+               "escalate: a denial the secondary would allow goes to the user, never runs silently: " + (disagree ? disagree->reason : ""));
+        expect(settled(settle_checks("escalate", {deny, c_ask}, 2), Verdict::Ask, "user"), "escalate: a denial the secondary is unsure about goes to the user");
+        expect(settled(settle_checks("escalate", {deny, c_deny}, 2), Verdict::Deny, "qwen+claude"), "escalate: a confirmed denial is refused, judged by both");
+        expect(settled(settle_checks("escalate", {deny, J("claude", "error")}, 2), Verdict::Deny, "qwen"), "escalate: a denial stands when the secondary cannot answer");
+        expect(settled(settle_checks("escalate", {ask, J("claude", "timeout")}, 2), Verdict::Ask, "qwen"), "escalate: an ASK stands when the secondary cannot answer");
+        auto down = settle_checks("escalate", {J("qwen", "error", Verdict::Ask, "can't reach"), J("claude", "timeout")}, 2);
+        expect(settled(down, Verdict::Ask, "user") && down->reason.rfind("no checker could answer", 0) == 0, "escalate: every checker down goes to the user");
+        expect(settled(settle_checks("primary", {deny}, 2), Verdict::Deny, "qwen") && settled(settle_checks("primary", {J("qwen", "garbage")}, 2), Verdict::Ask, "user") &&
+                   settled(settle_checks("primary", {allow}, 2), Verdict::Allow, "qwen"),
+               "primary: the first checker alone, and its failure goes to the user");
+        expect(!settle_checks("both", {allow}, 2) && settled(settle_checks("both", {allow, c_allow}, 2), Verdict::Allow, "qwen+claude"), "both: every checker is asked, and all allowing allows");
+        expect(settled(settle_checks("both", {allow, c_ask}, 2), Verdict::Ask, "user") && settled(settle_checks("both", {allow, c_deny}, 2), Verdict::Ask, "user") &&
+                   settled(settle_checks("both", {deny, c_allow}, 2), Verdict::Ask, "user"),
+               "both: any disagreement goes to the user");
+        expect(settled(settle_checks("both", {deny, c_deny}, 2), Verdict::Deny, "qwen+claude") && settled(settle_checks("both", {deny, J("claude", "error")}, 2), Verdict::Deny, "qwen"),
+               "both: an agreed denial is refused, and stands when another checker cannot answer");
+        expect(settled(settle_checks("both", {allow, J("claude", "timeout")}, 2), Verdict::Ask, "user") && settled(settle_checks("both", {J("qwen", "error"), J("claude", "garbage")}, 2), Verdict::Ask, "user"),
+               "both: an ALLOW without the other checker's goes to the user, and so does every checker down");
+
+        // The shipped setups: Qwen without thinking first, Claude Haiku 4.5 on the CLI second, escalating.
+        auto d9 = checker_setup("dual-9b"), d4 = checker_setup("dual-4b");
+        expect(d9 && d4 && !checker_setup("dual") && d9->combine == "escalate" && d9->judges.size() == 2 && d9->judges[0].model == "qwen-9b" && d9->judges[0].think == 0 &&
+                   d4->judges[0].model == "qwen-4b" && d4->judges[0].think == 0 && d9->judges[1].model == "claude-cli/claude-haiku-4-5-20251001",
+               "dual-9b and dual-4b: Qwen non-thinking, then Claude Haiku 4.5 through claude-cli, escalate");
+
+        // The panel in the agent, with fake judges: fm drives the session, fq is the primary, fc the secondary.
+        FakeServer fm, fq, fc;
+        Provider pm = fm.provider(), pq = fq.provider(), pc = fc.provider();
+        pm.name = "main", pq.name = "local", pc.name = "metered";
+        auto is_review = [](const json& b) { return b["messages"][0]["content"].get<std::string>().rfind("You review one action", 0) == 0; };
+        auto asked_of = [&](FakeServer& f) {
+            int n = 0;
+            for (const auto& q : f.requests) n += is_review(q);
+            return n;
+        };
+        int n = 0;
+        struct Run {
+            Recorder r;
+            std::string file;
+            json tool;  // the transcript's tool record
+        };
+        auto run = [&](const std::string& combine, const std::string& q, const std::string& c, std::vector<Checker> judges = {}) {
+            fq.reply = [q](const json&) { return q; };
+            fc.reply = [c](const json&) { return c; };
+            Run out;
+            out.file = "panel" + std::to_string(++n) + ".txt";
+            fm.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", out.file}, {"content", "x"}}}};
+            fm.calls_left = 1;
+            SessionLog log("agent-test");
+            Agent agent(ws, "main/session");
+            agent.providers = {pm, pq, pc};
+            agent.mode = Mode::Auto;
+            agent.checkers = {"", judges.empty() ? std::vector<Checker>{{"local/qwen", 0, 1}, {"metered/claude", 0, 5}} : judges, combine};
+            agent.set_log(&log);
+            out.r.reply = {Approval::Yes, ""};
+            agent.submit("please write the file", Origin::Local, out.r, no_cancel);
+            std::ifstream in(log.path());
+            for (std::string line; std::getline(in, line);) {
+                json j = json::parse(line);
+                if (j.value("type", "") == "tool") out.tool = j;
+            }
+            fs::remove(log.path());
+            return out;
+        };
+        auto noticed = [](const Run& x, const std::string& start) {
+            for (const auto& t : x.r.notices) {
+                if (t.rfind(start, 0) == 0) return true;
+            }
+            return false;
+        };
+        int q0 = asked_of(fq), c0 = asked_of(fc);
+        auto a = run("escalate", "ALLOW: asked for", "DENY: never asked");
+        expect(fs::exists(ws / a.file) && a.r.asked.empty() && asked_of(fq) == q0 + 1 && asked_of(fc) == c0, "escalate: Qwen allows, it runs, and the metered checker is not asked");
+        expect(a.tool["review"].value("judged_by", "") == "local/qwen" && a.tool["review"]["judges"].size() == 1 && a.tool["review"]["judges"][0].value("verdict", "") == "allow" &&
+                   a.tool["review"]["judges"][0].value("think", true) == false && a.tool["review"].value("combine", "") == "escalate",
+               "the transcript records the verdict, the judge's thinking setting and judged_by: " + a.tool.dump());
+        expect(noticed(a, "checked: allow by local/qwen in "), "the user sees who judged it");
+        c0 = asked_of(fc);
+        auto b = run("escalate", "DENY: not asked for", "ALLOW: fine");
+        expect(fs::exists(ws / b.file) && b.r.asked.size() == 1 && b.r.asked[0].reason.find("checkers: the checkers disagree") == 0 && asked_of(fc) == c0 + 1,
+               "escalate: a flag goes to the secondary, and a disagreement to the user, who said yes");
+        expect(b.tool["review"].value("judged_by", "") == "user" && b.tool["review"]["judges"].size() == 2 && b.tool.value("approval", "") == "yes", "judged_by user for a disagreement");
+        expect(noticed(b, "checked: yours to decide (local/qwen deny in "), "the notice shows both verdicts");
+        auto c = run("escalate", "ASK: unusual", "ALLOW: the user asked for it");
+        expect(fs::exists(ws / c.file) && c.r.asked.empty() && c.tool["review"].value("judged_by", "") == "metered/claude" && c.tool["review"].value("model", "") == "metered/claude",
+               "escalate: Qwen unsure, Claude allows: it runs, judged by Claude");
+        auto d = run("escalate", "DENY: destructive", "DENY: destructive");
+        expect(!fs::exists(ws / d.file) && d.r.asked.empty() && !d.r.results.empty() && d.r.results[0].find("DENIED: checkers: local/qwen: destructive; metered/claude") == 0 &&
+                   d.tool["review"].value("judged_by", "") == "local/qwen+metered/claude",
+               "escalate: a confirmed denial is refused without asking");
+        auto g = run("escalate", "maybe it is fine", "ALLOW: fine");
+        expect(fs::exists(ws / g.file) && g.r.asked.empty() && g.tool["review"]["judges"][0].value("outcome", "") == "garbage", "escalate: an unparseable verdict asks the secondary");
+        fq.fail_when = [](const json&) { return true; };
+        auto e = run("escalate", "ALLOW: fine", "ALLOW: fine");
+        expect(fs::exists(ws / e.file) && e.r.asked.empty() && e.tool["review"]["judges"][0].value("outcome", "") == "error", "escalate: an error asks the secondary");
+        fc.fail_when = fq.fail_when;
+        auto all_down = run("escalate", "ALLOW: fine", "ALLOW: fine");
+        expect(all_down.r.asked.size() == 1 && all_down.r.asked[0].reason.find("checkers: no checker could answer") == 0 && all_down.tool["review"].value("judged_by", "") == "user",
+               "every checker down: the call goes to the user");
+        fq.fail_when = fc.fail_when = nullptr;
+        fq.hold_when = [&](const json& body) { return is_review(body); };
+        auto t0 = std::chrono::steady_clock::now();
+        auto t = run("escalate", "ALLOW: too late", "ALLOW: fine");
+        double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        fq.hold_when = nullptr;
+        expect(fs::exists(ws / t.file) && t.r.asked.empty() && t.tool["review"]["judges"][0].value("outcome", "") == "timeout" && took < 5,
+               "escalate: past its 1 s timeout Qwen is cut off and the secondary judges (" + std::to_string(took) + " s)");
+        c0 = asked_of(fc);
+        auto p = run("primary", "DENY: no", "ALLOW: yes");
+        auto pg = run("primary", "hmm", "ALLOW: yes");
+        expect(!fs::exists(ws / p.file) && p.r.asked.empty() && pg.r.asked.size() == 1 && asked_of(fc) == c0, "primary: the first checker alone decides, its failure is asked, the second is never consulted");
+        auto both = run("both", "ALLOW: fine", "ALLOW: fine");
+        auto split = run("both", "ALLOW: fine", "ASK: hmm");
+        expect(fs::exists(ws / both.file) && both.r.asked.empty() && both.tool["review"].value("judged_by", "") == "local/qwen+metered/claude" && split.r.asked.size() == 1 &&
+                   split.tool["review"].value("judged_by", "") == "user",
+               "both: two ALLOWs run it, a disagreement asks");
+        // A judge named by its preset carries the preset's name and model, and its usage limit takes it off the panel.
+        std::vector<ModelPreset> presets = default_presets();
+        fc.fail_when = [](const json&) { return true; };
+        fc.fail_status = 429;
+        fc.fail_body = R"({"error": {"type": "insufficient_quota", "message": "You've reached your usage limit"}})";
+        {
+            fq.reply = [](const json&) { return std::string("ASK: unsure"); };
+            Agent agent(ws, "main/session");
+            agent.providers = {pm, pq, pc};
+            agent.mode = Mode::Auto;
+            agent.checkers = {"", {{"local/qwen", 0, 5}, {"metered/claude", 0, 5}}, "escalate"};
+            Recorder r;
+            r.reply = {Approval::Yes, ""};
+            for (int k = 0; k < 2; ++k) {
+                fm.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", "limit" + std::to_string(k) + ".txt"}, {"content", "x"}}}};
+                fm.calls_left = 1;
+                agent.submit("please write the file", Origin::Local, r, no_cancel);
+            }
+            int limits = 0;
+            for (const auto& x : r.notices) limits += x.rfind("checker metered/claude hit its usage limit", 0) == 0;
+            expect(r.asked.size() == 2 && limits == 1 && r.asked[1].reason.find("checkers: local/qwen: unsure") == 0, "a usage limit takes a checker off the panel once, and Qwen's ASK stands");
+        }
+        fc.fail_when = nullptr;
+        fc.fail_status = 400;
+        fc.fail_body.clear();
+        fq.reply = fc.reply = nullptr;
+    }
+
     section("the reviewer's model, its limits and its spend");
     {
         // fa serves the session's model (Opus), fb the cheaper ones the reviewer may use.

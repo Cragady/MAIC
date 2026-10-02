@@ -150,6 +150,28 @@ bool touches_trust(const Action& action);
 // Whether the action writes a file the user's own instructions import with their approval (maic trust imports).
 bool changes_approved_import(const Action& action);
 
+// One checker's answer on the panel (docs/harness.md, Checkers). `outcome` is "verdict" when it answered ALLOW, ASK
+// or DENY; otherwise why it gave none ("garbage", "timeout", "error", "limit", "off"), and `verdict` is then Ask.
+struct Judgement {
+    std::string judge;  // the preset's name, else the model as written
+    std::string model;
+    bool think = false;
+    std::string outcome;
+    Verdict verdict = Verdict::Ask;
+    std::string reason;
+    long ms = 0;
+};
+// What the panel decided and who decided it: a checker's name, several joined by "+" when all of them did under
+// `both`, or "user" when the call goes to the user because the checkers disagree or none could answer.
+struct PanelVerdict {
+    Verdict verdict = Verdict::Ask;
+    std::string reason;
+    std::string judged_by;
+};
+// The combine policy over the judgements so far, in the panel's order, of `total` checkers: the verdict once it is
+// settled, nullopt while the next checker is to be asked. Never Allow unless a checker that answered allowed it.
+std::optional<PanelVerdict> settle_checks(const std::string& combine, const std::vector<Judgement>& so_far, size_t total);
+
 class Agent {
 public:
     Agent(std::filesystem::path workspace, std::string model);
@@ -306,6 +328,9 @@ public:
     std::string reviewer_model;
     std::string small_model;
     long reviewer_budget_tokens = 0;  // 0 = no cap of its own
+    // The checker panel (settings `checkers`): with judges it reviews in place of reviewer_pick's single reviewer.
+    // Its tokens, usage limits and budget are the reviewer's.
+    Checkers checkers;
     struct ReviewerInfo {
         ModelPick pick;  // pick.model "" when the reviewer is off for the session, pick.reason says why
         long tokens = 0;
@@ -428,6 +453,9 @@ private:
     void save_undo_point(const std::filesystem::path& path, const std::string& summary);  // a file's content before a write; nothing for a directory
     void push_undo(UndoPoint u);
     Decision review(const Action& action, const std::string& summary, const std::string& preview, AgentEvents& events, nlohmann::json& record);
+    // One checker's answer to the review request `req` on `model`; `timeout_s` 0 waits as long as the provider does.
+    Judgement judge(const std::string& model, bool think, int timeout_s, const std::vector<Message>& req);
+    Decision review_panel(const std::vector<Message>& req, AgentEvents& events, nlohmann::json& record);
     void review_budget_check(AgentEvents& events);  // turns the reviewer off, with one notice, once its budget is spent
     void use_preset(const ModelPreset& preset);  // its model, thinking and context window, as apply_preset sets them
     std::string task_agents_text() const;    // the agents task can run, with what each is for

@@ -141,7 +141,7 @@ Every agent tool call goes through `Agent::run_tool_call` (`core/src/agent.cpp`)
 18. **`workdir` for commands** is resolved by the harness; outside the workspace it is asked about like a write there.
 19. **User-defined tools stay inside.** A Lua tool runs in a state with no `io`, `os`, `require` or `load`; its only way to the machine is the `maic` table, whose calls are authorised one by one like built-in calls, logged with the tool call, and refused with a Lua error the model reads. A tool is stopped after 60 s or on Ctrl-C. A script tool ([tools.md](tools.md)) declares in its manifest what it reads and writes; each declaration is judged here as a read or write before the script starts (a write glob outside the workspace is refused, not asked), the arguments are checked against its schema, and the script then runs in the same bubblewrap sandbox as `run_shell`, the workspace writable only when it declared writes, killed at its `timeout_s`. `network: true` in a manifest is refused when it loads.
 
-20. **A second reader.** With `harness = "smart"` (the default is `"dumb"`), a model reads the last few user messages, the agent's last words and the action before any command or write that the rules would let through without asking (auto and edit modes), and answers ALLOW, ASK or DENY. ASK turns into an approval prompt, DENY refuses with the reason in the tool result, and a reviewer that fails or gives no clear verdict means ASK. Reads and actions the user already approved are not reviewed. The review is a separate, tool-less call. Its model, first match wins: `reviewer_model` (the user's pin), the preset's `reviewer` (the local presets review with themselves, which is free and already loaded), `small_model`, then the family's small model, the cheapest non-limited preset on the preset's `subagents` list (haiku-4.5 for the Anthropic presets: a one-line verdict needs no more), then the model itself; the transcript's `review` object records `model` and `model_reason`. The reviewer runs on every command and write in auto and edit modes, so its cost and its limits are held to account: its tokens count toward `budget_tokens`, and `reviewer_budget_tokens` caps them on their own. A reviewer that reports a usage limit is never called again that session: the next review goes to the failed preset's `on_limit` or the cheapest non-limited preset no higher in tier, with one notice, and when none is left, or the cap is reached, the reviewer is off and every action it would have reviewed is asked (fail closed: never silently allowed). A subagent's reviewer follows the same rule from the child's own model. `:harness` shows the model, why, and what it has spent. The reviewer can run on Claude Code with your own plan instead of API billing (`small_model` or `reviewer_model` = `claude-haiku-cli`, [settings.md](settings.md#claude-code-as-a-provider)): the review prompt becomes the CLI's system prompt, its usage limit sends reviews to the API's `haiku-4.5` like any other limit, and a CLI that cannot be run means ASK. A `cli` provider (claude -p) is text only: its tools and MCP servers are off, so it takes no actions and MAIC's harness remains the only judge of what runs. It also loads none of your Claude Code settings files by default (`--setting-sources ""`), so hooks defined there do not run either.
+20. **A second reader.** With `harness = "smart"` (the default is `"dumb"`), a model reads the last few user messages, the agent's last words and the action before any command or write that the rules would let through without asking (auto and edit modes), and answers ALLOW, ASK or DENY. ASK turns into an approval prompt, DENY refuses with the reason in the tool result, and a reviewer that fails or gives no clear verdict means ASK. Reads and actions the user already approved are not reviewed. The review is a separate, tool-less call. Its model, first match wins: `reviewer_model` (the user's pin), the preset's `reviewer` (the local presets review with themselves, which is free and already loaded), `small_model`, then the family's small model, the cheapest non-limited preset on the preset's `subagents` list (haiku-4.5 for the Anthropic presets: a one-line verdict needs no more), then the model itself; the transcript's `review` object records `model` and `model_reason`. The reviewer runs on every command and write in auto and edit modes, so its cost and its limits are held to account: its tokens count toward `budget_tokens`, and `reviewer_budget_tokens` caps them on their own. A reviewer that reports a usage limit is never called again that session: the next review goes to the failed preset's `on_limit` or the cheapest non-limited preset no higher in tier, with one notice, and when none is left, or the cap is reached, the reviewer is off and every action it would have reviewed is asked (fail closed: never silently allowed). A subagent's reviewer follows the same rule from the child's own model. `:harness` shows the model, why, and what it has spent. The reviewer can run on Claude Code with your own plan instead of API billing (`small_model` or `reviewer_model` = `claude-haiku-cli`, [settings.md](settings.md#claude-code-as-a-provider)): the review prompt becomes the CLI's system prompt, its usage limit sends reviews to the API's `haiku-4.5` like any other limit, and a CLI that cannot be run means ASK. A `cli` provider (claude -p) is text only: its tools and MCP servers are off, so it takes no actions and MAIC's harness remains the only judge of what runs. It also loads none of your Claude Code settings files by default (`--setting-sources ""`), so hooks defined there do not run either. With `checkers` in your global settings a panel of judges takes the reviewer's place: see [Checkers](#checkers-a-panel-of-judges-built).
 
 21. **An allow list.** `allow` in settings (and `:allow` in a session) holds command patterns the user pre-approved; they run in every mode but plan without an approval prompt and without the second reader. MAIC's own helpers are on it by default. An entry, a helper's read-only shape and a session's "always" for a program match only one simple command: a command with `;`, `&`, `|`, a line break, a backtick, `$(`, `<(`, `>(`, `>` or `<` anywhere matches none of them (`is_simple_command`), so `maic path && rm -rf .` is not `maic path*`; it gets the mode's own decision, asked in manual and reviewed in auto. Trip patterns are checked first and still win; the sandbox still applies.
 
@@ -179,6 +179,61 @@ Existing protections in the service manager (`core/src/service.cpp`):
 * MAIC only signals processes it started. Each PID file stores the PID **and** the process's start time from `/proc`, so a reused PID never matches.
 * It refuses to stop anything on a service's port that it didn't start.
 * It signals a whole process group only if the group is still the one MAIC created.
+
+## Checkers: a panel of judges (built)
+
+The smart harness's second reader can be an ordered panel of judges instead of one model. It is still MAIC's one harness ([harness-authority.md](harness-authority.md)): the judges only answer ALLOW, ASK or DENY on a command or write the rules would let through without asking, the fixed rules decide first and no verdict lifts them, and every entry names the judge that decided.
+
+**Turning it on.** In your global settings (`~/.config/maic/settings.lua`; a project's `checkers` is ignored with a warning, so a cloned repository can neither weaken the panel nor spend your Claude plan):
+
+```lua
+harness = "smart",     -- the default stays "dumb"
+checkers = "dual-9b",  -- or "dual-4b"
+model = "qwen-9b",     -- the session on the first judge's model (qwen-4b with dual-4b), or that model linked as current
+```
+
+`:harness` lists the panel and what it has spent. `checkers = ""` (the default) keeps the single reviewer.
+
+**The shipped setups.**
+
+| Setup | First judge | Second judge | Combine |
+| :--- | :--- | :--- | :--- |
+| `dual-9b` (recommended) | `qwen-9b`, thinking off, 20 s | Claude Haiku 4.5 on your Claude plan (`claude-cli/claude-haiku-4-5-20251001`), 60 s | `escalate` |
+| `dual-4b` | `qwen-4b`, thinking off, 20 s | the same | `escalate` |
+
+**Why this setup, for Micaiah's 8 GB card.**
+
+* **Thinking off.** Measured on the 9B ([roadmap.md](roadmap.md#real-model-checks-optional-highly-recommended), 2026-10-02): the audit judge took about 40 s for 6 candidates with thinking on and about 7 s with it off, with the same verdicts. A verdict is one line; thinking added about 5 s per verdict and changed none of them.
+* **The 9B first when the card runs it.** It follows long instructions and tool-shaped prompts better than the 4B ([models.md](models.md)), and a review is a long instruction plus the conversation. It costs no extra memory when it is the model the session already runs: `qwen-9b` at 16k takes about 7.4 GB, so nothing fits beside it, and the judge has to be that same resident model. `dual-4b` is for sessions on `qwen-4b` (a shared card, ComfyUI parked, or speed above depth): a judge on another model than the session's makes llama-server swap models on every check (it keeps one resident), which costs far more than the 9B's extra second.
+* **Claude only when Qwen does not settle the call.** Her plan's usage is limited, so Haiku 4.5, the fastest and cheapest Claude model through `claude-cli`, is asked only on escalation. The full model id is pinned, so the `haiku` alias moving to a newer model never changes what she spends. An escalated check sends the review request (the last few user messages, the agent's last words and the command or change) to Anthropic, as any remote reviewer does.
+* **Fail closed.** No verdict, from any judge, can make a call run silently that a judge denied.
+
+**How verdicts combine** (`combine`):
+
+| Policy | What decides |
+| :--- | :--- |
+| `primary` | the first judge alone; if it cannot answer, the call is asked |
+| `escalate` (default) | the first judge; the next is asked only when it does not allow: it flags the call (DENY), is unsure (ASK), times out, errors, gives no clear verdict, hit its usage limit, or was taken off earlier. The next judge's ALLOW settles an ASK or a failure. It cannot overrule a DENY: a DENY it would allow or is unsure about goes to the user, a DENY it confirms is refused, and a DENY stands when no later judge answers |
+| `both` | every judge is asked; all ALLOW runs it, all DENY refuses it, any disagreement or a judge that could not answer (unless the rest deny) goes to the user |
+
+When no judge can answer, down, timed out or unparseable, the call goes to the user. A judge that hits its usage limit is skipped for the rest of the session, with one notice. `reviewer_budget_tokens` counts every judge's tokens; past it every call the panel would judge is asked.
+
+**Where the judges run.** A judge is a preset or `provider/model`. One on `llamacpp` goes to the side server `llamacpp-2` (port 8082) with the same model name when that server answers, else to the main server (8081), as the single reviewer does; a check never starts a server. With the 9B on the main server keep the side server down: a second 9B does not fit 8 GB. A Claude Code judge runs as the reviewer does on the CLI: a kept process, text only, no tools ([settings.md](settings.md#claude-code-as-a-provider)).
+
+**What you see.** Each judged call gets one line before it runs or is asked: `checked: allow by qwen-9b in 1.1 s`; after an escalation `checked: allow by claude-cli/claude-haiku-4-5-20251001 (qwen-9b ask in 1.0 s; claude-cli/claude-haiku-4-5-20251001 allow in 2.8 s)`; when it goes to you, `checked: yours to decide (...)` and the approval prompt with both reasons. In the transcript, the tool record's `review` holds `combine`, `judges` (per judge: `judge`, `model`, `think`, `outcome` (`verdict`, `timeout`, `error`, `garbage`, `limit` or `off`), `verdict`, `reason`, `ms`) and `judged_by`: the judge that decided, two joined by `+` when both did, or `user`. The audit trail's entry carries `review.judged_by` too. The engine protocol does not carry reviews yet ([limits.md](limits.md#the-checker-panel)).
+
+**Written out**, for a panel of your own:
+
+```lua
+checkers = {
+  judges = { { model = "qwen-9b", think = false, timeout = 20 }, { model = "claude-haiku-cli", timeout = 60 } },
+  combine = "escalate",
+}
+```
+
+A judge is a string (a preset or `provider/model`) or a table; `think` defaults to the preset's own setting, `timeout` to 30 seconds.
+
+Tests: `core/tests/agent_test.cpp` ("the checker panel": every policy as a table, the shipped setups, and fake judges in the agent for each escalation trigger, a disagreement, every judge down, a usage limit and `judged_by` in the transcript), `core/tests/protocol_conformance_test.cpp` (the panel through the engine: a disagreement is an approval, the stream conforms, the transcript records it) and `core/tests/robustness_test.cpp` (the setting: global only, setups, a written-out panel, refused values).
 
 ## Windows version (not built; design notes)
 

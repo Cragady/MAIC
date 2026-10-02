@@ -783,6 +783,7 @@ struct Engine::Impl {
     void configure(Agent& a, const Settings& st, Mode mode) {
         a.review_with_model = st.harness != "dumb";
         a.reviewer_model = st.reviewer_model;
+        a.checkers = st.checkers;
         if (mode == Mode::Auto && !a.review_with_model && !st.dumb_auto_ok) mode = Mode::Edit;
         a.providers = st.providers;
         a.set_forbid(st.forbid);
@@ -3331,6 +3332,7 @@ void configure_agent(Agent& a, const Settings& st) {
     a.review_with_model = st.harness != "dumb";
     a.audit = st.audit;
     a.reviewer_model = st.reviewer_model;
+    a.checkers = st.checkers;
     a.small_model = st.small_model;
     a.reviewer_budget_tokens = st.reviewer_budget_tokens;
     a.presets = st.presets;

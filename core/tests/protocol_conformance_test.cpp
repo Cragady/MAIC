@@ -1190,6 +1190,52 @@ int main() {
         asked_rec.finish();
     }
 
+    section("the checker panel through the engine: a disagreement is the user's approval, judged_by in the transcript");
+    {
+        // Fake judges: the local one flags the write, the metered one would allow it, so it goes to the user.
+        FakeServer fq, fc;
+        Provider pq = fq.provider(), pc = fc.provider();
+        pq.name = "local", pc.name = "metered";
+        fq.reply = [](const json&) { return std::string("DENY: nobody asked for that file"); };
+        fc.reply = [](const json&) { return std::string("ALLOW: the user asked for it"); };
+        EngineOptions op = o;
+        op.settings.harness = "smart";
+        op.settings.providers = {fake.provider(), pq, pc};
+        op.settings.checkers = {"", {{"local/qwen", 0, 5}, {"metered/claude", 0, 5}}, "escalate"};
+        op.index_file = root / "state" / "engine-checkers" / "index.json";
+        op.protocol_log = root / "state" / "engine-checkers" / "protocol.log";
+        Engine e(op);
+        Recording rec("checkers");
+        TestClient a(e, rec, Origin::Local, "tui");
+        a.hello();
+        json conv = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}, {"mode", "edit"}}}});
+        a.ok("maic.session.subscribe", {{"session", conv["id"]}});
+        size_t mark = a.events.size();
+        plan({json{{"name", "write_file"}, {"arguments", {{"path", "checked.txt"}, {"content", "x"}}}}});
+        a.ok("response.create", {{"conversation", conv["id"]}, {"input", "write checked.txt"}});
+        long at = a.until_type("maic.approval.requested", mark);
+        json approval = at > 0 ? a.events[at] : json::object();
+        long noticed = a.until([](const json& ev) { return ev["type"] == "maic.notice" && ev.value("text", "").rfind("checked: yours to decide (local/qwen deny in ", 0) == 0; }, mark);
+        expect(at > 0 && approval.value("reason", "").rfind("checkers: the checkers disagree", 0) == 0 && noticed >= 0,
+               "edit mode: the write the rules allow is judged, the checkers disagree, and the user is asked with both verdicts in view");
+        if (at > 0) a.ok("maic.approval.answer", {{"session", conv["id"]}, {"approval", approval["id"]}, {"choice", "yes"}});
+        expect(a.until_idle(at) > 0 && fs::exists(ws / "checked.txt"), "the user's yes runs it");
+        json record;
+        for (const auto& f : fs::recursive_directory_iterator(root / "state")) {
+            if (f.path().extension() != ".jsonl") continue;
+            std::ifstream in(f.path());
+            for (std::string line; std::getline(in, line);) {
+                json j = json::parse(line, nullptr, false);
+                if (j.is_object() && j.value("type", "") == "tool" && j.contains("review") && j["arguments"].value("path", "") == "checked.txt") record = j;
+            }
+        }
+        expect(!record.is_null() && record["review"].value("judged_by", "") == "user" && record["review"]["judges"].size() == 2 &&
+                   record["review"]["judges"][0].value("verdict", "") == "deny" && record["review"]["judges"][1].value("verdict", "") == "allow" && record.value("approval", "") == "yes",
+               "the session's transcript records each judge's verdict, judged_by and the user's answer");
+        fs::remove(ws / "checked.txt");
+        rec.finish();
+    }
+
     section("protocol tiers per session: the default, a directory's, :tier, a resumed session's own; and leaving a session");
     {
         fs::path open_dir = root / "ws-open", air_dir = root / "ws-air";
