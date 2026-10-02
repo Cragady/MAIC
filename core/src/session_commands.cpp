@@ -398,7 +398,7 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
             if (arg.empty()) {
                 std::string list = "model: " + agent.model + "\npresets (:model NAME):" + preset_lines(s.settings);
                 list += "\nproviders:";
-                for (const auto& p : agent.providers) list += "\n  " + p.name + "/<model>  (" + p.kind + ", " + (p.kind == "cli" ? p.options.value("command", "") + ", text only" : p.base_url) + (p.remote() ? ", REMOTE)" : ")");
+                for (const auto& p : agent.providers) list += "\n  " + p.name + "/<model>  (" + p.kind + ", " + (p.kind == "cli" ? p.options.value("command", "") + ", MAIC's tools over MCP" : p.base_url) + (p.remote() ? ", REMOTE)" : ")");
                 out.info(list);
             } else if (idle()) {
                 set_model(s, out, arg);

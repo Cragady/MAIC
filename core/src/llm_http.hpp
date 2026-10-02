@@ -60,7 +60,8 @@ Message chat_anthropic(const Provider&, const ChatOptions&, const std::vector<Me
                        const TextSink&, const std::atomic<bool>&);
 Message chat_openai(const Provider&, const ChatOptions&, const std::vector<Message>&, const nlohmann::json& tools,
                     const TextSink&, const std::atomic<bool>&);
-// A `cli` provider: refuses tool schemas (text only), runs the CLI headless and keeps it for the next request.
+// A `cli` provider: runs the CLI headless and keeps it for the next request; text only without tool schemas, and
+// with them the agent loop on MAIC's tools over MCP (level 2).
 Message chat_cli(const Provider&, const ChatOptions&, const std::vector<Message>&, const nlohmann::json& tools,
                  const TextSink&, const std::atomic<bool>&);
 

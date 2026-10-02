@@ -133,7 +133,7 @@ std::vector<Provider> default_providers() {
          {{"max_tokens", 64000}, {"effort", "high"}, {"think_effort", "xhigh"}, {"fallbacks", "default"}}},
         {"deepseek", "openai", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "", nlohmann::json::object()},
         {"openrouter", "openai", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "", nlohmann::json::object()},
-        // Claude Code run headless as a text-only model, on the user's own login and plan (docs/settings.md).
+        // Claude Code run headless on the user's own login and plan: text only, or the agent on MAIC's tools (docs/settings.md).
         {"claude-cli", "cli", "", "", "", {{"command", "claude"}, {"args", nlohmann::json::array()}}},
     };
 }

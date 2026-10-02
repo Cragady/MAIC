@@ -739,12 +739,118 @@ int main() {
                "a usage limit in the result line is an ApiError that is_usage_limit knows: " + what);
         expect(ask(cli, "haiku", "be brief", "still there").content.find("still there") != std::string::npos, "and the process stays usable after it");
 
-        size_t before = fake_claude::spawns(dir).size();
-        std::string refused;
-        try { chat(cli, {"sonnet"}, hello, kTools, [](std::string_view, bool) {}, no_cancel); } catch (const std::exception& e) { refused = e.what(); }
-        expect(refused == "claude-cli is a text-only provider here; use it for small_model, the reviewer, titles or compaction; agent use arrives with level 2" &&
-                   fake_claude::spawns(dir).size() == before,
-               "tool schemas are refused before anything starts: " + refused);
+        {
+            // Level 2: with tool schemas the CLI runs the loop on MAIC's tools over MCP. Each reply stops at its
+            // calls; the next request carries their results, which go back over MCP, and the CLI continues.
+            setenv("XDG_RUNTIME_DIR", (dir / "run").c_str(), 1);
+            fs::create_directories(dir / "run");
+            const json run_shell = {{"type", "function"}, {"function", {{"name", "run_shell"}, {"description", "Run"}, {"parameters", {{"type", "object"}, {"properties", {{"command", {{"type", "string"}}}}}}}}}};
+            const json tools = json::array({kTools[0], run_shell});
+            auto send = [&](std::vector<Message>& convo, std::string* streamed = nullptr, const std::atomic<bool>& cancel = no_cancel) {
+                Message r = chat(cli, {"sonnet"}, convo, tools, [&](std::string_view d, bool) { if (streamed) *streamed += d; }, cancel);
+                convo.push_back(r);
+                return r;
+            };
+            auto result_for = [](const ToolCall& c, const std::string& text, bool error = false) { return Message{"tool", text, {}, c.name, c.id, error}; };
+            size_t spawned = fake_claude::spawns(dir).size();
+            std::vector<Message> convo = {{"system", "agent system"}, {"user", "look at a\nCALL read_file {\"path\": \"a.txt\"}"}};
+            std::string streamed;
+            Message step = send(convo, &streamed);
+            auto starts = fake_claude::spawns(dir);
+            json argv = starts.size() > spawned ? starts.back()["argv"] : json::array();
+            auto after = [&](const std::string& flag) {
+                for (size_t i = 0; i + 1 < argv.size(); ++i) if (argv[i] == flag) return argv[i + 1].get<std::string>();
+                return std::string("(absent)");
+            };
+            json servers = json::parse(after("--mcp-config"), nullptr, false).value("mcpServers", json::object());
+            json maic = servers.value("maic", json::object());
+            std::string socket_path = maic.value("args", json::array()).size() == 2 ? maic["args"][1].get<std::string>() : "";
+            expect(starts.size() == spawned + 1 && after("--tools").empty() && servers.size() == 1 && maic.value("type", "") == "stdio" &&
+                       maic.value("command", "") == fs::read_symlink("/proc/self/exe").string() && maic["args"][0] == "mcp-bridge" &&
+                       socket_path.rfind((dir / "run" / "maic" / "mcp").string(), 0) == 0 && after("--allowedTools") == "mcp__maic" && after("--permission-mode") == "dontAsk",
+                   "an agent starts with its own tools off and only MAIC's MCP server, pre-approved, reached through `maic mcp-bridge` on a socket in the runtime directory: " + argv.dump());
+            expect(starts.back().value("tool_timeout", "") == "86400000" && !starts.back().value("api_key", true),
+                   "a call may wait on the harness a day before the CLI gives up on it, and the plan's login is used, not the API key");
+            struct stat st{};
+            expect(stat(socket_path.c_str(), &st) == 0 && S_ISSOCK(st.st_mode) && (st.st_mode & 0777) == 0600, "the socket is the user's alone");
+            auto shakes = fake_claude::handshakes(dir);
+            json shake = shakes.empty() ? json::object() : shakes.back();
+            json listed = shake.value("tools", json::object()).value("result", json::object()).value("tools", json::array());
+            expect(shake["initialize"]["result"]["protocolVersion"] == "2025-06-18" && shake["initialize"]["result"]["capabilities"].contains("tools") &&
+                       listed.size() == 2 && listed[0]["name"] == "read_file" && listed[0]["inputSchema"]["properties"].contains("path") && listed[1]["name"] == "run_shell" &&
+                       shake["unknown"]["error"]["code"] == -32601,
+                   "MCP: the handshake keeps the client's version, tools/list serves MAIC's tools as MCP Tool objects, an unknown method is -32601: " + shake.dump());
+            expect(step.tool_calls.size() == 1 && step.tool_calls[0].name == "read_file" && step.tool_calls[0].arguments == json{{"path", "a.txt"}} &&
+                       step.tool_calls[0].id.rfind("toolu_", 0) == 0 && step.content == "calling read_file" && streamed == step.content && step.usage.input == 13 && step.usage.output == 4,
+                   "the reply ends at the CLI's call, MAIC's tool name without the mcp__maic__ prefix, with the text before it and the step's usage: " + message_to_json(step).dump());
+            convo.push_back(result_for(step.tool_calls[0], "contents of a"));
+            Message done = send(convo);
+            int agent_pid = pid_of(done);
+            expect(done.tool_calls.empty() && done.content.find("results: contents of a") != std::string::npos && fake_claude::spawns(dir).size() == spawned + 1,
+                   "the result goes back over MCP and the same process finishes the turn: " + done.content);
+
+            convo.push_back({"user", "now two in a row\nCALL read_file {\"path\": \"b\"}\nCALL run_shell {\"command\": \"ls\"}"});
+            Message first_call = send(convo);
+            convo.push_back(result_for(first_call.tool_calls.at(0), "contents of b"));
+            Message second_call = send(convo);
+            convo.push_back(result_for(second_call.tool_calls.at(0), "denied by the user", true));
+            convo.push_back({"user", "use the read instead"});
+            Message after_two = send(convo);
+            expect(first_call.tool_calls[0].name == "read_file" && second_call.tool_calls[0].name == "run_shell" && pid_of(after_two) == agent_pid &&
+                       after_two.content.find("results: contents of b | ERROR denied by the user\n\n[User]: use the read instead") != std::string::npos,
+                   "calls one step at a time, a refused call reaches it as an error, and a message sent mid-turn rides on the last result: " + after_two.content);
+
+            convo.push_back({"user", "both\nPARALLEL\nCALL read_file {\"path\": \"c\"}\nCALL read_file {\"path\": \"d\"}"});
+            Message both = send(convo);
+            expect(both.tool_calls.size() == 2 && both.tool_calls[0].arguments["path"] == "c" && both.tool_calls[1].arguments["path"] == "d", "parallel calls come back together");
+            convo.push_back(result_for(both.tool_calls[1], "contents of d"));
+            convo.push_back(result_for(both.tool_calls[0], "contents of c"));
+            Message out_of_order = send(convo);
+            expect(pid_of(out_of_order) != agent_pid && out_of_order.content.find("call 1:") != std::string::npos,
+                   "results the CLI cannot be answered from (out of order) hand the conversation to a new process: " + out_of_order.content);
+            convo.erase(convo.end() - 3, convo.end());
+            convo.push_back(result_for(both.tool_calls[0], "contents of c"));
+            convo.push_back(result_for(both.tool_calls[1], "contents of d"));
+            size_t before_replay = fake_claude::spawns(dir).size();
+            Message replayed = send(convo);
+            expect(fake_claude::spawns(dir).size() == before_replay + 1 && replayed.content.find("[Tool result (read_file)]: contents of b") != std::string::npos &&
+                       replayed.content.find("(called read_file {\"path\":\"c\"})") != std::string::npos,
+                   "a conversation the process has not followed is replayed whole to a new one, calls and results written out: " + replayed.content);
+
+            std::vector<Message> stray = {{"system", "agent system"}, {"user", "STRAY"}};
+            std::string stray_err;
+            try { send(stray); } catch (const std::exception& e) { stray_err = e.what(); }
+            expect(stray_err == "claude-cli/sonnet: it called Bash, which is not one of MAIC's tools", "a call to anything but MAIC's tools is an error: " + stray_err);
+
+            std::vector<Message> waiting = {{"system", "agent system"}, {"user", "wait\nCALL read_file {\"path\": \"w\"}"}};
+            Message pending = send(waiting);
+            waiting.push_back({"tool", "x", {}, "read_file", "some-other-id", false});
+            size_t before_other = fake_claude::spawns(dir).size();
+            Message elsewhere = send(waiting);
+            expect(!pending.tool_calls.empty() && fake_claude::spawns(dir).size() == before_other + 1 && elsewhere.content.find("call 1: [User]: wait") != std::string::npos,
+                   "a result for a call it never made starts over too: " + elsewhere.content);
+            bool cancelled = false;
+            std::vector<Message> slow = {{"system", "agent system"}, {"user", "HANG"}};
+            std::atomic<bool> stop2{false};
+            std::thread stopper2([&] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                stop2 = true;
+            });
+            try { send(slow, nullptr, stop2); } catch (const Cancelled&) { cancelled = true; }
+            stopper2.join();
+            expect(cancelled, "cancel stops an agent's request in flight");
+
+            Provider one = cli;
+            one.options["max_agents"] = 1;
+            std::vector<Message> c1 = {{"system", "solo"}, {"user", "first conversation"}};
+            std::vector<Message> c2 = {{"system", "solo"}, {"user", "second conversation"}};
+            Message r1 = chat(one, {"sonnet"}, c1, tools, [](std::string_view, bool) {}, no_cancel);
+            int p1 = pid_of(r1);
+            chat(one, {"sonnet"}, c2, tools, [](std::string_view, bool) {}, no_cancel);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            expect(p1 > 0 && kill(p1, 0) != 0, "past max_agents the conversation idle longest loses its process");
+            unsetenv("XDG_RUNTIME_DIR");
+        }
 
         expect(generate_title(cli, "haiku", "How big should the ears be?") == "Title from haiku", "titles work through it");
 

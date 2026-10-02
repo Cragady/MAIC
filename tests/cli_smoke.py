@@ -268,12 +268,13 @@ def main():
 
     print(("ok" if read_ok else "FAIL") + ": maic settings read diction" + ("" if read_ok else "\n" + r.stdout[-1500:] + r.stderr[-1500:]))
     models_ok = models_smoke(maic, port)
+    mcp_ok = mcp_smoke(maic, port)
     trust_ok = trust_smoke(maic, port)
     trail_ok = audit_trail_smoke(maic, port)
     rpc_ok = rpc_smoke(maic, port)
     ui_ok = nvim_ui_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if rpc_ok and ui_ok and ok and stream_ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok else 1)
+    sys.exit(0 if rpc_ok and ui_ok and ok and stream_ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok and mcp_ok else 1)
 
 
 class RpcClient:
@@ -646,6 +647,36 @@ def rehome_smoke(maic, env, home):
     report(r.returncode == 1 and L + " is running (pid %d)" % os.getpid() in r.stderr and where(L) == "general" and where(X) == "rh",
            "a running session is refused with the reason and nothing moves", r)
     return all(results)
+
+
+def mcp_smoke(maic, port):
+    """Claude Code as the agent (level 2) through the real binary: the fake `claude` from core/tests/fake_claude.hpp
+    starts `maic mcp-bridge SOCKET` from its MCP config, as Claude Code would, and calls MAIC's read_file through it.
+    The real `claude` is never run: PATH holds only the fake and the system directories."""
+    home, env = make_home(port)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "core", "tests", "fake_claude.hpp")) as f:
+        header = f.read()
+    script = header[header.index('R"PY(') + 5:header.index(')PY"')]
+    bindir = os.path.join(home, "bin")
+    os.makedirs(bindir)
+    with open(os.path.join(bindir, "claude"), "w") as f:
+        f.write(script)
+    os.chmod(os.path.join(bindir, "claude"), 0o755)
+    env.update(PATH=bindir + ":/usr/bin:/bin", FAKE_CLAUDE_DIR=home, FAKE_CLAUDE_BRIDGE="1")
+    with open(os.path.join(home, "note.txt"), "w") as f:
+        f.write("big fluffy fennec ears\n")
+    r = subprocess.run([maic, "-p", 'CALL read_file {"path": "note.txt"}', "--model", "claude-cli/sonnet"], capture_output=True, text=True, env=env,
+                       cwd=home, timeout=60, stdin=subprocess.DEVNULL)
+    shakes = []
+    if os.path.exists(os.path.join(home, "mcp.jsonl")):
+        with open(os.path.join(home, "mcp.jsonl")) as f:
+            shakes = [json.loads(l) for l in f if l.strip()]
+    ok = (r.returncode == 0 and "results: " in r.stdout and "fennec ears" in r.stdout and len(shakes) == 1
+          and shakes[0]["tools"]["result"]["tools"] and not os.listdir(os.path.join(env["XDG_RUNTIME_DIR"], "maic", "mcp")))
+    print(("ok" if ok else "FAIL") + ": claude-cli as the agent: the bridge carries MCP to MAIC's tools, read_file runs, the socket is gone after"
+          + ("" if ok else "\n" + r.stdout[-2000:] + r.stderr[-2000:] + json.dumps(shakes)[:2000]))
+    return ok
 
 
 def models_smoke(maic, port):

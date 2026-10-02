@@ -35,7 +35,7 @@ std::vector<ModelPreset> default_presets() {
         // vision projector at 8k, the most an 8 GB card holds for it.
         {"qwen-9b", "llamacpp/Qwen3.5-9B-Q4_K_M-text", 16384, "same", 0, 12, false, local},
         {"qwen-9b-vision", "llamacpp/Qwen3.5-9B-Q4_K_M", 8192, "same", 0, 12, false, local},
-        // Claude Code on the user's own login and plan, text only: for small_model, the reviewer and summaries.
+        // Claude Code on the user's own login and plan: the helpers' model, or the agent on MAIC's tools over MCP.
         {"claude-haiku-cli", "claude-cli/haiku", 200000, "", -1, 20, false, {}},
         {"claude-sonnet-cli", "claude-cli/sonnet", 1000000, "", -1, 30, false, {}},
     };

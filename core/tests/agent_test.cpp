@@ -1990,12 +1990,41 @@ int main() {
             expect(write_turn(*a, r2, "next") && r2.asked.empty() && reviews_on_fake() == 1, "the next review runs on haiku-4.5");
         }
         {
+            // Level 2: Claude Code as the session's model runs the loop; every call it makes goes through MAIC's
+            // harness like any model's: asked in manual mode, refused when the person says no, in the transcript.
+            const char* old_rt = std::getenv("XDG_RUNTIME_DIR");
+            std::string saved_rt = old_rt ? old_rt : "";
+            setenv("XDG_RUNTIME_DIR", (ws / "run-l2").c_str(), 1);
+            fs::create_directories(ws / "run-l2");
+            SessionLog log("agent-test");
             Agent a(ws, "claude-cli/sonnet");
             a.providers = {fake.provider(), cli};
+            a.mode = Mode::Manual;
+            a.set_log(&log);
             Recorder r;
-            std::string err;
-            try { a.submit("hello", Origin::Local, r, no_cancel); } catch (const std::exception& e) { err = e.what(); }
-            expect(err.find("claude-cli is a text-only provider here") == 0, "as the session's model it refuses the agent loop's tools: " + err);
+            r.reply = {Approval::Yes, ""};
+            a.submit("CALL write_file {\"path\": \"l2-a.txt\", \"content\": \"from claude\"}", Origin::Local, r, no_cancel);
+            std::ifstream written(ws / "l2-a.txt");
+            std::string got((std::istreambuf_iterator<char>(written)), std::istreambuf_iterator<char>());
+            expect(r.asked.size() == 1 && got == "from claude" && r.text.find("results: ") != std::string::npos,
+                   "Claude Code's write is asked in manual mode, then runs, and its result goes back to it: " + r.text);
+            Recorder no;
+            a.submit("CALL run_shell {\"command\": \"touch l2-b.txt\"}", Origin::Local, no, no_cancel);
+            expect(no.asked.size() == 1 && !fs::exists(ws / "l2-b.txt") && no.text.find("results: ERROR") != std::string::npos,
+                   "a call the person refuses does not run, and Claude Code hears it as an error: " + no.text);
+            int tools = 0;
+            std::ifstream in(log.path());
+            for (std::string l; std::getline(in, l);) {
+                json j = json::parse(l, nullptr, false);
+                if (j.is_object() && j.value("type", "") == "tool" && (j.value("tool", "") == "write_file" || j.value("tool", "") == "run_shell")) ++tools;
+            }
+            expect(tools == 2, "both calls are in the transcript as MAIC's own tool records (" + std::to_string(tools) + ")");
+            size_t spawned = 0;
+            for (const auto& sp : fake_claude::spawns(dir)) spawned += sp["argv"].dump().find("mcp__maic") != std::string::npos;
+            expect(spawned == 1, "one Claude Code process carried the conversation across both turns (" + std::to_string(spawned) + ")");
+            fs::remove(log.path());
+            if (old_rt) setenv("XDG_RUNTIME_DIR", saved_rt.c_str(), 1);
+            else unsetenv("XDG_RUNTIME_DIR");
         }
         std::vector<Message> hist = {{"system", "sys"}, {"user", "turn 1"}, {"assistant", "reply 1"}, {"user", "turn 2"}, {"assistant", "reply 2"}};
         {

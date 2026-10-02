@@ -11,6 +11,7 @@
 #include "maic/nvim_keymaps.hpp"
 #include "maic/nvim_setup.hpp"
 #include "maic/paths.hpp"
+#include "maic/llm.hpp"
 #include "maic/protocol.hpp"
 #include "maic/redact.hpp"
 #include "maic/service.hpp"
@@ -1231,6 +1232,8 @@ int cmd_settings(const std::vector<std::string>& args) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // A `cli` agent's MCP server (level 2): nothing else of MAIC runs in it, settings and trust included.
+    if (argc == 3 && std::string(argv[1]) == "mcp-bridge") return maic::run_mcp_bridge(argv[2]);
     // --trust first: it decides which project settings the loads below may apply. The global settings are read
     // before it, for where the chain of project directories ends (instructions.bound).
     for (int i = 1; i < argc; ++i) {
