@@ -9,6 +9,8 @@
 
 namespace maic {
 
+struct Settings;
+
 struct TuiOptions {
     std::optional<std::string> model;  // overrides settings
     std::optional<std::string> mode;
@@ -35,5 +37,12 @@ struct TuiOptions {
 
 // The interactive agent: full-screen, vim-style input and navigation.
 int run_tui(const TuiOptions& options);
+
+// The settings files for `workspace` with the command line's flags over them.
+Settings tui_settings(const TuiOptions& options, const std::filesystem::path& workspace);
+
+// `maic --rpc`: the engine on stdio, JSON-RPC 2.0 one message per line, for an interface that is not this terminal
+// (maic.nvim's interface mode). Its sessions are set up as the TUI's, from the same flags.
+int run_rpc(const TuiOptions& options);
 
 }  // namespace maic

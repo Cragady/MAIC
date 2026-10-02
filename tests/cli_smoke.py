@@ -252,8 +252,186 @@ def main():
     models_ok = models_smoke(maic, port)
     trust_ok = trust_smoke(maic, port)
     trail_ok = audit_trail_smoke(maic, port)
+    rpc_ok = rpc_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if ok and stream_ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok else 1)
+    sys.exit(0 if rpc_ok and ok and stream_ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok else 1)
+
+
+class RpcClient:
+    """`maic --rpc` driven as maic.nvim drives it: one JSON-RPC message per line each way. With `record`, every
+    message is written as `maic protocol check` reads a connection, a request before its answer."""
+
+    def __init__(self, maic, env, cwd, record=None):
+        self.p = subprocess.Popen([maic, "--rpc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd)
+        self.rec = open(record, "w") if record else None
+        self.lock = threading.Lock()
+        self.cv = threading.Condition(self.lock)
+        self.msgs, self.answers, self.next = [], {}, 1
+        self.stderr = b""
+        threading.Thread(target=self._read, daemon=True).start()
+        threading.Thread(target=self._read_stderr, daemon=True).start()
+
+    def _record(self, d, msg):
+        if self.rec:
+            self.rec.write(json.dumps({"dir": d, "conn": "c1", "msg": msg}) + "\n")
+            self.rec.flush()
+
+    def _read(self):
+        for line in self.p.stdout:
+            msg = json.loads(line)
+            with self.cv:
+                if "id" in msg and "method" not in msg and msg["id"] is not None:
+                    self._record("out", msg)
+                    self.answers[msg["id"]] = msg
+                elif "method" in msg:
+                    self._record("out", msg)
+                self.msgs.append(msg)
+                self.cv.notify_all()
+
+    def _read_stderr(self):
+        self.stderr = self.p.stderr.read()
+
+    def send(self, method, params=None, raw=None):
+        with self.cv:
+            if raw is not None:
+                self.p.stdin.write(raw)
+                self.p.stdin.flush()
+                return None
+            i, self.next = self.next, self.next + 1
+            msg = {"jsonrpc": "2.0", "id": i, "method": method, "params": params or {}}
+            self._record("in", msg)
+            self.p.stdin.write((json.dumps(msg) + "\n").encode())
+            self.p.stdin.flush()
+            return i
+
+    def wait(self, pred, timeout=30):
+        with self.cv:
+            ok = self.cv.wait_for(lambda: any(pred(m) for m in self.msgs), timeout)
+            return next((m for m in self.msgs if pred(m)), None) if ok else None
+
+    def answer(self, i, timeout=30):
+        return self.wait(lambda m: m.get("id") == i and "method" not in m, timeout)
+
+    def call(self, method, params=None, timeout=30):
+        return self.answer(self.send(method, params), timeout)
+
+    def events(self, session):
+        with self.cv:
+            return [m["params"] for m in self.msgs if m.get("method") == "maic.event" and m["params"].get("stream_id") == session]
+
+    def close(self, timeout=30):
+        self.p.stdin.close()
+        try:
+            code = self.p.wait(timeout)
+        except subprocess.TimeoutExpired:
+            self.p.kill()
+            code = None
+        if self.rec:
+            self.rec.close()
+        return code
+
+
+def rpc_smoke(maic, port):
+    """`maic --rpc`: the handshake, a session created and followed, a turn, an approval answered over the pipe, a
+    request answered while a long one runs, a resume with starting_after, the error codes, and the end at EOF and
+    at a signal. Both ends' recordings pass `maic protocol check`."""
+    import signal
+    home, env = make_home(port)
+    rec = os.path.join(home, "rpc-streams")
+    os.makedirs(rec)
+    results = []
+
+    def report(ok, what, extra=""):
+        results.append(ok)
+        print(("ok" if ok else "FAIL") + ": maic --rpc " + what + ("" if ok else "\n" + extra[-3000:]))
+
+    c = RpcClient(maic, dict(env, MAIC_PROTOCOL_RECORD=rec), home, os.path.join(rec, "client.jsonl"))
+    a = c.call("createConversation")
+    early = a and a.get("error", {}).get("data", {}).get("code") == "maic_hello_required"
+    h = c.call("maic.hello", {"protocol": 1, "client": {"name": "rpc-smoke", "version": "0"}, "capabilities": ["tool_output"]})
+    hr = (h or {}).get("result", {})
+    report(early and hr.get("protocol") == 1 and hr.get("path") == {"via": "stdio"} and hr.get("origin") == "local",
+           "answers only maic.hello first, then the hello over stdio", json.dumps([a, h]))
+    conv = (c.call("createConversation") or {}).get("result", {})
+    sid = conv.get("id", "")
+    sub = (c.call("maic.session.subscribe", {"session": sid}) or {}).get("result", {})
+    first = c.wait(lambda m: m.get("method") == "maic.event" and m["params"].get("sequence_number") == 0)
+    report(sid != "" and sub.get("replay_from") == 0 and first and first["params"]["by"]["name"] == "rpc-smoke",
+           "creates a session and replays it from 0, the client named by its hello", json.dumps([conv, sub, first]))
+
+    def turn(text):
+        r = c.call("response.create", {"conversation": sid, "input": text})
+        rid = (r or {}).get("result", {}).get("id")
+        done = c.wait(lambda m: m.get("method") == "maic.event" and m["params"].get("type") in ("response.completed", "response.failed")
+                      and m["params"]["response"]["id"] == rid, 60)
+        return rid, done
+
+    rid, done = turn("ping")
+    text = "".join(e["delta"] for e in c.events(sid) if e["type"] == "response.output_text.delta")
+    report(done and done["params"]["type"] == "response.completed" and "echo: ping" in text, "runs a turn and streams its reply", json.dumps(c.events(sid))[-2000:])
+    mark = max(e["sequence_number"] for e in c.events(sid))
+
+    # run_shell in manual mode asks first; the answer goes back over the pipe.
+    r = c.send("response.create", {"conversation": sid, "input": "shell:echo rpc-$((40+2))"})
+    ask = c.wait(lambda m: m.get("method") == "maic.event" and m["params"].get("type") == "maic.approval.requested", 60)
+    yes = c.call("maic.approval.answer", {"session": sid, "approval": ask["params"]["id"], "choice": "yes"}) if ask else None
+    rid2 = (c.answer(r) or {}).get("result", {}).get("id")
+    done = c.wait(lambda m: m.get("method") == "maic.event" and m["params"].get("type") == "response.completed" and m["params"]["response"]["id"] == rid2, 60)
+    out = json.dumps([e for e in c.events(sid) if e["type"].startswith("response.shell_call_output")])
+    report(ask and yes and "result" in yes and done and "rpc-42" in out, "asks an approval and takes its answer", json.dumps([ask, yes]) + out)
+
+    # A request that runs long (`!cmd` answers when the command ends) holds up nothing else.
+    t0 = time.time()
+    sh = c.send("maic.session.shell", {"session": sid, "command": "sleep 2; echo slept"})
+    st = c.call("maic.engine.status")
+    quick = time.time() - t0
+    shr = c.answer(sh)
+    report(st and "result" in st and quick < 1.5 and shr and shr.get("result", {}).get("exit_code") == 0 and time.time() - t0 >= 2,
+           "answers a request while a long one runs (%.2f s)" % quick, json.dumps([st, shr]))
+
+    # A client that lost its place resumes after the last event it saw.
+    c.call("maic.session.unsubscribe", {"session": sid})
+    with c.cv:
+        c.msgs = [m for m in c.msgs if m.get("method") != "maic.event"]
+    res = (c.call("maic.session.subscribe", {"session": sid, "starting_after": mark}) or {}).get("result", {})
+    c.wait(lambda m: m.get("method") == "maic.event" and m["params"].get("sequence_number") == res.get("sequence_number"))
+    seqs = [e["sequence_number"] for e in c.events(sid)]
+    report(res.get("replay_from") == mark + 1 and seqs and seqs[0] == mark + 1 and seqs == list(range(mark + 1, res["sequence_number"] + 1)),
+           "replays from starting_after", json.dumps([res, seqs]))
+    gone = c.call("maic.nope")
+    report(gone and gone["error"]["code"] == -32601, "answers an unknown method -32601", json.dumps(gone))
+    code = c.close()
+    transcripts = [f for d, _, fs in os.walk(os.path.join(home, "state")) for f in fs if f.startswith(sid) and f.endswith(".jsonl")]
+    report(code == 0 and transcripts and "AddressSanitizer" not in c.stderr.decode(errors="replace"), "ends at EOF, exit %r, the session kept" % code, c.stderr.decode(errors="replace"))
+    chk = subprocess.run([maic, "protocol", "check", rec], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    report(chk.returncode == 0 and "2 streams, 0 with a violation" in chk.stdout, "client's and engine's recordings pass maic protocol check", chk.stdout + chk.stderr)
+
+    # Faults, unrecorded: a line that is not JSON, then one over 1 MiB, which ends the connection.
+    c = RpcClient(maic, env, home)
+    c.send(None, raw=b"this is not json\n")
+    bad = c.wait(lambda m: m.get("error", {}).get("code") == -32700)
+    h = c.call("maic.hello", {"protocol": 1, "client": {"name": "x", "version": "0"}})
+    old = c.call("maic.hello", {"protocol": 0})
+    c.send(None, raw=b'{"jsonrpc":"2.0","id":99,"method":"maic.engine.status","params":{"pad":"' + b"x" * (1 << 20) + b'"}}\n')
+    big = c.wait(lambda m: m.get("error", {}).get("data", {}).get("code") == "maic_too_large")
+    try:
+        code = c.p.wait(30)
+    except subprocess.TimeoutExpired:
+        code = None
+    c.close()
+    report(bad and bad["id"] is None and h and "result" in h and old and old["error"]["data"]["code"] == "maic_unsupported_protocol" and big and code == 1,
+           "answers -32700, maic_unsupported_protocol and maic_too_large, and closes on the last (exit %r)" % code, json.dumps([bad, h, old, big]))
+    c = RpcClient(maic, env, home)
+    c.call("maic.hello", {"protocol": 1, "client": {"name": "x", "version": "0"}})
+    c.p.send_signal(signal.SIGTERM)
+    try:
+        code = c.p.wait(30)
+    except subprocess.TimeoutExpired:
+        code = None
+    c.close()
+    report(code == 0, "ends cleanly at SIGTERM (exit %r)" % code, c.stderr.decode(errors="replace"))
+    shutil.rmtree(home, ignore_errors=True)
+    return all(results)
 
 
 def output_smoke(maic, env, sess_dir):

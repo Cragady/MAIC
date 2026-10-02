@@ -711,6 +711,10 @@ struct Engine::Impl {
             throw refuse("maic_unsupported_protocol", "this engine speaks protocol " + std::to_string(kProtocol) + " to " + std::to_string(kProtocol), "protocol");
         }
         c.hello = true;
+        // A local client names itself; a remote one is named by its token or pairing (section 2).
+        if (c.origin == Origin::Local && p.contains("client") && p["client"].is_object()) {
+            if (std::string name = p["client"].value("name", ""); !name.empty()) c.name = name;
+        }
         return {{"protocol", kProtocol},
                 {"engine", {{"version", MAIC_VERSION}, {"epoch", epoch}}},
                 {"client", c.id},
@@ -839,7 +843,8 @@ struct Engine::Impl {
         s->settings = options.settings;
         s->commands.dumb_auto_ok = options.settings.dumb_auto_ok;
         configure(s->agent, *mode);
-        s->log = std::make_unique<SessionLog>(options.kind, resolve_sessions_home(options.settings, ws));
+        if (options.setup) options.setup(s->agent, s->settings);
+        s->log = std::make_unique<SessionLog>(options.kind, options.settings.record ? resolve_sessions_home(options.settings, ws) : runtime_sessions_dir());
         s->id = s->log->path().stem().string();
         s->agent.set_log(s->log.get());
         if (p.contains("metadata") && p["metadata"].is_object()) {
@@ -878,6 +883,7 @@ struct Engine::Impl {
         s->settings = options.settings;
         s->commands.dumb_auto_ok = options.settings.dumb_auto_ok;
         configure(s->agent, mode);
+        if (options.setup) options.setup(s->agent, s->settings);
         s->log = std::make_unique<SessionLog>(SessionLog::Reopen{}, info->path);
         s->id = info->id;
         s->title = info->title;

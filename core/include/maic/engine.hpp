@@ -16,7 +16,7 @@
 namespace maic {
 
 // What an engine starts with. Its transport builds one: maic-server (every client remote), the TUI and `maic -p`
-// in-process; `maic --rpc` on stdio (step 8) and the daemon on its socket (step 13) later.
+// in-process, `maic --rpc` on stdio; the daemon on its socket (step 13) later.
 struct EngineOptions {
     Settings settings;                              // what each session's Agent is set up from: providers, model, mode, ...
     std::vector<std::filesystem::path> workspaces;  // where a remote client may open or resume a session (server.workspaces)
@@ -28,6 +28,9 @@ struct EngineOptions {
     size_t ring_bytes = 8 << 20;
     // What `:cd` reads in the directory it moves to; unset, the settings files there. The TUI adds its flags.
     std::function<Settings(const std::filesystem::path&)> settings_at;
+    // What a local host adds to each session createConversation or maic.session.resume opens, after the engine's
+    // own setup and before its history is restored: `maic --rpc` sets it up as the TUI sets up its own.
+    std::function<void(Agent&, const Settings&)> setup;
 };
 
 // A session an in-process host set up itself (Engine::open_local): what `maic`, `maic -r`, `--fork-at` and the

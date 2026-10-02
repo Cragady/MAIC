@@ -1,6 +1,6 @@
 find_package(ftxui CONFIG REQUIRED)
 
-add_executable(maic src/main.cpp src/audit_trail.cpp src/tui.cpp src/editor.cpp src/view.cpp src/style.cpp src/headless.cpp src/commands.cpp src/doctor.cpp src/setup.cpp src/msgpack.cpp src/highlight.cpp src/nvim_host.cpp)
+add_executable(maic src/main.cpp src/audit_trail.cpp src/tui.cpp src/editor.cpp src/view.cpp src/style.cpp src/headless.cpp src/rpc.cpp src/commands.cpp src/doctor.cpp src/setup.cpp src/msgpack.cpp src/highlight.cpp src/nvim_host.cpp)
 target_link_libraries(maic PRIVATE maic_core maic_server ftxui::component ftxui::dom ftxui::screen)
 target_compile_options(maic PRIVATE -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
 target_compile_definitions(maic PRIVATE MAIC_VERSION="${MAIC_GIT_VERSION}")

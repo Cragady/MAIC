@@ -59,6 +59,9 @@ void usage(std::ostream& out = std::cerr) {
                  "                                          one from --no-record too); no argument: pick from a list\n"
                  "       maic -p \"prompt\" [--json] [--think] one turn without the UI (prompt \"-\" reads stdin; -c/-r work here too)\n"
                  "       maic -p \"prompt\" --interactive     an interactive session that opens with that prompt sent (-i)\n"
+                 "       maic --rpc                         the engine on stdin and stdout, JSON-RPC 2.0 one message per line, for an\n"
+                 "                                          interface such as maic.nvim (docs/design/engine-protocol.md); the agent's\n"
+                 "                                          flags apply to the sessions it opens\n"
                  "       --context FILE, -C FILE            attach a text file to the conversation before the prompt; repeatable;\n"
                  "                                          FILE \"-\" reads stdin (then the prompt can't also be stdin)\n"
                  "       --image FILE, -I                   a picture sent with the first (or only) prompt; repeatable; the model must\n"
@@ -1304,6 +1307,7 @@ int main(int argc, char** argv) {
         maic::HeadlessOptions headless;
         bool print = false;
         bool interactive = false;
+        bool rpc = false;
         std::optional<bool> append;
         bool continue_last = false;
         std::optional<std::string> resume_id;
@@ -1333,6 +1337,7 @@ int main(int argc, char** argv) {
             else if (a == "--no-append") append = false;
             else if (a == "--fork-at") tui.fork_at = headless.fork_at = std::stoul(value("--fork-at"));
             else if (a == "--interactive" || a == "-i") interactive = true;
+            else if (a == "--rpc") rpc = true;
             else if (a == "--system" || a == "-S") tui.system = headless.system = value("--system");
             else if (a == "--no-instructions") tui.load_instructions = headless.load_instructions = false;
             else if (a == "--trust" || a.rfind("--trust=", 0) == 0) continue;  // read before anything else, at the top of main
@@ -1420,6 +1425,13 @@ int main(int argc, char** argv) {
             tui.append = headless.append = false;
         }
         if (headless.append) headless.record = true;
+        if (rpc) {
+            // Sessions are opened over the protocol (createConversation, maic.session.resume), not by flags.
+            if (print || interactive || continue_last || resume || !rest.empty() || !tui.context.empty() || !tui.images.empty()) {
+                throw std::runtime_error("--rpc takes the agent's flags (--model, --mode, ...); sessions, prompts, files and images come over the protocol");
+            }
+            return maic::run_rpc(tui);
+        }
         if (print && interactive) {
             // An interactive session that starts with the prompt: interactive transcript rules apply, whatever
             // the order of the flags. --json has no meaning here.

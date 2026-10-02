@@ -2135,8 +2135,6 @@ void App::shutdown() {
 
 }  // namespace
 
-namespace {
-
 // The settings files for `workspace` with the command line's flags over them.
 Settings tui_settings(const TuiOptions& options, const std::filesystem::path& workspace) {
     Settings settings = load_settings(workspace);
@@ -2159,8 +2157,6 @@ Settings tui_settings(const TuiOptions& options, const std::filesystem::path& wo
     if (options.accept_dumb_auto) settings.dumb_auto_ok = true;
     return settings;
 }
-
-}  // namespace
 
 int run_tui(const TuiOptions& options) {
     // The host nvim first, so the settings files' Lua can use maic.nvim (docs/nvim.md); never when bare. `bare = true`
