@@ -59,6 +59,11 @@ private:
     std::map<std::string, std::string> openai_events_;  // type -> pointer to OpenAI's schema for it
 };
 
+// The protocol's hash: the digest of protocol/ as built in (every file above, with its prose annotations dropped:
+// string-valued `description`, `title`, `summary`, `text` and `$comment`), in RFC 8785 form. Names and types change
+// it; rewording a description does not. Each load of a session names it in its header.
+const std::string& protocol_hash();
+
 // The pointer to `path` inside the bundle: "schemas/event.schema.json" -> "/files/schemas~1event.schema.json".
 std::string bundle_pointer(const std::string& path);
 
@@ -77,9 +82,13 @@ public:
     // openai_only: the view an OpenAI-only client has (every maic.* event and maic object removed): sequence numbers
     // only rise, and only the machines marked `openai` run; a response the view never sees end is closed by the next
     // one's response.created (open question 25: a cancelled response shows to such a client as cancelled on getResponse).
-    explicit StreamChecker(bool openai_only = false);
+    // blind: a reader without the built-in protocol (`maic protocol check --blind`): only what every stream shares,
+    // its numbers and its stream_id, is checked; shapes come from the file's own skeletons (Conformance).
+    explicit StreamChecker(bool openai_only = false, bool blind = false);
 
     std::optional<Violation> check(const nlohmann::json& event);
+    // Only the numbers and the stream_id: an event of a type this build does not know, read by its skeleton.
+    std::optional<Violation> check_numbers(const nlohmann::json& event);
 
     // The client holds everything up to `after` already (it attached or subscribed mid-stream): objects opened
     // before that are not checked, everything opened after is.
@@ -93,6 +102,7 @@ public:
 private:
     struct Pending;
     bool openai_only_;
+    bool blind_;
     bool started_ = false;
     bool joined_ = false;
     long last_ = -1;
@@ -115,9 +125,16 @@ std::optional<nlohmann::json> openai_view(const nlohmann::json& event);
 // Checks each message against its schema, every request answered once on its connection, and each connection's
 // view of each session's events against the order (a StreamChecker per connection and session, joined where the
 // connection attached or subscribed). The first violation is reported; later records are not checked.
+//
+// A recording describes itself (Recorder): a {"dir": "header", "protocol", "canonical"} line first, and a
+// {"dir": "skeleton", "of", "hash", "canonical", "skeleton"[, "must_understand"]} line before the first event of
+// each shape. Once a file declares skeletons every event must match one declared before it (skeleton.undeclared),
+// each declaration must hash to its own hash (skeleton.hash), an event type this build does not know is read by
+// its skeleton alone unless the skeleton says must_understand (skeleton.must_understand). Blind, the built-in
+// schemas and machines are not used at all and every event needs its skeleton. {"dir": "note"} lines are skipped.
 class Conformance {
 public:
-    explicit Conformance(bool openai_only = false) : openai_only_(openai_only) {}
+    explicit Conformance(bool openai_only = false, bool blind = false) : openai_only_(openai_only), blind_(blind) {}
     std::optional<Violation> feed(const nlohmann::json& record);
     std::optional<Violation> finish();  // requests never answered
     size_t events() const { return events_; }
@@ -130,7 +147,10 @@ private:
     std::optional<Violation> fail(Violation v);
     std::optional<Violation> out(const std::string& conn, const nlohmann::json& msg);
     bool openai_only_;
+    bool blind_;
     std::optional<Violation> first_;
+    bool described_ = false;
+    std::map<std::string, nlohmann::json> declared_;  // skeleton hash -> its declaration
     std::map<std::string, std::map<std::string, Request>> pending_;      // conn -> request id -> request
     std::map<std::string, std::map<std::string, StreamChecker>> streams_;  // conn -> session -> its view
     std::map<std::string, std::set<std::string>> exclude_;                 // conn -> what its hello filtered out
@@ -149,13 +169,15 @@ public:
     std::optional<Violation> add(const std::string& dir, const std::string& conn, const nlohmann::json& msg);
 
 private:
+    void put(const nlohmann::json& record);
     int fd_ = -1;
     Conformance check_;
     bool violated_ = false;
+    std::set<std::string> described_;  // event type + skeleton already declared in the file
 };
 
 // Checks a recorded stream file (JSON lines as above). The first violation, or nullopt when it conforms;
 // `events` is set to how many events it held.
-std::optional<Violation> check_file(const std::string& path, bool openai_only, size_t* events = nullptr);
+std::optional<Violation> check_file(const std::string& path, bool openai_only, size_t* events = nullptr, bool blind = false);
 
 }  // namespace maic::protocol

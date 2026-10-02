@@ -216,6 +216,10 @@ RedactReport redact_records(const fs::path& in, const fs::path& out, const fs::p
             continue;
         }
         auto j = json::parse(line, nullptr, false);
+        if (j.is_object() && j.value("type", "") == "skeleton") {
+            dst << line << '\n';  // a shape with every value emptied: nothing to redact, and its hash must stay its own
+            continue;
+        }
         if (j.is_object()) {
             json kept = j.contains("full_output") ? j["full_output"] : json();
             if (!kept.is_null()) j.erase("full_output");

@@ -345,7 +345,7 @@
     },
     {
       "name": "maic.session.subscribe",
-      "summary": "The session's events after starting_after, replayed from the ring, then as they come. maic_resync when they left the ring or the load changed.",
+      "summary": "The session's events after starting_after, replayed from the ring, then as they come. maic_resync when they left the ring or the epoch changed.",
       "paramStructure": "by-name",
       "params": [
         {
@@ -358,7 +358,8 @@
           }
         },
         {
-          "name": "load",
+          "name": "epoch",
+          "description": "The epoch the client's numbers belong to (attach's and subscribe's answers name it); another epoch answers maic_resync.",
           "required": false,
           "schema": {
             "type": "string"

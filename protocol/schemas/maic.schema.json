@@ -189,8 +189,8 @@
         "protocol": {"type": "integer", "minimum": 1},
         "engine": {
           "type": "object",
-          "properties": {"version": {"type": "string"}, "epoch": {"type": "string", "minLength": 1}},
-          "required": ["version", "epoch"]
+          "properties": {"version": {"type": "string"}, "instance": {"description": "Random per engine start: a different one after a reconnect means the engine restarted.", "type": "string", "minLength": 1}},
+          "required": ["version", "instance"]
         },
         "client": {"type": "string", "minLength": 1},
         "origin": {"$ref": "#/$defs/Origin"},
@@ -280,7 +280,7 @@
       "type": "object",
       "properties": {
         "entry": {"$ref": "#/$defs/Entry"},
-        "load": {"type": "string", "minLength": 1},
+        "epoch": {"description": "The stream's epoch (maic.session.state); maic.session.subscribe takes it back.", "type": "string", "minLength": 1},
         "sequence_number": {"type": "integer", "minimum": 0},
         "more_before": {"type": "boolean"},
         "items": {"type": "array", "items": {"$ref": "../openai/subset.json#/components/schemas/ConversationItem"}},
@@ -290,13 +290,13 @@
         "todo": {"type": "array", "items": {"$ref": "#/$defs/TodoItem"}},
         "usage": {"$ref": "#/$defs/UsageUpdate"}
       },
-      "required": ["entry", "load", "sequence_number", "more_before", "items", "inflight", "pending", "todo", "usage"]
+      "required": ["entry", "epoch", "sequence_number", "more_before", "items", "inflight", "pending", "todo", "usage"]
     },
     "Subscribed": {
       "description": "maic.session.subscribe: the stream's position and the session's activity when the replay was taken.",
       "type": "object",
       "properties": {
-        "load": {"type": "string"},
+        "epoch": {"type": "string"},
         "sequence_number": {"type": "integer", "minimum": 0},
         "activity": {"$ref": "#/$defs/Activity"}
       }

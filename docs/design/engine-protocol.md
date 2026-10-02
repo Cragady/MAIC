@@ -81,7 +81,7 @@ Commands are requests with an `id`. Session events are notifications with method
 
 | Object | Id | What it is |
 | :--- | :--- | :--- |
-| engine | `epoch`: random, per start | one process that owns sessions: `maic --rpc`, the TUI's in-process engine, or the daemon (`maic daemon`) |
+| engine | `instance`: random, per start | one process that owns sessions: `maic --rpc`, the TUI's in-process engine, or the daemon (`maic daemon`) |
 | client | `c1`, `c2`, ... per engine | one connection; has a name (for remote: the token's or pairing's name, never self-declared), an origin, and per-client view settings |
 | session | the transcript id, `20261001-091500-tui-4121` | one conversation with one main agent, one JSONL file; the id MAIC already uses everywhere. On the wire it is OpenAI's `conversation` and its stream's `stream_id` |
 | side thread | a session id | a session with `parent` and `side` (`btw` or `aside`); `btw` starts as a fork pointer at the parent's current record |
@@ -131,7 +131,7 @@ The Remote column is the default; section 7 has the rules behind it.
 
 | Method | Params | Result | Remote |
 | :--- | :--- | :--- | :--- |
-| `maic.hello` | `protocol`, `client {name, version}`, `capabilities`, `view {collapse_over}`, `auth` (remote only) | `protocol`, `engine {version, epoch}`, `client`, `origin`, `capabilities`, `limits`, `tier`, `path` | yes |
+| `maic.hello` | `protocol`, `client {name, version}`, `capabilities`, `view {collapse_over}`, `auth` (remote only) | `protocol`, `engine {version, instance}`, `client`, `origin`, `capabilities`, `limits`, `tier`, `path` | yes |
 | `maic.engine.status` | | what `GET /api/status` returns today | yes |
 | `maic.engine.trip` | `reason` | `{tripped: true}`; cancels every response | yes |
 | `maic.index.get` / `maic.index.subscribe` / `maic.index.unsubscribe` | | entries / `{}` | yes |
@@ -159,7 +159,7 @@ The Remote column is the default; section 7 has the rules behind it.
 | `maic.session.park` / `maic.session.stop` | `session`, `interrupt` | the entry; `maic_busy` when a response runs and `interrupt` is not true | yes |
 | `maic.session.resume` | `session` (id or unique prefix; a path only locally), `focus` | the entry | yes |
 | `maic.session.attach` | `session`, `exchanges` (default 3) | a snapshot, and events from its `sequence_number` on (section 5) | yes |
-| `maic.session.subscribe` | `session`, `load`, `starting_after` | `{}` then replay; `maic_resync` when `starting_after` left the ring | yes |
+| `maic.session.subscribe` | `session`, `epoch`, `starting_after` | `{}` then replay; `maic_resync` when `starting_after` left the ring or the epoch changed | yes |
 | `maic.session.unsubscribe` | `session` | `{}` | yes |
 | `maic.session.image` | `session`, `name`, `mime`, `data` (base64), `part`, `parts` | `{file_id}` once every part is in, for an `input_image` | yes |
 | `maic.approval.answer` | `session`, `approval`, `choice` (`yes`, `no`, `always`, `trip`), `feedback` | `{choice}`; `maic_already_answered` for a late one | yes, without `always` |
@@ -272,7 +272,7 @@ Items being written have the provisional id `~<n>` (the `sequence_number` of the
 ← {"jsonrpc":"2.0","id":3,"result":{"entry":{"id":"20261001-091500-tui-4121","title":"fix the relay keepalive","workspace":"~/dev2/MAIC",
             "kind":"main","parent":null,"state":"live","activity":"idle","model":"llamacpp/qwen3.5-9b","mode":"edit","agent":"build","harness":"auto",
             "judge":"maic","tier":"guarded","last_activity":"2026-10-01T09:42:10+02:00","unseen":false,"queued":0,"waiting":null},
-   "load":"q7c2","sequence_number":812,"more_before":true,
+   "epoch":"q7c2m0x4ya1b8nde","sequence_number":812,"more_before":true,
    "items":[{"id":"20261001-091500-tui-4121#57","type":"message","role":"user","status":"completed","content":[{"type":"input_text","text":"run the tests"}],
              "maic":{"time":"2026-10-01T09:41:02+02:00"}},
             {"id":"20261001-091500-tui-4121#61","type":"shell_call_output","call_id":"c3","status":"completed","output":[],"max_output_length":null,
@@ -290,11 +290,11 @@ Items being written have the provisional id `~<n>` (the `sequence_number` of the
 
 ### Resume after a reconnect
 
-Each loaded session keeps a ring of its last 10,000 events or 8 MiB, whichever is smaller, in memory only. `sequence_number` counts from 0 per load of a session, and `load` (returned by `attach`) names that load; `epoch` names the engine.
+Each loaded session keeps a ring of its last 10,000 events or 8 MiB, whichever is smaller, in memory only. `sequence_number` counts within the session's epoch (section 17): a load that the last one closed cleanly goes on from where it stopped, and `epoch` (returned by `attach` and `subscribe`) names the number space. `engine.instance` in the hello names the running engine.
 
-1. Reconnect and `maic.hello`. A different `epoch` means the engine restarted: `attach` again.
-2. Same epoch: `maic.session.subscribe {session, load, starting_after: last_sequence_number}` replays what was missed and continues.
-3. A different `load` (the session was parked and resumed) or a `starting_after` older than the ring answers `maic_resync`: `attach` again.
+1. Reconnect and `maic.hello`. A different `engine.instance` means the engine restarted: the ring is new, but the numbers are not.
+2. `maic.session.subscribe {session, epoch, starting_after: last_sequence_number}` replays what was missed and continues. After a restart this works when the client held everything up to the last load's close: the new ring starts at the next number.
+3. A different `epoch` (the history was reset, forked or rewritten, or the last load never closed) or a `starting_after` older than the ring answers `maic_resync`: `attach` again.
 
 This replaces maic-server's unbounded per-session `events` vector and its replay of the folded transcript as events on resume: history comes from the file, and the ring only bridges a dropped connection.
 
@@ -359,7 +359,7 @@ The rule is an allow-list: each engine method and each engine `:` command carrie
 ```json
 → {"jsonrpc":"2.0","id":1,"method":"maic.hello","params":{"protocol":1,"client":{"name":"maic.nvim","version":"0.1"},
    "capabilities":["tool_output","collapse","side_threads","tasks","autocmds"],"exclude":["response.output_text.delta"],"view":{"collapse_over":0}}}
-← {"jsonrpc":"2.0","id":1,"result":{"protocol":1,"engine":{"version":"dev","epoch":"k3f9w2"},"client":"c1","origin":"local",
+← {"jsonrpc":"2.0","id":1,"result":{"protocol":1,"engine":{"version":"dev","instance":"k3f9w2"},"client":"c1","origin":"local",
    "capabilities":["tool_output","collapse","side_threads","tasks","index","images"],"exclude":["response.output_text.delta"],"limits":{"always":true,"max_message":1048576},"tier":"guarded","path":{"via":"stdio"}}}
 ```
 
@@ -383,7 +383,7 @@ Errors use JSON-RPC's codes for protocol faults and `-32000` for the rest; `data
 | `maic_already_answered` | another client answered first |
 | `maic_forbidden_remote` | outside the remote allow-list |
 | `maic_confirm_required` | auto under a dumb harness; `data.message` is what to show |
-| `maic_resync` | `starting_after` left the ring, or the session was reloaded |
+| `maic_resync` | `starting_after` left the ring, or the session's epoch changed (section 17) |
 | `maic_too_large`, `maic_too_slow` | the size caps of section 1, the queue cap of section 4 |
 | `maic_tripped` | the harness is tripped |
 | `maic_not_owner` | accounts: another user's session |
@@ -432,7 +432,7 @@ The session file keeps its own records ([sessions.md](../sessions.md)); the engi
 
 OpenAI's description gives each event's shape but not the sequence: OpenAPI 3.1 gives `text/event-stream` a `schema` for one event. The order below is that missing half, borrowed from how the Responses API streams and held to by the checker (section 15). Anthropic's Messages stream has the same shape (`message_start`, `content_block_start` with `index`, `content_block_delta`, `content_block_stop`, `message_stop`), and MAIC's provider clients read both already.
 
-1. **Every event carries `sequence_number`**, one number space per session load: 0 at each load (`load` names it), one more per event. A response's events are therefore a contiguous run of the session's numbers, and `starting_after` means the same on `getResponse` and on `maic.session.subscribe` (open question 23). A merged delta (section 4) carries `maic.merged_from`, the first number it covers. `maic.index` and `maic.engine` notifications replace state and carry no number.
+1. **Every event carries `sequence_number`**, one number space per epoch of a session (section 17): 0 when the epoch starts, one more per event, going on across loads while the epoch holds. A response's events are therefore a contiguous run of the session's numbers, and `starting_after` means the same on `getResponse` and on `maic.session.subscribe` (open question 23). A merged delta (section 4) carries `maic.merged_from`, the first number it covers. `maic.index` and `maic.engine` notifications replace state and carry no number.
 2. **Every lifecycle has an opening event and exactly one terminal event.** A response: `response.created`, then `response.queued` while it waits for a slot, then `response.in_progress`, then one of `response.completed`, `response.incomplete`, `response.failed` or `maic.response.cancelled`. Items, parts, reviews, approvals, questions and tasks likewise.
 3. **Items are announced before their deltas and closed after them**: `response.output_item.added`, then for a message `response.content_part.added`, the `response.output_text.delta`s, `response.output_text.done`, `response.content_part.done`, then `response.output_item.done`. Nothing is sent for a closed item or part.
 4. **A response ends after its items.** Its terminal event comes after every item it opened is done; an abrupt end (a halt, the tripwire, a provider failure) first closes open items with `status: "incomplete"` (and `maic.status: "discarded"` when a halt threw them away).
@@ -443,11 +443,11 @@ Items are addressed by `item_id` and `output_index` (0-based within the response
 
 Derived from the messages of sections 2 to 6 and 11. `-` is "not yet"; a terminal state takes no further event.
 
-**Session** (`maic.session.state`; one machine per load):
+**Session** (`maic.session.state`; one machine per load of a session):
 
 | From | Event | To |
 | :--- | :--- | :--- |
-| - | `maic.session.state` `live` or `background` (attach, create, resume) | `live`, `background`; `sequence_number` 0, a new `load` |
+| - | `maic.session.state` `live` or `background` (attach, create, resume) | `live`, `background`; the load's header (`epoch`, `protocol`, section 17) |
 | `live` | `maic.session.state` `background` | `background` |
 | `background` | `maic.session.state` `live` | `live` |
 | `live`, `background` | `maic.session.state` `parked` | `parked`, terminal for this load |
@@ -716,6 +716,37 @@ It runs on every build (`scripts/check.sh`), over:
 * **The provider side.** `FakeServer`'s OpenAI-compatible chunks and the client's parsing are validated against the pinned `CreateChatCompletionStreamResponse`; fields llama.cpp adds (`timings`, `reasoning_content`) are allowed, and what OpenAI defines must be shaped as defined.
 * **Recorded real streams**, when a session ran at `airtight` and kept its stream ([protocol-security.md](protocol-security.md)).
 
+## 17. Event identity: epochs, self-describing streams and lineage
+
+The numbers in section 5 order a session's events and show gaps. Three more things make the stream durable, readable without this code, and able to show where each event came from. Micaiah set the shape; the prior art is noted in [standards.md](../standards.md#model-apis-and-protocol-prior-art).
+
+### The epoch
+
+An **epoch** is one incarnation of a session's history. It is a random id, carried on every load's first event (`maic.session.state`) and written to the transcript as an `epoch` record. `sequence_number` belongs to the epoch, not the load: a load that the one before it closed cleanly (a `stream` record with `closed: true` and the number it stopped at) continues the same epoch from that number, so a client that held everything resumes across a restart. A new epoch starts, from 0, naming the one it replaces (`previous_epoch {epoch, reason}`) or the parent it forked from (`forked_from {session, epoch, records}`), when the history is fresh, was reset, was forked, was rewritten, or the last load did not close. `maic.session.subscribe` takes the epoch back; another epoch is `maic_resync`. The engine process has its own `engine.instance` in the hello, random per start, which tells a reconnecting client the ring is new without saying the numbers are.
+
+### Self-describing streams
+
+A transcript and a protocol recording each carry the shape of every kind of line they hold, so a reader needs no source and no git history, even for a protocol since renamed, obfuscated or deleted. This is Avro's object-container approach rather than a central registry.
+
+* A **skeleton** is a value with every name kept and every value emptied (`null` stays, a boolean becomes `false`, a number `0`, a string `""`, an array holds its elements' distinct skeletons in canonical order). A skeleton is hashed over its [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) (JCS) serialization, in OCI digest form (`sha256:...`).
+* The first time a file holds a record or event of a given type and shape, a **skeleton line** precedes it: `{of, hash, canonical, skeleton}`, and `must_understand: true` for a type a reader must not skip (section below). A protocol recording opens with a `{dir: "header", protocol, canonical}` line, the protocol hash being the digest of `protocol/` (names and types, prose dropped) in the same form; `maic protocol hash` prints it.
+* The reader checks each skeleton hashes to its own `hash` (`skeleton.hash`), that every event matches a skeleton declared before it (`skeleton.undeclared`), and reads an event or record whose type this build does not know by its skeleton alone, leaving it untouched. `maic protocol check --blind` uses only the file's own skeletons and the universal rules (numbers, `stream_id`), never the built-in schemas, to prove a file reads itself.
+* The serialization rule is itself part of the protocol (named in every header and skeleton line), so changing it is a protocol change like any other, tracked where the event list is.
+
+### must_understand
+
+A type whose skeleton carries `must_understand: true` may not be skipped: a reader that does not know it refuses the file or stream rather than rebuild a conversation, or follow a stream, without it. The transcript marks the record types whose loss would change the conversation or the stream's identity (`msg`, `compact`, `reset`, `clear`, `undo`, `resumed_from`, `epoch`); everything else an old reader may pass over. This is SOAP's `mustUnderstand` applied to self-description, and it is the floor under the future "null means not understood" answer (below).
+
+### Lineage
+
+Where OpenAI's own fields do not already say what caused an event (`previous_response_id`, `item_id`), `maic.cause` on the event carries the `sequence_number` of the event that caused it: a response's `response.created` names the `maic.input.added` it answers. A fork's `forked_from` names its parent session, that parent's epoch and the record count it holds. No event carries a per-event hash: the epoch and the skeletons give identity and readability, and anything needing tamper evidence (the audit trail) adds its own chain rather than burdening every event.
+
+### Future: the dumb answer
+
+Not built; recorded here so the shape is fixed. When a client meets a skeleton it does not know, it may answer with a value of that skeleton filled with `null`. A `null` in a field whose schema does not allow `null` means "not understood" (OpenAI's genuinely nullable fields keep their meaning), so the receiver knows the sender did not understand and answers as policy dictates; every type's not-understood answer must be the fail-closed, no-op one, and a type with no safe empty answer is `must_understand` and refused instead. An unknown skeleton on either side is the signal that the client needs updating.
+
+When the **server** is the older side (needs accounts, [roadmap.md](../roadmap.md) item 6): an administrator may approve a skeleton hash on that server ahead of time, scoped and expiring, behind a step-up. A newer client's first-use skeleton line is then accepted when it hashes to an approved value; the server validates the shape, stores and forwards it, and answers `null` where it would have to understand it, but never acts on it. The server refuses an approved skeleton whose name collides with a built-in type, one marked `must_understand`, or one in a security-relevant area (approvals, trust, auth, steering), whatever the admin approved, so a newer client keeps talking to an old server without the upload becoming a way past the server's own checks.
+
 ## 16. Build order
 
 Each step is one PR with its tests and is useful on its own. The names, `sequence_number`, the schemas, the ordering machine and the checker arrive with the engine itself (step 5), so no step ever ships an unchecked message.
@@ -731,6 +762,7 @@ Each step is one PR with its tests and is useful on its own. The names, `sequenc
 | 7 | Steering: `response.steer` and `maic.steer` with its six actions, `response.steer.accepted` and `.failed`, `maic.steer.applied`, `maic.turn.paused`, `maic.response.cancelled`, the `steer` record, the `steering` settings and per-agent overrides, ban triggers, `:steer` and `:steering`, the TUI's keys; the driver gains steers. **Built 2026-10-02** (as built, below) | 1 |
 | 8 | `maic --rpc`: JSON lines on stdio, `maic.hello`, versioning, error codes. **Built 2026-10-02** (as built, below) | 1 |
 | 9 | maic.nvim's interface mode on `--rpc`: conversation and input buffers, approval and question floats, folds over collapsed items, the `maic` and `maic-input` filetypes, steering keys . **Built 2026-10-02** (as built, below) | 1 |
+| - | Event identity (section 17): epochs and durable numbers, self-describing transcripts and recordings, `maic.cause`, `maic protocol hash` and `--blind`. **Built 2026-10-02** (as built, below) | 1 |
 | 10 | Harness paths: `harness = "auto"` and `"external"` with L3 agents, `judge` on the entry, the constraints of section 13 | 2 |
 | 11 | History: the line-offset index, `attach`, `history`, `expand`, collapsing | 4 |
 | 12 | Several sessions in one engine: create, fork, focus, background, park, stop, resume, the index file, `:new`, `:switch`, `:fork`, `:bg`, `:park`, `:stop` and the switcher in the TUI and maic.nvim | 4 |
@@ -805,7 +837,7 @@ Not yet: `step_up` is accepted and ignored (step 18); a review in flight is stop
 
 * **The checker** learns each connection's filter from its hello answer (`Conformance`, `StreamChecker::filter`): an excluded type sent is `seq.filtered`, a `maic.filtered_from` on a connection that excludes nothing or not before the event's own first number is `seq.filtered`, and `seq.next` takes `maic.filtered_from` first, then `maic.merged_from`, then the number.
 * **Tests**: `protocol_conformance` has a filtering section (the refusal of a lifecycle type, an unknown type ignored, two connections on one turn with a shell call where every filtered run is accounted for by the full connection's numbers, and a third connection that resumes unfiltered after a number the filtered one holds) and three mutations (a marker removed is `seq.next`; an excluded type sent and a marker on an unfiltered connection are `seq.filtered`). `cli_smoke.py` runs a `maic --rpc` client that excludes text deltas and reads the reply from `response.output_text.done`; both recordings pass `maic protocol check`.
-* **Numbers do not need an extra id.** They restart at 0 on each load (an engine restart, a resume from the transcript), and `load`, in `maic.session.subscribe`'s and attach's answers, names the number space; a `starting_after` against another load is `maic_resync`. The ring is trimmed from the front, never renumbered.
+* **Numbers and their identity** were per load here (`load` named the number space); section 17 replaced that with the session's epoch and numbers that survive a reload. The ring is trimmed from the front, never renumbered.
 
 Steps 1 to 3 are small and stand alone; 4 helps the TUI the day it lands; 5 to 9 deliver item 1, with steering in from the start; 10 is item 2's choice of judge; 11 to 14 and 16 deliver item 4; 15 is item 3 and needs 12; 18 and 19 complete the tiers.
 
@@ -860,3 +892,5 @@ The open questions above are settled as recommended, with these refinements in h
 * All others (3 to 5, 8, 10 to 12, 14 to 19, 21, 23 to 25): as recommended.
 * **Filtering** (after step 8): a client declares its filter in `maic.hello`, the checker and the gap rule honour it, resume stays session-global, and the first event after filtered ones carries `maic.filtered_from`, shaped like `maic.merged_from` (section 9). The other ways were set aside: numbering each connection's stream apart (resume and hand-off between devices get messy) and allowing gaps everywhere (real loss goes unseen). Integers stay the order and gap test (OpenAI's `sequence_number`); an id per stream incarnation was considered and is already there as `load` (section 10).
 
+
+**As built (event identity, 2026-10-02).** Section 17. `maic/skeleton.hpp` gives `skeleton_of`, `canonical_json` (RFC 8785: UTF-16-ordered keys, ECMAScript numbers, minimal escapes), and `sha256_digest` in `sha256:` form; `protocol::protocol_hash()` is the digest of `protocol/` with prose (`description`, `title`, `summary`, `text`, `$comment`) dropped, and `maic protocol hash` prints it. The engine mints an epoch per fresh history (`stream_start` reads the transcript's `epoch` and `stream` records: a clean `closed` `stream` continues the epoch and its numbers, a tool-declared epoch is taken as it is, anything else is a new epoch naming its predecessor or fork); `maic.session.state` carries `epoch` and `protocol`, and a fresh epoch also `previous_epoch` or `forked_from`. `open_session` writes the `epoch` and opening `stream` records, `shutdown` the closing one. `maic.session.subscribe` and the `Snapshot` take `epoch`, not `load`; another epoch is `maic_resync`. `SessionLog::write` prepends a `skeleton` record (must_understand for `msg`, `compact`, `reset`, `clear`, `undo`, `resumed_from`, `epoch`) the first time it writes each type and shape; `walk_records` reads an unknown type by skipping it and refuses the file only when the skeleton says must_understand (`known_record_type`, `record_must_understand`). `Recorder` writes a `header` line and a `skeleton` line before the first event of each shape; `Conformance` and `StreamChecker` gained `blind`, reached by `maic protocol check --blind`, which checks only numbers, `stream_id` and the file's own skeletons, and otherwise read an unknown event type by its declared skeleton (`skeleton.hash`, `skeleton.undeclared`, `skeleton.must_understand`). `maic.cause` is on the event envelope and on `response.created` (the `maic.input.added` a turn answers). The engine's per-start id in the hello is now `engine.instance` (it was `epoch`). trans-fairy is unchanged by this step.

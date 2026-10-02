@@ -119,9 +119,11 @@ void usage(std::ostream& out = std::cerr) {
                  "                             directory's Lua and script tools with their language and declared reads/writes\n"
                  "  tools check                validate every tool manifest here and in ~/.config/maic/tools (exit 1 on a problem)\n"
                  "  tools new NAME --lang python|sh|perl|node [--global]   scaffold .maic/tools/NAME/ with a manifest and a stub\n"
-                 "  protocol check [--openai] FILE|DIR...   recorded engine protocol streams (JSON lines of {dir, conn, msg}, a\n"
-                 "                             directory's *.jsonl) against protocol/'s schemas and ordering.json; --openai\n"
-                 "                             checks the OpenAI-only view; exit 0 all conform, 1 a violation (docs/testing.md)\n"
+                 "  protocol check [--openai|--blind] FILE|DIR...   recorded engine protocol streams (JSON lines of {dir, conn,\n"
+                 "                             msg}, a directory's *.jsonl) against protocol/'s schemas and ordering.json and the\n"
+                 "                             skeletons the file declares; --openai checks the OpenAI-only view, --blind uses\n"
+                 "                             only the file's own skeletons; exit 0 all conform, 1 a violation (docs/testing.md)\n"
+                 "  protocol hash              this build's protocol hash, as each session load names it\n"
                  "  themes                     the themes there are (yours in ~/.config/maic/themes, then the shipped ones), the\n"
                  "                             active one marked, with where each comes from (maic help theme)\n"
                  "  themes import NAME [--as FILE]   a neovim colorscheme as a theme file, from a headless nvim with your config\n"
@@ -1579,12 +1581,20 @@ int main(int argc, char** argv) {
             else std::cerr << "maic lua: " << r.output << (r.output.empty() || r.output.back() != '\n' ? "\n" : "");
             return r.ok ? 0 : 1;
         }
+        if (cmd == "protocol" && cargs.size() == 1 && cargs[0] == "hash") {
+            std::cout << maic::protocol::protocol_hash() << "\n";
+            return 0;
+        }
         if (cmd == "protocol" && !cargs.empty() && cargs[0] == "check") {
-            bool openai = false;
+            bool openai = false, blind = false;
             std::vector<std::filesystem::path> files;
             for (size_t i = 1; i < cargs.size(); ++i) {
                 if (cargs[i] == "--openai") {
                     openai = true;
+                    continue;
+                }
+                if (cargs[i] == "--blind") {
+                    blind = true;
                     continue;
                 }
                 std::error_code ec;
@@ -1599,11 +1609,11 @@ int main(int argc, char** argv) {
                     files.emplace_back(cargs[i]);
                 }
             }
-            if (files.empty()) throw std::runtime_error("usage: maic protocol check [--openai] FILE|DIR...");
+            if (files.empty()) throw std::runtime_error("usage: maic protocol check [--openai|--blind] FILE|DIR...");
             int bad = 0;
             for (const auto& f : files) {
                 size_t events = 0;
-                auto v = maic::protocol::check_file(f.string(), openai, &events);
+                auto v = maic::protocol::check_file(f.string(), openai, &events, blind);
                 if (v) ++bad;
                 std::cout << (v ? "FAIL  " : "ok    ") << f.string() << ": " << (v ? maic::protocol::describe(*v) : std::to_string(events) + " events conform") << "\n";
             }

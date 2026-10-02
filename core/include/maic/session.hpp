@@ -10,6 +10,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,11 @@ std::string project_home_name(const std::filesystem::path& workspace);  // "/hom
 
 // Append-only transcript of one agent session: what was said, every tool call, and the harness's decision on it.
 // Files are created 0600 in a 0700 directory, since transcripts can hold anything the agent read.
+//
+// A transcript describes itself (docs/sessions.md, Self-describing files): before the first record of each type and
+// shape, write() puts a `skeleton` record {of, hash, canonical, skeleton[, must_understand]}, so the file can be read
+// with nothing but itself. A reader that meets a type it does not know skips it, unless the file marked it
+// must_understand: then walk_records refuses the file rather than rebuild a conversation without it.
 class SessionLog {
 public:
     // kind: "tui", "headless". home: a directory under sessions_dir() (see sessions_home()).
@@ -75,6 +81,7 @@ private:
     mutable std::mutex mu_;
     std::ofstream out_;
     int pending_fd_ = -1;  // while relocating: where write() puts records
+    std::set<std::string> described_;  // "<type>\x1f<skeleton hash>" already declared in the file
     std::vector<std::string> recovered_;
 };
 
@@ -170,6 +177,24 @@ struct LoadedSession {
     std::string mode;
     size_t records = 0;  // lines in this file (what a fork of it would point at)
 };
+
+// The record types this build writes or knows; and of those, the ones a reader must not skip because skipping them
+// changes the conversation it rebuilds or the stream's identity (`msg`, `compact`, `reset`, `clear`, `undo`,
+// `resumed_from`, `epoch`). Their skeletons say must_understand.
+bool known_record_type(const std::string& type);
+bool record_must_understand(const std::string& type);
+
+// Where the next load of a session's stream starts (docs/design/engine-protocol.md, Event identity), from the
+// file's own `epoch` and `stream` records. A load that the last one closed cleanly continues its epoch and numbers;
+// an epoch a tool declared and nobody loaded yet is taken as it is, from 0; anything else (a new file, one from
+// before epochs, a load that never closed) starts a new epoch from 0, naming the one it replaces.
+struct StreamStart {
+    std::string epoch;           // "" when a new one is needed: the caller mints it and writes the `epoch` record
+    long next = 0;               // the load's first sequence_number
+    nlohmann::json previous;     // a new epoch's predecessor {epoch, reason}, or null
+    nlohmann::json forked_from;  // a new fork's first epoch: {session, epoch, records}, or null
+};
+StreamStart stream_start(const std::filesystem::path& path);
 
 // Every record of a session in order: the parent a `resumed_from` pointer names first (its first `records`
 // lines, recursively), then the file's own lines up to `limit`. Returns how many lines of the file itself were

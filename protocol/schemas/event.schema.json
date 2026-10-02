@@ -139,6 +139,11 @@
               "description": "The first sequence_number filtered out of this connection's stream (maic.hello's `exclude`) since the last event it was sent: the numbers from it up to this event's, or its merged_from's, are accounted for.",
               "type": "integer",
               "minimum": 0
+            },
+            "cause": {
+              "description": "The sequence_number of the event that caused this one, where OpenAI's own fields do not already say it: on response.created, the maic.input.added of the input the response answers.",
+              "type": "integer",
+              "minimum": 0
             }
           }
         }
@@ -1207,7 +1212,7 @@
       ]
     },
     "maic.session.state": {
-      "description": "The session's lifecycle and activity. The first event of every load (sequence_number 0).",
+      "description": "The session's lifecycle and activity. The first event of every load is one, and it carries the stream's header: the epoch, the protocol hash and, for a new epoch, what it replaced.",
       "allOf": [
         {
           "$ref": "#/$defs/Envelope"
@@ -1236,6 +1241,66 @@
             },
             "by": {
               "$ref": "maic.schema.json#/$defs/By"
+            },
+            "epoch": {
+              "description": "The history incarnation this stream belongs to: kept across loads while the history is unchanged, new when it starts fresh, is reset, forked or rewritten. maic.session.subscribe takes it back.",
+              "type": "string",
+              "minLength": 1
+            },
+            "protocol": {
+              "description": "The protocol this load speaks: the digest of protocol/ in RFC 8785 form (maic protocol hash), and that form's name.",
+              "type": "object",
+              "properties": {
+                "hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "canonical": {
+                  "const": "RFC 8785"
+                }
+              },
+              "required": [
+                "hash",
+                "canonical"
+              ]
+            },
+            "previous_epoch": {
+              "description": "A new epoch's predecessor in the same session, and why it was replaced.",
+              "type": "object",
+              "properties": {
+                "epoch": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "epoch"
+              ]
+            },
+            "forked_from": {
+              "description": "A forked session's first epoch: the parent session, its epoch and the transcript records the fork holds.",
+              "type": "object",
+              "properties": {
+                "session": {
+                  "type": "string"
+                },
+                "epoch": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "records": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "session",
+                "records"
+              ]
             }
           },
           "required": [
