@@ -897,6 +897,11 @@ InitMove init_move_check(const fs::path& path, const fs::path& workspace, bool r
     return init_move_check(path, records, workspace, recorded, outside_reads_allowed);
 }
 
+bool SessionLog::recorded() const {
+    auto rel = path().lexically_relative(runtime_sessions_dir());
+    return rel.empty() || *rel.begin() == "..";
+}
+
 void SessionLog::write(const std::string& type, nlohmann::json data) {
     data["type"] = type;
     if (!data.contains("time")) data["time"] = now("%Y-%m-%dT%H:%M:%S%z");

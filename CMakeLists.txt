@@ -78,6 +78,8 @@ file(WRITE ${CMAKE_BINARY_DIR}/diction-VERSION "${MAIC_GIT_VERSION}\n")
 install(FILES ${CMAKE_BINARY_DIR}/diction-VERSION DESTINATION share/maic/diction RENAME VERSION)
 install(DIRECTORY server/web/ DESTINATION share/maic/server/web)
 install(DIRECTORY services/ DESTINATION share/maic/services)
+# The audit schedule's systemd units, which `maic audit-trail schedule install` fills in (docs/audit-trail.md).
+install(DIRECTORY contrib/systemd/ DESTINATION share/maic/contrib/systemd)
 install(DIRECTORY themes/ DESTINATION share/maic/themes)
 install(DIRECTORY models/ DESTINATION share/maic/models)
 # Fallback root for a copy installed without the repository: the vendor ledger and scripts, not the checkouts.

@@ -235,6 +235,7 @@ struct Server::Impl {
         s->agent.presets = st.presets;
         s->agent.small_model = st.small_model;
         s->agent.reviewer_budget_tokens = st.reviewer_budget_tokens;
+        s->agent.audit = st.audit;
         s->agent.mode = mode;
         s->agent.think = st.think;
         s->agent.compaction.at = st.compact_at;

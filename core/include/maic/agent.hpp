@@ -1,5 +1,6 @@
 #pragma once
 
+#include "maic/audit_trail.hpp"
 #include "maic/bans.hpp"
 #include "maic/harness.hpp"
 #include "maic/instructions.hpp"
@@ -206,6 +207,9 @@ public:
     // cheaper one, or the reviewer goes off; off, every action it would review is asked (fail closed). Its
     // tokens count toward budget_tokens, and past reviewer_budget_tokens it goes off the same way.
     bool review_with_model = true;
+    // audit.lua (docs/audit-trail.md): when enabled, every tool call also goes to the audit trail, recorded
+    // session or not. Subagents inherit it.
+    AuditSettings audit;
     std::string reviewer_model;
     std::string small_model;
     long reviewer_budget_tokens = 0;  // 0 = no cap of its own
@@ -276,6 +280,7 @@ public:
 
 private:
     Message run_tool_call(const ToolCall& call, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel);
+    void audit_tool_call(const nlohmann::json& record, bool ran, bool ok, const std::string& text, AgentEvents& events);
     ToolResult run_task(const nlohmann::json& args, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel, nlohmann::json& record);
     // Policy, then this session's "always" answers (local requests only), then the user. Never returns Ask: a No becomes Deny with the
     // user's words, a Trip has already tripped the lock. For Deny and Trip the reason is the text the model

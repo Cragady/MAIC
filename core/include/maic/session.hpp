@@ -46,6 +46,8 @@ public:
         std::lock_guard lock(mu_);
         return path_;
     }
+    // False for a session kept in the runtime directory (--no-record, maic -p without --record).
+    bool recorded() const;
     // Stamps `type` and, unless the record already carries one (a record copied from another session), `time`.
     void write(const std::string& type, nlohmann::json data);
 

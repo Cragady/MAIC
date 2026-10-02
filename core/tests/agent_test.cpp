@@ -1,9 +1,11 @@
+#include <sys/stat.h>
 #include <unistd.h>
 #include <cstdlib>
 // The agent loop against a fake OpenAI-compatible server: mid-turn messages, deliver-now, cancellation, resume.
 #include "check.hpp"
 
 #include "maic/agent.hpp"
+#include "maic/audit_trail.hpp"
 #include "maic/settings.hpp"
 #include "maic/tripwire.hpp"
 #include "maic/trust.hpp"
@@ -16,6 +18,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <thread>
 
@@ -404,6 +407,138 @@ int main() {
         expect(briefing.find("maic-workflow-edit inspect FILE --json") != std::string::npos, "the briefing names the workflow editor and how to start with it");
         expect(briefing.find("maic-storyboard start STORY TEMPLATE --out DEST") != std::string::npos && briefing.find("ask the user for the story file") != std::string::npos,
                "and the storyboard driver, beginning by asking the user for the files");
+    }
+
+    section("audit trail");
+    {
+        // Every entry of this run in id order, read from the containers (not index.json or seq).
+        auto trail = [&] {
+            std::vector<json> lines;
+            for (const auto& e : fs::directory_iterator(audit_trail_dir(), ec_ignore())) {
+                if (e.path().extension() != ".jsonl") continue;
+                std::ifstream in(e.path());
+                for (std::string l; std::getline(in, l);) lines.push_back(json::parse(l));
+            }
+            std::sort(lines.begin(), lines.end(), [](const json& a, const json& b) { return a["id"] < b["id"]; });
+            return lines;
+        };
+        auto raw_trail = [&] {
+            std::string all;
+            for (const auto& e : fs::directory_iterator(audit_trail_dir(), ec_ignore())) {
+                std::ifstream in(e.path());
+                all += std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            }
+            return all;
+        };
+        const char* old_rt = std::getenv("XDG_RUNTIME_DIR");
+        std::string saved_rt = old_rt ? old_rt : "";
+        setenv("XDG_RUNTIME_DIR", (ws / "run").c_str(), 1);
+        std::ofstream(ws / "trail-note.txt") << "file-content-marker\n";
+        // read_file, a command, write_file; in edit mode the command (rm) is asked and the rest allowed.
+        auto session = [&](SessionLog& log, bool on, Mode mode, Recorder& r) {
+            FakeServer fake;
+            int n = 0;
+            fake.tool_call_for = [&](const json&) {
+                switch (++n) {
+                    case 1: return json{{"name", "read_file"}, {"arguments", {{"path", "trail-note.txt"}}}};
+                    case 2: return json{{"name", "run_shell"}, {"arguments", {{"command", mode == Mode::Auto ? "echo $((6*7))" : "rm -f trail-nothing.txt"}}}};
+                    case 3: return json{{"name", "write_file"}, {"arguments", {{"path", "trail-out.txt"}, {"content", "x"}}}};
+                    default: return json();
+                }
+            };
+            Agent agent(ws, "test");
+            agent.providers = {fake.provider()};
+            agent.mode = mode;
+            agent.review_with_model = false;
+            agent.audit.enabled = on;
+            agent.set_log(&log);
+            agent.submit("prompt-text-marker: look at the note", Origin::Local, r, no_cancel);
+        };
+
+        {
+            SessionLog log("agent-test");
+            Recorder r;
+            session(log, false, Mode::Auto, r);
+            expect(!fs::exists(audit_trail_dir()), "off (the default): a session's tool calls write no trail at all");
+            fs::remove(log.path());
+            fs::remove(ws / "trail-out.txt");
+        }
+
+        SessionLog recorded("agent-test");
+        Recorder r1;
+        session(recorded, true, Mode::Auto, r1);
+        std::vector<json> lines = trail();
+        expect(lines.size() == 3, "on: one entry per tool call of a recorded session (" + std::to_string(lines.size()) + ")");
+        std::string id = recorded.path().stem().string();
+        bool shaped = lines.size() == 3;
+        for (size_t k = 0; k < lines.size(); ++k) {
+            const json& l = lines[k];
+            shaped = shaped && l.value("id", 0) == static_cast<int>(k + 1) && l.value("session", "") == id && l.value("recorded", false) &&
+                     l.value("workspace", "") == ws.string() && l.value("time", "").size() == 20 && l.value("decision", "") == "allow" &&
+                     l.value("judged_by", "") == "harness" && l.value("ran", false) && l.value("ok", false) && !l.contains("result");
+        }
+        expect(shaped, "each has a monotonic id, the UTC time, session, recorded, workspace, the harness's decision, judged_by, ran and ok, and no result");
+        expect(lines.size() == 3 && lines[0]["tool"] == "read_file" && lines[0]["arguments"]["path"] == "trail-note.txt" && lines[1]["arguments"]["command"] == "echo $((6*7))" &&
+                   lines[1].value("exit", -1) == 0 && lines[2]["tool"] == "write_file",
+               "the tool and its arguments as given, and a command's exit code");
+        std::string raw = raw_trail();
+        expect(raw.find("prompt-text-marker") == std::string::npos && raw.find("file-content-marker") == std::string::npos && raw.find("echo: ") == std::string::npos,
+               "no message text and no tool output in the trail");
+        struct stat st {};
+        bool private_files = ::stat(audit_trail_dir().c_str(), &st) == 0 && (st.st_mode & 0777) == 0700;
+        size_t containers = 0;
+        for (const auto& e : fs::directory_iterator(audit_trail_dir(), ec_ignore())) {
+            private_files = private_files && ::stat(e.path().c_str(), &st) == 0 && (st.st_mode & 0777) == 0600;
+            containers += e.path().extension() == ".jsonl" && e.path().filename().string().size() == 14;
+        }
+        expect(private_files && containers == 1, "one <YYYYMMDD>.jsonl container beside seq, 0600 in a 0700 directory");
+        std::ifstream seq_in(audit_trail_dir() / "seq");
+        long long last = 0;
+        seq_in >> last;
+        expect(last == 3, "seq holds the last id given (" + std::to_string(last) + ")");
+        fs::remove(recorded.path());
+        fs::remove(ws / "trail-out.txt");
+
+        SessionLog unrecorded("agent-test", runtime_sessions_dir());
+        Recorder r2;
+        r2.reply = {Approval::No, "typed-feedback-marker"};
+        session(unrecorded, true, Mode::Edit, r2);
+        // The two sessions can share a stem (same second, same name): this one's entries are the ones after id 3.
+        std::vector<json> mine;
+        for (const auto& l : trail()) {
+            if (l.value("id", 0) > 3 && l.value("session", "") == unrecorded.path().stem().string()) mine.push_back(l);
+        }
+        expect(!unrecorded.recorded() && recorded.recorded() && mine.size() == 3 && !mine[0].value("recorded", true) && mine[0].value("id", 0) == 4,
+               "an unrecorded session (the runtime directory) writes its entries too, marked unrecorded, the ids going on (" + std::to_string(mine.size()) + ")");
+        bool denied = false;
+        for (const auto& l : mine) {
+            if (l["tool"] == "run_shell") {
+                denied = l.value("decision", "") == "ask" && l.value("approval", "") == "no" && l.value("judged_by", "") == "user" && !l.value("ran", true) && !l.value("ok", true);
+            }
+        }
+        expect(denied, "a call the user refused: the decision, the user's answer, judged_by user, not run");
+        raw = raw_trail();
+        expect(raw.find("typed-feedback-marker") == std::string::npos && raw.find("prompt-text-marker") == std::string::npos,
+               "what the user typed with the refusal stays out of it");
+
+        // A container past file_mb continues in a numbered part, the ids going on.
+        append_audit_trail({{"tool", "read_file"}, {"arguments", {{"path", std::string(700 * 1024, 'x')}}}}, 1);
+        append_audit_trail({{"tool", "read_file"}, {"arguments", {{"path", std::string(700 * 1024, 'y')}}}}, 1);
+        append_audit_trail({{"tool", "read_file"}, {"arguments", {{"path", "small"}}}}, 1);
+        std::vector<std::string> names;
+        for (const auto& e : fs::directory_iterator(audit_trail_dir(), ec_ignore())) {
+            if (e.path().extension() == ".jsonl") names.push_back(e.path().filename().string());
+        }
+        std::sort(names.begin(), names.end());
+        lines = trail();
+        expect(names.size() == 2 && names[0].substr(8) == ".2.jsonl" && names[1].substr(8) == ".jsonl" && lines.size() == 9 && lines.back().value("id", 0) == 9,
+               "file_mb: the next part is <YYYYMMDD>.2.jsonl once a line would pass the cap");
+        fs::remove(unrecorded.path());
+        fs::remove_all(audit_trail_dir());
+        fs::remove(ws / "trail-note.txt");
+        fs::remove(ws / "trail-out.txt");
+        if (old_rt) setenv("XDG_RUNTIME_DIR", saved_rt.c_str(), 1);
+        else unsetenv("XDG_RUNTIME_DIR");
     }
 
     section("undo points and nested instructions");

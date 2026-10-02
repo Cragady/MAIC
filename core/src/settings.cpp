@@ -574,6 +574,8 @@ Settings load_settings(const fs::path& workspace) {
     apply_file(s, settings_path(), workspace, true, LuaTier::Full, s.lua_memory_mb);
     set_trust_config({s.trust_strictness, s.trust_identities, s.trust_levels, s.project_markers, s.instructions_bound, s.instructions});
     set_lua_data_limits({*parse_lua_tier(s.global_lua), size_t(s.lua_memory_mb)});
+    // audit.lua is the user's own file, at their Lua level; no project layer below can touch it.
+    s.audit = load_audit_settings();
     // Project layers: the config chain (the project root, or just under $HOME, down to the workspace), like
     // instruction files, each only once its directory is trusted (docs/harness.md, Trust).
     for (const auto& d : config_chain(workspace)) {

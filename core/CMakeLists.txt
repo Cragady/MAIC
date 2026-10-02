@@ -4,6 +4,7 @@ add_library(maic_core
     src/agent.cpp
     src/anthropic.cpp
     src/artifacts.cpp
+    src/audit_trail.cpp
     src/bans.cpp
     src/clipboard.cpp
     src/harness.cpp
@@ -46,7 +47,7 @@ target_compile_options(maic_core PRIVATE -Wall -Wextra -Wpedantic -Wno-missing-f
 set(MAIC_SOURCE_ROOT "${PROJECT_SOURCE_DIR}" CACHE PATH "MAIC repository the built binary uses as its root")
 target_compile_definitions(maic_core PRIVATE MAIC_VERSION="${MAIC_GIT_VERSION}" MAIC_ROOT="${MAIC_SOURCE_ROOT}")
 
-foreach(t harness robustness llm agent session lua_tools script_tools models lazy_lock trust instructions)
+foreach(t harness robustness llm agent session lua_tools script_tools models lazy_lock trust instructions audit_trail)
     add_executable(${t}_test tests/${t}_test.cpp)
     target_link_libraries(${t}_test PRIVATE maic_core httplib::httplib)
     target_compile_options(${t}_test PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
@@ -54,6 +55,7 @@ foreach(t harness robustness llm agent session lua_tools script_tools models laz
 endforeach()
 target_compile_definitions(session_test PRIVATE MAIC_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
 target_compile_definitions(agent_test PRIVATE MAIC_EXAMPLES="${PROJECT_SOURCE_DIR}/tools/examples")
+target_compile_definitions(audit_trail_test PRIVATE MAIC_CONTRIB="${PROJECT_SOURCE_DIR}/contrib")
 
 # The parser fuzzer: a seeded mutation loop, 2 s per target by default (FUZZ_SECONDS=60 for a long run).
 add_executable(fuzz_parsers tests/fuzz_parsers.cpp)

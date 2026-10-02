@@ -1,5 +1,6 @@
 #pragma once
 
+#include "maic/audit_trail.hpp"
 #include "maic/bans.hpp"
 #include "maic/llm.hpp"
 #include "maic/agent_def.hpp"
@@ -178,6 +179,7 @@ struct Settings {
     std::string trust_strictness = "standard";  // the default trust tier: strict, standard, relaxed (docs/harness.md, Trust)
     std::vector<std::string> trust_identities;  // author emails that are yours; empty: git config --global user.email
     std::map<std::string, std::string> trust_levels;  // a tier per directory ("~/dev2/app" = "relaxed")
+    AuditSettings audit;  // audit.lua beside the global settings file, never a project's (docs/audit-trail.md)
     // `instructions = { project_markers = {...}, bound = ... }`: project settings and instruction files are read
     // from the workspace up to the project root (the nearest directory holding a marker), or up to $HOME with
     // bound "home" or outside any project (maic/trust.hpp, config_chain).

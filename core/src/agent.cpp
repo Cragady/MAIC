@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <fstream>
 #include <regex>
 #include <iostream>
@@ -804,8 +805,47 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
     events.on_notice("stopped after " + std::to_string(max_steps) + " steps" + (agent_name_.empty() ? "; send a message to continue" : " (the agent's limit)"));
 }
 
+// One audit trail entry: the call as given and what the harness, the reviewer and the user made of it. Never the
+// result text, a feedback the user typed, the answer to a question, or the reviewer's reasoning.
+void Agent::audit_tool_call(const nlohmann::json& record, bool ran, bool ok, const std::string& text, AgentEvents& events) {
+    auto pick = [](const nlohmann::json& from) {
+        nlohmann::json out = nlohmann::json::object();
+        for (const char* key : {"tool", "arguments", "decision", "reason", "approval"}) {
+            if (from.contains(key)) out[key] = from[key];
+        }
+        out["judged_by"] = "harness";
+        if (from.contains("review") && from["review"].is_object()) {
+            out["review"] = {{"verdict", from["review"].value("verdict", "")}, {"model", from["review"].value("model", "")}};
+            out["judged_by"] = "reviewer";
+        }
+        if (from.contains("approval")) out["judged_by"] = "user";
+        return out;
+    };
+    nlohmann::json entry = pick(record);
+    if (record.contains("actions")) {
+        entry["actions"] = nlohmann::json::array();
+        for (const auto& a : record["actions"]) {
+            nlohmann::json sub = pick(a);
+            sub["action"] = a.value("action", "");
+            entry["actions"].push_back(sub);
+        }
+    }
+    entry["session"] = log_ ? log_->path().stem().string() : "";
+    entry["recorded"] = log_ && log_->recorded();
+    entry["workspace"] = harness_.workspace().string();
+    entry["ran"] = ran;
+    entry["ok"] = ok;
+    if (int code; ran && std::sscanf(text.c_str(), "exit code %d", &code) == 1) entry["exit"] = code;
+    try {
+        append_audit_trail(std::move(entry), audit.file_mb);
+    } catch (const std::exception& e) {
+        events.on_notice(std::string("audit trail: ") + e.what());
+    }
+}
+
 Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel) {
     nlohmann::json record = {{"tool", call.name}, {"arguments", call.arguments}};
+    bool ran = false;
     auto result = [&](const std::string& text, bool ok) {
         events.on_tool_result(text, ok);
         if (log_) {
@@ -813,6 +853,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
             record["result"] = text.size() > kMaxLoggedResult ? text.substr(0, kMaxLoggedResult) + "\n[truncated]" : text;
             log_->write("tool", record);
         }
+        if (audit.enabled) audit_tool_call(record, ran, ok, text, events);
         return Message{"tool", text, {}, call.name, call.id, !ok};
     };
 
@@ -925,6 +966,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
     }
 
     if (name == "task") {
+        ran = true;
         ToolResult r = run_task(call.arguments, origin, events, cancel, record);
         return result(r.text, r.ok);
     }
@@ -937,12 +979,14 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
                 if (o.is_string()) options.push_back(o.get<std::string>());
             }
         }
+        ran = true;
         std::string answer = events.question(call.arguments["question"].get<std::string>(), options);
         record["answer"] = answer;
         return result(answer.empty() ? "(the user gave no answer)" : answer, true);
     }
     if (name == "todo") {
         if (!call.arguments.contains("items") || !call.arguments["items"].is_array()) return result("error: missing array argument 'items'", false);
+        ran = true;
         todo_.clear();
         for (const auto& it : call.arguments["items"]) {
             if (it.is_string()) todo_.push_back({it.get<std::string>(), false});
@@ -971,6 +1015,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
             record["actions"].push_back(sub);
             return d;
         };
+        ran = true;
         ToolResult r = run_lua_tool(*lua, call.arguments, harness_, gate, cancel, std::chrono::seconds(60), nvim_.get());
         for (const auto& p : written) events.on_file_written(p, name);
         return result(r.text, r.ok);
@@ -986,6 +1031,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
             if (d.verdict != Verdict::Allow) return result(d.reason, false);
         }
         // The workspace is writable only for a tool that declared writes; the mode has already allowed each of them.
+        ran = true;
         ToolResult r = run_script_tool(*script, call.arguments, harness_, script->writes.empty(), cancel);
         return result(r.text, r.ok);
     }
@@ -993,6 +1039,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
     if (name == "diagnostics") {
         Decision d = authorise(actions[0], name, summary, "", origin, events, record);
         if (d.verdict != Verdict::Allow) return result(d.reason, false);
+        ran = true;
         ToolResult r = run_diagnostics(call.arguments, actions[0]);
         return result(r.text, r.ok);
     }
@@ -1011,6 +1058,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
             if (a.kind == Action::Kind::Write) save_undo_point(a.path, summary);
         }
     }
+    ran = true;
     ToolResult r = run_tool(harness_, name, call.arguments, d.read_only_sandbox, cancel);
     if (r.ok && name == "move_file") push_undo({actions[0].path, std::nullopt, summary, actions[1].path});
     if (r.ok) {
@@ -1204,6 +1252,7 @@ ToolResult Agent::run_task(const nlohmann::json& args, Origin origin, AgentEvent
     child.rules = rules;
     child.compaction = compaction;
     child.review_with_model = review_with_model;
+    child.audit = audit;
     child.reviewer_model = reviewer_model;
     child.small_model = small_model;
     if (review_with_model) review_budget_check(events);
