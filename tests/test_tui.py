@@ -633,7 +633,7 @@ class TuiTest(unittest.TestCase):
         tui.send(":switch<cr>", settle=False)
         text = tui.wait_for("j/k move · Enter goes there · Esc stays")
         self.assertIn("↳ explore: slow: look around  ·  finished", text)
-        tui.wait_for("↳ explore: slow: look around  ·  finished, parked")  # leave.switch.after, once its job is done
+        tui.wait_for("↳ explore: slow: look around  ·  finished, parked")  # leave.task.after, once its job is done
         tui.send("<cr>", settle=False)  # the task is the first row after a new session
         text = tui.wait_for("echo: slow: look around")
         self.assertIn("❯ slow: look around", text, "switched into the task: its own conversation")

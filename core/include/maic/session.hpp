@@ -48,10 +48,14 @@ public:
         return SessionLog(Fork{}, parent, records, kind, home);
     }
 
+    ~SessionLog();
+
     std::filesystem::path path() const {
         std::lock_guard lock(mu_);
         return path_;
     }
+    // Lets go of the transcript: nothing more is written, and another engine may open it. The destructor does it too.
+    void release();
     // False for a session kept in the runtime directory (--no-record, maic -p without --record).
     bool recorded() const;
     // Stamps `type` and, unless the record already carries one (a record copied from another session), `time`.
@@ -77,12 +81,15 @@ public:
 
 private:
     void create(const std::string& kind, const std::filesystem::path& home);
+    void hold(const std::string& id);
     std::filesystem::path path_;
     mutable std::mutex mu_;
     std::ofstream out_;
     int pending_fd_ = -1;  // while relocating: where write() puts records
     std::set<std::string> described_;  // "<type>\x1f<skeleton hash>" already declared in the file
     std::vector<std::string> recovered_;
+    std::filesystem::path held_;  // <runtime>/held/<id>.lock, flocked while this log has the transcript open
+    int held_fd_ = -1;
 };
 
 // Finishes a move a crash interrupted (SessionLog::relocate): records left in <id>.jsonl.pending are appended to the

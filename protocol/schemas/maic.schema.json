@@ -22,7 +22,7 @@
     "SessionState": {"enum": ["live", "background", "parked", "stopped"]},
     "Activity": {"enum": ["idle", "working", "waiting", "slot"]},
     "Leave": {
-      "description": "What happens to the session a client's focus leaves (section 2): `session` defaults to the client's focus; `as` defaults to `default`, the session's `leave.switch` setting.",
+      "description": "What happens to the session a client's focus leaves (section 2): `session` defaults to the client's focus; `as` defaults to `default`, the session's `leave.switch` setting. A remote client's `as` looser than that case (bg < park < stop) is refused with `maic_step_up_required`.",
       "type": "object",
       "properties": {
         "session": {"type": "string", "minLength": 1},

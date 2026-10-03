@@ -258,14 +258,15 @@ const std::vector<Topic>& topics() {
         {">", {"<", "shift", "shiftwidth", "indent"}, "> and < shift lines", "*>* *<*\n"
          "`>{motion}` indents the lines the motion covers by four spaces (`shiftwidth`), `<{motion}` removes up to four; `>>` and `<<` do the line, `3>>` three lines, `>ip` the paragraph. In visual mode `>` and `<` shift the selection, and a count shifts that many times (`2>`). Empty lines are left alone."},
         {"!", {"shell", "bang"}, "run a command in your shell", "*!* *:!*\n`!cmd` as a message, or `:!cmd`, runs cmd in your own shell (not the sandbox) in the workspace. The output shows in the conversation and is handed to the model as context. Ctrl-C stops it."},
-        {"leave", {"leaving", "leave.switch", "leave.quit", "leave.no_daemon"}, "what becomes of a session you leave: the leave setting",
-         "*leave* *leave.switch* *leave.quit* *leave.no_daemon*\n"
+        {"leave", {"leaving", "leave.switch", "leave.quit", "leave.task", "leave.no_daemon"}, "what becomes of a session you leave: the leave setting",
+         "*leave* *leave.switch* *leave.quit* *leave.task* *leave.no_daemon*\n"
          "`leave` in settings says, case by case, what becomes of a session you leave: `bg` (it stays loaded and keeps working), `park` (it stops for now and resumes where it was) or `stop` (it ends; its transcript stays, `maic -r`). The defaults:\n\n"
          "- `leave.switch` (`:new`, `:switch`, `:fork`): `idle = \"park\"`, `working = \"bg\"`, `after = \"park\"`. `ask` is allowed for `idle` and `working`: MAIC asks each time.\n"
          "- `leave.quit` (`:q`): `idle = \"stop\"`, `working = \"bg\"`, `after = \"park\"`. A quit mid-turn is a switch to the void: with the daemon the session keeps working. `ask` is allowed for `idle` and `working` here too; a client that closes unasked gets the shipped value.\n"
-         "- `after`: what a session left working becomes once its work ends with no window on it. A background task's session follows `leave.switch.after`.\n"
+         "- `after`: what a session left working becomes once its work ends with no window on it.\n"
+         "- `leave.task`: `after = \"park\"`, the same for a background task's session, whichever way it was left. A task is its own session: nothing comes from its parent.\n"
          "- `leave.no_daemon = \"park\"`: what a quit does (`park` or `stop`) to a session it would leave running where no daemon can keep it, and to the other sessions in this MAIC's background.\n\n"
-         "`--bg`, `--park` or `--stop` on `:q`, `:new`, `:switch` or `:fork` decides for that one leave. See docs/settings.md."},
+         "`--bg`, `--park` or `--stop` on `:q`, `:new`, `:switch` or `:fork` decides for that one leave; from a remote client only one that tightens the case. Without the daemon a second window on a session another has open is refused: one engine per transcript. See docs/settings.md."},
     };
     return t;
 }

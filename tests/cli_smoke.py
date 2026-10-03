@@ -431,6 +431,27 @@ def rpc_smoke(maic, port):
     chk = subprocess.run([maic, "protocol", "check", rec], capture_output=True, text=True, env=env, cwd=home, timeout=60)
     report(chk.returncode == 0 and "2 streams, 0 with a violation" in chk.stdout, "client's and engine's recordings pass maic protocol check", chk.stdout + chk.stderr)
 
+    # One engine per transcript: without the daemon a second window is refused the session another window's engine
+    # has open, until that one lets go of it; a killed holder's hold is taken over.
+    def window():
+        w = RpcClient(maic, env, home)
+        w.call("maic.hello", {"protocol": 1, "client": {"name": "window", "version": "0"}})
+        return w
+    first, second = window(), window()
+    got = first.call("maic.session.resume", {"session": sid})
+    refused = second.call("maic.session.resume", {"session": sid})
+    why = (refused or {}).get("error", {}).get("message", "")
+    report(got and "result" in got and "is open in another MAIC (pid %d): one engine per transcript" % first.p.pid in why,
+           "refuses a second window the session another window's engine has open", json.dumps([got, refused]))
+    first.close()
+    got = second.call("maic.session.resume", {"session": sid})
+    second.p.kill()
+    second.close()
+    third = window()
+    again = third.call("maic.session.resume", {"session": sid})
+    third.close()
+    report(got and "result" in got and again and "result" in again, "opens it once the first window ends, and takes over a killed window's hold", json.dumps([got, again]))
+
     # A client that wants no text deltas: the done events carry the text, and maic.filtered_from accounts for the gaps.
     rec2 = os.path.join(home, "rpc-filtered")
     os.makedirs(rec2)

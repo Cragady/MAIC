@@ -178,6 +178,7 @@ int main() {
     setenv("XDG_STATE_HOME", (root / "state").c_str(), 1);
     setenv("XDG_CONFIG_HOME", (root / "config").c_str(), 1);
     setenv("MAIC_TRIPWIRE_FILE", (root / "tripwire").c_str(), 1);
+    setenv("XDG_RUNTIME_DIR", (root / "run").c_str(), 1);  // unrecorded transcripts and the holds on open ones
     fs::remove_all(MAIC_PROTOCOL_STREAMS);
     fs::path ws = fs::weakly_canonical(root / "ws");
 
@@ -194,7 +195,7 @@ int main() {
     o.index_file = root / "state" / "engine" / "index.json";
     o.protocol_log = root / "state" / "engine" / "protocol.log";
     o.settings.max_tasks = 2;  // the background tasks section meets the limit
-    o.settings.leave.switching.after = "bg";  // and looks at its tasks after they end (the leaving section parks them)
+    o.settings.leave.task_after = "bg";  // and looks at its tasks after they end (the leaving section parks them)
     for (auto& a : o.settings.agents) {
         if (a.name == "explore") a.steering = {{"actions", {"interrupt", "keep", "halt"}}};  // and an agent's narrower steering
     }
@@ -1622,21 +1623,27 @@ int main() {
 
     section("leaving: every case of the leave table, a verb that overrides it, and after");
     {
-        // Three workspaces with their own settings: the defaults, a switch.idle that asks, and one that stops and parks.
-        fs::path ask_ws = fs::weakly_canonical(root / "leave-ask"), stop_ws = fs::weakly_canonical(root / "leave-stop");
+        // Four workspaces with their own settings: the defaults, a switch.idle that asks, one that stops and parks, and
+        // one whose tasks stay loaded where its other sessions are stopped.
+        fs::path ask_ws = fs::weakly_canonical(root / "leave-ask"), stop_ws = fs::weakly_canonical(root / "leave-stop"), task_ws = fs::weakly_canonical(root / "leave-task");
         fs::create_directories(ask_ws);
         fs::create_directories(stop_ws);
+        fs::create_directories(task_ws);
         Settings base = o.settings;
         base.leave = LeaveSettings{};
         EngineOptions od = o;
         od.settings = base;
-        od.workspaces = {ws, ask_ws, stop_ws};
+        od.workspaces = {ws, ask_ws, stop_ws, task_ws};
         od.index_file = root / "state" / "engine-leave" / "index.json";
         od.keeps_sessions = true;  // as the daemon: a quit can leave a session working
-        od.settings_for = [base, ask_ws, stop_ws](const fs::path& w) {
+        od.settings_for = [base, ask_ws, stop_ws, task_ws](const fs::path& w) {
             Settings st = base;
             if (w == ask_ws) st.leave.switching.idle = st.leave.quitting.idle = "ask";
             if (w == stop_ws) st.leave = {{"stop", "park", "park"}, {"stop", "stop", "park"}, "stop"};
+            if (w == task_ws) {
+                st.leave.switching.after = st.leave.quitting.after = "stop";
+                st.leave.task_after = "bg";
+            }
             return st;
         };
         // A message starting "gated" is answered once the gate opens: work that ends when the test says so.
@@ -1722,7 +1729,7 @@ int main() {
             create(stop_ws, {{"as", "bg"}});
             expect(state_of(sd)["state"] == "background", "--bg overrides leave.switch.idle = stop: the idle session stays loaded");
 
-            // A background task's session follows leave.switch.after once its job is done.
+            // A background task's session follows leave.task.after once its job is done.
             std::string parent = create(ws, {{"as", "default"}});
             a.ok("maic.session.subscribe", {{"session", parent}});
             plan({{{"name", "task"}, {"arguments", {{"agent", "explore"}, {"prompt", "look around"}, {"background", true}}}}});
@@ -1731,8 +1738,48 @@ int main() {
             long made = a.until([&](const json& ev) { return ev["stream_id"] == parent && ev["type"] == "maic.task.created"; }, mark);
             std::string task = made < 0 ? "" : a.events[made]["task"].get<std::string>();
             json t = becomes(task, "parked");
-            expect(!task.empty() && t["state"] == "parked" && t["unseen"] == true, "a finished background task's session is parked (leave.switch.after): " + t.dump());
+            expect(!task.empty() && t["state"] == "parked" && t["unseen"] == true, "a finished background task's session is parked (leave.task.after): " + t.dump());
             a.until_idle(mark);
+
+            // A task is its own session: started while its parent is in the background, it follows its own
+            // leave.task.after (bg here), not its parent's leave nor leave.switch.after (stop here).
+            std::string bgp = a.ok("createConversation", {{"maic", {{"workspace", task_ws.string()}, {"focus", false}}}}).value("id", "");
+            a.ok("maic.session.subscribe", {{"session", bgp}});
+            plan({{{"name", "task"}, {"arguments", {{"agent", "explore"}, {"prompt", "look around"}, {"background", true}}}}});
+            mark = a.events.size();
+            a.ok("response.create", {{"conversation", bgp}, {"input", "start a task"}});
+            long ended = a.until([&](const json& ev) { return ev["stream_id"] == bgp && ev["type"] == "maic.task.completed"; }, mark);
+            std::string own = ended < 0 ? "" : a.events[ended]["task"].get<std::string>();
+            a.until_idle(mark);
+            a.pump(200ms);
+            json ot = state_of(own);
+            expect(!own.empty() && ot["state"] == "background" && ot["unseen"] == true, "a task started while its parent was in the background follows its own leave.task.after (bg): " + ot.dump());
+            // Switched to and left working, it still has its own after: leave.task.after, not leave.switch.after.
+            a.ok("maic.session.focus", {{"session", own}});
+            gate(false);
+            a.ok("response.create", {{"conversation", own}, {"input", "gated: again"}});
+            a.ok("maic.session.focus", {{"session", bgp}, {"leave", {{"as", "default"}}}});
+            expect(state_of(own)["state"] == "background", "the task left working keeps on in the background (leave.switch.working)");
+            gate(true);
+            for (int i = 0; i < 300 && state_of(own).value("activity", "") != "idle"; ++i) a.pump(20ms);
+            a.pump(200ms);
+            ot = state_of(own);
+            expect(ot["state"] == "background" && ot["activity"] == "idle", "its work done, it follows leave.task.after (bg), not leave.switch.after (stop): " + ot.dump());
+
+            // A remote client's verb may tighten the case but not loosen it (Micaiah, 2026-10-03): loosening needs a
+            // step-up, which needs accounts (roadmap item 6).
+            TestClient r(e, rec, Origin::Remote, "phone");
+            r.hello();
+            std::string r1 = r.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}}).value("id", "");
+            expect(r.error("createConversation", {{"maic", {{"workspace", ws.string()}, {"leave", {{"as", "bg"}}}}}}) == "maic_step_up_required" && state_of(r1)["state"] == "live",
+                   "a remote --bg that loosens leave.switch.idle (park) is refused with maic_step_up_required, and nothing changed");
+            std::string r2 = r.ok("createConversation", {{"maic", {{"workspace", ws.string()}, {"leave", {{"as", "stop"}}}}}}).value("id", "");
+            expect(state_of(r1).is_null(), "a remote --stop that tightens it is done");
+            expect(r.error("maic.session.leave", {{"as", "park"}}) == "maic_step_up_required" && r.error("maic.session.leave", {{"as", "bg"}}) == "maic_step_up_required" &&
+                       state_of(r2)["state"] == "live",
+                   "a remote :q --park or --bg that loosens leave.quit.idle (stop) is refused, and nothing changed");
+            expect(r.ok("maic.session.leave", {{"as", "default"}})["left"]["state"] == "stopped", "the case itself is the remote client's to take");
+            e.disconnect(r.id);
 
             // quit (maic.session.leave): idle stops, working stays in the background until after, and the verbs override.
             TestClient b(e, rec, Origin::Local, "quitter");
@@ -1794,6 +1841,37 @@ int main() {
             expect(left["left"]["state"] == "parked", "leave.no_daemon (park): a working session a quit would leave running is interrupted and parked");
             expect(state_of(w1).is_null(), "a working session in the background does what its own leave.no_daemon (stop) says");
             e.disconnect(c.id);
+        }
+        {
+            // One engine per transcript (Micaiah, 2026-10-03): without the daemon each window runs its own engine, and a
+            // second one is refused a session another has open, until that one lets go of it; a dead holder's hold is taken over.
+            EngineOptions on = od, other = od;
+            on.keeps_sessions = other.keeps_sessions = false;
+            on.index_file = root / "state" / "engine-leave-one" / "index.json";
+            other.index_file = root / "state" / "engine-leave-two" / "index.json";
+            Engine e1(on), e2(other);
+            TestClient c1(e1, rec, Origin::Local, "tui");
+            TestClient c2(e2, rec, Origin::Local, "nvim");
+            c1.hello();
+            c2.hello();
+            std::string held_id = c1.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}}).value("id", "");
+            c1.ok("maic.session.subscribe", {{"session", held_id}});
+            c1.ok("response.create", {{"conversation", held_id}, {"input", "one"}});
+            c1.until_type("response.completed");
+            json second = e2.call(c2.id, {{"jsonrpc", "2.0"}, {"id", 9998}, {"method", "maic.session.resume"}, {"params", {{"session", held_id}}}});
+            std::string why = second.contains("error") ? second["error"].value("message", "") : "";
+            expect(why.find("is open in another MAIC (pid " + std::to_string(getpid()) + "): one engine per transcript") != std::string::npos,
+                   "a second engine is refused a session another has open, and told why: " + second.dump());
+            c1.ok("maic.session.park", {{"session", held_id}});
+            expect(c2.ok("maic.session.resume", {{"session", held_id}}).value("id", "") == held_id, "once the first lets go of it, the second opens it");
+            c2.ok("maic.session.park", {{"session", held_id}});
+            fs::path hold = root / "run" / "maic" / "held" / (held_id + ".lock");
+            std::ofstream(hold) << "999999";
+            std::string pid;
+            expect(c1.ok("maic.session.resume", {{"session", held_id}}).value("id", "") == held_id && std::getline(std::ifstream(hold), pid) && pid == std::to_string(getpid()),
+                   "a hold no live process has (a crashed MAIC's) is taken over");
+            e1.disconnect(c1.id);
+            e2.disconnect(c2.id);
         }
         fake.reply = nullptr;
         rec.finish();

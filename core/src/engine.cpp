@@ -875,7 +875,7 @@ struct Engine::Impl {
         l.as = leave.value("as", "default");
         if (l.as != "default" && l.as != "bg" && l.as != "park" && l.as != "stop") throw bad_params("leave.as is one of default, bg, park, stop", "leave");
         l.session = leave.value("session", "");
-        if (l.as != "default") return l;
+        if (l.as != "default" && c.origin != Origin::Remote) return l;
         std::string id = l.session;
         if (id.empty()) {
             std::lock_guard lock(c.mu);
@@ -888,14 +888,35 @@ struct Engine::Impl {
         }
         if (!s) return l;
         std::lock_guard lock(s->mu);
-        if (s->focused_by.size() > s->focused_by.count(c.id)) return l;  // another client has it: default touches it not
         bool working = busy(*s);
+        if (l.as != "default") {
+            remote_loosens(c, l.as, switch_verb(*s, working), working ? LeaveSettings{}.switching.working : LeaveSettings{}.switching.idle,
+                           working ? "switch.working" : "switch.idle", "leave");
+            return l;
+        }
+        if (s->focused_by.size() > s->focused_by.count(c.id)) return l;  // another client has it: default touches it not
         if (switch_verb(*s, working) == "ask") {
             throw refuse("maic_leave_ask", std::string("leave.switch.") + (working ? "working" : "idle") + " says ask: name what happens to the session left (bg, park or stop)", "leave");
         }
         return l;
     }
     static const std::string& switch_verb(const Session& s, bool working) { return working ? s.settings.leave.switching.working : s.settings.leave.switching.idle; }
+    // What a session left working becomes once its work ends: the leave's `after`, but a background task's session
+    // has its own, leave.task.after, whichever way it was left (a task is its own session; Micaiah, 2026-10-03).
+    static const std::string& after_of(const Session& s, const LeaveCase& left) { return s.kind == "sub" ? s.settings.leave.task_after : left.after; }
+
+    // A remote client's verb may tighten the case it overrides (bg, then park, then stop) but not loosen it: that
+    // needs a step-up, which needs accounts (roadmap item 6; Micaiah, 2026-10-03). A case that asks counts as its
+    // shipped value. The caller holds the session's lock.
+    static void remote_loosens(const Client& c, const std::string& as, std::string is, const std::string& shipped, const std::string& which, const std::string& param) {
+        if (c.origin != Origin::Remote) return;
+        if (is == "ask") is = shipped;
+        auto rank = [](const std::string& v) { return v == "bg" ? 0 : v == "park" ? 1 : 2; };
+        if (rank(as) < rank(is)) {
+            throw refuse("maic_step_up_required", "a remote client loosens leave." + which + " (" + is + ") to " + as +
+                                                      " only after a step-up check, which needs accounts (roadmap item 6); default, or a verb that tightens it, is allowed", param);
+        }
+    }
 
     // Moves `c`'s focus to `to`, which is loaded, and does with the session it leaves what `leave` says; `default`
     // touches neither a session another client has in focus.
@@ -933,7 +954,7 @@ struct Engine::Impl {
             bool working = busy(*s);
             // "ask" was asked before anything changed; a session that changed state since goes to the background.
             if (as == "default") as = switch_verb(*s, working) == "ask" ? "bg" : switch_verb(*s, working);
-            if (as == "bg" && leave.asked && working && s->focused_by.empty()) s->after = s->settings.leave.switching.after;
+            if (as == "bg" && leave.asked && working && s->focused_by.empty()) s->after = after_of(*s, s->settings.leave.switching);
         }
         if (as == "park" || as == "stop") unload(s, as == "park" ? "parked" : "stopped", c.by(), true);
     }
@@ -968,7 +989,7 @@ struct Engine::Impl {
                 // "ask" with nobody asked (a connection that ended without maic.session.leave): the shipped default.
                 if (verb == "ask") verb = working ? "bg" : "stop";
                 if (verb == "bg" && !options.keeps_sessions) verb = l.no_daemon;
-                if (verb == "bg" && working && s->focused_by.empty()) s->after = l.quitting.after;
+                if (verb == "bg" && working && s->focused_by.empty()) s->after = after_of(*s, l.quitting);
             }
             left = entry(*s);
         }
@@ -1061,7 +1082,10 @@ struct Engine::Impl {
             s->activity = "idle";
             s->waiting = nullptr;
             emit(*s, {{"type", "maic.session.state"}, {"state", state}, {"activity", "idle"}, {"waiting", nullptr}, {"by", by}});
-            if (s->log) s->log->write("stream", {{"epoch", s->epoch}, {"next", s->next}, {"closed", true}});
+            if (s->log) {
+                s->log->write("stream", {{"epoch", s->epoch}, {"next", s->next}, {"closed", true}});
+                s->log->release();  // another engine may open it now
+            }
             for (const auto& sub : s->subscribers) {
                 std::lock_guard cl(sub->mu);
                 sub->sessions.erase(s->id);
@@ -1265,7 +1289,7 @@ struct Engine::Impl {
         auto s = std::make_shared<Session>(ws, model);
         if (def) st.steering = agent_steering(st.steering, def->steering, def->name);
         s->settings = std::move(st);
-        s->after = s->settings.leave.switching.after;  // a task is a session left working from its start
+        s->after = s->settings.leave.task_after;  // a task is a session left working from its start, by its own case
         s->commands.dumb_auto_ok = dumb_ok;
         s->kind = "sub";
         s->parent = p.id;
@@ -1743,7 +1767,7 @@ struct Engine::Impl {
     json session_leave(Client& c, const json& p) {
         std::string as = p.value("as", "default");
         if (as != "default" && as != "bg" && as != "park" && as != "stop") throw bad_params("as is one of default, bg, park, stop", "as");
-        if (as == "default") {
+        if (as == "default" || c.origin == Origin::Remote) {
             std::string id;
             {
                 std::lock_guard lock(c.mu);
@@ -1757,7 +1781,11 @@ struct Engine::Impl {
             if (s) {
                 std::lock_guard lock(s->mu);
                 bool working = busy(*s);
-                if (s->focused_by.size() <= s->focused_by.count(c.id) && (working ? s->settings.leave.quitting.working : s->settings.leave.quitting.idle) == "ask") {
+                const LeaveCase& q = s->settings.leave.quitting;
+                if (as != "default") {
+                    remote_loosens(c, as, working ? q.working : q.idle, working ? LeaveSettings{}.quitting.working : LeaveSettings{}.quitting.idle,
+                                   working ? "quit.working" : "quit.idle", "as");
+                } else if (s->focused_by.size() <= s->focused_by.count(c.id) && (working ? q.working : q.idle) == "ask") {
                     throw refuse("maic_leave_ask", std::string("leave.quit.") + (working ? "working" : "idle") + " says ask: name what happens to the session in focus (bg, park or stop)", "as");
                 }
             }

@@ -852,12 +852,12 @@ int main() {
         trust_dir(project_dir(dir), Origin::Local);
         const LeaveSettings d;
         expect(d.switching.idle == "park" && d.switching.working == "bg" && d.switching.after == "park" && d.quitting.idle == "stop" && d.quitting.working == "bg" &&
-                   d.quitting.after == "park" && d.no_daemon == "park",
+                   d.quitting.after == "park" && d.no_daemon == "park" && d.task_after == "park",
                "the defaults fill every case");
-        write_file(cfg, "return { leave = { switch = { idle = 'ask' }, no_daemon = 'stop' } }\n");
+        write_file(cfg, "return { leave = { switch = { idle = 'ask' }, no_daemon = 'stop', task = { after = 'stop' } } }\n");
         LeaveSettings l = load_settings(dir).leave;
         expect(l.switching.idle == "ask" && l.no_daemon == "stop" && l.quitting.idle == "park" && l.switching.working == "bg" && l.switching.after == "park" &&
-                   l.quitting.working == "bg" && l.quitting.after == "park",
+                   l.quitting.working == "bg" && l.quitting.after == "park" && l.task_after == "stop",
                "each file replaces only the cases it names, a trusted project's after yours");
         auto refused = [&](const std::string& lua) {
             write_file(cfg, "return { leave = " + lua + " }\n");
@@ -869,7 +869,10 @@ int main() {
             }
             return err;
         };
-        expect(contains(refused("{ away = { idle = 'park' } }"), "leave.away is not a case (switch, quit, no_daemon)"), "an unknown case is an error naming it");
+        expect(contains(refused("{ away = { idle = 'park' } }"), "leave.away is not a case (switch, quit, task, no_daemon)"), "an unknown case is an error naming it");
+        expect(contains(refused("{ task = { idle = 'park' } }"), "leave.task.idle is not a case (after)"), "a task has only its after");
+        expect(contains(refused("{ task = { after = 'ask' } }"), "leave.task.after must be \"bg\", \"park\" or \"stop\", not \"ask\""), "which is bg, park or stop");
+        expect(contains(refused("{ task = 'park' }"), "leave.task must be a table of cases: after"), "and a table");
         expect(contains(refused("{ quit = { busy = 'bg' } }"), "leave.quit.busy is not a case (idle, working, after)"), "so is an unknown case under quit");
         expect(contains(refused("{ switch = { after = 'later' } }"), "leave.switch.after must be \"bg\", \"park\" or \"stop\", not \"later\""), "an unknown verb is an error naming it");
         expect(refused("{ quit = { idle = 'ask', working = 'ask' } }").empty(), "ask is accepted for quit.idle and quit.working too");
