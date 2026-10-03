@@ -144,11 +144,18 @@ int cmd_status(const Settings& settings, const fs::path& state) {
         fs::path cert = settings.server.cert.empty() ? state / "cert.pem" : settings.server.cert;
         std::cout << "cert:       " << cert.string() << (fs::exists(cert) ? "" : "  (made at first start)") << "\n";
     }
+    // A corrupt pairs.json is reported here; maid server start still refuses it.
+    std::string paired;
+    try {
+        paired = std::to_string(PairStore(state / "pairs.json").list().size()) + " phone(s) (maid server pairs)";
+    } catch (const std::exception& e) {
+        paired = std::string("unreadable: ") + e.what() + " (maid server start refuses until it is fixed)";
+    }
     std::cout << "workspaces:";
     for (const auto& w : workspace_roots(settings)) std::cout << " " << w.string();
     std::cout << "\ntokens:     " << store.list().size() << " (maid server token list)\n"
               << "relay:      " << relay_notice(settings, state) << "\n"
-              << "paired:     " << PairStore(state / "pairs.json").list().size() << " phone(s) (maid server pairs)\n"
+              << "paired:     " << paired << "\n"
               << "audit log:  " << (state / "audit.log").string() << "\n";
     // Any answer, even the 401 an unauthenticated probe gets, means a server is up.
     std::string probe_host = host == "0.0.0.0" || host == "::" || host.empty() ? "127.0.0.1" : host;

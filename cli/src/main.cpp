@@ -2019,8 +2019,9 @@ int main(int argc, char** argv) {
         if (cmd == "status") {
             try {
                 maid::audit_gate(maid::load_settings());
-            } catch (const std::exception&) {
-                // a broken settings file must not hide the services; the commands that need settings report it
+            } catch (const std::exception& e) {
+                // a broken settings or audit file must not hide the services: said, and the status follows
+                std::cerr << "maid: " << e.what() << "\n";
             }
             maid::StatusReport report = maid::status_report(services);
             try {

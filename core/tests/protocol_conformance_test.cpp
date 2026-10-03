@@ -8,6 +8,7 @@
 #include "fake_server.hpp"
 
 #include "maid/engine.hpp"
+#include "maid/paths.hpp"
 #include "maid/protocol.hpp"
 
 #include <sys/stat.h>
@@ -2235,6 +2236,54 @@ int main() {
                "the load's first event carries the epoch and the build's protocol hash");
         expect(!state["maid"].contains("previous_epoch") && !state.contains("previous_epoch"), "no new epoch: nothing was reset");
         after.finish();
+    }
+
+    section("one bad item degrades only itself: a service file that doesn't load, a vendor manifest that doesn't parse");
+    {
+        // A maid tree of its own: the real one's files, a bad service beside a healthy one, and a corrupt manifest.
+        fs::path tree = root / "tree";
+        fs::create_directories(tree / "services");
+        fs::create_directories(tree / "vendor");
+        for (const auto& e : fs::directory_iterator(root_dir())) {
+            if (e.path().filename() != "services" && e.path().filename() != "vendor") fs::create_symlink(e.path(), tree / e.path().filename());
+        }
+        std::ofstream(tree / "services" / "broken.json") << R"({"name":"broken","command":["${MAID_NO_SUCH_VARIABLE}/x"]})";
+        std::ofstream(tree / "services" / "healthy.json") << R"({"name":"healthy","command":["true"],"port":1})";
+        std::ofstream(tree / "vendor" / "manifest.json") << "{ not json";
+        setenv("MAID_HOME", tree.c_str(), 1);
+        EngineOptions od = o;
+        od.index_file = root / "state" / "engine-degrade" / "index.json";
+        od.protocol_log = root / "state" / "engine-degrade" / "protocol.log";
+        Engine e(od);
+        Recording rec("degrade");
+        TestClient a(e, rec, Origin::Local, "tui");
+        a.hello();
+        std::string sid = a.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}}).value("id", "");
+        a.ok("maid.session.subscribe", {{"session", sid}});
+        auto run = [&](const std::string& line) {
+            std::string text;
+            for (const auto& l : a.ok("maid.session.command", {{"session", sid}, {"line", line}}).value("lines", json::array())) text += l["text"].get<std::string>() + "\n";
+            return text;
+        };
+        auto has = [](const std::string& text, const std::string& part) { return text.find(part) != std::string::npos; };
+        size_t mark = a.events.size();
+        a.ok("response.create", {{"conversation", sid}, {"input", "purr"}});
+        expect(a.until_type("response.completed", mark) >= 0 && has(a.text(mark), "purr"), "a session starts and answers with the manifest corrupt");
+        a.until_idle(mark);
+        std::string status = run("status");
+        expect(has(status, "broken.json") && has(status, "this service is skipped") && has(status, "healthy: stopped") && has(status, "session: " + sid) &&
+                   has(status, "mode: manual  (idle)"),
+               ":status names the skipped file and keeps the healthy service and its session lines: " + status);
+        json engine_status = a.ok("maid.engine.status");
+        expect(engine_status["services"].size() == 1 && engine_status["services"][0]["name"] == "healthy", "maid.engine.status lists the healthy service");
+        fs::create_directories(ws / "den");
+        std::string cd = run("cd " + (ws / "den").string());
+        expect(has(cd, "workspace: " + (ws / "den").string()), ":cd still changes the workspace: " + cd);
+        run("cd -");
+        std::string model = run("model " + o.settings.model);
+        expect(has(model, "model: " + o.settings.model), ":model still switches with the manifest corrupt: " + model);
+        unsetenv("MAID_HOME");
+        rec.finish();
     }
 
     section("the engine's own checks found nothing");

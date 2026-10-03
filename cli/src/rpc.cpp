@@ -291,11 +291,13 @@ int run_rpc(const TuiOptions& options) {
     }
     set_tripwire_scope(settings.tripwire, runtime_sessions_dir() / ("rpc-" + std::to_string(getpid()) + ".tripped"));
     audit_gate(settings);
-    if (options.ctx) {
-        if (std::string r = restart_llamacpp_if_changed(); !r.empty()) fprintf(stderr, "※ %s\n", r.c_str());
-    }
-    if (options.ctx2) {
-        if (std::string r = restart_llamacpp_if_changed("llamacpp-2"); !r.empty()) fprintf(stderr, "※ %s\n", r.c_str());
+    for (const char* service : {options.ctx ? "llamacpp" : "", options.ctx2 ? "llamacpp-2" : ""}) {
+        if (!*service) continue;
+        try {
+            if (std::string r = restart_llamacpp_if_changed(service); !r.empty()) fprintf(stderr, "※ %s\n", r.c_str());
+        } catch (const std::exception& e) {
+            fprintf(stderr, "maid: %s was not restarted for the new context size: %s\n", service, e.what());
+        }
     }
 
     EngineOptions eo;

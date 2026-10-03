@@ -280,8 +280,9 @@ def main():
     rpc_ok = rpc_smoke(maid, port)
     daemon_ok = daemon_smoke(maid, port)
     ui_ok = nvim_ui_smoke(maid, port)
+    degrade_ok = degrade_smoke(maid, port)
     srv.shutdown()
-    sys.exit(0 if kit_ok and rpc_ok and daemon_ok and ui_ok and ok and stream_ok and trust_ok and color_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok and mcp_ok else 1)
+    sys.exit(0 if degrade_ok and kit_ok and rpc_ok and daemon_ok and ui_ok and ok and stream_ok and trust_ok and color_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok and mcp_ok else 1)
 
 
 class RpcClient:
@@ -1266,6 +1267,65 @@ def color_smoke(maid, port):
         report(len(names) > 40 and not stray, "no topic page keeps a backtick or a **bold marker: " + ", ".join(stray), plain)
     finally:
         run("down", "fake-gpu")
+    shutil.rmtree(home, ignore_errors=True)
+    return all(results)
+
+
+def degrade_smoke(maid, port):
+    """Degraded beats halted (docs/decisions.md): one bad item beside healthy ones, and the core commands still work.
+    MAID_HOME is the real tree with a services/ of its own (a bad file beside a healthy fake service on a free loopback
+    port); then a typo'd audit.lua, which stops only the audit's own path."""
+    home, env = make_home(port)
+    results = []
+
+    def report(ok, what, r):
+        print(("ok" if ok else "FAIL") + ": " + what + ("" if ok else "\n" + r.stdout[-1500:] + r.stderr[-1500:]))
+        results.append(ok)
+
+    def run(*args, extra=None):
+        return subprocess.run([maid, *args], capture_output=True, text=True, env=dict(env, **(extra or {})), cwd=home, timeout=60, stdin=subprocess.DEVNULL)
+
+    real = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root = os.path.join(home, "root")
+    os.makedirs(os.path.join(root, "services"))
+    for name in os.listdir(real):
+        if name != "services":
+            os.symlink(os.path.join(real, name), os.path.join(root, name))
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0))
+        p = sk.getsockname()[1]
+    with open(os.path.join(root, "services", "healthy.json"), "w") as f:
+        json.dump({"name": "healthy", "command": ["python3", "-m", "http.server", str(p), "--bind", "127.0.0.1"], "cwd": home, "port": p, "ready_timeout": 20}, f)
+    with open(os.path.join(root, "services", "broken.json"), "w") as f:
+        json.dump({"name": "broken", "command": ["${MAID_NO_SUCH_VARIABLE}/x"]}, f)
+    svc = {"MAID_HOME": root}
+    skipped = "broken.json: environment variable MAID_NO_SUCH_VARIABLE is not set (this service is skipped"
+    try:
+        r = run("up", "healthy", extra=svc)
+        report(r.returncode == 0 and "ready on port" in r.stdout and skipped in r.stderr, "maid up starts the healthy service and names the skipped file", r)
+        r = run("status", extra=svc)
+        report(r.returncode == 0 and "healthy: running" in r.stdout and skipped in r.stderr, "maid status shows the healthy service and names the skipped file", r)
+        r = run("logs", "healthy", extra=svc)
+        report(r.returncode == 0 and skipped in r.stderr, "maid logs of the healthy service", r)
+        r = run("down", "healthy", extra=svc)
+        report(r.returncode == 0 and "healthy: stopped" in r.stdout, "maid down of the healthy service", r)
+    finally:
+        run("down", "healthy", extra=svc)
+    r = run("path", "--names", extra={"MAID_HOME": os.path.join(home, "no-tree")})
+    report(r.returncode == 0 and "workspace" in r.stdout and "no services directory (looked for services/ in MAID_HOME (" in r.stderr,
+           "with no services directory at all, maid path still lists the places and says where it looked", r)
+
+    with open(os.path.join(env["XDG_CONFIG_HOME"], "maid", "audit.lua"), "w") as f:
+        f.write("return { enabld = true }\n")
+    typo = "audit.lua: enabld is not an audit trail setting"
+    r = run("path", "--names")
+    report(r.returncode == 0 and "workspace" in r.stdout, "a typo'd audit.lua leaves maid path working", r)
+    r = run("status")
+    report(r.returncode == 0 and "harness: armed" in r.stdout and typo in r.stderr, "maid status works and says what is wrong with audit.lua", r)
+    r = run("-p", "ping", "--no-instructions")
+    report(r.returncode == 1 and typo in r.stderr and "echo: ping" not in r.stdout, "audit_gate refuses a session and names the typo", r)
+    r = run("audit-trail", "status")
+    report(r.returncode == 1 and typo in r.stderr, "maid audit-trail status names it too", r)
     shutil.rmtree(home, ignore_errors=True)
     return all(results)
 

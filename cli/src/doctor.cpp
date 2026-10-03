@@ -159,7 +159,14 @@ int run_doctor() {
     else std::cout << "  gpu:   " << gpu.name << (gpu.vram_mb ? " " + std::to_string(gpu.vram_mb / 1024) + " GB VRAM" : " (VRAM unknown)") << "\n";
     if (!gpu.note.empty()) std::cout << "         " << gpu.note << "\n";
     std::cout << "  disk:  " << static_cast<int>(free_gb(std::getenv("HOME"))) << " GB free in $HOME";
-    Settings settings = load_settings();
+    // Broken settings are a finding, not the end of the checkup: the defaults stand in for the rest.
+    Settings settings;
+    std::string settings_error;
+    try {
+        settings = load_settings();
+    } catch (const std::exception& e) {
+        settings_error = e.what();
+    }
     std::cout << ", " << static_cast<int>(free_gb(state_dir().parent_path().parent_path())) << " GB free where sessions live\n\n";
 
     // ---- tools MAID relies on
@@ -168,7 +175,11 @@ int run_doctor() {
         std::cout << "  " << (ok ? "ok  " : "--  ") << what << (detail.empty() ? "" : ": " + detail) << "\n";
     };
     for (const auto& c : prerequisites()) line(c.what, c.ok, c.detail);
-    for (const auto& e : load_vendor_manifest()) {
+    line("settings", settings_error.empty(), settings_error.empty() ? "" : settings_error + " (the checks below use the defaults)");
+    for (const auto& w : settings.warnings) line("settings", false, w);
+    if (!settings.audit_error.empty()) line("audit.lua", false, settings.audit_error);
+    std::vector<std::string> problems;
+    for (const auto& e : load_vendor_manifest(&problems)) {
         auto st = vendor_status(e);
         line("vendored " + e.name + " (" + e.ref + ")", st.installed, st.installed ? st.target : st.note);
         if (e.name == "llamacpp" && st.installed) line("llama.cpp model", !st.model.empty(), st.model.empty() ? "maid vendor use llamacpp PATH" : st.model);
@@ -179,11 +190,8 @@ int run_doctor() {
         std::string verdict = cuda_agreement(torch, driver);
         line("ComfyUI torch vs driver", !driver.empty() && verdict.find("they agree") != std::string::npos, driver.empty() ? "torch is built for CUDA " + torch + "; nvidia-smi did not answer" : verdict);
     }
-    std::vector<ServiceDef> services;
-    try {
-        services = load_services(root_dir() / "services");
-    } catch (const std::exception&) {
-    }
+    std::vector<ServiceDef> services = load_services(root_dir() / "services", &problems);
+    for (const auto& p : problems) line("skipped", false, p);
     for (const auto& s : services) {
         if (!is_llama_server(s.name)) continue;
         bool up = service_status(s).state != ServiceState::Stopped;
