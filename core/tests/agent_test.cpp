@@ -130,6 +130,8 @@ int main() {
     fs::remove_all(ws);
     fs::create_directories(ws);
     setenv("XDG_STATE_HOME", (ws / "state").c_str(), 1);
+    fs::path runtime = fs::temp_directory_path() / ("maic-agent-test-run-" + std::to_string(getpid()));
+    setenv("XDG_RUNTIME_DIR", runtime.c_str(), 1);  // the holds on open sessions and the unrecorded ones
     std::atomic<bool> no_cancel{false};
 
     section("plain turn");
@@ -400,7 +402,7 @@ int main() {
         Recorder r2;
         r2.reply = {Approval::No, "typed-feedback-marker"};
         session(unrecorded, true, Mode::Edit, r2);
-        // The two sessions can share a stem (same second, same name): this one's entries are the ones after id 3.
+        // This one's entries are the ones after id 3.
         std::vector<json> mine;
         for (const auto& l : trail()) {
             if (l.value("id", 0) > 3 && l.value("session", "") == unrecorded.path().stem().string()) mine.push_back(l);
@@ -2607,5 +2609,6 @@ int main() {
     }
 
     fs::remove_all(ws);
+    fs::remove_all(runtime);
     return finish();
 }

@@ -80,6 +80,8 @@ int main() {
     fs::path ws = home / ".cache" / "maic-robustness-test";  // under $HOME so artifact cleaning is allowed
     fs::remove_all(ws);
     fs::create_directories(ws);
+    fs::path run = fs::temp_directory_path() / ("maic-robustness-test-run-" + std::to_string(getpid()));
+    setenv("XDG_RUNTIME_DIR", run.c_str(), 1);  // the hold on the session log below: this run's own
     Harness h(ws);
     for (const char* p : {"", "proj", "themeproj"}) trust_for_session(ws / p);  // the project files below are this test's own (trust_test covers trust)
 
@@ -2051,5 +2053,6 @@ int main() {
 
     fs::permissions(ws / "noperm", fs::perms::owner_all);
     fs::remove_all(ws);
+    fs::remove_all(run);
     return finish();
 }

@@ -18,6 +18,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -87,6 +88,10 @@ int main() {
     fs::remove_all(ws);
     fs::create_directories(ws);
     setenv("XDG_STATE_HOME", (ws / "state").c_str(), 1);
+    // The holds on open sessions and the unrecorded ones: this run's own, never the machine's or another run's.
+    fs::path run = fs::temp_directory_path() / ("maic-session-test-run-" + std::to_string(getpid()));
+    fs::remove_all(run);
+    setenv("XDG_RUNTIME_DIR", run.c_str(), 1);
     fs::path fixtures = MAIC_FIXTURES;
     fs::path ai_export = fixtures / "claude-ai-export.json";
     fs::path cc_transcript = fixtures / "claude-code.jsonl";
@@ -999,6 +1004,31 @@ int main() {
         expect(!fs::exists(relocated) && !fs::exists(side_dir(relocated)), "and goes with the session once the session is old");
     }
 
+    section("one engine per transcript: the hold");
+    {
+        // Two sessions of one process started in the same second in two homes (recorded, and the runtime directory)
+        // got the same id, and the second was refused the first one's hold: the agent test's flake.
+        std::time_t t0 = std::time(nullptr);
+        while (std::time(nullptr) == t0) std::this_thread::yield();
+        SessionLog a("hold-test");
+        SessionLog b("hold-test", runtime_sessions_dir());
+        expect(a.path().stem() != b.path().stem(), "two sessions started in the same second in two homes get two ids (" + a.path().stem().string() + ", " +
+                                                     b.path().stem().string() + ")");
+        std::string why;
+        try { SessionLog::reopen(a.path()); } catch (const std::runtime_error& e) { why = e.what(); }
+        expect(why.find("is open in another MAIC (pid " + std::to_string(getpid()) + ")") != std::string::npos,
+               "a second log on an open transcript is refused, from the same process too: " + why);
+        fs::path lock = run / "maic" / "held" / (a.path().stem().string() + ".lock");
+        expect(fs::exists(lock), "the hold is under the runtime directory it was taken in");
+        setenv("XDG_RUNTIME_DIR", (run / "elsewhere").c_str(), 1);
+        a.release();
+        setenv("XDG_RUNTIME_DIR", run.c_str(), 1);
+        expect(!fs::exists(lock), "release lets go of that same hold even after the runtime directory changed");
+        SessionLog again = SessionLog::reopen(a.path());
+        expect(again.path() == a.path(), "once released, the transcript opens again");
+    }
+
     fs::remove_all(ws);
+    fs::remove_all(run);
     return finish();
 }

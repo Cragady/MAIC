@@ -74,18 +74,26 @@ void SessionLog::create(const std::string& kind, const fs::path& home) {
     fs::permissions(home.parent_path(), fs::perms::owner_all, fs::perm_options::replace, ec);
     fs::permissions(home, fs::perms::owner_all, fs::perm_options::replace, ec);
     // time-kind-pid; a second session from the same process in the same second gets a sequence suffix.
+    // The id is held before its file exists: one of this process's sessions open in another home (the runtime
+    // directory) can have the same stem, and its hold makes this one take the next suffix rather than be refused.
     std::string base = now("%Y%m%d-%H%M%S") + "-" + kind + "-" + std::to_string(getpid());
     int fd = -1;
+    int err = EEXIST;
     for (int seq = 0; seq < 100 && fd < 0; ++seq) {
-        path_ = home / (base + (seq ? "-" + std::to_string(seq) : "") + ".jsonl");
+        std::string id = base + (seq ? "-" + std::to_string(seq) : "");
+        if (std::string holder; !hold(id, holder)) continue;
+        path_ = home / (id + ".jsonl");
         fd = open(path_.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-        if (fd < 0 && errno != EEXIST) break;
+        if (fd < 0) {
+            err = errno;
+            release();
+            if (err != EEXIST) break;
+        }
     }
     if (fd < 0) {
-        throw std::runtime_error("can't create session log " + path_.string() + ": " + std::strerror(errno));
+        throw std::runtime_error("can't create session log " + path_.string() + ": " + std::strerror(err));
     }
     close(fd);
-    hold(path_.stem().string());
     out_.open(path_, std::ios::app);
 }
 
@@ -95,8 +103,10 @@ SessionLog::SessionLog(const std::string& kind, const fs::path& home) {
 
 // One engine per transcript (Micaiah, 2026-10-03): an open log holds <runtime>/held/<id>.lock, its PID inside, beside the
 // daemon's socket ($XDG_RUNTIME_DIR/maic, else <state>/run). The kernel lets go of a dead process's flock, so a
-// lock a crashed MAIC left is taken over; release() removes it. Keyed by id, so a move (:init) keeps it.
-void SessionLog::hold(const std::string& id) {
+// lock a crashed MAIC left is taken over; release() removes it, at the path it was taken. Keyed by id, so a move
+// (:init) keeps it. A flock belongs to the open file, not the process: a second log in the same process is refused
+// too. False, with the holder's PID if it wrote one, when another log has it.
+bool SessionLog::hold(const std::string& id, std::string& holder) {
     const char* rt = std::getenv("XDG_RUNTIME_DIR");
     fs::path dir = (rt && *rt ? fs::path(rt) / "maic" : state_dir() / "run") / "held";
     fs::create_directories(dir);
@@ -110,9 +120,8 @@ void SessionLog::hold(const std::string& id) {
             char pid[32] = {};
             ssize_t n = pread(fd, pid, sizeof(pid) - 1, 0);
             close(fd);
-            throw std::runtime_error("session " + id + " is open in another MAIC" + (n > 0 ? " (pid " + std::string(pid, static_cast<size_t>(n)) + ")" : "") +
-                                     ": one engine per transcript. Use that window or quit it; with the daemon (maic daemon start) windows share their "
-                                     "sessions, and maic -r " + id + " --no-append forks it");
+            holder.assign(pid, n > 0 ? static_cast<size_t>(n) : 0);
+            return false;
         }
         // The holder may have let go and removed the file between our open and our lock: lock the one at the path.
         struct stat ours{}, there{};
@@ -121,7 +130,7 @@ void SessionLog::hold(const std::string& id) {
             if (ftruncate(fd, 0) != 0 || pwrite(fd, pid.data(), pid.size(), 0) < 0) {}  // the lock holds without it; a refusal names no process
             held_ = lock;
             held_fd_ = fd;
-            return;
+            return true;
         }
         close(fd);
     }
@@ -167,7 +176,12 @@ SessionLog::SessionLog(Fork, const fs::path& parent, size_t records, const std::
 }
 
 SessionLog::SessionLog(Reopen, const fs::path& path) : path_(path) {
-    hold(path.stem().string());
+    std::string id = path.stem().string();
+    if (std::string pid; !hold(id, pid)) {
+        throw std::runtime_error("session " + id + " is open in another MAIC" + (pid.empty() ? "" : " (pid " + pid + ")") +
+                                 ": one engine per transcript. Use that window or quit it; with the daemon (maic daemon start) windows share their "
+                                 "sessions, and maic -r " + id + " --no-append forks it");
+    }
     try {
         // A move this session was in the middle of when MAIC stopped is finished first; it may have left the file elsewhere.
         recovered_ = recover_relocations(path.stem().string());

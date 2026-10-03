@@ -81,7 +81,7 @@ public:
 
 private:
     void create(const std::string& kind, const std::filesystem::path& home);
-    void hold(const std::string& id);
+    bool hold(const std::string& id, std::string& holder);
     std::filesystem::path path_;
     mutable std::mutex mu_;
     std::ofstream out_;
