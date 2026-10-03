@@ -140,6 +140,7 @@ Everything below is covered by tests against fake servers; these runs confirm it
 
 ## Marked for review
 
+* **comfymaid-review on Vue, when packages are allowed** (2026-10-03, Micaiah: no packages yet): rebuild the page data-driven, `v-model` for the linked two-way boxes, TypeScript if it fits (Deno can transpile TypeScript with no packages). Loading Vue: `file:///` does not work, because browsers refuse module imports from `file://` (and a claude.ai page cannot reach local files at all); MAIC serving the page and a vendored, pinned Vue over local HTTP does, and a claude.ai artifact can carry the file alongside the page.
 * **Vue in a claude.ai artifact** (2026-10-03): test whether the import-map ES-module build of Vue runs under the artifact viewer's content security policy (its runtime template compiler builds functions), and whether the precompiled or runtime-only build is needed; also serve Vue as a published supporting file instead of from a CDN.
 * **A bans regex failure under fuzzing** (2026-10-02): the `fuzz` test failed once in the bans regex check (`/e*\b/` matched longer than the window) with `FUZZ_SEED=1606250349`; it predates the leave work. Reproduce with that seed and fix.
 * **A pty test that timed out once under load** (2026-10-02): `test_pause_menu_keeps_and_steer_drops` passed 3 of 3 alone; watch for it under parallel builds.
