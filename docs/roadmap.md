@@ -164,6 +164,14 @@ Micaiah's rule (2026-10-03): new information that needs refinement ships as beta
 * **trans-fairy across transcript styles**: a translator, adapter and normalizer for different transcript formats and their ID generation files (needs a later discussion).
 * **comfymaid-review splits**: which way a split goes (a sibling that takes resolved material out, or a deeper dive), named parent, child and sibling; tight or loose decided case by case. The split feature is beta, in active development.
 
+## Backlog (Micaiah, 2026-10-03; after DeepSeek)
+
+* **Leave protocol, refined (approved; build after DeepSeek):** `leave` required in the next protocol version; a disconnect is `dropped` (dead in the water, like an unannounced stop), waits `leave.grace` (configurable; default 0 local, about 60 s remote), then the switch case; a dropped or unsuccessfully parked session can be brought back from the index through a step-up (an administrative step-up may start a new one). `UNSUPPORTED_UNDEFINED` is a soft contract: an outcome label and a refusal, and every instance has a configurable allowance to go through anyway, with the warning that such paths may change at any time. `DEV_ONLY_UNSUPPORTED_UNDEFINED_BYPASS` keeps old client paths working until things settle (nothing is deployed, so it can go later). A setting opens unmanaged remote paths with a warning. Local counters of undefined paths taken; audit entries.
+* **Artifact capabilities without the address:** per-artifact security from a group-owned file not everyone can write, configured through MAIC; every cap defined globally (some not overridable), local overrides on top; longer-term changes through sudo, group membership or a step-up.
+* **Vue under the artifact sandbox, two strategies kept:** (1) precompile templates at build time; (2) allow runtime code building through step-up and sudo on the first build, only when the build matches a stored hash before and after. Until then a per-artifact `ALLOW_INSECURE` (audited) lets a page use the runtime compiler.
+* **Nuxt, if Vue alone stops being enough:** statically generate the pages at build time, so Node is a build-time dependency only and never in a runtime; shared dependencies (no copy per artifact), heavy tree shaking, build output ignored by git and its source tracked. The artifact service stays the source of truth and nodeless.
+* **Relays at scale:** Nuxt on Cloudflare Workers as many relays, serving the web app as an installable PWA so no native mobile app is needed.
+
 ## Parked
 
 * A sandbox wrapper for external processes: bubblewrap around any helper or agentic tool MAIC starts (Claude Code first), letting through only what that tool names (for Claude Code, `~/.claude` and the network). Not needed for Claude Code today, which acts only through MAIC's tools; worth having for tools that act on their own.
