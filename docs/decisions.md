@@ -42,7 +42,7 @@ An index of decisions and findings, newest first, so none is lost. Each line say
 * **The docs audit also documents what `auto` lets through per level,** and how `auto` shuts down or degrades. [roadmap backlog](roadmap.md)
 * **Thinking stays on;** harness-driven tool calls written into the transcript; Flash as a fast subagent. [roadmap backlog](roadmap.md)
 * **Finding: DeepSeek supports `stop` sequences and Chat Prefix Completion in thinking mode** (docs, untested), which allow continuing a turn after a tool call. [roadmap backlog](roadmap.md)
-* **Name: maid, an agent runner.** *Mica's AI Decisions*, or *Micaiah's Agentic Interface Delta*; trans-fairy gets the credit. [README](../README.md), [v0.4.0](releases/v0.4.0.md). `comfymaid-review` keeps its name.
+* **Name: maid, an agent runner.** *Micaiah's AI Dominance* (first), *Mica's AI Decisions*, or *Micaiah's Agentic Interface Delta*; trans-fairy gets the credit. [README](../README.md), [v0.4.0](releases/v0.4.0.md). `comfymaid-review` keeps its name.
 * **Tool-use onboarding policy:** levels 0 to 4, trials with fixed task sets, measurements, records never edited, thresholds fixed in advance, slow archival before any purge. [model-onboarding.md](model-onboarding.md)
 * **Agentic tying:** an agent below level 4 never runs without a tool monitor. [model-onboarding.md](model-onboarding.md#agentic-tying)
 * **Liaison sessions** and a `maid liaison` command (to be allowlisted in Claude Code once it exists); Claude judges the liaison's tool calls, so Claude tokens go to judging only. [roadmap backlog](roadmap.md)

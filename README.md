@@ -1,6 +1,6 @@
 # MAID
 
-maid: an agent runner. *Mica's AI Decisions*, or *Micaiah's Agentic Interface Delta*.
+maid: an agent runner. *Micaiah's AI Dominance*, *Mica's AI Decisions*, or *Micaiah's Agentic Interface Delta*.
 
 Why maid? Blame trans-fairy: once it arrived, it earned its name three times over, because it made MAIC transition to MAID.
 
