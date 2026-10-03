@@ -200,7 +200,8 @@ void SessionCommands::set_model(Session& s, CommandOutput& out, const std::strin
     std::string note = "model: " + model + " (" + provider.name + ", " + provider.kind + ")" +
                        (preset.empty() ? "" : "  preset " + preset + ": context " + std::to_string(s.settings.providers.empty() ? 0 : provider.options.value("context_window", 0)) +
                                                   ", reviewer " + (reviewer.model.empty() ? "off" : reviewer.preset.empty() ? reviewer.model : reviewer.preset) + ", thinking " + (agent.think ? "on" : "off"));
-    if (provider.metered()) note += "\nMETERED: billed per token to the account of " + (provider.api_key_env.empty() ? provider.name + "'s key" : "$" + provider.api_key_env);
+    if (provider.metered() && provider.kind == "cli") note += "\nMETERED: spends your plan's usage through " + provider.name;
+    else if (provider.metered()) note += "\nMETERED: billed per token to the account of " + (provider.api_key_env.empty() ? provider.name + "'s key" : "$" + provider.api_key_env);
     if (provider.remote()) {
         out.warn(note + "\nREMOTE: prompts, files the agent reads and command output will be sent to " + provider.base_url);
     } else {

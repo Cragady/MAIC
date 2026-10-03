@@ -1074,6 +1074,7 @@ function U.start(args, o)
     vim.notify("maic.nvim: cannot start " .. table.concat(cmd, " "), vim.log.levels.ERROR)
     return
   end
+  vim.api.nvim_create_autocmd("VimLeavePre", { once = true, callback = function() U.quit(conn) end })
   local v = vim.version()
   local hello = { protocol = 1, client = { name = "maic.nvim", version = ("nvim %d.%d.%d"):format(v.major, v.minor, v.patch) },
     capabilities = { "tool_output", "autocmds" }, view = { collapse_over = 0 } }
@@ -1161,6 +1162,28 @@ function U.go(ui, how, target, as, sure, after)
   else
     request(ui, "maic.session.resume", { session = target, leave = leave }, done)
   end
+end
+
+-- Quitting nvim: the session in this engine's focus becomes what leave.quit says, asked through vim.ui.select where
+-- that case says ask (the engine answers maic_leave_ask). nvim is going, so this waits for the engine's answers.
+function U.quit(conn)
+  if not conn.job or vim.fn.jobwait({ conn.job }, 0)[1] ~= -1 then return end
+  local function leave(params)
+    local done, ask = false, false
+    request({ conn = conn }, "maic.session.leave", params, function(_, err)
+      ask = err and err.data and err.data.code == "maic_leave_ask"
+      done = true
+    end)
+    vim.wait(5000, function() return done end, 10)
+    return ask
+  end
+  if not leave(nil) then return end
+  local pick, picked = nil, false
+  vim.ui.select({ "bg", "park", "stop" }, { prompt = "quitting: this session (bg: it keeps working, park: it stops for now, stop: it ends)" }, function(p)
+    pick, picked = p, true
+  end)
+  vim.wait(60000, function() return picked end, 10)
+  if pick then leave({ as = pick }) end
 end
 
 -- The switcher: every other session the engine holds, and a new one; a task under its parent, this session's first.

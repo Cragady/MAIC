@@ -314,7 +314,7 @@ io.write("a leave that asks\n")
 local cfg = vim.fn.tempname()
 vim.fn.mkdir(cfg .. "/maic", "p")
 vim.fn.writefile({ "local s = dofile(" .. vim.inspect(os.getenv("XDG_CONFIG_HOME") .. "/maic/settings.lua") .. ")",
-  "s.leave = { switch = { idle = 'ask' } }", "return s" }, cfg .. "/maic/settings.lua")
+  "s.leave = { switch = { idle = 'ask' }, quit = { idle = 'ask' } }", "return s" }, cfg .. "/maic/settings.lua")
 vim.env.XDG_CONFIG_HOME = cfg
 vim.cmd("tabnew")
 ui.start({})
@@ -329,8 +329,18 @@ local after_ask = landed(before.session)
 expect(prompt and prompt:find("leave this session", 1, true) and after_ask.session ~= before.session,
   "leave.switch.idle = \"ask\": :MaicNew asks what happens to the idle session left (" .. tostring(prompt) .. ")")
 expect(vim.wait(5000, function() return ui.here().conn.index[before.session] == nil end, 20), "and the answer, stop, ends it")
+-- leave.quit.idle = "ask" as well: quitting nvim asks before it goes (what VimLeavePre runs), and the answer is sent.
+local conn, quitting = ui.here().conn, after_ask.session
+prompt = nil
+vim.ui.select = function(items, o, cb)
+  prompt = o.prompt
+  cb(items[2]) -- park
+end
+ui.quit(conn)
+expect(prompt and prompt:find("quitting", 1, true) and vim.wait(5000, function() return conn.index[quitting] and conn.index[quitting].state == "parked" end, 20),
+  "leave.quit.idle = \"ask\": quitting asks with vim.ui.select (" .. tostring(prompt) .. "), and the answer, park, parks the idle session")
 vim.ui.select = real_select
-job = ui.state().job
+job = conn.job
 vim.fn.chanclose(job, "stdin")
 expect(vim.fn.jobwait({ job }, 30000)[1] == 0, "that engine ends cleanly too")
 

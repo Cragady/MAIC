@@ -62,6 +62,11 @@ bool on_other_meter(const std::vector<Provider>& providers, const std::vector<Mo
     }
 }
 
+// What a metered provider costs the user, for a question or a reason.
+std::string meter_words(const Provider& p) {
+    return p.kind == "cli" ? "spends your plan's usage through " + p.name : "is billed per token to your " + p.name + " account";
+}
+
 const char* verdict_name(Verdict v) {
     switch (v) {
         case Verdict::Allow: return "allow";
@@ -139,6 +144,8 @@ struct ChildEvents : AgentEvents {
         if (r.agent.empty()) r.agent = agent;
         return parent.ask(r);
     }
+    std::string question(const std::string& text, const std::vector<std::string>& options) override { return parent.question(agent + ": " + text, options); }
+    bool can_ask() override { return parent.can_ask(); }
 };
 
 }  // namespace
@@ -1518,12 +1525,10 @@ ToolResult Agent::run_task(const nlohmann::json& args, const std::string& call_i
     // not her asking, so she is asked (Micaiah's rule). No answer, or no, keeps the subagent on this model.
     if (!asked.empty() && pick.model != model && on_other_meter(providers, presets, model, pick.model)) {
         std::string on = pick.preset.empty() ? pick.model : pick.preset;
-        std::string provider = resolve_model(providers, pick.model).first.name;
-        std::string answer = events.question("The " + def.name + " subagent asks to run on " + on + ", which is billed per token to your " + provider +
-                                                 " account. Run it there?",
-                                             {"yes", "no"});
-        if (answer == "yes") pick.reason = "asked for by the parent; you approved " + provider + "'s metered billing";
-        else pick = {own ? own->name : "", model, on + " is billed per token to your " + provider + " account and you did not approve it; the same model"};
+        Provider provider = resolve_model(providers, pick.model).first;
+        std::string answer = events.question("The " + def.name + " subagent asks to run on " + on + ", which " + meter_words(provider) + ". Run it there?", {"yes", "no"});
+        if (answer == "yes") pick.reason = "asked for by the parent; you approved " + provider.name + "'s metered billing";
+        else pick = {own ? own->name : "", model, on + " " + meter_words(provider) + " and you did not approve it; the same model"};
     }
     record["model"] = pick.model;
     record["model_reason"] = pick.reason;
@@ -1936,16 +1941,36 @@ Decision Agent::review_panel(const std::vector<Message>& req, AgentEvents& event
             std::lock_guard lock(usage_mu_);
             failed = reviewer_failed_.count(m) > 0;
         }
+        std::string name = preset ? preset->name : k.model;
+        // A metered judge on another account spends the user's money or plan: she says yes first, each time (Micaiah's
+        // rule). With nobody to ask, or no yes, it is skipped and the call goes on as for a judge that could not answer.
+        std::string asked;
+        if (!failed && checkers.ask_before_metered && on_other_meter(providers, presets, model, m)) {
+            if (!events.can_ask()) {
+                asked = "nobody to ask";
+            } else {
+                asked = events.question("The checkers want " + name + " to judge this call" + (said.empty() ? "" : " (" + checks_text(said, false) + ")") + ", and " + name + " " +
+                                            meter_words(resolve_model(providers, m).first) + ". Ask it?",
+                                        {"yes", "no"});
+                if (asked.empty()) asked = "no answer";
+            }
+        }
         Judgement j;
         if (failed) {
             j.model = m;
             j.think = think;
             j.outcome = "off";
             j.reason = "it hit its usage limit earlier this session";
+        } else if (!asked.empty() && asked != "yes") {
+            j.model = m;
+            j.think = think;
+            j.outcome = "declined";
+            j.reason = asked == "nobody to ask" ? "metered, and nobody could be asked" : "metered, and you did not let it be asked";
         } else {
             j = judge(on_side_server(providers, m), think, k.timeout, req);
         }
-        j.judge = preset ? preset->name : k.model;
+        j.judge = name;
+        j.asked = asked;
         if (j.outcome == "limit") {
             {
                 std::lock_guard lock(usage_mu_);
@@ -1961,6 +1986,7 @@ Decision Agent::review_panel(const std::vector<Message>& req, AgentEvents& event
     for (const auto& j : said) {
         nlohmann::json e = {{"judge", j.judge}, {"model", j.model}, {"think", j.think}, {"outcome", j.outcome}, {"reason", j.reason}, {"ms", j.ms}};
         if (j.outcome == "verdict") e["verdict"] = verdict_name(j.verdict);
+        if (!j.asked.empty()) e["asked"] = j.asked;
         judges.push_back(e);
         if (decider.empty() && (j.judge == v->judged_by || v->judged_by.rfind(j.judge + "+", 0) == 0)) decider = j.model;
     }

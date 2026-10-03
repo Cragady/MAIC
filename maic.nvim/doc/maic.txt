@@ -104,7 +104,8 @@ session left becomes what `leave.switch` in MAIC's settings says (by
 default a working one goes to the background, and is parked once its work
 ends, and an idle one is parked), unless --bg, --park or --stop says
 otherwise; a case set to "ask" asks with |vim.ui.select()|. Quitting nvim
-ends the tab's engine as MAIC's `:q` does (`leave.quit`). A background
+ends the tab's engine as MAIC's `:q` does (`leave.quit`, "ask" asking with
+|vim.ui.select()| before nvim goes). A background
 session keeps writing its buffer; its approvals and
 questions wait until you switch to it, with one notification naming it. The
 winbar counts the other sessions. A parked or stopped session's buffer goes

@@ -965,6 +965,8 @@ struct Engine::Impl {
                 const LeaveSettings& l = s->settings.leave;
                 bool working = busy(*s);
                 verb = !as.empty() ? as : working ? l.quitting.working : l.quitting.idle;
+                // "ask" with nobody asked (a connection that ended without maic.session.leave): the shipped default.
+                if (verb == "ask") verb = working ? "bg" : "stop";
                 if (verb == "bg" && !options.keeps_sessions) verb = l.no_daemon;
                 if (verb == "bg" && working && s->focused_by.empty()) s->after = l.quitting.after;
             }
@@ -1735,10 +1737,31 @@ struct Engine::Impl {
         return for_client(entry(*s), c);
     }
 
-    // `:q`: what the client's going does to the session in its focus, now, before it closes (Engine::leave).
+    // `:q`: what the client's going does to the session in its focus, now, before it closes (Engine::leave). A
+    // leave.quit case set to "ask" is the client's to ask, as for switching: refused (maic_leave_ask) before anything
+    // changes, and the client sends what the person chose.
     json session_leave(Client& c, const json& p) {
         std::string as = p.value("as", "default");
         if (as != "default" && as != "bg" && as != "park" && as != "stop") throw bad_params("as is one of default, bg, park, stop", "as");
+        if (as == "default") {
+            std::string id;
+            {
+                std::lock_guard lock(c.mu);
+                id = c.focus;
+            }
+            std::shared_ptr<Session> s;
+            {
+                std::lock_guard lock(mu);
+                if (auto it = sessions.find(id); it != sessions.end()) s = it->second;
+            }
+            if (s) {
+                std::lock_guard lock(s->mu);
+                bool working = busy(*s);
+                if (s->focused_by.size() <= s->focused_by.count(c.id) && (working ? s->settings.leave.quitting.working : s->settings.leave.quitting.idle) == "ask") {
+                    throw refuse("maic_leave_ask", std::string("leave.quit.") + (working ? "working" : "idle") + " says ask: name what happens to the session in focus (bg, park or stop)", "as");
+                }
+            }
+        }
         json left = quit(c, as == "default" ? "" : as);
         return {{"left", left.is_null() ? json() : for_client(left, c)}};
     }
@@ -2973,6 +2996,11 @@ public:
         e_.emit(s_, {{"type", "maic.question.answered"}, {"id", id}, {"by", by}, {"withdrawn", q.withdrawn}});
         settle_activity();
         return q.answer.value_or("");
+    }
+
+    bool can_ask() override {
+        std::lock_guard lock(s_.mu);
+        return !s_.focused_by.empty();
     }
 
     std::string start_task(const TaskStart& t) override { return e_.start_task(s_, t); }

@@ -560,7 +560,7 @@ class TuiTest(unittest.TestCase):
         cfg = os.path.join(self.home, "config-ask")
         os.makedirs(os.path.join(cfg, "maic"), exist_ok=True)
         with open(os.path.join(cfg, "maic", "settings.lua"), "w") as f:
-            f.write("local s = dofile(%r)\ns.leave = { switch = { idle = 'ask' } }\nreturn s\n" % os.path.join(self.env["XDG_CONFIG_HOME"], "maic", "settings.lua"))
+            f.write("local s = dofile(%r)\ns.leave = { switch = { idle = 'ask' }, quit = { idle = 'ask' } }\nreturn s\n" % os.path.join(self.env["XDG_CONFIG_HOME"], "maic", "settings.lua"))
         tui = self.start(env=dict(self.env, XDG_CONFIG_HOME=cfg))
         tui.send(":new<cr>", settle=False)
         tui.wait_for("leave this session?")
@@ -568,8 +568,12 @@ class TuiTest(unittest.TestCase):
         tui.wait_for("·  idle  ·")
         self.assertNotIn("other session", tui.text(), "the answer, stop, ended the session left")
         tui.send(":q<cr>", settle=False)
+        tui.wait_for("quit: this session?")
+        tui.send("p", settle=False)
         self.assertEqual(tui.wait_exit(), 0)
-        self.assertEqual(self.recorded_states()[0][-1], "stopped")
+        first, second = self.recorded_states()
+        self.assertEqual(first[-1], "stopped")
+        self.assertEqual(second[-1], "parked", "leave.quit.idle = 'ask': the answer, park, parks the idle session instead of stopping it")
 
     def test_new_parks_the_idle_session_and_switch_resumes_it(self):
         tui = self.start()

@@ -1191,12 +1191,13 @@ int main() {
         asked_rec.finish();
     }
 
-    section("the checker panel through the engine: a disagreement is the user's approval, judged_by in the transcript");
+    section("the checker panel through the engine: a metered judge asked about first, a disagreement is the user's approval, judged_by in the transcript");
     {
         // Fake judges: the local one flags the write, the metered one would allow it, so it goes to the user.
         FakeServer fq, fc;
         Provider pq = fq.provider(), pc = fc.provider();
         pq.name = "local", pc.name = "metered";
+        pc.options["metered"] = true;  // on loopback the default would say no
         fq.reply = [](const json&) { return std::string("DENY: nobody asked for that file"); };
         fc.reply = [](const json&) { return std::string("ALLOW: the user asked for it"); };
         EngineOptions op = o;
@@ -1214,6 +1215,9 @@ int main() {
         size_t mark = a.events.size();
         plan({json{{"name", "write_file"}, {"arguments", {{"path", "checked.txt"}, {"content", "x"}}}}});
         a.ok("response.create", {{"conversation", conv["id"]}, {"input", "write checked.txt"}});
+        long q = a.until_type("maic.question.asked", mark);
+        expect(q > 0 && a.events[q].value("text", "").find("metered/claude") != std::string::npos, "the metered judge is asked about first: " + (q > 0 ? a.events[q].dump() : std::string("no question")));
+        if (q > 0) a.ok("maic.question.reply", {{"session", conv["id"]}, {"question", a.events[q]["id"]}, {"text", "yes"}});
         long at = a.until_type("maic.approval.requested", mark);
         json approval = at > 0 ? a.events[at] : json::object();
         long noticed = a.until([](const json& ev) { return ev["type"] == "maic.notice" && ev.value("text", "").rfind("checked: yours to decide (local/qwen deny in ", 0) == 0; }, mark);
@@ -1221,19 +1225,41 @@ int main() {
                "edit mode: the write the rules allow is judged, the checkers disagree, and the user is asked with both verdicts in view");
         if (at > 0) a.ok("maic.approval.answer", {{"session", conv["id"]}, {"approval", approval["id"]}, {"choice", "yes"}});
         expect(a.until_idle(at) > 0 && fs::exists(ws / "checked.txt"), "the user's yes runs it");
-        json record;
-        for (const auto& f : fs::recursive_directory_iterator(root / "state")) {
-            if (f.path().extension() != ".jsonl") continue;
-            std::ifstream in(f.path());
-            for (std::string line; std::getline(in, line);) {
-                json j = json::parse(line, nullptr, false);
-                if (j.is_object() && j.value("type", "") == "tool" && j.contains("review") && j["arguments"].value("path", "") == "checked.txt") record = j;
+        auto record_of = [&](const std::string& path) {
+            json record;
+            for (const auto& f : fs::recursive_directory_iterator(root / "state")) {
+                if (f.path().extension() != ".jsonl") continue;
+                std::ifstream in(f.path());
+                for (std::string line; std::getline(in, line);) {
+                    json j = json::parse(line, nullptr, false);
+                    if (j.is_object() && j.value("type", "") == "tool" && j.contains("review") && j["arguments"].value("path", "") == path) record = j;
+                }
             }
-        }
+            return record;
+        };
+        json record = record_of("checked.txt");
         expect(!record.is_null() && record["review"].value("judged_by", "") == "user" && record["review"]["judges"].size() == 2 &&
-                   record["review"]["judges"][0].value("verdict", "") == "deny" && record["review"]["judges"][1].value("verdict", "") == "allow" && record.value("approval", "") == "yes",
-               "the session's transcript records each judge's verdict, judged_by and the user's answer");
+                   record["review"]["judges"][0].value("verdict", "") == "deny" && record["review"]["judges"][1].value("verdict", "") == "allow" &&
+                   record["review"]["judges"][1].value("asked", "") == "yes" && record.value("approval", "") == "yes",
+               "the session's transcript records each judge's verdict, the ask and its answer, judged_by and the user's answer");
         fs::remove(ws / "checked.txt");
+        // A session no client has in focus (a background task nobody watches): nobody to ask, so the metered judge is
+        // skipped and Qwen's denial stands.
+        json back = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}, {"mode", "edit"}, {"focus", false}}}});
+        a.ok("maic.session.subscribe", {{"session", back["id"]}});
+        mark = a.events.size();
+        size_t judged = fc.requests.size();
+        plan({json{{"name", "write_file"}, {"arguments", {{"path", "unasked.txt"}, {"content", "x"}}}}});
+        a.ok("response.create", {{"conversation", back["id"]}, {"input", "write unasked.txt"}});
+        long started = a.until([&](const json& ev) { return ev["stream_id"] == back["id"] && ev["type"] == "response.created"; }, mark);
+        long idle = started < 0 ? -1 : a.until([&](const json& ev) { return ev["stream_id"] == back["id"] && ev["type"] == "maic.session.state" && ev["activity"] == "idle"; }, started);
+        bool asked = false;
+        for (size_t i = mark; i < a.events.size(); ++i) asked = asked || a.events[i]["type"] == "maic.question.asked" || a.events[i]["type"] == "maic.approval.requested";
+        json unasked = record_of("unasked.txt");
+        expect(idle > 0 && !asked && !fs::exists(ws / "unasked.txt") && fc.requests.size() == judged && !unasked.is_null() &&
+                   unasked["review"]["judges"][1].value("outcome", "") == "declined" && unasked["review"]["judges"][1].value("asked", "") == "nobody to ask" &&
+                   unasked["review"].value("judged_by", "") == "local/qwen",
+               "in the background nobody is asked: the metered judge is not called, the record says so, and the denial stands: " + unasked.dump());
         rec.finish();
     }
 
@@ -1609,7 +1635,7 @@ int main() {
         od.keeps_sessions = true;  // as the daemon: a quit can leave a session working
         od.settings_for = [base, ask_ws, stop_ws](const fs::path& w) {
             Settings st = base;
-            if (w == ask_ws) st.leave.switching.idle = "ask";
+            if (w == ask_ws) st.leave.switching.idle = st.leave.quitting.idle = "ask";
             if (w == stop_ws) st.leave = {{"stop", "park", "park"}, {"stop", "stop", "park"}, "stop"};
             return st;
         };
@@ -1728,6 +1754,13 @@ int main() {
             b.ok("response.create", {{"conversation", q4}, {"input", "held"}});
             fake.wait_streaming(n);
             expect(b.ok("maic.session.leave")["left"]["state"] == "stopped" && state_of(q4).is_null(), "leave.quit.working = stop: interrupted and stopped");
+            // quit, idle, "ask": refused before anything changes, then the client's answer; a client that goes unasked gets the shipped case.
+            std::string q5 = b.ok("createConversation", {{"maic", {{"workspace", ask_ws.string()}}}}).value("id", "");
+            expect(b.error("maic.session.leave", json::object()) == "maic_leave_ask" && state_of(q5)["state"] == "live", "leave.quit.idle = ask: maic_leave_ask, and nothing changed");
+            expect(b.ok("maic.session.leave", {{"as", "park"}})["left"]["state"] == "parked" && state_of(q5)["state"] == "parked", "the client's answer (park) is done");
+            std::string q6 = b.ok("createConversation", {{"maic", {{"workspace", ask_ws.string()}}}}).value("id", "");
+            e.leave(b.id);
+            expect(state_of(q6).is_null(), "a client that goes without being asked: the shipped leave.quit.idle (stop)");
             // Past the recording, which would fail the request's schema itself.
             json bad = e.call(b.id, {{"jsonrpc", "2.0"}, {"id", 9999}, {"method", "maic.session.leave"}, {"params", {{"as", "later"}}}});
             expect(bad.contains("error") && bad["error"]["code"] == -32602, "an unknown verb is refused");

@@ -2557,13 +2557,21 @@ bool App::handle_switcher(const Event& e) {
     return true;
 }
 
-// :q, with --bg, --park or --stop for this session (`as`; else leave.quit decides), parking or stopping it mid-turn
-// asked first.
+// :q, with --bg, --park or --stop for this session (`as`; else leave.quit decides, which may be to ask), parking or
+// stopping it mid-turn asked first.
 void App::quit(const std::string& as, bool sure) {
     if (!sure && busy_ && (as == "park" || as == "stop")) {
         confirm_ = PendingConfirm{"leave", " " + as + " a working session? ", {"Its turn is interrupted (y), or it stays (n)."}, "yn", [this, as](const std::string& k) {
             if (k == "y") quit(as, true);
         }};
+        return;
+    }
+    if (as.empty() && (busy_ ? settings_.leave.quitting.working : settings_.leave.quitting.idle) == "ask") {
+        confirm_ = PendingConfirm{"leave", " quit: this session? ", {"[b] background: it keeps working", "[p] park: it stops for now and resumes where it was",
+                                                                   "[s] stop: it ends; its transcript stays (maic -r)", "Esc stays here"},
+                                  "bps", [this](const std::string& k) {
+                                      if (k != "n") quit(k == "b" ? "bg" : k == "p" ? "park" : "stop");
+                                  }};
         return;
     }
     // Background sessions in this process's own engine end with it, as leave.no_daemon says, mid-turn too. The
