@@ -150,6 +150,8 @@ Everything below is covered by tests against fake servers; these runs confirm it
   * Provenance: the header said `llamacpp/Qwen3.5-4B-Q4_K_M` and `local` while `deepseek/deepseek-flash` served the session.
   * Startup noise: the MAID_VENDOR error shown twice (welcome block and alone); the `lazy-lock.json is not recorded yet` notice.
   * The history window filled in only after continuing, switching away and back.
+  * The history pane gets line numbers, relative and absolute (like nvim's `number` with `relativenumber`), for quick jumps.
+  * Bug: in the history pane, text objects such as `vi'`, `vi"` and ``vi` `` throw focus back to the input instead of selecting in the pane.
   * Operator visibility: the last call's outcome (succeeded, failed, ignored) must be visible; a refusal and a silent no-op look the same today.
 * **Tests touching real state** (2026-10-03): robustness_test writes a session into the real `~/.local/state`, and session_test uses a fixed `~/.cache` folder two runs would share. Move both into temporary directories.
 * **One engine resuming one parked session for two clients at once** can refuse itself: `session_resume` checks, then reopens, with no lock held in between.
