@@ -982,7 +982,14 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
             usage_.total_input += reply.usage.input;
             usage_.total_output += reply.usage.output;
             ++usage_.calls;
-            double cost = add_cost(provider, options.model, reply.usage);
+            std::string served = reply.raw_kind == "openai" && reply.raw.is_object() ? reply.raw.value("model", "") : "";
+            usage_.last_served = served == options.model ? "" : served;
+            // A turn is priced, and counted, as the model that answered it when the catalog knows that model (a Pro
+            // request DeepSeek served with Flash costs Flash's price); otherwise as the model asked for.
+            const std::string& priced_as = !usage_.last_served.empty() && find_api_model(api_models(), provider.name, served) ? served : options.model;
+            double cost = add_cost(provider, priced_as, reply.usage);
+            add_model_use(provider, priced_as, reply.usage, cost);
+            usage_.last_model = provider.name + "/" + options.model;
             if (log_) {
                 nlohmann::json u = {{"input", reply.usage.input}, {"output", reply.usage.output}, {"context", reply.usage.context}};
                 if (reply.usage.cached) u["cached"] = reply.usage.cached;
@@ -1677,6 +1684,17 @@ double Agent::add_cost(const Provider& provider, const std::string& model, const
     return cost;
 }
 
+void Agent::add_model_use(const Provider& provider, const std::string& model, const Usage& u, double cost) {
+    UsageReport::ModelUse& m = usage_.by_model[provider.name + "/" + model];
+    m.provider = provider.name;
+    m.model = model;
+    ++m.calls;
+    m.input += u.input;
+    m.cached += std::min(u.cached, u.input);
+    m.output += u.output;
+    m.cost += cost;
+}
+
 void Agent::absorb_usage(const Agent& child) {
     std::lock_guard lock(usage_mu_);
     std::lock_guard child_lock(child.usage_mu_);
@@ -1687,6 +1705,16 @@ void Agent::absorb_usage(const Agent& child) {
         usage_.currency = child.usage_.currency;
     }
     for (const auto& [rule, n] : child.usage_.normalized) usage_.normalized[rule] += n;
+    for (const auto& [key, c] : child.usage_.by_model) {
+        UsageReport::ModelUse& m = usage_.by_model[key];
+        m.provider = c.provider;
+        m.model = c.model;
+        m.calls += c.calls;
+        m.input += c.input;
+        m.cached += c.cached;
+        m.output += c.output;
+        m.cost += c.cost;
+    }
     reviewer_tokens_ += child.reviewer_tokens_;
     reviewer_failed_.insert(child.reviewer_failed_.begin(), child.reviewer_failed_.end());
     if (reviewer_off_.empty()) reviewer_off_ = child.reviewer_off_;
@@ -1918,7 +1946,7 @@ Judgement Agent::judge(const std::string& m, bool think, int timeout_s, const st
         usage_.total_output += reply.usage.output;
         reviewer_tokens_ += reply.usage.input + reply.usage.output;
         auto [provider, name] = resolve_model(providers, m);
-        add_cost(provider, name, reply.usage);
+        add_model_use(provider, name, reply.usage, add_cost(provider, name, reply.usage));
     }
     std::string t = reply.content;
     if (auto p = t.find("</think>"); p != std::string::npos) t = t.substr(p + 8);

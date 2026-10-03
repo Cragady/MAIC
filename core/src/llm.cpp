@@ -505,6 +505,22 @@ bool rate_limited(Account& a, int wait_ms, int window_ms) {
 
 }  // namespace
 
+AccountState account_state(const Provider& provider, const std::string& model) {
+    Account& a = account_of(provider);
+    AccountState out;
+    out.cap = concurrency_cap(provider, model);
+    std::lock_guard lock(a.mu);
+    if (out.cap > 0) {
+        if (auto it = a.open.find(model); it != a.open.end()) out.open = it->second;
+        if (auto it = a.waiting.find(model); it != a.waiting.end()) out.waiting = it->second;
+    }
+    if (auto left = a.hold_until - Clock::now(); left > Clock::duration::zero()) {
+        out.hold_ms = std::chrono::duration_cast<milliseconds>(left).count();
+        out.breaker = a.breaker;
+    }
+    return out;
+}
+
 int retry_wait_ms(int attempt, int base_ms) {
     thread_local std::mt19937 rng{std::random_device{}()};
     long long ceiling = std::min<long long>(60LL * base_ms, static_cast<long long>(base_ms) << std::min(attempt, 30));

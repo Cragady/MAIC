@@ -122,6 +122,16 @@ struct ChatOptions {
     std::function<void(const std::string& rule, int count)> normalized;
 };
 
+// What the account behind `provider` shares right now (every session of this process): `model`'s requests open and
+// waiting against its max_concurrent cap (0: no cap, nothing counted), and what a 429 left: the milliseconds every
+// request to the account still holds, and whether that hold is the circuit breaker's.
+struct AccountState {
+    int cap = 0, open = 0, waiting = 0;
+    long hold_ms = 0;
+    bool breaker = false;
+};
+AccountState account_state(const Provider& provider, const std::string& model);
+
 // The wait before retry number `attempt` (0 for the first): full jitter, uniform in [0, min(60 * base_ms, base_ms * 2^attempt)].
 int retry_wait_ms(int attempt, int base_ms);
 

@@ -2664,7 +2664,12 @@ struct Engine::Impl {
                                       },
                                       [&](const std::string& title) { retitle(*s, title, "rename", c.by()); },
                                       [&](const std::string& text) { emit(*s, {{"type", "maid.notice"}, {"text", text}, {"level", "info"}}); },
-                                      settings_at, tier_line(*s)};
+                                      settings_at, tier_line(*s), s->id, s->title, s->turns,
+                                      static_cast<int>(std::count_if(s->tasks.begin(), s->tasks.end(), [](const auto& kv) { return kv.second.state == "running"; })),
+                                      static_cast<int>(s->tasks.size()),
+                                      options.kind == "server" ? "daemon: no, this is maid-server (client via " + c.via + ")"
+                                      : options.keeps_sessions ? "daemon: attached (client via " + c.via + ")"
+                                                               : "daemon: not attached, the engine runs inside this process (client via " + c.via + ")"};
         CommandOutput out = p.contains("ask") ? s->commands.answer(lent, p.at("ask"), p.value("key", "")) : s->commands.run(lent, p.at("line"));
         index_changed(*s);
         return out.json();

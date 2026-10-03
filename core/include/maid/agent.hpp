@@ -379,6 +379,17 @@ public:
         // An estimate for the calls to models the catalog prices (call_cost), in its currency; 0 and "" when none was.
         double cost = 0;
         std::string currency;
+        // Per model, by "provider/model" as asked for (what call_cost prices): what this session sent it, a subagent's
+        // and the reviewer's included. `cost` is 0 for a model the catalog does not price.
+        struct ModelUse {
+            std::string provider, model;
+            int calls = 0;
+            long input = 0, cached = 0, output = 0;
+            double cost = 0;
+        };
+        std::map<std::string, ModelUse> by_model;
+        std::string last_model;   // "provider/model" of the last call
+        std::string last_served;  // the model that answered it, when the provider named another
     };
     UsageReport usage() const;
 
@@ -435,6 +446,8 @@ private:
     std::function<void(const std::string&, int)> count_normalized(const Provider& provider);
     // Adds the estimate for one call to usage_ (held by the caller) and returns it; 0 for a model the catalog does not price.
     double add_cost(const Provider& provider, const std::string& model, const Usage& u);
+    // Adds one call to usage_.by_model (held by the caller), with the cost add_cost returned for it.
+    void add_model_use(const Provider& provider, const std::string& model, const Usage& u, double cost);
 
     Harness harness_;
     std::vector<Message> messages_;

@@ -1180,7 +1180,7 @@
         }
       },
       "x-maid-remote": true,
-      "x-maid-remote-partly": ":mode (tightening freely, loosening up to edit), :model, :think, :compact, :rename, :todo, :tools, :status, adding a :forbid term, lowering :budget and :trip; every other command, and a command's question, are local only",
+      "x-maid-remote-partly": ":mode (tightening freely, loosening up to edit), :model, :think, :compact, :rename, :todo, :tools, :status, :usage, adding a :forbid term, lowering :budget and :trip; every other command, and a command's question, are local only",
       "x-maid-local-only-params": [
         "ask",
         "key"

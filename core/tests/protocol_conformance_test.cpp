@@ -4,6 +4,7 @@
 // maid.* event and maid object removed. The recordings are written to build/protocol-streams/ for `maid protocol
 // check`, then mutated: a mutation that breaks a rule must be caught with that rule's id, one that breaks none must pass.
 #include "check.hpp"
+#include "fake_deepseek.hpp"
 #include "fake_server.hpp"
 
 #include "maid/engine.hpp"
@@ -1261,6 +1262,83 @@ int main() {
                    unasked["review"]["judges"][1].value("outcome", "") == "declined" && unasked["review"]["judges"][1].value("asked", "") == "nobody to ask" &&
                    unasked["review"].value("judged_by", "") == "local/qwen",
                "in the background nobody is asked: the metered judge is not called, the record says so, and the denial stands: " + unasked.dump());
+        rec.finish();
+    }
+
+    section(":status and :usage: a local model with tokens and no spend, a priced one with an estimate, the key only by its variable's name");
+    {
+        FakeDeepSeek ds;
+        FakeServer lab;
+        lab.usage_input = 100;
+        Provider labp = lab.provider(), dsp;
+        labp.name = "lab";
+        for (const auto& p : default_providers()) {
+            if (p.name == "deepseek") dsp = p;
+        }
+        dsp.base_url = ds.url();
+        setenv("DEEPSEEK_API_KEY", ds.key.c_str(), 1);
+        EngineOptions ou = o;
+        ou.settings.model = "lab/m";
+        ou.settings.providers = {labp, dsp};
+        ou.index_file = root / "state" / "engine-usage" / "index.json";
+        ou.protocol_log = root / "state" / "engine-usage" / "protocol.log";
+        Engine e(ou);
+        Recording rec("usage");
+        TestClient a(e, rec, Origin::Local, "tui");
+        a.hello();
+        std::string sid = a.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}}).value("id", "");
+        a.ok("maid.session.subscribe", {{"session", sid}});
+        auto run = [&](const std::string& line) {
+            std::string text;
+            for (const auto& l : a.ok("maid.session.command", {{"session", sid}, {"line", line}}).value("lines", json::array())) text += l["text"].get<std::string>() + "\n";
+            return text;
+        };
+        auto turn = [&](const std::string& input) {
+            size_t mark = a.events.size();
+            a.ok("response.create", {{"conversation", sid}, {"input", input}});
+            a.until_idle(a.until_type("response.completed", mark));
+        };
+        auto has = [](const std::string& text, const std::string& part) { return text.find(part) != std::string::npos; };
+
+        std::string before = run("usage");
+        expect(has(before, "no model call yet") && has(before, "estimates") && has(before, "lab  no key; no rate-limit hold") && !has(before, "DEEPSEEK_API_KEY"),
+               ":usage before any call says so, and lists the provider in use with no key");
+        turn("purr");
+        std::string local = run("usage");
+        expect(has(local, "lab/m\n  requests 1; tokens in 100 (cache hit 0, cache miss 100), out 5\n  no spend: a local model\n") &&
+                   has(local, "concurrency: no cap") && has(local, "session total: 1 requests; tokens in 100 (cache hit 0, cache miss 100), out 5; no spend counted") &&
+                   has(local, "context: 100 tokens of 16.4k (0%); 1 turn, 1 model call"),
+               ":usage for a local model: its tokens, no spend, no cap, the total and the context: " + local);
+
+        run("model deepseek/deepseek-v4-pro");
+        turn("and again");
+        std::string both = run("usage");
+        expect(has(both, "lab/m\n  requests 1;") && has(both, "deepseek/deepseek-v4-pro\n  requests 1; tokens in 120 (cache hit 64, cache miss 56), out 30\n  spend ~") &&
+                   has(both, " USD est.") && has(both, "concurrency: 0 open of 166 (max_concurrent), 0 waiting") &&
+                   has(both, "session total: 2 requests; tokens in 220 (cache hit 64, cache miss 156), out 35; spend ~") &&
+                   has(both, "  deepseek  DEEPSEEK_API_KEY: set; no rate-limit hold") && has(both, "  lab  no key; no rate-limit hold") &&
+                   has(both, "all sessions: tokens per provider account are not kept across sessions"),
+               ":usage per model: the local one without spend, DeepSeek priced by the catalog with its concurrency, the total, the key's variable and the holds: " + both);
+        run("rename the tail");
+        std::string status = run("status");
+        expect(has(status, "session: " + sid + "  \"the tail\"") && has(status, "model: deepseek-v4-pro via deepseek at ") && has(status, "thinking: off") &&
+                   has(status, "context: 120 tokens of 1048.6k (0%); 2 turns, 2 model calls") &&
+                   has(status, "mode: manual  (idle)") && has(status, "harness: dumb (the rule list alone)") && has(status, "workspace: " + ws.string() + "  (") &&
+                   has(status, "daemon: not attached, the engine runs inside this process (client via in-process)") && has(status, "background tasks: 0 running of 0 started (max_tasks ") &&
+                   has(status, ":usage has the tokens"),
+               ":status says the session, model, thinking, context, turns, mode, harness, workspace, daemon and tasks: " + status);
+
+        unsetenv("DEEPSEEK_API_KEY");
+        std::string unset = run("usage");
+        expect(has(unset, "DEEPSEEK_API_KEY: not set"), ":usage says when the key's variable is not set");
+        bool leaked = false;
+        for (const std::string& text : {before, local, both, status, unset, run("usage")}) leaked = leaked || has(text, ds.key) || has(text, "sk-fake");
+        expect(!leaked, "no key or part of one in :status or :usage");
+
+        TestClient r(e, rec, Origin::Remote, "phone");
+        r.hello();
+        expect(r.ok("maid.session.command", {{"session", sid}, {"line", "usage"}}).value("ok", false), "a remote client may run :usage");
+        a.pump(0ms);
         rec.finish();
     }
 

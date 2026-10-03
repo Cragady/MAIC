@@ -2082,7 +2082,7 @@ void App::run_command(const std::string& line) {
     // The commands that act on the session are the engine's (maid.session.command), under the names the TUI has
     // always taken; the rest are the view's, the editor's and the machine's.
     static const std::set<std::string> engine_owned = {"mode", "harness", "model", "models", "think", "undo", "export", "rename", "title", "budget", "compact",
-                                                       "clear", "trip", "status", "todo", "tools", "init", "cd", "ban", "sampling", "sampler", "image", "img",
+                                                       "clear", "trip", "status", "usage", "todo", "tools", "init", "cd", "ban", "sampling", "sampler", "image", "img",
                                                        "forbid", "allow", "rule", "rules", "ctx", "context-size", "ctx2", "prefill", "prefix", "system",
                                                        "instructions", "session", "steer", "steering", "tier"};
     try {
