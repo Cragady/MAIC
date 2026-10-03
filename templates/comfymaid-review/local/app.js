@@ -72,7 +72,7 @@ function adopt(saved) {
 }
 function isNewer(a, b) { if (!b) return true; const d = (a.rev || 0) - (b.rev || 0); return d ? d > 0 : (a.savedAt || "") > (b.savedAt || ""); }
 function newest(list) { return list.filter(Boolean).reduce((best, c) => (!best || isNewer(c, best) ? c : best), null); }
-function readLocal() { try { return JSON.parse(localStorage.getItem(LOCAL) || "null"); } catch (e) { return null; } }
+function readLocal() { try { return JSON.parse(REVIEW_STORE.getItem(LOCAL) || "null"); } catch (e) { return null; } }
 function readBeside() { return window.REVIEW_ANSWERS && typeof window.REVIEW_ANSWERS === "object" ? window.REVIEW_ANSWERS : null; }
 function resetOpen() { Object.keys(openCards).forEach((k) => delete openCards[k]); allCards().forEach((c) => { openCards[c.id] = cardState(c) === "open"; }); }
 // A linked partner holds nothing of its own; text written in both before they were linked is joined once.
@@ -113,7 +113,7 @@ async function writeOnce() {
   meta.rev++; meta.savedAt = new Date().toISOString();
   const snap = snapshot();
   let local = true, stored = null, how = "";
-  try { localStorage.setItem(LOCAL, JSON.stringify(snap)); } catch (e) { local = false; logEvent("save", false, "localStorage: " + (e && e.name)); }
+  try { REVIEW_STORE.setItem(LOCAL, JSON.stringify(snap)); } catch (e) { local = false; logEvent("save", false, "localStorage: " + (e && e.name)); }
   try {
     if (backend.name === "http") { await httpSave(snap); how = "to MAIC "; stored = true; }
     else if (backend.name === "fsaccess" && folder.mode === "linked") { await writeBeside(snap); how = "beside the page "; stored = true; }
@@ -178,11 +178,12 @@ async function pickBackend() {
 }
 
 // ---- fsaccess: the folder beside the page (File System Access API; Chromium) ----
-const CAN_LINK = typeof window.showDirectoryPicker === "function";
+const CAN_LINK = typeof window.showDirectoryPicker === "function" && !!window.REVIEW_IDB;
 const IDB = "maic-review-local";
 function idb(fn) {
   return new Promise((resolve, reject) => {
-    const open = indexedDB.open(IDB, 1);
+    if (!window.REVIEW_IDB) { reject(new Error("IndexedDB is not available here")); return; }
+    const open = window.REVIEW_IDB.open(IDB, 1);
     open.onupgradeneeded = () => open.result.createObjectStore("handles");
     open.onerror = () => reject(open.error);
     open.onsuccess = () => {
@@ -591,7 +592,7 @@ const Root = { template: "#tpl-app", setup: () => Object.assign({}, ctx, {
 }) };
 
 // ---- start ----
-function flushLocal() { try { meta.rev++; meta.savedAt = new Date().toISOString(); localStorage.setItem(LOCAL, JSON.stringify(snapshot())); } catch (e) {} }
+function flushLocal() { try { meta.rev++; meta.savedAt = new Date().toISOString(); REVIEW_STORE.setItem(LOCAL, JSON.stringify(snapshot())); } catch (e) {} }
 window.addEventListener("pagehide", () => { if (timer) { clearTimeout(timer); timer = null; flushLocal(); } });
 
 const first = newest([readLocal(), readBeside()]);
