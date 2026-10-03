@@ -107,6 +107,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 * [standards.md](docs/standards.md): every specification and standard MAIC follows or borrows from, with its version, where MAIC uses it, how closely, and the known deviations.
 * [remote.md](docs/remote.md): remote access: `maic-server`, the phone web client, tokens and TLS, the API, `maic-relay` and the end-to-end tunnel for the phone away from home, why the tripwire cannot be reset remotely.
 * [artifacts.md](docs/artifacts.md): pages maic-server serves itself at `/a/ID/`, sandboxed, with their data beside them: `maic artifact add|list|open`, the security model, the capability and the login link.
+* [agent-kit.md](docs/agent-kit.md): telling an agent session when an artifact page submits: `maic artifact watch`, `tools/agent-kit/artifact-watch.sh`, `maic channel` for Claude Code's channels, notify protocols the user approves, and the rule that a notification is a trigger only.
 * [roadmap.md](docs/roadmap.md): everything MAIC should still become: accounts and a native phone client, the harness layers, cai-tools, tools, editor, services.
 * [testing.md](docs/testing.md): how to run every suite, the build gate (`scripts/check.sh`, the pre-push hook), the flake rules, the pty harness for the TUI, the fuzzer, the asan preset.
 * [remote.md](docs/remote.md): remote access: `maic-server`, the phone web client, tokens and TLS, the API, the relay design, why the tripwire cannot be reset remotely.

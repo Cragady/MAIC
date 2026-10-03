@@ -162,6 +162,9 @@ std::vector<std::string> normalize_openai(nlohmann::json& body, const std::strin
 Message chat(const Provider& provider, const ChatOptions& options, const std::vector<Message>& messages,
              const nlohmann::json& tools, const TextSink& on_text, const std::atomic<bool>& cancel);
 
+// The MCP versions MAIC's servers speak, newest first (docs/standards.md, MCP).
+extern const std::vector<std::string> kMcpVersions;
+
 // `maic mcp-bridge SOCKET`: what a `cli` agent starts as its MCP server. It joins its stdin and stdout to the unix
 // socket where MAIC serves its tools to that agent, and returns when either side closes.
 int run_mcp_bridge(const std::string& socket_path);

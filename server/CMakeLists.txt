@@ -2,7 +2,7 @@ find_package(httplib CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(unofficial-sodium CONFIG REQUIRED)
 
-add_library(maic_server src/server.cpp src/auth.cpp src/tls.cpp src/command.cpp src/tunnel.cpp src/home_link.cpp src/artifacts.cpp)
+add_library(maic_server src/server.cpp src/auth.cpp src/tls.cpp src/command.cpp src/tunnel.cpp src/home_link.cpp src/artifacts.cpp src/artifact_notify.cpp)
 target_include_directories(maic_server PUBLIC src)
 target_link_libraries(maic_server PUBLIC maic_core PRIVATE httplib::httplib OpenSSL::SSL OpenSSL::Crypto unofficial-sodium::sodium)
 target_compile_options(maic_server PRIVATE -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)

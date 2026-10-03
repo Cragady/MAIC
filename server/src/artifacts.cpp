@@ -49,6 +49,8 @@ std::string utc_now() {
     return buf;
 }
 
+}  // namespace
+
 void write_0600(const fs::path& file, const std::string& body) {
     int fd = open(file.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (fd < 0) throw std::runtime_error("can't write " + file.string() + ": " + std::strerror(errno));
@@ -56,8 +58,6 @@ void write_0600(const fs::path& file, const std::string& body) {
     close(fd);
     if (n != static_cast<ssize_t>(body.size())) throw std::runtime_error("short write to " + file.string());
 }
-
-}  // namespace
 
 bool artifact_name_ok(std::string_view name) {
     if (name.empty() || name.size() > 64 || name[0] == '_' || name[0] == '-') return false;

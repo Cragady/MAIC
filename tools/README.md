@@ -6,6 +6,8 @@
 
 `audit/` holds `maic-leak-audit`, which checks transcripts for agents that reached for a host socket from the sandbox, judged by a local model ([docs/leak-audit.md](../docs/leak-audit.md)).
 
+`agent-kit/` holds `artifact-watch.sh`, `maic artifact watch` in POSIX sh for an agent outside MAIC ([docs/agent-kit.md](../docs/agent-kit.md)).
+
 Still to come: per-tool network grants declared in the manifest (`network: true` is refused today).
 
 Design background: [docs/programming-lang-for-agentic-cli.md](../docs/programming-lang-for-agentic-cli.md).

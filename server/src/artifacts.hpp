@@ -15,6 +15,8 @@ namespace maic::server {
 
 constexpr size_t kArtifactDataMax = 1 << 20;  // a data document's size cap, 1 MiB
 
+void write_0600(const std::filesystem::path& file, const std::string& body);
+
 // An artifact id or a data document's name: [A-Za-z0-9][A-Za-z0-9_-]{0,63}.
 bool artifact_name_ok(std::string_view name);
 
@@ -58,6 +60,12 @@ std::vector<ArtifactInfo> list_artifacts(const std::filesystem::path& root);
 // artifact's own data/ documents are never overwritten (the folder's seed one only fills a missing one). Records
 // the trust as sandboxed the first time. Returns what it skipped.
 std::vector<std::string> add_artifact(const std::filesystem::path& root, const std::filesystem::path& src, const std::string& id);
+
+// Telling an agent when a page submits (docs/agent-kit.md): `maic artifact watch ID [--doc NAME] [--once]` prints a
+// line per event, and `maic artifact protocol ID [--propose FILE | --approve | --verify HASH]` shows, proposes,
+// approves or re-hashes the notify protocol beside the artifact (.maic-notify-protocol.json) that every event names. Return the exit code.
+int artifact_watch(const std::filesystem::path& root, const std::vector<std::string>& args);
+int artifact_protocol(const std::filesystem::path& root, const std::vector<std::string>& args);
 
 // One-time browser logins: `maic artifact open` writes one under <state>/artifact-logins/ (only the code's SHA-256
 // names the file), and the server claims it once, before it expires.

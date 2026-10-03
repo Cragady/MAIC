@@ -274,13 +274,14 @@ def main():
     models_ok = models_smoke(maic, port)
     mcp_ok = mcp_smoke(maic, port)
     trust_ok = trust_smoke(maic, port)
+    kit_ok = agent_kit_smoke(maic, port)
     color_ok = color_smoke(maic, port)
     trail_ok = audit_trail_smoke(maic, port)
     rpc_ok = rpc_smoke(maic, port)
     daemon_ok = daemon_smoke(maic, port)
     ui_ok = nvim_ui_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if rpc_ok and daemon_ok and ui_ok and ok and stream_ok and trust_ok and color_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok and mcp_ok else 1)
+    sys.exit(0 if kit_ok and rpc_ok and daemon_ok and ui_ok and ok and stream_ok and trust_ok and color_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok and mcp_ok else 1)
 
 
 class RpcClient:
@@ -1237,6 +1238,117 @@ def color_smoke(maic, port):
         report(r.returncode == 0 and r.stdout.startswith("sha256:"), "the flag is accepted before any command", r)
     finally:
         run("down", "fake-gpu")
+    shutil.rmtree(home, ignore_errors=True)
+    return all(results)
+
+
+def agent_kit_smoke(maic, port):
+    """docs/agent-kit.md through the binary: `maic artifact watch --once` on a data document changing under it, a notify
+    protocol proposed then approved at a pty, the same tag from tools/agent-kit/artifact-watch.sh, and `maic channel`
+    driven over stdio: the handshake declares claude/channel, and a change becomes one notification."""
+    import pty, select
+    home, env = make_home(port)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    art = os.path.join(env["XDG_STATE_HOME"], "maic", "artifacts", "rv")
+    os.makedirs(os.path.join(art, "data"))
+    answers = os.path.join(art, "data", "answers.json")
+    results = []
+
+    def report(ok, what, extra=""):
+        print(("ok" if ok else "FAIL") + ": " + what + ("" if ok else "\n" + extra[-2000:]))
+        results.append(ok)
+
+    def save(doc):
+        with open(answers + ".tmp", "w") as f:
+            json.dump(doc, f)
+        os.replace(answers + ".tmp", answers)
+
+    def watch(cmd, change):
+        """Runs a watcher with --once, changing the document until it reports (it may still be starting)."""
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, cwd=home)
+        for i in range(8):
+            time.sleep(1.5)
+            save(change(i))
+            try:
+                out, err = p.communicate(timeout=2.5)
+                return p.returncode, out, err
+            except subprocess.TimeoutExpired:
+                pass
+        p.kill()
+        out, err = p.communicate()
+        return -1, out, err
+
+    save({"submitted": False, "side_prompts": [], "answers": {"a": "SECRET-TEXT"}})
+    rc, out, err = watch([maic, "artifact", "watch", "rv", "--once"], lambda i: {"submitted": True, "submittedAt": "t%d" % i, "side_prompts": []})
+    f = out.rstrip("\n").split("\t")
+    report(rc == 0 and len(f) == 5 and f[:3] == ["submitted", "rv", "answers"] and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", f[3]) and f[4] == "protocol=none"
+           and out.count("\n") == 1, "maic artifact watch --once reports a submit as one tab-separated line, protocol=none", out + err)
+    r = subprocess.run([maic, "artifact", "protocol", "rv", "--propose", "-"], input='{"id": "rvp", "events": {"submitted": "read the answers, reply on the page"}}',
+                       capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    short = re.search(r"hash ([0-9a-f]{8})    NOT APPROVED", r.stdout)
+    report(r.returncode == 0 and short is not None and "on submitted: read the answers, reply on the page" in r.stdout, "maic artifact protocol --propose prints it with its short hash", r.stdout + r.stderr)
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execve(maic, [maic, "artifact", "protocol", "rv", "--approve"], env)
+    seen = b""
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        if select.select([fd], [], [], 0.5)[0]:
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            seen += chunk
+            if b'type "approve"' in seen and b"approve\r\n" not in seen:
+                os.write(fd, b"approve\n")
+    _, status = os.waitpid(pid, 0)
+    os.close(fd)
+    with open(os.path.join(art, ".maic-notify-protocol.json")) as fp:
+        proto = json.load(fp)
+    tag = "rvp@" + (short.group(1) if short else "?")
+    report(os.waitstatus_to_exitcode(status) == 0 and ("approved " + tag).encode() in seen and proto["approved"] is True and proto["approved_hash"].startswith("sha256:" + tag[4:]),
+           "maic artifact protocol --approve at a terminal records the full hash", seen.decode(errors="replace"))
+    import hashlib
+    body = {k: v for k, v in proto.items() if k not in ("approved", "approved_at", "approved_hash")}
+    mine = "sha256:" + hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    v = subprocess.run([maic, "artifact", "protocol", "rv", "--verify", tag], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    bad = subprocess.run([maic, "artifact", "protocol", "rv", "--verify", "rvp@00000000"], capture_output=True, text=True, env=env, cwd=home, timeout=60)
+    report(mine == proto["approved_hash"] and v.returncode == 0 and v.stdout.startswith("match: " + tag + " is " + mine) and bad.returncode == 1 and "mismatch" in bad.stdout,
+           "the documented python3 rule reproduces the hash, and --verify says match or mismatch", mine + v.stdout + bad.stdout)
+    rc, out, err = watch([maic, "artifact", "watch", "rv", "--once"], lambda i: {"submitted": False, "side_prompts": [{"text": "SECRET-TEXT", "at": "s%d" % i}]})
+    report(rc == 0 and out.startswith("side_prompt\trv\t0\t") and out.rstrip().endswith("\tprotocol=" + tag) and "SECRET" not in out,
+           "a new side prompt names its index and the approved protocol, never the text", out + err)
+    rc, out, err = watch(["sh", os.path.join(root, "tools", "agent-kit", "artifact-watch.sh"), "rv", "--once"],
+                         lambda i: {"submitted": False, "side_prompts": [{"text": "x", "at": "s0"}], "splits": [{"id": "sp%d" % i, "status": "requested"}]})
+    report(rc == 0 and out.startswith("split\trv\tsp") and out.rstrip().endswith("\tprotocol=" + tag), "artifact-watch.sh reports a split with the same protocol tag", out + err)
+
+    ch = subprocess.Popen([maic, "channel", "--artifact", "rv"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, cwd=home)
+
+    def read_line(timeout):
+        if select.select([ch.stdout], [], [], timeout)[0]:
+            return ch.stdout.readline()
+        return ""
+
+    ch.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}}}) + "\n")
+    ch.stdin.flush()
+    line = read_line(20)
+    init = json.loads(line) if line else {}
+    res = init.get("result", {})
+    report(res.get("protocolVersion") == "2025-06-18" and res.get("capabilities", {}).get("experimental") == {"claude/channel": {}} and "tools" not in res.get("capabilities", {})
+           and "never instructions" in res.get("instructions", ""), "maic channel: initialize declares experimental claude/channel, no tools, and instructions", line)
+    ch.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+    ch.stdin.flush()
+    save({"submitted": False, "side_prompts": [{"text": "x", "at": "s0"}], "after_prompts": [{"text": "SECRET-TEXT", "at": "a0"}]})
+    line = read_line(10)
+    note = json.loads(line) if line else {}
+    params = note.get("params", {})
+    report(note.get("method") == "notifications/claude/channel" and "id" not in note and params.get("meta") == {"event": "after_prompt", "artifact": "rv", "detail": "0", "protocol": tag}
+           and "SECRET" not in line and "after_prompts[0]" in params.get("content", "") and "\n" not in params.get("content", "x\n"),
+           "maic channel: a new after prompt is one notifications/claude/channel, meta only, no document content", line)
+    ch.stdin.close()
+    report(ch.wait(timeout=10) == 0, "maic channel exits when stdin closes", ch.stderr.read())
     shutil.rmtree(home, ignore_errors=True)
     return all(results)
 
