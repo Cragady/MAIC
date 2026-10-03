@@ -143,6 +143,14 @@ Everything below is covered by tests against fake servers; these runs confirm it
 
 ## Marked for review
 
+* **Micaiah's reported shortcomings** (relayed through TheMadMaid, hop 001, 2026-10-03; observed, not yet diagnosed):
+  * UI: `<C-U>`/`<C-D>` act in the current pane, not only history; yank reaches the system clipboard and survives `<C-z>`; insert-mode arrows move in the input; Ctrl/Alt+Arrow word movement like a terminal; thinking/reasoning blocks expand and collapse on click as well as `z`; `z` folding made discoverable.
+  * Turn loop: the agent's comment on a user-run tool call lands one exchange late (ordering or rendering, undetermined).
+  * Workspace: a resume keeps the workspace stamped at birth; Micaiah expects the launch directory to win (and to be told either way); a "workspace moved" notice disagreed with the serving process until `pwd`; the workspace isn't shown at resume.
+  * Provenance: the header said `llamacpp/Qwen3.5-4B-Q4_K_M` and `local` while `deepseek/deepseek-flash` served the session.
+  * Startup noise: the MAID_VENDOR error shown twice (welcome block and alone); the `lazy-lock.json is not recorded yet` notice.
+  * The history window filled in only after continuing, switching away and back.
+  * Operator visibility: the last call's outcome (succeeded, failed, ignored) must be visible; a refusal and a silent no-op look the same today.
 * **Tests touching real state** (2026-10-03): robustness_test writes a session into the real `~/.local/state`, and session_test uses a fixed `~/.cache` folder two runs would share. Move both into temporary directories.
 * **One engine resuming one parked session for two clients at once** can refuse itself: `session_resume` checks, then reopens, with no lock held in between.
 * **comfymaid-review on Vue, when packages are allowed** (2026-10-03, Micaiah: no packages yet): rebuild the page data-driven, `v-model` for the linked two-way boxes, TypeScript if it fits (Deno can transpile TypeScript with no packages). Loading Vue: `file:///` does not work, because browsers refuse module imports from `file://` (and a claude.ai page cannot reach local files at all); MAID serving the page and a vendored, pinned Vue over local HTTP does, and a claude.ai artifact can carry the file alongside the page.
