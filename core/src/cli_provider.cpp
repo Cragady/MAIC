@@ -81,9 +81,6 @@ bool write_all(int fd, const std::string& data) {
     return true;
 }
 
-// The MCP versions this server speaks, newest first (docs/standards.md, MCP).
-const std::vector<std::string> kMcpVersions = {"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"};
-
 // MAIC's tools served to one CLI over MCP: newline-delimited JSON-RPC on a unix socket the CLI reaches through
 // `maic mcp-bridge`. A thread answers the handshake and tools/list itself; each tools/call waits in `calls` until
 // the agent loop has judged and run it, and take() hands it to the reply.
@@ -785,6 +782,8 @@ Message chat_cli(const Provider& provider, const ChatOptions& options, const std
 }  // namespace maic::detail
 
 namespace maic {
+
+const std::vector<std::string> kMcpVersions = {"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"};
 
 int run_mcp_bridge(const std::string& socket_path) {
     sockaddr_un addr{};

@@ -1254,6 +1254,8 @@ int cmd_settings(const std::vector<std::string>& args) {
 int main(int argc, char** argv) {
     // A `cli` agent's MCP server (level 2): nothing else of MAIC runs in it, settings and trust included.
     if (argc == 3 && std::string(argv[1]) == "mcp-bridge") return maic::run_mcp_bridge(argv[2]);
+    // Claude Code's channel server: stdout is its JSON-RPC, so nothing else of MAIC runs before it either.
+    if (argc >= 2 && std::string(argv[1]) == "channel") return maic::server::run_channel_command({argv + 2, argv + argc});
     // --trust first: it decides which project settings the loads below may apply. The global settings are read
     // before it, for where the chain of project directories ends (instructions.bound).
     for (int i = 1; i < argc; ++i) {

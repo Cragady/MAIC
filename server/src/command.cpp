@@ -213,9 +213,13 @@ void artifact_usage(std::ostream& out) {
            "       maic artifact open ID           a one-time link for a browser on this machine, valid 2 minutes\n"
            "       maic artifact allow-insecure ID [--off]   add 'unsafe-eval' to that artifact's script policy (asks you to type\n"
            "                                    \"allow insecure\" at a terminal); --off removes it without asking\n"
+           "       maic artifact watch ID [--doc NAME] [--once]   a line per event an agent acts on (submitted, side_prompt N,\n"
+           "                                    after_prompt N, split ID) when the page saves data/NAME.json (answers)\n"
+           "       maic artifact protocol ID [--propose FILE | --approve | --verify HASH]   the notify protocol events name;\n"
+           "                                    --approve asks you to type \"approve\" at a terminal; --verify re-hashes it\n"
            "\n"
            "Artifacts live in ~/.local/state/maic/artifacts/ and are served sandboxed at /a/ID/ by maic server start.\n"
-           "docs/artifacts.md\n";
+           "docs/artifacts.md; watch, protocol and maic channel: docs/agent-kit.md\n";
 }
 
 // The server's own address as this machine reaches it, from server.listen.
@@ -302,6 +306,8 @@ int run_artifact_command(const std::vector<std::string>& args, bool text_base) {
         std::cout << args[1] << ": ALLOW_INSECURE is on\n";
         return 0;
     }
+    if (sub == "watch" && args.size() >= 2) return artifact_watch(root, args);
+    if (sub == "protocol" && args.size() >= 2) return artifact_protocol(root, args);
     if (sub == "help" || sub == "-h" || sub == "--help") {
         artifact_usage(std::cout);
         return 0;
