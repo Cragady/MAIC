@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cctype>
+#include <filesystem>
 #include <regex>
 
 namespace maid {
@@ -522,6 +523,24 @@ std::vector<std::string> complete_argument(const std::string& command, const std
     } else if (cmd == "h" || cmd == "help") {
         for (const auto& c : commands()) candidates.push_back(c.name);
         for (const auto& t : topics()) candidates.push_back(t.name);
+    }
+    // :cd also completes directories on disk: absolute, ~/..., or relative to the workspace; hidden ones once a
+    // dot is typed.
+    if (cmd == "cd" && !ctx.workspace.empty()) {
+        size_t slash = partial.rfind('/');
+        std::string dir_part = slash == std::string::npos ? "" : partial.substr(0, slash + 1);
+        std::filesystem::path base = dir_part.empty() ? std::filesystem::path(".") : std::filesystem::path(dir_part);
+        const char* home = std::getenv("HOME");
+        if (partial == "~") candidates.push_back("~/");
+        if (dir_part.rfind("~/", 0) == 0 && home) base = std::filesystem::path(home) / dir_part.substr(2);
+        if (base.is_relative()) base = std::filesystem::path(ctx.workspace) / base;
+        bool hidden = partial.compare(dir_part.size(), 1, ".") == 0;
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(base, ec), end; !ec && it != end; it.increment(ec)) {
+            std::string name = it->path().filename().string();
+            if (!it->is_directory(ec) || (name[0] == '.' && !hidden)) continue;
+            candidates.push_back(dir_part + name + "/");
+        }
     }
     std::vector<std::string> out;
     std::string p = lower(partial);

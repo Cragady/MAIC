@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <unistd.h>
 #include "editor.hpp"
@@ -840,6 +841,25 @@ int main() {
         expect(a.size() == 2 && a[0] == "auto" && a[1] == "auto-read", "mode arguments complete");
         expect(complete_argument("up", "c", ctx) == std::vector<std::string>{"comfyui"}, "service names complete");
         expect(complete_argument("model", "an", ctx) == std::vector<std::string>{"anthropic/"}, "provider prefixes complete");
+        {
+            // :cd completes directories on disk, relative to the workspace, hidden ones only once a dot is typed.
+            std::string ws = "/tmp/maid-cd-complete-" + std::to_string(getpid());
+            std::filesystem::create_directories(ws + "/hop/to-claude");
+            std::filesystem::create_directories(ws + "/hop/to-deepseek");
+            std::filesystem::create_directories(ws + "/.hidden");
+            std::ofstream(ws + "/hop/notes.md") << "x";
+            CompletionContext here = ctx;
+            here.workspace = ws;
+            auto top = complete_argument("cd", "ho", here);
+            expect(std::find(top.begin(), top.end(), "hop/") != top.end(), "a relative directory completes: " + std::to_string(top.size()));
+            expect(complete_argument("cd", "hop/to-", here) == std::vector<std::string>{"hop/to-claude/", "hop/to-deepseek/"}, "inside it, only directories complete");
+            auto dots = complete_argument("cd", ".h", here);
+            expect(std::find(dots.begin(), dots.end(), ".hidden/") != dots.end() && complete_argument("cd", "h", here) == std::vector<std::string>{"hop/"},
+                   "a hidden directory completes once a dot is typed, and not before");
+            auto abs = complete_argument("cd", ws + "/ho", here);
+            expect(abs == std::vector<std::string>{ws + "/hop/"}, "an absolute path completes");
+            std::filesystem::remove_all(ws);
+        }
         auto h = complete_argument("h", "sess", ctx);
         expect(std::find(h.begin(), h.end(), "sessions") != h.end() && std::find(h.begin(), h.end(), "session") != h.end(), "help topics and commands complete");
         expect(help_text("").find(":w") != std::string::npos && help_text("").find("modes") != std::string::npos, ":h alone is an index");
