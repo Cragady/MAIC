@@ -870,6 +870,9 @@
                           "items": {
                             "type": "string"
                           }
+                        },
+                        "from": {
+                          "$ref": "maid.schema.json#/$defs/From"
                         }
                       }
                     }

@@ -39,6 +39,12 @@
           }
         },
         {
+          "name": "as",
+          "description": "Another agent speaking through this connection (maid liaison --as): its name, never one the session owner goes by (user, local, owner, ...). Every input it sends is that voice's: recorded with origin liaison and `from`, shown under its name, told to the model by maid's own line above the quoted text. A voice cannot steer. Kept for the connection: a later hello cannot drop or change it. Refused with invalid params when the name does not fit.",
+          "required": false,
+          "schema": {"$ref": "schemas/maid.schema.json#/$defs/Voice"}
+        },
+        {
           "name": "capabilities",
           "required": false,
           "schema": {

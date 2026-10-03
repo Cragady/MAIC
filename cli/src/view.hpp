@@ -21,6 +21,7 @@ struct Entry {
     time_t when = 0;  // appended at; shown when timestamps are on
     bool live = false;  // a running command's last lines, until its result takes their place
     std::string full;   // a result whose whole output was kept: that output, labelled, shown when the fold is open
+    std::string from;   // a user entry another agent sent through the liaison: its name ("" for the owner)
 };
 
 // The conversation window. Appends are thread-safe; everything else runs on the UI thread. When focused
@@ -31,7 +32,7 @@ public:
     void set_leader(std::string leader) { leader_ = std::move(leader); }
 
     // thread-safe
-    void append(Kind kind, std::string text);
+    void append(Kind kind, std::string text, std::string from = {});
     void set_collapse_default(bool on) { collapse_default_ = on; }
     bool collapse_default() const { return collapse_default_; }
     void set_all_collapsed(bool on);  // zR / zM

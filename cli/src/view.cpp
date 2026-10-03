@@ -48,10 +48,23 @@ bool attached(Kind k) {
     return k == Kind::ToolOk || k == Kind::ToolErr;
 }
 
-// A subagent's tool call ("↳ explore: ...") sits indented under the task call that started it.
-const char* marker(const Entry& e) {
+// A subagent's tool call ("↳ explore: ...") sits indented under the task call that started it. A liaison sender's
+// turn has a line of its own naming it, above its text.
+std::string marker(const Entry& e) {
     if (e.kind == Kind::Tool && e.text.rfind("↳", 0) == 0) return "  ";
+    if (e.kind == Kind::User && !e.from.empty()) return "◆ " + e.from + " (liaison)";
     return prefix(e.kind);
+}
+
+size_t indent(const Entry& e) {
+    return e.from.empty() ? utf8_len(marker(e)) : 2;
+}
+
+// The entry's own style: a liaison sender's is the liaison role with that name's `voices` entry over it.
+Style entry_style(const Settings& settings, Kind kind, const std::string& from) {
+    if (from.empty()) return settings.style(style_name(kind));
+    auto v = settings.voices.find(from);
+    return v == settings.voices.end() ? settings.style("liaison") : v->second.merged_over(settings.style("liaison"));
 }
 
 constexpr size_t kPreviewLines = 8;
@@ -120,9 +133,10 @@ std::vector<StyledLine> diff_lines(const std::string& text) {
     return lines;
 }
 
-void View::append(Kind kind, std::string text) {
+void View::append(Kind kind, std::string text, std::string from) {
     std::lock_guard lock(mu_);
     entries_.push_back({kind, std::move(text), attached(kind) && collapse_default_, std::time(nullptr)});
+    entries_.back().from = std::move(from);
     ++version_;
 }
 
@@ -259,7 +273,7 @@ void View::layout(size_t width) {
     for (size_t e = 0; e < snapshot.size(); ++e) {
         const auto& entry = snapshot[e];
         if (e > 0 && !attached(entry.kind)) lines_.push_back({{}, Kind::Assistant, e, 0, 0, false});
-        size_t pre = utf8_len(marker(entry)) + (timestamps_ ? 6 : 0);
+        size_t pre = indent(entry) + (timestamps_ ? 6 : 0);
         bool use_md = markdown_ && (entry.kind == Kind::Assistant || entry.kind == Kind::User || entry.kind == Kind::Notice);
         std::string shown_text = entry.collapsed ? preview(entry.text) : entry.full.empty() ? entry.text : entry.full;
         bool diff = markdown_ && is_tool(entry.kind) && looks_like_diff(shown_text);
@@ -267,6 +281,10 @@ void View::layout(size_t width) {
         auto source = use_md ? markdown_lines(shown_text) : diff ? diff_lines(shown_text) : plain_lines(shown_text);
         size_t offset = 0;
         bool first = true;
+        if (!entry.from.empty()) {
+            lines_.push_back({{}, entry.kind, e, 0, 0, true});
+            first = false;
+        }
         for (const auto& src : source) {
             std::string raw = line_text(src);
             StyledLine expanded;
@@ -728,12 +746,15 @@ Element View::render(const Settings& settings, size_t width, int height) {
         const Line& l = lines_[static_cast<size_t>(i)];
         size_t pre_len = 0;
         StyledLine shown = l.spans;
-        std::string mark;
+        std::string mark, from;
+        size_t width = 0;
         {
             std::lock_guard lock(mu_);
             mark = l.entry < entries_.size() ? marker(entries_[l.entry]) : prefix(l.kind);
+            width = l.entry < entries_.size() ? indent(entries_[l.entry]) : utf8_len(mark);
+            if (l.entry < entries_.size()) from = entries_[l.entry].from;
         }
-        std::string pre = l.first ? mark : std::string(utf8_len(mark), ' ');
+        std::string pre = l.first ? mark : std::string(width, ' ');
         if (timestamps_) {
             std::string stamp(6, ' ');
             if (l.first) {
@@ -772,7 +793,7 @@ Element View::render(const Settings& settings, size_t width, int height) {
             overlays.push_back({pre_len + cur_col_, pre_len + cur_col_ + 1, &cursor_style});
             if (w == 0) shown.push_back(Span{" ", MdNone});
         }
-        rows.push_back(render_line(settings, shown, settings.style(style_name(l.kind)), overlays));
+        rows.push_back(render_line(settings, shown, entry_style(settings, l.kind, from), overlays));
     }
     return vbox(rows);
 }

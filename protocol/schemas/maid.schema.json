@@ -17,6 +17,20 @@
       },
       "required": ["client", "name", "origin"]
     },
+    "Voice": {
+      "description": "Another agent's name on a connection (hello `as`): 1 to 32 of letters, digits, space, . _ and -.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9 ._-]{1,32}$"
+    },
+    "From": {
+      "description": "A user message a voice sent: its name and its client's. Absent on the owner's.",
+      "type": "object",
+      "properties": {
+        "name": {"$ref": "#/$defs/Voice"},
+        "client": {"type": "string"}
+      },
+      "required": ["name", "client"]
+    },
     "Mode": {"enum": ["manual", "auto-read", "edit", "auto", "plan"]},
     "Tier": {"enum": ["open", "guarded", "airtight"]},
     "SessionState": {"enum": ["live", "background", "parked", "stopped"]},
@@ -173,7 +187,8 @@
         "time": {"type": "string"},
         "size": {"type": "integer", "minimum": 0},
         "head": {"type": "string"},
-        "collapsed": {"type": "boolean"}
+        "collapsed": {"type": "boolean"},
+        "from": {"$ref": "#/$defs/From"}
       }
     },
     "ErrorData": {

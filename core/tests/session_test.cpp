@@ -599,6 +599,13 @@ int main() {
         std::string plain = render_text(ls);
         expect(plain.find("[tool]") == std::string::npos && plain.find("[notice] compacted (prune)") != std::string::npos && plain.find("[assistant]\ndone") != std::string::npos,
                "without tools: turns and notices only");
+        SessionLog voices("session-test");
+        voices.write("user", {{"text", "an old turn"}, {"origin", "local"}});
+        voices.write("user", {{"text", "look at this"}, {"origin", "liaison"}, {"from", {{"name", "Claude"}, {"client", "liaison"}}}});
+        LoadedSession vs = load_session(voices.path());
+        expect(vs.transcript.size() == 2 && vs.transcript[0].from.empty() && vs.transcript[1].from == "Claude" &&
+                   render_text(vs) == "[user]\nan old turn\n\n[liaison:Claude]\nlook at this\n\n",
+               "a liaison sender's turn reads as [liaison:NAME]; a record without from is the owner's, as before");
     }
 
     section(":init moving a session: who is eligible");

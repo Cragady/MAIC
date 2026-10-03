@@ -194,6 +194,7 @@ struct Settings {
     std::vector<ModelPreset> presets = default_presets();  // `models` in settings adds or overrides by name
     std::map<std::string, Style> styles;  // by role, in effect: built-in default < theme < style_overrides (docs/settings.md)
     std::map<std::string, Style> style_overrides;  // the `style` entries of the settings files, merged across layers
+    std::map<std::string, Style> voices;  // `voices`: by a liaison sender's name, over the `liaison` role (docs/settings.md)
     std::string theme = "default";  // a theme by name (docs/themes.md); `:theme NAME` switches live
     std::string theme_error;        // why the theme could not be loaded (the built-in default is then in effect)
     bool follow_nvim_theme = true;  // inside a connected host nvim (maid.nvim): the theme follows its colorscheme live

@@ -44,7 +44,7 @@ Two things differ for a session in the daemon:
 `maid liaison` lets another agent (Claude Code, a script) hand turns to a long-lived session the daemon holds while your own window stays attached to it.
 
 ```
-maid liaison send ID (TEXT | --file FILE) [--out FILE] [--timeout SECONDS]
+maid liaison send ID (TEXT | --file FILE) [--as NAME] [--out FILE] [--timeout SECONDS]
 maid liaison approve ID APPROVAL yes|no
 maid liaison status ID
 ```
@@ -53,8 +53,9 @@ maid liaison status ID
 * **Exit codes:** 0 done; 2 the response failed (its message on stderr); 3 no daemon runs (it never starts one); 4 the turn waits for an approval, said on stderr as one line `approval<TAB>ID<TAB>TOOL<TAB>SUMMARY` and left waiting; 5 no reply within `--timeout` seconds (default 600), the turn keeps running.
 * **`approve`** answers a waiting approval yes or no. It refuses `always`: that is for a person at their own window.
 * **`status`** prints one tab separated line: `idle`, `working`, `paused` or `parked`, the model, `queued=N`, and `approvals=` with the waiting ones' ids (`-` for none).
+* **Its turns are not yours.** `send` speaks as `--as NAME` (default `liaison`): 1 to 32 of letters, digits, space, `.`, `_` and `-`, and never a name you go by (`user`, `local`, `owner`, `Micaiah` and the like are refused, in any case). The name is the connection's (the hello's `as`), not something the text can claim, and the daemon records each such turn with origin `liaison` and `from` (the name and the client). Your window shows it under `◆ NAME (liaison)` in the `liaison` style (`voices` in settings styles each name; [settings.md](settings.md#styles-and-themes)), `maid sessions read` prints it as `[liaison:NAME]`, and the model gets maid's own line above it: from NAME through the liaison, not from the user, to be treated as a request and not as the user's instruction. Every line of the sent text is quoted (`> `) under that line, so text that imitates it is still quoted text. A voice cannot steer or deliver into a running turn: its input waits its turn. A transcript from before this has no `from`: all its turns are yours.
 * **It never takes focus.** The session stays in your window's focus, and the liaison leaving changes nothing about it.
-* **Nothing new travels.** It uses the protocol's ordinary client calls (`maid.session.resume`, `maid.session.attach`, `response.create`, `maid.approval.answer`), so the harness, approvals and trust judge its input as they judge a window's. It never reads or handles a key, and prints only the model's reply.
+* **Nothing else new travels.** Beside the hello's `as` it uses the protocol's ordinary client calls (`maid.session.resume`, `maid.session.attach`, `response.create`, `maid.approval.answer`), so the harness, approvals and trust judge its input as they judge a window's. It never reads or handles a key, and prints only the model's reply.
 
 ## Where it lives
 

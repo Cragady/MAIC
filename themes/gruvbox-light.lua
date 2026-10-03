@@ -17,6 +17,7 @@ return {
     notice = { fg = "#b57614" },
     error = { fg = "#9d0006", bold = true },
     shell = { fg = "#79740e" },
+    liaison = { fg = "#8f3f71" },
     -- markdown
     md_heading = { fg = "#af3a03", bold = true },
     md_bold = { fg = "#282828", bold = true },

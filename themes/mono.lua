@@ -15,6 +15,7 @@ return {
     notice = {},
     error = { bold = true },
     shell = { bold = true },
+    liaison = { italic = true },
     -- markdown
     md_heading = { bold = true, underline = true },
     md_bold = { bold = true },

@@ -16,6 +16,7 @@ return {
     notice = { fg = "yellow" },
     error = { fg = "red_light" },
     shell = { fg = "green_light" },
+    liaison = { fg = "magenta" },
     -- markdown, applied on top of the entry's style
     md_heading = { fg = "magenta", bold = true },
     md_bold = { bold = true },
