@@ -13,6 +13,7 @@
 #include <ctime>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -257,6 +258,67 @@ std::string xterm_hex(int index) {
     char buf[8];
     snprintf(buf, sizeof buf, "#%02x%02x%02x", r, g, b);
     return buf;
+}
+
+namespace {
+
+// The SGR parameters of one colour, for the foreground or (`background`) the background; "" for "default" or a name
+// that is none.
+std::string sgr_color(const std::string& name, ColorDepth depth, bool background) {
+    static const std::map<std::string, int> named = {
+        {"black", 0}, {"red", 1}, {"green", 2}, {"yellow", 3}, {"blue", 4}, {"magenta", 5}, {"cyan", 6}, {"white", 7},
+        {"gray_dark", 8}, {"red_light", 9}, {"green_light", 10}, {"yellow_light", 11}, {"blue_light", 12}, {"magenta_light", 13},
+        {"cyan_light", 14}, {"gray", 7}, {"gray_light", 7},
+    };
+    auto ansi16 = [&](int i) { return std::to_string((i < 8 ? (background ? 40 : 30) : (background ? 100 : 90)) + i % 8); };
+    auto hex = [&](uint8_t r, uint8_t g, uint8_t b) {
+        std::string lead = background ? "48;" : "38;";
+        switch (depth) {
+            case ColorDepth::Truecolor: return lead + "2;" + std::to_string(r) + ";" + std::to_string(g) + ";" + std::to_string(b);
+            case ColorDepth::Xterm256: return lead + "5;" + std::to_string(nearest_xterm256(r, g, b));
+            default: return ansi16(nearest_ansi16(r, g, b));
+        }
+    };
+    if (auto it = named.find(name); it != named.end()) return ansi16(it->second);
+    if (name.size() == 7 && name[0] == '#') {
+        auto part = [&](size_t i) { return static_cast<uint8_t>(std::strtol(name.substr(i, 2).c_str(), nullptr, 16)); };
+        return hex(part(1), part(3), part(5));
+    }
+    if (!name.empty() && name.find_first_not_of("0123456789") == std::string::npos) {
+        int n = std::atoi(name.c_str()) & 255;
+        if (n < 16) return ansi16(n);
+        if (depth == ColorDepth::Xterm256) return std::string(background ? "48;5;" : "38;5;") + std::to_string(n);
+        std::string rgb = xterm_hex(n);
+        return hex(static_cast<uint8_t>(std::strtol(rgb.substr(1, 2).c_str(), nullptr, 16)), static_cast<uint8_t>(std::strtol(rgb.substr(3, 2).c_str(), nullptr, 16)),
+                   static_cast<uint8_t>(std::strtol(rgb.substr(5, 2).c_str(), nullptr, 16)));
+    }
+    return "";
+}
+
+}  // namespace
+
+std::string ansi_sgr(const Style& style, ColorDepth depth) {
+    std::string params;
+    auto add = [&](const std::string& p) {
+        if (!p.empty()) params += (params.empty() ? "" : ";") + p;
+    };
+    if (style.bold) add("1");
+    if (style.dim || style.italic) add("2");
+    if (style.underline) add("4");
+    if (style.inverted) add("7");
+    if (style.fg) add(sgr_color(*style.fg, depth, false));
+    if (style.bg) add(sgr_color(*style.bg, depth, true));
+    return params.empty() ? "" : "\x1b[" + params + "m";
+}
+
+std::string ansi_paint(const std::string& text, const Style& style, ColorDepth depth) {
+    std::string open = ansi_sgr(style, depth);
+    return open.empty() ? text : open + text + "\x1b[0m";
+}
+
+bool color_output(bool text_base, int fd) {
+    const char* no_color = std::getenv("NO_COLOR");
+    return !text_base && !(no_color && *no_color) && isatty(fd);
 }
 
 const std::vector<std::string>& nvim_theme_groups() {

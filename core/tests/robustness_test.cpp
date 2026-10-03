@@ -22,6 +22,7 @@
 #include "maic/trust.hpp"
 #include "maic/paths.hpp"
 
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -1959,6 +1960,62 @@ int main() {
             expect(m.find("nvim has no colorscheme no-such-scheme-here") == 0, "and names a missing colorscheme");
         }
         unsetenv("XDG_CONFIG_HOME");
+    }
+
+    section("colour in status output");
+    {
+        Settings plain;
+        apply_theme(plain, Theme{"default"});
+        expect(ansi_sgr(plain.style("harness_armed"), ColorDepth::Ansi16) == "\x1b[32m", "green is SGR 32");
+        expect(ansi_sgr(plain.style("status_dim"), ColorDepth::Ansi16) == "\x1b[2m", "dim is SGR 2");
+        expect(ansi_sgr(Style{"red_light", std::nullopt, true}, ColorDepth::Ansi16) == "\x1b[1;91m", "bold and a light colour join with a semicolon");
+        expect(ansi_sgr(Style{"#ff0000"}, ColorDepth::Truecolor) == "\x1b[38;2;255;0;0m", "hex at truecolor");
+        expect(ansi_sgr(Style{"#ff0000"}, ColorDepth::Xterm256) == "\x1b[38;5;196m", "hex at 256 colours is the nearest palette entry");
+        expect(ansi_sgr(Style{"#ff0000"}, ColorDepth::Ansi16) == "\x1b[91m", "hex at 16 colours is the nearest of the 16");
+        expect(ansi_sgr(Style{}, ColorDepth::Truecolor).empty() && ansi_paint("x", Style{}, ColorDepth::Truecolor) == "x", "a style that sets nothing leaves the text alone");
+        expect(ansi_paint("up", plain.style("harness_armed"), ColorDepth::Ansi16) == "\x1b[32mup\x1b[0m", "a painted word is reset after it");
+
+        ServiceReport up{"llamacpp", "running", "host", "pid 7 · http://127.0.0.1:8081", "model: m", "", {}, true, "pid 7", "http://127.0.0.1:8081"};
+        ServiceReport down{"tool", "stopped", "host", "", "", "", {}, false, "", ""};
+        ServiceReport busy{"slow", "starting", "host", "pid 9", "", "", {}, false, "pid 9", ""};
+        ServiceReport dead{"gone", "failed", "host", "", "", "", {}, false, "", ""};
+        ServiceReport other{"held", "foreign", "host", "port 1 is held", "", "", {}, false, "", ""};
+        StatusReport rep{false, "", {up, down, busy, dead, other}, {}};
+        std::string bare = format_status(rep);
+        expect(bare.find('\x1b') == std::string::npos, "without a painter there is no escape sequence");
+        expect(bare.find("llamacpp: running [host]  pid 7 · http://127.0.0.1:8081  GPU\n") != std::string::npos && bare.find("tool: stopped [host]\n") != std::string::npos, "the GPU tag ends the line of a GPU service only: " + bare);
+        StatusPaint paint{plain, ColorDepth::Ansi16};
+        std::string colored = format_status(rep, &paint);
+        expect(colored.find("llamacpp: \x1b[32mrunning\x1b[0m [host]") != std::string::npos, "running is green");
+        expect(colored.find("slow: \x1b[33mstarting\x1b[0m") != std::string::npos, "starting is yellow");
+        expect(colored.find("tool: \x1b[2mstopped\x1b[0m") != std::string::npos, "stopped is dim");
+        expect(colored.find("gone: \x1b[91mfailed\x1b[0m") != std::string::npos, "failed is red");
+        expect(colored.find("held: foreign [host]") != std::string::npos, "an unknown state keeps the default colour");
+        expect(colored.find("  \x1b[36mGPU\x1b[0m\n") != std::string::npos, "the GPU tag has its own colour");
+        expect(colored.find("harness: \x1b[32marmed") == std::string::npos && colored.find("\x1b[32mharness: armed\x1b[0m\n") == 0, "the harness line is painted whole");
+
+        std::string records = format_status_records(rep);
+        expect(records.find('\x1b') == std::string::npos && records.find("harness\tarmed\n") == 0, "records: no escape, the harness first");
+        expect(records.find("service\tllamacpp\trunning\thost\tgpu\tpid 7\thttp://127.0.0.1:8081\tmodel: m\n") != std::string::npos, "records: fields in a fixed order");
+        expect(records.find("service\ttool\tstopped\thost\tcpu\t-\t-\t-\n") != std::string::npos, "records: an empty field is a dash");
+
+        setenv("NO_COLOR", "1", 1);
+        expect(!color_output(false, STDOUT_FILENO) && !color_output(true, STDOUT_FILENO), "NO_COLOR set: no colour");
+        unsetenv("NO_COLOR");
+        setenv("NO_COLOR", "", 1);
+        int master = posix_openpt(O_RDWR | O_NOCTTY);
+        grantpt(master);
+        unlockpt(master);
+        int slave = open(ptsname(master), O_RDWR | O_NOCTTY);
+        expect(color_output(false, slave), "an empty NO_COLOR is not set, and a terminal gets colour");
+        expect(!color_output(true, slave), "--text-base wins on a terminal");
+        unsetenv("NO_COLOR");
+        int pipefd[2];
+        expect(pipe(pipefd) == 0 && !color_output(false, pipefd[1]), "a pipe gets none");
+        close(pipefd[0]);
+        close(pipefd[1]);
+        close(slave);
+        close(master);
     }
 
     section("system prompt setting");

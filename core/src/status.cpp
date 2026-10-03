@@ -158,12 +158,15 @@ std::vector<ServiceReport> service_reports(const std::vector<ServiceDef>& servic
         r.name = def.name;
         r.runtime = def.runtime;
         r.log = service_log_path(def).string();
+        r.gpu = def.needs_gpu || def.gpu;
         ServiceStatus st = service_status(def);
-        std::string url = def.port ? "http://127.0.0.1:" + std::to_string(def.port) : "";
+        r.url = def.port ? "http://127.0.0.1:" + std::to_string(def.port) : "";
+        const std::string& url = r.url;
         switch (st.state) {
             case ServiceState::Running:
                 r.state = st.port_open ? "running" : "starting";
-                r.where = st.who() + (url.empty() ? "" : " · " + url);
+                r.who = st.who();
+                r.where = r.who + (url.empty() ? "" : " · " + url);
                 r.detail = service_detail(def, st);
                 r.actions = {"maic down " + def.name, "maic logs " + def.name};
                 break;
@@ -173,9 +176,9 @@ std::vector<ServiceReport> service_reports(const std::vector<ServiceDef>& servic
                 r.actions = {"stop that process yourself, then: maic up " + def.name};
                 break;
             case ServiceState::Stopped:
-                r.state = "stopped";
+                r.state = st.crashed ? "failed" : "stopped";
                 r.where = url;
-                r.actions = {"maic up " + def.name};
+                r.actions = st.crashed ? std::vector<std::string>{"maic logs " + def.name, "maic up " + def.name} : std::vector<std::string>{"maic up " + def.name};
                 break;
         }
         out.push_back(r);
@@ -194,15 +197,34 @@ StatusReport status_report(const std::vector<ServiceDef>& services) {
     return rep;
 }
 
-std::string format_status(const StatusReport& rep) {
-    std::string out = rep.tripped ? "harness: TRIPPED\n" + rep.tripwire : "harness: armed\n";
+std::string format_status(const StatusReport& rep, const StatusPaint* paint) {
+    auto in = [&](const std::string& text, const char* role) { return paint ? ansi_paint(text, paint->settings.style(role), paint->depth) : text; };
+    auto state_role = [](const std::string& state) {
+        if (state == "running") return "harness_armed";
+        if (state == "starting") return "notice";
+        if (state == "stopped") return "status_dim";
+        if (state == "failed") return "error";
+        return "";
+    };
+    std::string out = rep.tripped ? in("harness: TRIPPED", "harness_tripped") + "\n" + rep.tripwire : in("harness: armed", "harness_armed") + "\n";
     for (const auto& a : rep.actions) out += "  -> " + a + "\n";
     for (const auto& s : rep.services) {
-        out += s.name + ": " + s.state + " [" + s.runtime + "]" + (s.where.empty() ? "" : "  " + s.where) + "\n";
+        out += s.name + ": " + (paint && *state_role(s.state) ? in(s.state, state_role(s.state)) : s.state) + " [" + s.runtime + "]" + (s.where.empty() ? "" : "  " + s.where) +
+               (s.gpu ? "  " + in("GPU", "focus") : "") + "\n";
         if (!s.detail.empty()) out += "     " + s.detail + "\n";
         for (const auto& a : s.actions) out += "  -> " + a + "\n";
     }
     if (!rep.lazy_lock.empty()) out += "nvim lazy-lock: " + rep.lazy_lock + "\n";
+    return out;
+}
+
+std::string format_status_records(const StatusReport& rep) {
+    auto field = [](const std::string& s) { return s.empty() ? std::string("-") : s; };
+    std::string out = std::string("harness\t") + (rep.tripped ? "tripped" : "armed") + "\n";
+    for (const auto& s : rep.services) {
+        out += "service\t" + s.name + "\t" + s.state + "\t" + s.runtime + "\t" + (s.gpu ? "gpu" : "cpu") + "\t" + field(s.who) + "\t" + field(s.url) + "\t" + field(s.detail) + "\n";
+    }
+    if (!rep.lazy_lock.empty()) out += "lazy-lock\t" + rep.lazy_lock + "\n";
     return out;
 }
 
@@ -330,6 +352,16 @@ GpuReport gpu_report(const std::vector<ServiceDef>& services) {
         if (mib > 0) r.card_total = mib * 1024L * 1024L;
     }
     return r;
+}
+
+std::string GpuReport::records() const {
+    auto field = [](const std::string& s) { return s.empty() ? std::string("-") : s; };
+    auto state = [](bool running) { return running ? "running" : "stopped"; };
+    std::string out;
+    for (const auto& s : servers) out += "server\t" + s.name + "\t" + state(s.running) + "\t" + field(joined(s.models)) + "\t" + std::to_string(s.context) + "\t" + field(s.linked) + "\n";
+    out += std::string("comfyui\t") + state(comfyui_running) + "\t" + std::to_string(comfyui_vram_used) + "\t" + std::to_string(comfyui_vram_total) + "\n";
+    if (has_whisper) out += std::string("whisper\t") + state(whisper_running) + "\t" + field(whisper_model) + "\t" + std::to_string(whisper_bytes) + "\n";
+    return out + "card\t" + std::to_string(card_total) + "\n";
 }
 
 std::string GpuReport::text() const {

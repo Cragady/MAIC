@@ -290,8 +290,8 @@ A style is `{ fg, bg, bold, dim, italic, underline, inverted }`. Colours are FTX
 | `tool` | a tool call line (`▸ read_file ...`) |
 | `tool_ok` | a tool's result |
 | `tool_err` | a failed tool result; also `[n]` and `[N]` in the approval prompt |
-| `notice` | MAIC's own notes (`※`), status-strip notes, the ISOLATED marker |
-| `error` | errors (`✗`), the DUMB HARNESS marker, `[t]` in the approval prompt, a confirmation's title |
+| `notice` | MAIC's own notes (`※`), status-strip notes, the ISOLATED marker, a service that is `starting` in `maic status` |
+| `error` | errors (`✗`), the DUMB HARNESS marker, `[t]` in the approval prompt, a confirmation's title, a `failed` service in `maic status` |
 | `shell` | a `!command` of yours and its running marker, Lua mode |
 | `md_heading` | markdown headings |
 | `md_bold` | `**strong**` |
@@ -308,15 +308,15 @@ A style is `{ fg, bg, bold, dim, italic, underline, inverted }`. Colours are FTX
 | `input` | the input box text |
 | `input_prompt_insert`, `input_prompt_normal` | the input's prompt character in insert and in normal mode |
 | `separator` | the line above the input |
-| `focus` | the border of the conversation window when it has the focus |
+| `focus` | the border of the conversation window when it has the focus, the `GPU` tag in `maic status` |
 | `visual` | a visual selection, and the selected row of the command palette |
 | `search` | search hits |
 | `cursor_line` | the cursor line in the conversation window |
 | `status` | the top status strip |
 | `status_insert`, `status_normal`, `status_visual` | the vim mode in the bottom status line |
-| `status_dim` | quiet text in the status lines and the palette's summaries |
+| `status_dim` | quiet text in the status lines and the palette's summaries, a `stopped` service in `maic status` |
 | `mode_manual`, `mode_auto-read`, `mode_edit`, `mode_auto`, `mode_plan` | the agent mode's name in the status strip |
-| `harness_armed`, `harness_tripped` | the harness state in the status strip; `harness_armed` also colours `[y]` in the approval prompt |
+| `harness_armed`, `harness_tripped` | the harness state in the status strip and in `maic status`; `harness_armed` also colours `[y]` in the approval prompt and a `running` service in `maic status` |
 | `remote` | the REMOTE marker |
 | `approval` | the approval, question and confirmation boxes |
 
@@ -358,6 +358,34 @@ A style is `{ fg, bg, bold, dim, italic, underline, inverted }`. Colours are FTX
 | `approval` | Question, MoreMsg |
 
 Normal, StatusLineNC, PmenuSel, Todo and DiffChange are read too but no role takes from them yet. The theme's `background` is nvim's `'background'` after the colorscheme ran.
+
+## Colour and plain output in commands
+
+`maic status` paints each service's state with the theme's roles (the table above): `running` green (`harness_armed`), `starting` yellow (`notice`), `stopped` dim (`status_dim`), `failed` red (`error`; a service that exited without `maic down`, which left its start record behind), and a service whose port something else holds uncoloured. A service that uses the card gets a `GPU` tag in the `focus` colour. Which service that is comes from its file: `"needs_gpu": true`, or a docker service run with `"gpu": true`. ComfyUI's line already carries the card's figures (`VRAM 3.0 GB used of 8.0 GB`, from its own `/system_stats`); `maic status` runs no `nvidia-smi`, so `maic gpu` is where the card's total is read.
+
+Colour follows three rules, in this order:
+
+1. `--text-base` turns it off everywhere (below).
+2. `NO_COLOR` set to anything but the empty string turns it off ([no-color.org](https://no-color.org)).
+3. Output that is not a terminal (a pipe, a file) has none; on a terminal the colours are the theme's, at the depth `colors` sets.
+
+`--text-base` is for scripts. Given to `maic status`, `maic gpu`, `maic models` or `maic daemon status` it prints plain records: no colour, no escape sequence, no prose, one record per line, tab separated, fields in a fixed order, `-` for an empty field (a shell `read` with a tab in `IFS` would otherwise merge the empty ones). The first field names the record.
+
+| Command | Records |
+| :--- | :--- |
+| `maic status --text-base` | `harness` STATE (`armed` or `tripped`); `service` NAME STATE RUNTIME `gpu`\|`cpu` WHO URL DETAIL (WHO is `pid 1234` or `container maic-comfyui`); `lazy-lock` TEXT when there is something to say |
+| `maic gpu --text-base` | `server` NAME STATE MODELS CONTEXT LINKED; `comfyui` STATE VRAM_USED VRAM_TOTAL (bytes, -1 unknown); `whisper` STATE MODEL BYTES; `card` TOTAL_BYTES |
+| `maic models --text-base` | `model` ID ROLE SIZE INSTALLED CURRENT PRESETS |
+| `maic daemon status --text-base` | `daemon` `running`\|`stopped` PID SOCKET; `session` ACTIVITY `focus`\|`-` ID WORKSPACE |
+
+```
+$ maic status --text-base
+harness	armed
+service	llamacpp	running	host	gpu	pid 4242	http://127.0.0.1:8081	model: Qwen3.5-4B-Q4_K_M
+service	comfyui	stopped	host	gpu	-	http://127.0.0.1:8188	-
+```
+
+The flag is accepted by every command; the others print no colour already, so for them it changes nothing. `maic ... --json` stays as it was and is separate.
 
 ## Project layers, trust and the chain
 

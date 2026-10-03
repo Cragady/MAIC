@@ -108,13 +108,13 @@ void usage(std::ostream& out = std::cerr) {
                  "                             from models_dir (no network; add and adopt do this too)\n"
                  "  vendor unlink NAME         stop using it (nothing is deleted)\n"
                  "  model resolve NAME         a preset name or provider/model as JSON: provider, kind, base_url, model, context\n"
-                 "  models                     the model catalog: id, role, size, installed, current, presets (maic help models)\n"
+                 "  models [--text-base]       the model catalog: id, role, size, installed, current, presets (maic help models)\n"
                  "  models info ID             what it is good and bad at, its license, files, hashes and VRAM estimate\n"
                  "  models install ID [--link] download its files checked by SHA-256 (present ones are kept), --link: make it\n"
                  "                             the current model of its server (llamacpp, whisper, or llamacpp-fim)\n"
                  "  models verify ID | remove ID [--yes] | check   hash what is there; delete it (never shared weights);\n"
                  "                             validate the catalog offline\n"
-                 "  daemon start|stop|status   one engine in the background that holds sessions: maic and maic.nvim open\n"
+                 "  daemon start|stop|status [--json|--text-base]   one engine in the background that holds sessions: maic and maic.nvim open\n"
                  "                             theirs in it while it runs, so a session outlives its window (maic help daemon)\n"
                  "  diction [ARGS...]          narrate out loud into a markdown document: mic, whisper-server, a local scribe\n"
                  "                             (maic help diction is its own --help; docs/diction.md)\n"
@@ -143,11 +143,12 @@ void usage(std::ostream& out = std::cerr) {
                  "                             dotfiles), or list what changed per plugin; exit 0 in sync, 1 changed, 2 no file\n"
                  "  setup                      a guided first run: prerequisites, settings, llama.cpp, ComfyUI, a model, the\n"
                  "                             tripwire; every step is a yes/no question, nothing runs without a yes\n"
-                 "  status                     harness, services (host process or docker container), what each holds, quick actions\n"
+                 "  status [--text-base]       harness, services (host process or docker container), what each holds, quick actions;\n"
+                 "                             states in colour on a terminal; --text-base: plain tab separated records, no escapes\n"
                  "  up <service...|all>        start services\n"
                  "  down <service...|all>      stop services MAIC started\n"
                  "  logs <service> [lines]     the end of a service's log (default 40 lines; docker logs for a container)\n"
-                 "  gpu [free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui]]   who holds the card (each llama server's resident model,\n"
+                 "  gpu [--text-base] [free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui]]   who holds the card (each llama server's resident model,\n"
                  "                             whisper's, ComfyUI's VRAM) and whether they fit; free unloads models without stopping anything\n"
                  "  gpu load llamacpp-fim      load the completion server's coder (it never loads by itself; docs/models.md)\n"
                  "  path [NAME] [--copy]       every place maic knows (workspace, sessions, models, workflows, ...) or one path;\n"
@@ -215,6 +216,10 @@ void usage(std::ostream& out = std::cerr) {
                  "  help [TOPIC]               this text, or one page: maic help help lists the topics; help headless,\n"
                  "                             sessions, modes, keys, vendor, lua, settings, ... (the same pages as :h);\n"
                  "                             help cai [TOOL], help trans-fairy and help trans-fairy-write print cai's help\n"
+                 "\n"
+                 "--text-base                  on status, gpu, models and daemon status: plain tab separated records, one per line, no\n"
+                 "                             colour or escape sequences. Colour is also off when NO_COLOR is set and when stdout is\n"
+                 "                             not a terminal (maic help status)\n"
                  "\n"
                  "modes: manual, auto-read, edit, auto, plan\n";
 }
@@ -311,10 +316,14 @@ int cmd_up(const std::vector<maic::ServiceDef>& services) {
     return rc;
 }
 
-int cmd_gpu(const std::vector<std::string>& args) {
+int cmd_gpu(const std::vector<std::string>& args, bool text_base) {
     auto services = maic::load_services(maic::root_dir() / "services");
     if (args.empty() || args[0] == "show") {
         maic::GpuReport report = maic::gpu_report(services);
+        if (text_base) {
+            std::cout << report.records();
+            return 0;
+        }
         std::cout << report.text();
         if (std::string fit = maic::gpu_budget(report, maic::load_settings()); !fit.empty()) std::cout << fit << "\n";
         std::cout << "maic gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui] releases memory without stopping anything; maic gpu load llamacpp-fim brings the coder back\n";
@@ -336,7 +345,7 @@ std::string human_bytes(uintmax_t b);
 
 // `maic models`: the catalog (models/catalog.json plus ~/.config/maic/models.json), what is installed, and
 // installing, verifying and removing by id. docs/models.md
-int cmd_models(const std::vector<std::string>& args) {
+int cmd_models(const std::vector<std::string>& args, bool text_base) {
     const std::string sub = args.empty() ? "list" : args[0];
     if (sub == "check") {
         std::ifstream in(maic::catalog_path());
@@ -360,7 +369,7 @@ int cmd_models(const std::vector<std::string>& args) {
     if (sub == "list") {
         std::vector<std::pair<std::string, std::string>> presets;
         for (const auto& p : maic::load_settings().presets) presets.emplace_back(p.name, p.model);
-        std::printf("%-28s %-10s %-9s %-10s %-9s %s\n", "id", "role", "size", "installed", "current", "presets");
+        if (!text_base) std::printf("%-28s %-10s %-9s %-10s %-9s %s\n", "id", "role", "size", "installed", "current", "presets");
         for (const auto& e : all) {
             long bytes = 0;
             for (const auto& f : e.files) bytes += f.size;
@@ -370,9 +379,15 @@ int cmd_models(const std::vector<std::string>& args) {
             for (const auto& f : e.files) some = some || std::filesystem::exists(maic::entry_dir(e) / f.name);
             std::string names;
             for (const auto& p : maic::entry_presets(e, presets)) names += (names.empty() ? "" : ", ") + p;
+            if (text_base) {
+                std::printf("model\t%s\t%s\t%s\t%s\t%s\t%s\n", e.id.c_str(), e.role.c_str(), size.c_str(), installed ? "yes" : some ? "partial" : "no",
+                            maic::entry_current(e) ? e.root.c_str() : "-", names.empty() ? "-" : names.c_str());
+                continue;
+            }
             std::printf("%-28s %-10s %-9s %-10s %-9s %s\n", e.id.c_str(), e.role.c_str(), size.c_str(), installed ? "yes" : some ? "partial" : "no",
                         maic::entry_current(e) ? e.root.c_str() : "", names.c_str());
         }
+        if (text_base) return 0;
         std::cout << "models_dir: " << maic::models_root("llamacpp").parent_path().string() << " (llamacpp/, whisper/, fim/)\n"
                   << "maic models info ID · install ID [--link] · verify ID · remove ID · check (docs/models.md)\n";
         return 0;
@@ -1327,6 +1342,7 @@ int main(int argc, char** argv) {
         bool print = false;
         bool interactive = false;
         bool rpc = false;
+        bool text_base = false;
         std::optional<bool> append;
         bool continue_last = false;
         std::optional<std::string> resume_id;
@@ -1419,6 +1435,7 @@ int main(int argc, char** argv) {
                 tui.context.push_back(f);
                 headless.context.push_back(f);
             } else if (a == "--json") headless.json = true;
+            else if (a == "--text-base") text_base = true;
             else if (a == "--think") headless.think = true;
             else if (a == "-h" || a == "--help" || a == "help") {
                 if (i + 1 < args.size()) {
@@ -1862,8 +1879,8 @@ int main(int argc, char** argv) {
         if (cmd == "path" || cmd == "paths" || cmd == "places") return cmd_path(cargs);
         if (cmd == "open") return cmd_open(cargs);
         if (cmd == "cd") return cmd_cd(cargs);
-        if (cmd == "gpu" || cmd == "vram") return cmd_gpu(cargs);
-        if (cmd == "models") return cmd_models(cargs);
+        if (cmd == "gpu" || cmd == "vram") return cmd_gpu(cargs, text_base);
+        if (cmd == "models") return cmd_models(cargs, text_base);
         if (cmd == "nvim" && !cargs.empty() && cargs[0] == "setup") return cmd_nvim_setup(cargs);
         if (cmd == "nvim") {
             // maic nvim keymaps [--all] [-u FILE]: maic.nvim's keymap check, headless, against the user's nvim config.
@@ -1913,7 +1930,23 @@ int main(int argc, char** argv) {
             } catch (const std::exception&) {
                 // a broken settings file must not hide the services; the commands that need settings report it
             }
-            std::cout << maic::format_status(report);
+            if (text_base) {
+                std::cout << maic::format_status_records(report);
+                return 0;
+            }
+            if (maic::color_output(false, STDOUT_FILENO)) {
+                maic::Settings settings;
+                try {
+                    settings = maic::load_settings();
+                } catch (const std::exception&) {
+                    // the built-in styles paint it; the commands that need settings report the error
+                    maic::apply_theme(settings, maic::Theme{"default"});
+                }
+                maic::StatusPaint paint{settings, maic::color_depth(settings.colors)};
+                std::cout << maic::format_status(report, &paint);
+            } else {
+                std::cout << maic::format_status(report);
+            }
             return 0;
         }
         if (cmd == "up" || cmd == "down") {
