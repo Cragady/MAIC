@@ -3,6 +3,7 @@
 #include "maic/llm.hpp"
 #include "maic/service.hpp"
 #include "maic/settings.hpp"
+#include "maic/theme.hpp"
 
 #include <chrono>
 #include <string>
@@ -13,12 +14,15 @@ namespace maic {
 // One line of `maic status` / `:status`, with what the user could do about it.
 struct ServiceReport {
     std::string name;
-    std::string state;    // running, stopped, foreign, starting
+    std::string state;    // running, stopped, foreign, starting, failed (it exited without `maic down`)
     std::string runtime;  // host (a process MAIC started), docker (a container it started)
     std::string where;    // "pid 1234 · http://127.0.0.1:8081", "container maic-comfyui · ...", or the port for a foreign process
     std::string detail;   // what it holds, when it answers: a llama server's resident model, ComfyUI's VRAM and queue
     std::string log;      // path of the log MAIC keeps for it
     std::vector<std::string> actions;  // quick actions, as commands the user can run
+    bool gpu = false;     // the definition says it uses the card (needs_gpu, or a docker service run with --gpus all)
+    std::string who;      // "pid 1234" or "container maic-comfyui" while it runs; "" otherwise
+    std::string url;      // where it listens, "" for a service without a port
 };
 
 std::vector<ServiceReport> service_reports(const std::vector<ServiceDef>& services);
@@ -38,8 +42,22 @@ struct StatusReport {
 
 StatusReport status_report(const std::vector<ServiceDef>& services);
 
-// Plain-text rendering shared by the CLI command and the TUI.
-std::string format_status(const StatusReport& report);
+// Colour for `maic status`: each state and the GPU tag take the style of a role of the settings' theme
+// (harness_armed, harness_tripped, notice, status_dim, error, focus), at the terminal's colour depth.
+struct StatusPaint {
+    const Settings& settings;
+    ColorDepth depth;
+};
+
+// Plain-text rendering shared by the CLI command and the TUI; `paint` adds colour (the CLI, on a terminal).
+std::string format_status(const StatusReport& report, const StatusPaint* paint = nullptr);
+
+// `maic status --text-base`: one record per line, fields separated by a tab, in a fixed order, "-" for an empty
+// field, no colour and no prose:
+//   harness  armed|tripped
+//   service  NAME  STATE  RUNTIME  gpu|cpu  WHO  URL  DETAIL
+//   lazy-lock  TEXT        (only when there is something to say)
+std::string format_status_records(const StatusReport& report);
 
 // What a service still needs before it can start, with what to do about it: a mounted drive, or for a
 // vendored model link, `maic vendor use`. Empty when it can start.
@@ -88,6 +106,12 @@ struct GpuReport {
     std::string whisper_model;     // the file <models_dir>/whisper/current.bin points at; "" when none is linked
     long whisper_bytes = -1;       // its size on disk
     std::string text() const;      // a few lines for a person
+    // `maic gpu --text-base`: one tab-separated record per line, "-" for an empty field:
+    //   server  NAME  running|stopped  MODELS (comma separated)  CONTEXT  LINKED
+    //   comfyui  running|stopped  VRAM_USED_BYTES  VRAM_TOTAL_BYTES   (-1 when unknown)
+    //   whisper  running|stopped  MODEL  BYTES   (only when there is a whisper service)
+    //   card  TOTAL_BYTES
+    std::string records() const;
 };
 GpuReport gpu_report(const std::vector<ServiceDef>& services);
 // Frees what can be freed without stopping anything: a llama server unloads its models, ComfyUI unloads its

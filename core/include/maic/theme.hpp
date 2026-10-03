@@ -59,6 +59,15 @@ int nearest_ansi16(uint8_t r, uint8_t g, uint8_t b);
 // An xterm palette index (0-255) as #rrggbb, at xterm's default values.
 std::string xterm_hex(int index);
 
+// The escape sequence that paints `style` on a plain terminal ("\x1b[1;32m"), colours at `depth`; "" when the style
+// sets nothing. The colour names are the ones settings take (a hex colour or 0-255 follows the depth).
+std::string ansi_sgr(const Style& style, ColorDepth depth);
+// `text` in `style`, or `text` as it is when `style` sets nothing.
+std::string ansi_paint(const std::string& text, const Style& style, ColorDepth depth);
+// Whether a command that prints for people may use colour on `fd`: not with --text-base (`text_base`), not when
+// NO_COLOR is set and not empty (https://no-color.org), and only when `fd` is a terminal.
+bool color_output(bool text_base, int fd);
+
 // Importing a colorscheme from neovim. The highlight groups read, each as nvim_get_hl(0, {name, link = false})
 // returns it with fg / bg / sp as "#rrggbb".
 const std::vector<std::string>& nvim_theme_groups();

@@ -333,12 +333,14 @@ std::string ago(const std::string& when) {
 }
 
 // `maic daemon status`: 0 when it runs, 3 when it does not (systemctl's convention).
-int status_daemon(bool as_json) {
+int status_daemon(bool as_json, bool text_base) {
     auto d = DaemonClient::connect();
     if (!d) {
         bool left = fs::exists(daemon_socket());
         if (as_json) {
             std::cout << json{{"running", false}, {"socket", daemon_socket().string()}, {"stale_socket", left}}.dump(2) << "\n";
+        } else if (text_base) {
+            std::cout << "daemon\tstopped\t-\t" << daemon_socket().string() << "\n";
         } else {
             std::cout << "maic daemon: not running" << (left ? " (a socket was left at " + daemon_socket().string() + "; maic daemon start clears it)" : "")
                       << "\nmaic daemon start runs it\n";
@@ -353,6 +355,16 @@ int status_daemon(bool as_json) {
     if (as_json) {
         std::cout << json{{"running", true}, {"pid", pid}, {"socket", daemon_socket().string()}, {"engine", hello.value("engine", json::object())},
                           {"tier", st.value("tier", "")}, {"sessions", entries}}.dump(2) << "\n";
+        return 0;
+    }
+    if (text_base) {
+        std::cout << "daemon\trunning\t" << pid << "\t" << daemon_socket().string() << "\n";
+        for (const auto& e : entries) {
+            std::string state = e.value("state", "");
+            std::string doing = state == "parked" ? "parked" : e.value("activity", "idle") != "idle" ? e.value("activity", "") : e.value("unseen", false) ? "finished" : "idle";
+            std::string workspace = e.value("workspace", "");
+            std::cout << "session\t" << doing << "\t" << (state == "live" ? "focus" : "-") << "\t" << e.value("id", "") << "\t" << (workspace.empty() ? "-" : workspace) << "\n";
+        }
         return 0;
     }
     std::cout << "maic daemon: running (pid " << pid << ", maic " << hello.value("engine", json::object()).value("version", "?") << "), socket " << daemon_socket().string()
@@ -581,9 +593,9 @@ int cmd_daemon(const std::vector<std::string>& args) {
     if (sub == "run") return run_daemon();
     if (sub == "start") return start_daemon();
     if (sub == "stop") return stop_daemon(has("--yes") || has("-y"));
-    if (sub == "status") return status_daemon(has("--json"));
+    if (sub == "status") return status_daemon(has("--json"), has("--text-base"));
     if (sub == "unit") return unit_daemon(args.size() > 1 ? args[1] : "");
-    throw std::runtime_error("maic daemon start | stop [--yes] | status [--json] | run | unit [install|remove]");
+    throw std::runtime_error("maic daemon start | stop [--yes] | status [--json|--text-base] | run | unit [install|remove]");
 }
 
 }  // namespace maic

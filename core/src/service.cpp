@@ -369,14 +369,19 @@ ServiceStatus service_status(const ServiceDef& def) {
             status.container = container_name(def);
         } else if (status.port_open) {
             status.state = ServiceState::Foreign;
+        } else {
+            status.crashed = fs::exists(container_path(def), ec);
         }
         return status;
     }
-    if (auto id = read_pid_file(def); id && is_alive(*id)) {
+    auto id = read_pid_file(def);
+    if (id && is_alive(*id)) {
         status.state = ServiceState::Running;
         status.pid = id->pid;
     } else if (status.port_open) {
         status.state = ServiceState::Foreign;
+    } else {
+        status.crashed = id.has_value();
     }
     return status;
 }

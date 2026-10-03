@@ -29,7 +29,7 @@ struct ServiceDef {
     std::chrono::seconds ready_timeout{30};
     std::vector<ArtifactDef> artifacts;
     std::string runtime = "host";  // "host": a process MAIC starts; "docker": a container (image, volumes, gpu below), loopback only
-    bool needs_gpu = false;        // starting it first frees the GPU: each llama server's resident model is unloaded
+    bool needs_gpu = false;        // it uses the GPU (maic status tags it); starting a non-llama one first frees the GPU: each llama server's resident model is unloaded
     std::string ready_pattern;     // POSIX extended regex the output since start must match, besides the open port, to count as ready
     std::string image;             // docker: the image `docker run` starts; MAIC never pulls it
     std::map<std::string, std::string> volumes;  // docker: host path -> container path; hosts only under the state, models or vendor trees
@@ -49,6 +49,7 @@ struct ServiceStatus {
     pid_t pid = 0;           // host: the process
     std::string container;   // docker: maic-<name>
     bool port_open = false;
+    bool crashed = false;    // stopped, but the record of a start is still there: it exited without `maic down`
     std::string who() const;  // "pid 1234" or "container maic-comfyui"
 };
 

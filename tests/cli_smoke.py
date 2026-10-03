@@ -5,7 +5,7 @@ cannot see (they link httplib themselves). Usage: cli_smoke.py PATH_TO_MAIC
 
 Also a module for test_tui.py (the fake, the throwaway home), and `cli_smoke.py --serve` runs the fake alone,
 printing its port."""
-import http.server, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
+import http.server, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
 
 class Fake(http.server.BaseHTTPRequestHandler):
@@ -274,12 +274,13 @@ def main():
     models_ok = models_smoke(maic, port)
     mcp_ok = mcp_smoke(maic, port)
     trust_ok = trust_smoke(maic, port)
+    color_ok = color_smoke(maic, port)
     trail_ok = audit_trail_smoke(maic, port)
     rpc_ok = rpc_smoke(maic, port)
     daemon_ok = daemon_smoke(maic, port)
     ui_ok = nvim_ui_smoke(maic, port)
     srv.shutdown()
-    sys.exit(0 if rpc_ok and daemon_ok and ui_ok and ok and stream_ok and trust_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok and mcp_ok else 1)
+    sys.exit(0 if rpc_ok and daemon_ok and ui_ok and ok and stream_ok and trust_ok and color_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok and mcp_ok else 1)
 
 
 class RpcClient:
@@ -1123,6 +1124,98 @@ def audit_trail_smoke(maic, port):
     left = sorted(os.listdir(trail))
     report(r.returncode == 0 and "deleted 2 files of audit trail and its index (ids go on from 5)" in r.stdout and ".jsonl" not in "".join(left) and "seq" in left
            and "index.json" not in left and os.path.exists(os.path.join(archive, old)), "purge answered yes: the containers and the index go, seq and the archive stay", r)
+    shutil.rmtree(home, ignore_errors=True)
+    return all(results)
+
+
+def color_smoke(maic, port):
+    """Colour and --text-base in the informational commands. MAIC_HOME is a throwaway tree with two fake services (a
+    python http.server marked needs_gpu that `maic up` starts on a free loopback port, and one never started), so no
+    real service runs and no GPU is touched (nvidia-smi is a stub on PATH). Colour is checked on a pty."""
+    import pty
+    home, env = make_home(port)
+    results = []
+
+    def free_port():
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0))
+            return sk.getsockname()[1]
+
+    root = os.path.join(home, "root")
+    os.makedirs(os.path.join(root, "services"))
+    gpu_port, cpu_port = free_port(), free_port()
+    for name, p, gpu in (("fake-gpu", gpu_port, True), ("fake-cpu", cpu_port, False)):
+        with open(os.path.join(root, "services", name + ".json"), "w") as f:
+            json.dump({"name": name, "description": "a fake", "command": ["python3", "-m", "http.server", str(p), "--bind", "127.0.0.1"],
+                       "cwd": home, "port": p, "ready_timeout": 20, "needs_gpu": gpu}, f)
+    stub = os.path.join(home, "bin")
+    os.makedirs(stub)
+    with open(os.path.join(stub, "nvidia-smi"), "w") as f:
+        f.write("#!/bin/sh\necho 8192\n")
+    os.chmod(os.path.join(stub, "nvidia-smi"), 0o755)
+    env = dict(env, MAIC_HOME=root, PATH=stub + ":" + env["PATH"], TERM="xterm-256color")
+    env.pop("NO_COLOR", None)
+
+    class Result:
+        def __init__(self, returncode, stdout):
+            self.returncode, self.stdout, self.stderr = returncode, stdout, ""
+
+    def run(*args, tty=False, extra=None):
+        e = dict(env, **(extra or {}))
+        if not tty:
+            return subprocess.run([maic, *args], capture_output=True, text=True, env=e, cwd=home, timeout=60, stdin=subprocess.DEVNULL)
+        master, slave = pty.openpty()
+        p = subprocess.Popen([maic, *args], stdout=slave, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, env=e, cwd=home)
+        os.close(slave)
+        out = b""
+        while True:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            out += chunk
+        os.close(master)
+        return Result(p.wait(timeout=60), out.decode(errors="replace").replace("\r\n", "\n"))
+
+    def report(ok, what, r):
+        print(("ok" if ok else "FAIL") + ": " + what + ("" if ok else "\n" + repr(r.stdout[-2000:]) + r.stderr[-2000:]))
+        results.append(ok)
+
+    ESC = "\x1b["
+    try:
+        r = run("up", "fake-gpu")
+        report(r.returncode == 0, "the fake GPU service starts", r)
+        r = run("status", tty=True)
+        gpu_line = next((l for l in r.stdout.splitlines() if l.startswith("fake-gpu:")), "")
+        cpu_line = next((l for l in r.stdout.splitlines() if l.startswith("fake-cpu:")), "")
+        report(ESC + "32mrunning" in gpu_line and ESC + "36mGPU" in gpu_line and ESC + "2mstopped" in cpu_line and "GPU" not in cpu_line,
+               "on a terminal: running green with a GPU tag in its own colour, stopped dim and untagged", r)
+        r = run("status", "--text-base", tty=True)
+        report("\x1b" not in r.stdout and re.search(r"^service\tfake-gpu\trunning\thost\tgpu\tpid \d+\thttp://127.0.0.1:%d\t-$" % gpu_port, r.stdout, re.M)
+               and "service\tfake-cpu\tstopped\thost\tcpu\t-\thttp://127.0.0.1:%d\t-\n" % cpu_port in r.stdout and r.stdout.startswith("harness\tarmed\n"),
+               "--text-base on a terminal: plain records in a fixed order", r)
+        r = run("status", tty=True, extra={"NO_COLOR": "1"})
+        report("\x1b" not in r.stdout and "fake-gpu: running [host]" in r.stdout and "GPU" in r.stdout, "NO_COLOR on a terminal: the same lines without colour", r)
+        r = run("status", tty=True, extra={"NO_COLOR": ""})
+        report(ESC + "32mrunning" in r.stdout, "an empty NO_COLOR does not turn colour off", r)
+        r = run("status")
+        report("\x1b" not in r.stdout and "fake-gpu: running [host]" in r.stdout and "fake-cpu: stopped [host]" in r.stdout, "piped: no colour", r)
+        r = run("status", "--text-base")
+        report("\x1b" not in r.stdout and r.stdout.count("service\t") == 2, "piped with --text-base: records", r)
+        r = run("gpu", "--text-base", tty=True)
+        report(r.returncode == 0 and r.stdout == "comfyui\tstopped\t-1\t-1\ncard\t%d\n" % (8192 << 20), "gpu --text-base: records, the card from the stub nvidia-smi", r)
+        r = run("models", "--text-base", tty=True, extra={"MAIC_HOME": ""})  # the shipped catalog, not the fake tree
+        lines = r.stdout.splitlines()
+        report(r.returncode == 0 and len(lines) > 3 and all(l.startswith("model\t") and l.count("\t") == 6 for l in lines) and "\x1b" not in r.stdout,
+               "models --text-base: one tab separated record per catalog entry, no header or footer", r)
+        r = run("daemon", "status", "--text-base", tty=True)
+        report(r.returncode == 3 and re.fullmatch(r"daemon\tstopped\t-\t\S+\n", r.stdout), "daemon status --text-base: a record, exit 3 when it is not running", r)
+        r = run("--text-base", "protocol", "hash")
+        report(r.returncode == 0 and r.stdout.startswith("sha256:"), "the flag is accepted before any command", r)
+    finally:
+        run("down", "fake-gpu")
     shutil.rmtree(home, ignore_errors=True)
     return all(results)
 
