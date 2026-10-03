@@ -170,6 +170,8 @@ Micaiah's rule (2026-10-03): new information that needs refinement ships as beta
 * **Artifact capabilities without the address:** per-artifact security from a group-owned file not everyone can write, configured through MAIC; every cap defined globally (some not overridable), local overrides on top; longer-term changes through sudo, group membership or a step-up.
 * **Vue under the artifact sandbox, two strategies kept:** (1) precompile templates at build time; (2) allow runtime code building through step-up and sudo on the first build, only when the build matches a stored hash before and after. Until then a per-artifact `ALLOW_INSECURE` (audited) lets a page use the runtime compiler.
 * **Nuxt, if Vue alone stops being enough:** statically generate the pages at build time, so Node is a build-time dependency only and never in a runtime; shared dependencies (no copy per artifact), heavy tree shaking, build output ignored by git and its source tracked. The artifact service stays the source of truth and nodeless.
+* **Two sandbox modes for tool calls:** a sandbox started from within the tool call, and one started externally, where sudo or an administrator puts the call in a separate process so the child can never override the parent's sandbox rules or their enforcement.
+* **Official pipelines from MAIC to an agent session:** MAIC raising an event (an artifact submitted, a side prompt sent) that reaches the agent directly. Crude version first: the agent watches the artifact's data file and wakes on a submit.
 * **Relays at scale:** Nuxt on Cloudflare Workers as many relays, serving the web app as an installable PWA so no native mobile app is needed.
 
 ## Parked
