@@ -206,7 +206,7 @@ public:
         if (resume) {
             old = load_session(append && settings_.record ? log->path() : *resume, fork_at.value_or(~size_t(0)));
             for (const auto& t : old.transcript) {
-                if (t.type == "user") view_.append(Kind::User, t.text);
+                if (t.type == "user") view_.append(Kind::User, t.text, t.from);
                 else if (t.type == "assistant") view_.append(Kind::Assistant, t.text);
                 else if (t.type == "tool_call") view_.append(Kind::Tool, t.text);
                 else if (t.type == "tool_result") view_.append(t.ok ? Kind::ToolOk : Kind::ToolErr, t.text);
@@ -398,6 +398,7 @@ private:
     bool pump_wake_ = false, pump_stop_ = false;
     std::thread pump_;
     std::atomic<bool> drain_posted_{false};
+    bool drawn_ = false;  // the first frame drew: FTXUI drops what is posted before its loop runs
     std::unique_ptr<protocol::Recorder> recorder_;  // MAID_PROTOCOL_RECORD: this connection's exchange
     Startup startup_;
 
@@ -738,8 +739,10 @@ void App::on_event(const nlohmann::json& e) {
     } else if (type == "maid.input.added") {
         std::string text;
         for (const auto& part : e["item"].value("content", nlohmann::json::array())) text += part.value("text", "");
-        size_t pics = e["item"].contains("maid") ? e["item"]["maid"].value("images", nlohmann::json::array()).size() : 0;
-        view_.append(Kind::User, text + (pics == 0 ? "" : "\n(with " + std::to_string(pics) + " image" + (pics == 1 ? "" : "s") + ")"));
+        const nlohmann::json& m = e["item"].value("maid", nlohmann::json::object());
+        size_t pics = m.value("images", nlohmann::json::array()).size();
+        view_.append(Kind::User, text + (pics == 0 ? "" : "\n(with " + std::to_string(pics) + " image" + (pics == 1 ? "" : "s") + ")"),
+                     m.value("from", nlohmann::json::object()).value("name", ""));
     } else if (type == "response.created") {
         response_ = e["response"].value("id", "");
         paused_ = pause_menu_ = false;
@@ -1503,6 +1506,12 @@ Element App::render_question() {
 }
 
 Element App::render() {
+    // A drain posted before the loop ran was dropped and left drain_posted_ set, so events that came then (another
+    // client's turn in the daemon) waited for a key; the first frame applies them and lets the pump post again.
+    if (!drawn_) {
+        drawn_ = true;
+        drain();
+    }
     // FTXUI leaves ISIG on, so Ctrl-C would be a SIGINT that tears the UI down. Disable just the interrupt
     // and quit characters: Ctrl-C then arrives as a key, while Ctrl-Z still raises SIGTSTP from the line
     // discipline, which FTXUI turns into a proper suspend (its input parser drops the byte, so a key handler
@@ -2413,7 +2422,7 @@ void App::show_items(const std::string& id, const nlohmann::json& snap) {
         if (type == "message") {
             std::string t;
             for (const auto& part : item.value("content", nlohmann::json::array())) t += part.value("text", "");
-            view_.append(item.value("role", "") == "user" ? Kind::User : Kind::Assistant, t);
+            view_.append(item.value("role", "") == "user" ? Kind::User : Kind::Assistant, t, m.value("from", nlohmann::json::object()).value("name", ""));
         } else if (type == "function_call_output" || type == "shell_call_output") {
             std::string out = type == "function_call_output" ? item.value("output", "") : item["output"].empty() ? "" : item["output"][0].value("stdout", "");
             if (m.value("collapsed", false)) out = m.value("head", "") + " … (" + std::to_string(m.value("size", size_t(0))) + " bytes)";

@@ -177,12 +177,20 @@ struct PanelVerdict {
 // settled, nullopt while the next checker is to be asked. Never Allow unless a checker that answered allowed it.
 std::optional<PanelVerdict> settle_checks(const std::string& combine, const std::vector<Judgement>& so_far, size_t total);
 
+// Another agent's voice on a session (docs/daemon.md, The liaison): why `name` cannot be one, "" when it can. A name
+// is 1 to 32 of letters, digits, space, . _ and -, and never one the session's owner goes by.
+std::string voice_refusal(const std::string& name);
+// The user turn the model gets from a voice: maid's attribution line, then the text with every line quoted, so
+// nothing in it can stand at the start of a line as maid's own.
+std::string voiced_turn(const std::string& name, const std::string& text);
+
 class Agent {
 public:
     Agent(std::filesystem::path workspace, std::string model);
 
     // Runs the user's message to completion: model replies, tool calls, approvals. Throws on transport errors.
-    void submit(const std::string& text, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel);
+    // `from` ({name, client}) marks it as a voice's (voiced_turn), recorded with origin "liaison"; null is the owner.
+    void submit(const std::string& text, Origin origin, AgentEvents& events, const std::atomic<bool>& cancel, const nlohmann::json& from = nullptr);
     // Pictures for the next user turn (the user's own attachments: --image, :image, a dropped file).
     void attach_image(const std::filesystem::path& file);  // throws when it cannot be read
     std::vector<std::string> pending_images() const;       // their names

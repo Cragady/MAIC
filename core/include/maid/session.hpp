@@ -175,6 +175,7 @@ struct TranscriptEntry {
     std::string text;
     bool ok = true;
     nlohmann::json full_output;  // tool_result: the record's `full_output` when the whole output was kept (null otherwise)
+    std::string from;  // user: the voice that sent it through the liaison, "" for the session's owner
 };
 
 struct LoadedSession {

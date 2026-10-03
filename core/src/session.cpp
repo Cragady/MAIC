@@ -539,6 +539,7 @@ LoadedSession load_session(const fs::path& path, size_t records) {
             out.transcript.clear();
         } else if (type == "user") {
             out.transcript.push_back({"user", j.value("text", "")});
+            if (j.contains("from") && j["from"].is_object()) out.transcript.back().from = j["from"].value("name", "");
             out.model = j.value("model", out.model);
             out.mode = j.value("mode", out.mode);
         } else if (type == "assistant") {
@@ -754,7 +755,7 @@ std::string export_markdown(const SessionInfo& info, const LoadedSession& sessio
     if (!session.model.empty()) out += ", model `" + session.model + "`";
     out += "\n\n";
     for (const auto& t : session.transcript) {
-        if (t.type == "user") out += "## User\n\n" + t.text + "\n\n";
+        if (t.type == "user") out += (t.from.empty() ? "## User\n\n" : "## " + t.from + " (liaison)\n\n") + t.text + "\n\n";
         else if (t.type == "assistant") out += "## Assistant\n\n" + t.text + "\n\n";
         else if (t.type == "tool_call" && tool_details) out += "**Tool:** `" + t.text + "`\n\n";
         else if (t.type == "tool_result" && tool_details) out += "```\n" + (t.text.size() > 4000 ? t.text.substr(0, 4000) + "\n…" : t.text) + "\n```\n\n" + kept_note(t, "_", "_\n\n");
@@ -769,7 +770,7 @@ std::string render_text(const LoadedSession& session, size_t from, size_t to, bo
     for (const auto& t : session.transcript) {
         if (t.type == "user") ++turn;
         if (turn < from || (to && turn > to)) continue;
-        if (t.type == "user") out += "[user]\n" + t.text + "\n\n";
+        if (t.type == "user") out += (t.from.empty() ? "[user]\n" : "[liaison:" + t.from + "]\n") + t.text + "\n\n";
         else if (t.type == "assistant") out += "[assistant]\n" + t.text + "\n\n";
         else if (t.type == "notice") out += "[notice] " + t.text + "\n\n";
         else if (tools && t.type == "tool_call") out += "[tool] " + t.text + "\n";

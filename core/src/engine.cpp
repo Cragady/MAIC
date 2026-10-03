@@ -197,6 +197,7 @@ json history_item(const json& r, const std::string& id, size_t collapse_over) {
     if (type == "user" || type == "assistant") {
         json part = type == "user" ? json{{"type", "input_text"}, {"text", r.value("text", "")}}
                                    : json{{"type", "output_text"}, {"text", r.value("text", "")}, {"annotations", json::array()}, {"logprobs", json::array()}};
+        if (type == "user" && r.contains("from")) maid["from"] = r["from"];
         return {{"id", id}, {"type", "message"}, {"role", type}, {"status", "completed"}, {"content", {part}}, {"maid", maid}};
     }
     std::string text = history_text(r);
@@ -280,6 +281,7 @@ bool inside(const fs::path& dir, const std::vector<fs::path>& roots) {
 struct Client {
     std::string id, name, via;
     Origin origin = Origin::Local;
+    std::string voice;  // its hello's `as`: another agent's name, whose input the model is told is not the owner's
     bool hello = false;
     std::function<void()> wake;
 
@@ -301,6 +303,7 @@ struct Client {
     std::map<std::string, Bucket> buckets;  // per session: tool output not yet spent this second
 
     json by() const { return {{"client", id}, {"name", name}, {"origin", origin_name(origin)}}; }
+    json from() const { return voice.empty() ? json() : json{{"name", voice}, {"client", name}}; }
 
     void push(json msg, size_t size) {
         std::function<void()> w;
@@ -479,6 +482,7 @@ struct Session {
         Run run;
         std::string text;
         Origin origin;
+        json from;  // a voice's input (Client::from); null for the owner's
     };
     std::deque<Queued> lane;  // response.create on a busy lane, run in order after the running turn
 
@@ -1074,7 +1078,10 @@ struct Engine::Impl {
         {
             std::lock_guard lock(s->mu);
             json queued = json::array();
-            for (const auto& q : s->lane) queued.push_back({{"text", q.text}, {"origin", origin_name(q.origin)}});
+            for (const auto& q : s->lane) {
+                queued.push_back({{"text", q.text}, {"origin", origin_name(q.origin)}});
+                if (q.from.is_object()) queued.back()["from"] = q.from;
+            }
             std::string left;
             Origin origin = Origin::Local;
             take_leftovers(*s, left, origin);
@@ -1237,16 +1244,16 @@ struct Engine::Impl {
     // ---------- turns ----------
 
     class TurnEvents;
-    void run_turns(std::shared_ptr<Session> s, std::string text, Origin origin);
+    void run_turns(std::shared_ptr<Session> s, std::string text, Origin origin, json from);
     // Opens the turn's first response now, under the session's lock, and runs it on the worker.
-    void start_turn(const std::shared_ptr<Session>& s, Run r, std::string text, Origin origin) {
+    void start_turn(const std::shared_ptr<Session>& s, Run r, std::string text, Origin origin, json from = nullptr) {
         if (s->worker.joinable()) s->worker.join();  // it set running = false and needs the lock no more
         s->running = true;
         s->cancel = false;
         s->cancel_by = nullptr;
         take_leftovers(*s, text, origin);
         open_response(*s, std::move(r));
-        s->worker = std::thread([this, s, text, origin] { run_turns(s, text, origin); });
+        s->worker = std::thread([this, s, text, origin, from] { run_turns(s, text, origin, from); });
     }
 
     // Stops what runs: the turn is cancelled, and what waits for a person is answered `answer`. A cancel wins over
@@ -1437,6 +1444,10 @@ struct Engine::Impl {
         if (p.value("protocol", 0) < kProtocol) {
             throw refuse("maid_unsupported_protocol", "this engine speaks protocol " + std::to_string(kProtocol) + " to " + std::to_string(kProtocol), "protocol");
         }
+        // A voice is the connection's for good: a second hello cannot drop or change it.
+        std::string voice = p.contains("as") && p["as"].is_string() ? p["as"].get<std::string>() : c.voice;
+        if (std::string why = voice.empty() ? "" : voice_refusal(voice); !why.empty()) throw bad_params(why, "as");
+        if (!c.voice.empty() && voice != c.voice) throw bad_params("this connection speaks as " + c.voice + " already", "as");
         // The event types the connection is not sent: those of a capability it lacks, and the deltas it excludes.
         const json& filter = protocol::Schemas::get().ordering().at("filter");
         std::set<std::string> exclude;
@@ -1460,6 +1471,7 @@ struct Engine::Impl {
         c.collapse_over = c.origin == Origin::Local ? kLocalCollapse : kRemoteCollapse;
         if (const json& view = p.contains("view") ? p["view"] : json(); view.is_object() && view.contains("collapse_over")) c.collapse_over = view["collapse_over"];
         c.hello = true;
+        c.voice = voice;
         // A local client names itself; a remote one is named by its token or pairing (section 2).
         if (c.origin == Origin::Local && p.contains("client") && p["client"].is_object()) {
             if (std::string name = p["client"].value("name", ""); !name.empty()) c.name = name;
@@ -1701,7 +1713,7 @@ struct Engine::Impl {
         }
         for (const auto& q : queued) {
             json by = {{"client", "engine"}, {"name", "engine"}, {"origin", q.value("origin", "local")}};
-            start_or_queue(s, q.value("text", ""), q.value("origin", "local") == "remote" ? Origin::Remote : Origin::Local, by);
+            start_or_queue(s, q.value("text", ""), q.value("origin", "local") == "remote" ? Origin::Remote : Origin::Local, by, q.value("from", json()));
         }
         return for_client(entry(*s), c);
     }
@@ -2205,6 +2217,7 @@ struct Engine::Impl {
         // maid.now: delivered into the running response at once, its model call abandoned (`:w now`); with no
         // input, what is already queued goes in now.
         bool now = p.contains("maid") && p["maid"].is_object() && p["maid"].value("now", false);
+        if (now && !c.voice.empty()) throw refuse("maid_steer_disabled", "a voice's input waits its turn: maid.now is the owner's", "maid");
         std::string text = p.contains("input") || !now ? input_text(p.at("input")) : "";
         if (text.empty() && !now) throw bad_params("the input is empty", "input");
         auto s = session(sid);
@@ -2220,14 +2233,17 @@ struct Engine::Impl {
             return r;
         }
         json item = {{"id", "~" + std::to_string(s->next)}, {"type", "message"}, {"role", "user"}, {"content", {{{"type", "input_text"}, {"text", text}}}}};
+        if (!c.voice.empty()) item["maid"] = {{"from", c.from()}};
         if (s->paused) {
-            // The paused turn resumes: a successor of its last response carries the input.
+            // The paused turn resumes: a successor of its last response carries the input. Joined with a voice's,
+            // the whole input is the voice's, as origin only rises.
             emit(*s, {{"type", "maid.input.added"}, {"item", item}, {"queued", false}, {"by", c.by()}});
             if (!s->resume) {
-                s->resume = Session::Queued{successor(*s, c.origin), text, c.origin};
+                s->resume = Session::Queued{successor(*s, c.origin), text, c.origin, c.from()};
                 s->resume->run.cause = s->next - 1;
             } else {
                 s->resume->text += "\n\n" + text;
+                if (!c.voice.empty()) s->resume->from = c.from();
             }
             s->cv.notify_all();
             json r = response_object(*s, s->resume->run, "in_progress");
@@ -2248,19 +2264,20 @@ struct Engine::Impl {
             r["maid"]["sequence_number"] = before;
             return r;
         }
-        return start_or_queue(s, text, c.origin, c.by());
+        return start_or_queue(s, text, c.origin, c.by(), c.from());
     }
 
     // A message that starts a turn on an idle session, or waits on a busy one's lane for a turn of its own once the
     // running one (and those queued before it) end: OpenAI's FIFO. The caller holds s->mu.
-    json start_or_queue(const std::shared_ptr<Session>& s, const std::string& text, Origin origin, const json& by) {
+    json start_or_queue(const std::shared_ptr<Session>& s, const std::string& text, Origin origin, const json& by, const json& from = nullptr) {
         long before = s->next - 1;
         json item = {{"id", "~" + std::to_string(s->next)}, {"type", "message"}, {"role", "user"}, {"content", {{{"type", "input_text"}, {"text", text}}}}};
+        if (from.is_object()) item["maid"] = {{"from", from}};
         if (s->running) {
             Run r = reserve_turn(*s, origin);
             emit(*s, {{"type", "maid.input.added"}, {"item", item}, {"queued", true}, {"by", by}});
             r.cause = s->next - 1;
-            s->lane.push_back({r, text, origin});
+            s->lane.push_back({r, text, origin, from});
             index_changed(*s);
             json resp = response_object(*s, r, "queued");
             resp["maid"]["queued"] = true;
@@ -2268,12 +2285,12 @@ struct Engine::Impl {
             return resp;
         }
         // The pictures attached since the last message go with this one.
-        if (auto pics = s->agent.pending_images(); !pics.empty()) item["maid"] = {{"images", pics}};
+        if (auto pics = s->agent.pending_images(); !pics.empty()) item["maid"]["images"] = pics;
         emit(*s, {{"type", "maid.input.added"}, {"item", item}, {"queued", false}, {"by", by}});
         Run run = reserve_turn(*s, origin);
         run.cause = s->next - 1;
         json r = response_object(*s, run, "in_progress");
-        start_turn(s, std::move(run), text, origin);
+        start_turn(s, std::move(run), text, origin, from);
         r["maid"]["sequence_number"] = before;
         return r;
     }
@@ -2481,6 +2498,7 @@ struct Engine::Impl {
         std::string rid = p.at("response_id"), action = p.at("action");
         auto all = SteeringSettings::steer_actions();
         if (std::find(all.begin(), all.end(), action) == all.end()) throw bad_params("action must be steer, drop, further, interrupt, keep or halt", "action");
+        if (!c.voice.empty()) throw refuse("maid_steer_disabled", "steering is the session owner's, not a voice's", "action");
         const SteeringSettings& st = s.settings.steering;
         if (!st.allows(action, c.origin == Origin::Remote)) {
             throw refuse("maid_steer_disabled", "the " + action + " steer is not accepted " + (c.origin == Origin::Remote ? "from a remote client " : "") + "here (steering in settings; :steering shows it)", "action");
@@ -2506,6 +2524,7 @@ struct Engine::Impl {
 
     // OpenAI's response.steer: a message for the running response, delivered at its next boundary.
     json response_steer(Client& c, const json& p) {
+        if (!c.voice.empty()) throw refuse("maid_steer_disabled", "a voice's input waits its turn: response.create queues it", "input");
         std::string rid = p.at("previous_response_id");
         std::string text = input_text(p.at("input"));
         if (text.empty()) throw refuse("invalid_input", "the input is empty", "input");
@@ -3224,7 +3243,7 @@ private:
 // The worker of a session's turns. The first turn's first response is open already (start_turn); each response
 // runs the agent once, then ends by what stopped it: a paused turn waits for its resume or its end, steers that came
 // as a reply ended continue in a successor, and queued turns come off the lane in order.
-void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origin origin) {
+void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origin origin, json from) {
     for (;;) {
         std::string first_text = text;
         bool cancelled = false;
@@ -3233,7 +3252,7 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
             TurnEvents events(*this, *s);
             std::string failure;
             try {
-                s->agent.submit(text, origin, events, s->cancel);
+                s->agent.submit(text, origin, events, s->cancel, from);
             } catch (const std::exception& e) {
                 failure = failure_text(s->agent, e);
             }
@@ -3254,6 +3273,7 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
                     s->resume.reset();
                     text = next.text;
                     origin = next.run.origin;
+                    from = next.from;
                     take_leftovers(*s, text, origin);  // a `!cmd` run while it was paused
                     open_response(*s, std::move(next.run));
                     continue;
@@ -3290,6 +3310,7 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
                 end_response(*s, "response.completed", "completed", "", false);
                 text.clear();
                 origin = Origin::Local;
+                from = nullptr;
                 take_leftovers(*s, text, origin);
                 Run next = successor(*s, origin);
                 origin = next.origin;
@@ -3352,6 +3373,7 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
         s->cancel_by = nullptr;
         text = next.text;
         origin = next.origin;
+        from = next.from;
         take_leftovers(*s, text, origin);
         next.run.origin = origin;
         open_response(*s, std::move(next.run));

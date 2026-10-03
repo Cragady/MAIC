@@ -603,18 +603,21 @@ int cmd_daemon(const std::vector<std::string>& args) {
 
 // Another agent's client of the daemon (docs/daemon.md, "The liaison"): ordinary client input on a session the
 // daemon holds, never a focus of its own, so a window attached to the session keeps it and leaving changes nothing.
+// It speaks as a voice (`--as`, default liaison), so its turns are never the owner's.
 
 namespace {
 
 const char* kLiaisonUsage =
-    "maid liaison send ID (TEXT | --file FILE) [--out FILE] [--timeout SECONDS] | approve ID APPROVAL yes|no | status ID";
+    "maid liaison send ID (TEXT | --file FILE) [--as NAME] [--out FILE] [--timeout SECONDS] | approve ID APPROVAL yes|no | status ID";
 
-std::unique_ptr<DaemonClient> liaison_connect(std::function<void()> wake = {}) {
+std::unique_ptr<DaemonClient> liaison_connect(std::function<void()> wake = {}, const std::string& as = "liaison") {
     auto d = DaemonClient::connect(std::move(wake));
     if (!d) return nullptr;
-    d->call(request("maid.hello", {{"protocol", 1},
-                                   {"client", {{"name", "liaison"}, {"version", MAID_VERSION}}},
-                                   {"exclude", {"response.output_text.delta", "response.reasoning_text.delta"}}}));
+    json hello = d->call(request("maid.hello", {{"protocol", 1},
+                                                {"client", {{"name", "liaison"}, {"version", MAID_VERSION}}},
+                                                {"as", as},
+                                                {"exclude", {"response.output_text.delta", "response.reasoning_text.delta"}}}));
+    if (!hello.contains("result")) throw std::runtime_error(hello.value("error", json::object()).value("message", "the daemon refused the liaison"));
     return d;
 }
 
@@ -650,14 +653,16 @@ std::string error_of(const json& reply) {
 }
 
 int liaison_send(const std::vector<std::string>& args) {
-    std::string id, text, out;
+    std::string id, text, out, as = "liaison";
     std::optional<std::string> file;
     long timeout = 600;
     for (size_t i = 1; i < args.size(); ++i) {
         const std::string& a = args[i];
-        if ((a == "--file" || a == "--out" || a == "--timeout") && i + 1 >= args.size()) throw std::runtime_error(a + " takes a value");
+        if ((a == "--file" || a == "--out" || a == "--timeout" || a == "--as") && i + 1 >= args.size()) throw std::runtime_error(a + " takes a value");
         if (a == "--file") {
             file = args[++i];
+        } else if (a == "--as") {
+            as = args[++i];
         } else if (a == "--out") {
             out = args[++i];
         } else if (a == "--timeout") {
@@ -671,6 +676,7 @@ int liaison_send(const std::vector<std::string>& args) {
         }
     }
     if (id.empty() || text.empty() == !file) throw std::runtime_error(kLiaisonUsage);
+    if (std::string why = voice_refusal(as); !why.empty()) throw std::runtime_error("--as: " + why);
     if (file) {
         std::ifstream in(*file == "-" ? "/dev/stdin" : *file);
         if (!in) throw std::runtime_error("cannot read " + *file);
@@ -681,11 +687,13 @@ int liaison_send(const std::vector<std::string>& args) {
     std::mutex mu;
     std::condition_variable cv;
     bool woke = false;
-    auto d = liaison_connect([&] {
-        std::lock_guard lock(mu);
-        woke = true;
-        cv.notify_all();
-    });
+    auto d = liaison_connect(
+        [&] {
+            std::lock_guard lock(mu);
+            woke = true;
+            cv.notify_all();
+        },
+        as);
     if (!d) return no_daemon();
     // Loaded (a parked one is resumed) without moving any client's focus, then followed from here on.
     json res = d->call(request("maid.session.resume", {{"session", id}, {"focus", false}}));

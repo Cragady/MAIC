@@ -1108,6 +1108,38 @@ int main() {
         ftxui::Terminal::SetColorSupport(before);
     }
 
+    section("voices: a liaison sender's turn has its own line and style, its name's voices entry over it");
+    {
+        auto before = ftxui::Terminal::ColorSupport();
+        ftxui::Terminal::SetColorSupport(ftxui::Terminal::Color::TrueColor);
+        std::string r5;
+        View v(&r5);
+        v.append(Kind::User, "mine");
+        v.append(Kind::User, "theirs", "Claude");
+        v.append(Kind::User, "others", "TheMadMaid");
+        Settings s;
+        apply_theme(s, Theme{"default"});
+        s.voices["Claude"] = Style{std::nullopt, "#1e2a3a"};
+        ftxui::Screen screen(40, 10);
+        ftxui::Render(screen, v.render(s, 40, 10));
+        auto row = [&](int y) {
+            std::string t;
+            for (int x = 0; x < 40; ++x) t += screen.PixelAt(x, y).character;
+            return t;
+        };
+        // the bottom rows: "❯ mine", "", "◆ Claude (liaison)", "  theirs", "", "◆ TheMadMaid (liaison)", "  others"
+        expect(row(3).find("❯ mine") == 0 && row(5).find("◆ Claude (liaison)") == 0 && row(6).find("  theirs") == 0 && row(8).find("◆ TheMadMaid (liaison)") == 0 &&
+                   row(9).find("  others") == 0,
+               "a liaison turn is named on a line of its own above its text; the owner's keeps ❯");
+        expect(screen.PixelAt(2, 6).background_color == ftxui::Color::RGB(0x1e, 0x2a, 0x3a) && screen.PixelAt(2, 6).foreground_color == parse_color("magenta") &&
+                   screen.PixelAt(0, 5).background_color == ftxui::Color::RGB(0x1e, 0x2a, 0x3a),
+               "Claude's voices entry puts its background over the liaison role, which keeps its colour");
+        expect(screen.PixelAt(2, 9).foreground_color == parse_color("magenta") && screen.PixelAt(2, 9).background_color == ftxui::Color() &&
+                   screen.PixelAt(2, 3).bold && screen.PixelAt(2, 3).foreground_color == ftxui::Color(),
+               "a name without an entry is the liaison role; the owner's turn stays the user role");
+        ftxui::Terminal::SetColorSupport(before);
+    }
+
     section("msgpack");
     {
         using namespace maid::msgpack;

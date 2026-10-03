@@ -96,7 +96,7 @@ MAID already runs Claude Code headless as a provider (`claude -p --input-format 
 
 ## Route 4: `maid liaison`
 
-An agent outside MAID hands turns to a session the daemon holds with `maid liaison send ID TEXT`, and waits for the reply on stdout while the user's window stays attached; an approval it meets is left waiting (exit 4) for the window or `maid liaison approve`. See [daemon.md](daemon.md#the-liaison).
+An agent outside MAID hands turns to a session the daemon holds with `maid liaison send ID TEXT`, and waits for the reply on stdout while the user's window stays attached; an approval it meets is left waiting (exit 4) for the window or `maid liaison approve`. It speaks as `--as NAME` (default `liaison`), never as the user: the window shows its turns under `◆ NAME (liaison)`, and maid tells the model, in a line the sender cannot write, that they are a request from NAME and not the user's instruction. See [daemon.md](daemon.md#the-liaison).
 
 ## The open-items pointer
 

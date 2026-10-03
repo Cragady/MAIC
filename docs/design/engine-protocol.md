@@ -131,7 +131,7 @@ The Remote column is the default; section 7 has the rules behind it.
 
 | Method | Params | Result | Remote |
 | :--- | :--- | :--- | :--- |
-| `maid.hello` | `protocol`, `client {name, version}`, `capabilities`, `view {collapse_over}`, `auth` (remote only) | `protocol`, `engine {version, instance}`, `client`, `origin`, `capabilities`, `limits`, `tier`, `path` | yes |
+| `maid.hello` | `protocol`, `client {name, version}`, `as` (a voice, section 6), `capabilities`, `view {collapse_over}`, `auth` (remote only) | `protocol`, `engine {version, instance}`, `client`, `origin`, `capabilities`, `limits`, `tier`, `path` | yes |
 | `maid.engine.status` | | what `GET /api/status` returns today | yes |
 | `maid.engine.trip` | `reason` | `{tripped: true}`; cancels every response | yes |
 | `maid.index.get` / `maid.index.subscribe` / `maid.index.unsubscribe` | | entries / `{}` | yes |
@@ -308,6 +308,7 @@ The TUI at the desk and the phone on the sofa can have the same session open. On
 * **Approvals and questions** go to every client with the session (or its tree) open. The first valid answer wins under the session's lock; the rest get `maid.approval.answered` with `by` and close their prompt, and a late answer gets `maid_already_answered`. A remote client may answer an approval raised in a turn started locally (approving from the phone while away from the desk is the point); its answer is recorded with its origin, and it cannot answer `always` (section 7).
 * **Settings and lifecycle** (`maid.session.set`, park, stop) act for everyone and are announced with `by`, so the TUI says "parked from phone" rather than going quiet.
 * **Origin is per turn and only rises.** A turn started by a local client runs as local; once a message from a remote client is delivered into it, the rest of that turn runs as `Origin::Remote`, because what the model does next is shaped by remote input. It never goes back down within a turn. Tasks inherit their parent's current origin.
+* **A voice is not the owner.** A connection whose `maid.hello` carries `as: NAME` (`maid liaison send --as NAME`) speaks for another agent: NAME fits `[A-Za-z0-9 ._-]{1,32}`, is never one the owner goes by (`user`, `local`, `owner`, ..., in any case; otherwise invalid params on `as`), and stays the connection's (a later hello cannot drop or change it). Each of its `user` items carries `maid.from` (`{name, client}`) on `maid.input.added` and in history, and its record has origin `liaison` and `from`. The model's message for it is maid's own bracketed line naming NAME as not the user, then the text with every line quoted (`> `), so text that imitates the line stays quoted. A voice's input joined with the owner's (a paused turn's resume) makes all of it the voice's, as origin only rises. A voice cannot steer: `response.steer`, `maid.steer` and `maid.now` answer `maid_steer_disabled`. It is attribution, not a harness origin: the harness judges a local voice's turn as local. A client that omits `as` and records without `from` are the owner's, as before.
 
 ## 7. Security
 

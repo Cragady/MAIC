@@ -196,6 +196,7 @@ const std::map<std::string, Style>& default_styles() {
         {"notice", {"yellow"}},
         {"error", {"red_light"}},
         {"shell", {"green_light"}},
+        {"liaison", {"magenta"}},
         // markdown, applied on top of the entry's style
         {"md_heading", {"magenta", std::nullopt, true}},
         {"md_bold", {std::nullopt, std::nullopt, true}},
@@ -820,6 +821,8 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         for (const auto& [name, sj] : styles.items()) {
             s.style_overrides[name] = parse_style(sj).merged_over(s.style_overrides[name]);
         }
+        json voices = j.value("voices", json::object());
+        for (const auto& [name, sj] : voices.items()) s.voices[name] = parse_style(sj).merged_over(s.voices[name]);
     } catch (const json::exception& e) {
         throw std::runtime_error(path.string() + ": " + e.what());
     }
@@ -1101,6 +1104,8 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"//models", "presets by short name, adding to the built-in ones (opus-5.5, sonnet-5, haiku-4.5, fable-5.1, qwen-4b, qwen-9b, qwen-9b-vision, deepseek-pro, deepseek-flash and their -nothink twins) or changing them field by field: models = { [\"opus-5.5\"] = { limited = true } }. Fields: model (needed for a new name), context, reviewer (\"same\" = itself, empty = small_model), think, tier (higher is stronger), limited (your plan caps it: subagents and the reviewer step aside), metered (billed per token; default: its provider's. No rule picks one on another provider, and a parent model asking for one asks you), subagents (presets a subagent may run on), subagent (\"same\" or a preset; empty = the rule), on_limit (where a subagent continues after a usage limit). A model on the side server: [\"qwen-4b-side\"] = { model = \"llamacpp-2/Qwen3.5-4B-Q4_K_M\", context = 8192 }. docs/settings.md"},
         {"style", json::object()},
         {"//style", "single roles over the theme, merged into it: style = { user = { fg = \"#ff8800\" } } keeps the theme's bold. Every role and its default: themes/default.lua"},
+        {"voices", json::object()},
+        {"//voices", "a liaison sender's turns by its name, over the liaison role: voices = { Claude = { bg = \"#1e2a3a\" } }. Your own turns are the user role, the model's the assistant role. docs/settings.md"},
     };
     std::ofstream out(p);
     if (as_json) {

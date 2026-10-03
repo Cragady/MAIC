@@ -728,6 +728,35 @@ class TuiTest(unittest.TestCase):
         self.assertTrue(r.returncode != 0 and "no session matching 'nosuchsession'" in r.stderr, r.stdout + r.stderr)
         self.assertEqual(transcripts(), before, "no resume started another transcript")
 
+    def test_a_liaison_turn_shows_under_its_name_in_its_voice(self):
+        run = lambda *a: subprocess.run([MAID, *a], capture_output=True, text=True, env=self.env, cwd=self.ws, stdin=subprocess.DEVNULL, timeout=60)
+        r = run("daemon", "start")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.addCleanup(lambda: run("daemon", "stop", "--yes"))
+        ws = os.path.join(self.home, "ws-voices")
+        os.makedirs(ws, exist_ok=True)
+        # The window's own settings give Claude a background; the daemon's stay as they are.
+        cfg = os.path.join(self.home, "config-voices")
+        shutil.copytree(self.env["XDG_CONFIG_HOME"], cfg, dirs_exist_ok=True)
+        with open(os.path.join(cfg, "maid", "settings.lua")) as f:
+            text = f.read()
+        with open(os.path.join(cfg, "maid", "settings.lua"), "w") as f:
+            f.write(text.replace("return {", "return { voices = { Claude = { bg = '#1e2a3a' } },", 1))
+        tui = Tui([MAID], env=dict(self.env, XDG_CONFIG_HOME=cfg, COLORTERM="truecolor"), cwd=ws)
+        self.addCleanup(tui.close)
+        tui.wait_for(STRIP)
+        sid = next(e["id"] for e in json.loads(run("daemon", "status", "--json").stdout)["sessions"] if e["workspace"] == ws)
+        r = run("liaison", "send", sid, "--as", "Claude", "hello from claude")
+        self.assertEqual(r.stdout, "echo: hello from claude\n", r.stderr)
+        tui.wait_for("echo: hello from claude")
+        lines = tui.screen.display
+        y = next((i for i, l in enumerate(lines) if l.startswith("◆ Claude (liaison)")), -1)
+        self.assertTrue(y >= 0 and lines[y + 1].startswith("  hello from claude"), tui.text())
+        self.assertEqual(tui.screen.buffer[y + 1][2].bg, "1e2a3a", "Claude's voices entry paints its turn")
+        self.assertNotIn("❯ hello from claude", tui.text())
+        tui.send(":q<cr>", settle=False)
+        self.assertEqual(tui.wait_exit(), 0)
+
     def test_quit_prints_the_transcript_line(self):
         tui = self.start()
         tui.send(":q<cr>", settle=False)
