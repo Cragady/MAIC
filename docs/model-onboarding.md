@@ -16,6 +16,10 @@ A model starts at the bottom and climbs one level at a time. Each level is a pol
 
 A provider that runs its own harness on its servers (Anthropic's server tools, for example) is placed on this chain by what MAIC can see and control: server-side actions MAIC can't judge are not counted as judged.
 
+## Agentic tying
+
+A rule shape (Micaiah, 2026-10-03): an agent below level 4 never runs untied. Starting it also starts a tool monitor over it, a command-line stream of every tool call the agent makes and every verdict on it (`maid session watch ID --tools`, one line per call, never the content), so another agent or a person can watch the run live and stop it. The monitor is a plain line stream, so anything can consume it: a terminal, another agent's background watcher, a hook. A run whose monitor dies is paused until a monitor is attached again.
+
 ## A trial
 
 A trial is one run of a fixed task set at one level, for one model (provider, model id, thinking on or off, harness and checker setup). The same task set is used for every model at that level, so results compare.
