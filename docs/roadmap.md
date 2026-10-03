@@ -151,6 +151,7 @@ Everything below is covered by tests against fake servers; these runs confirm it
   * Provenance: the header said `llamacpp/Qwen3.5-4B-Q4_K_M` and `local` while `deepseek/deepseek-flash` served the session.
   * Startup noise: the MAID_VENDOR error shown twice (welcome block and alone).
   * The history window filled in only after continuing, switching away and back.
+  * The session's name (its title, e.g. TheMadMaid) shows on the main screen: in the header and the status strip, so with several maids running each window says whose it is.
   * The history pane gets line numbers, relative and absolute (like nvim's `number` with `relativenumber`), for quick jumps.
   * Bug: in the history pane, text objects such as `vi'`, `vi"` and ``vi` `` throw focus back to the input instead of selecting in the pane.
   * Operator visibility: the last call's outcome (succeeded, failed, ignored) must be visible; a refusal and a silent no-op look the same today.
