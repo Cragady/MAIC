@@ -47,7 +47,7 @@ While a page has open items, every agent reply in the conversation ends with one
 ↪ Open items: maic artifact open <id>
 ```
 
-`<id>` is the page holding the active open items (after a split, usually the newest child). After a set number of chat rounds with the page unresolved (3 suggested), the agent answers only with a short acknowledgement and this line.
+The line appears only while that page has open items: once a page is fully closed out, the pointer is dropped (or moved to another page that still has open items), and reopening a closed issue means a new page, not reviving the old one. `<id>` is the page holding the active open items (after a split, usually the newest child). After a set number of chat rounds with the page unresolved (3 suggested), the agent answers only with a short acknowledgement and this line.
 
 ## Splitting a page
 
