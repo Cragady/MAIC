@@ -179,3 +179,20 @@ Ideas only, from deepseek-harness (MIT), the agent lists, and a look at opencode
 4. A stream with a keep-alive comment and a final usage chunk, plus a `length` finish with a half-written tool call.
 5. A 402 and a 429 path (a fake server is enough), each shown to the user with a distinct message.
 6. Logging of `model`, `system_fingerprint`, `usage` and the retry history per turn.
+
+## Reasoning replay: what it covers, and when thinking can be skipped
+
+Checked against DeepSeek's Thinking Mode page (Micaiah's saved copy, 2026-10-02):
+
+* **Keyed on the request.** A request that carries the `tools` parameter must pass back the `reasoning_content` of all previous turns, including turns without a tool call; it is concatenated into the context, and leaving it out is an HTTP 400. A request without `tools` needs no reasoning passed back; any sent is ignored and not concatenated.
+* **Why:** continuity. Before its final answer the model may reason across several tool calls, and the reasoning carries across them. It is not a tamper check in the OpenAI format (no signature); DeepSeek's Anthropic-format endpoint signs thinking blocks, which does act as an integrity check.
+* **Skipping thinking:** any request without tools (plain chat, titles, summaries) may run thinking-off freely. A thinking-off turn inside a tool session leaves turns with no reasoning; whether DeepSeek accepts the empty string MAIC sends for them is the open question the live check settles. If it does not, start the context fresh at the switch point (a compaction: the summary replaces the earlier assistant turns, so no earlier reasoning is owed), or let trans-fairy normalize the history.
+* **Billing when Pro is served by Flash:** unstated by DeepSeek; MAIC records the model that answered each turn and prices the turn by it (Micaiah's chosen method).
+
+Further sources (weighed accordingly):
+
+| Source | Date read | Weight |
+| :- | :- | :- |
+| Micaiah's notes from Google's search assistant, `~/dev2/AI/LLMs/chatgpt-prompts/Google_Prompts/deepseek-one-offs/` (`thinking-tools-q.md`, `tool-restoration-steps.md`) | 2026-10-03 | Low: consistent with the docs on the 400 and on pruning history to recover; its claim of a "degraded reasoning" fallback is unverified. |
+| https://www.reddit.com/r/DeepSeek/comments/1t2jqee/be_aware_deepseek_auto_discards_thinking_if_a/ | 2026-10-03 | Low (little traction). One commenter's account matches the docs: reasoning carries across tool turns and is discarded after a final answer in plain chat. Another attributes context loss in opencode to the client, not the model; MAIC keeps every turn's reasoning verbatim. |
+
