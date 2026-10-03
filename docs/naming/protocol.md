@@ -24,6 +24,10 @@ Names come in role groups. Each group has a base role, the names that belong to 
 * **Active:** ComfyMaid (Claude, in Claude Code).
 * **Why:** ComfyMaid ties back to comfymaid-review and ComfyUI, where this began; HeadMaid says the rank outright. The group also names the old observation that management has the easiest job.
 
+## Compound names (proposed)
+
+A name can be built as qualifiers around a base role: **BlindWriter** is the base role *Writer* with the qualifier *Blind* (writes, runs nothing). The base sits at the center; qualifiers allow or restrict around it, so other names can be composed the same way (a qualifier that adds, one that takes away). A qualifier describes a capability profile, it doesn't grant one: what a maid may do is still set by her mode and profile, and a name that claims more or less than her profile allows is flagged as a mismatch. BlindWriter is both a compound and, for now, the base writer.
+
 ## Role-prefixed names (proposed convention)
 
 For more than one maid in a role: a prefix from the group's base name, an underscore, then a personal name: **`MM_`** for a reader (MadMaid), **`BM_`** for a writer (BlindMaid), **`CM_`** for an overseer (ComfyMaid). For example `MM_Sarah`, `BM_Johnny`, `CM_Donnah`, `MM_Bee`. The prefix says the role at a glance; the name tells maids in the same role apart. Part of following this protocol: a setup with a loose protocol, or none, names its agents however it likes, and that is respected.
