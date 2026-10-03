@@ -41,7 +41,7 @@ Every trial writes one record that is never edited after the fact; corrections a
 
 * **Where:** `<state>/trials/<model>/<date>-<level>-<task-set version>/`, local only, never sent anywhere.
 * **What:** the full configuration (model, provider, settings, harness, checker panel, task-set version and its hash), every request and response's metadata, every call with its verdicts and who gave them, the measurements above, and the outcome per task.
-* **Kept:** under the same live, stale and archive lifecycle as the audit trail, never purged before it has been reviewed.
+* **Kept, then archived slowly before anything is purged** (Micaiah, 2026-10-03: this is key data for getting the best out of every model). Trial records follow the audit trail's live, stale and archive lifecycle, with longer windows: a record stays live while it is being compared against new trials, then moves to the archive (compressed, with its hash recorded), and the archive copy is verified against that hash before the live copy is removed. Archived records are kept indefinitely unless Micaiah chooses otherwise; off-site copies are printed as commands for her to run, as for the audit trail. Nothing is purged before it has been reviewed and archived.
 * **Summarized:** each trial ends with a short summary (the measurements against their thresholds, and the decision it supports), which is what Micaiah reviews.
 
 ## Thresholds
