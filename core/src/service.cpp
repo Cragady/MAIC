@@ -20,6 +20,9 @@
 #include <ctime>
 #include <deque>
 #include <fstream>
+#include <set>
+#include <mutex>
+#include <iostream>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -245,7 +248,7 @@ std::string timestamp() {
 
 }  // namespace
 
-std::vector<ServiceDef> load_services(const fs::path& dir) {
+std::vector<ServiceDef> load_services(const fs::path& dir, std::vector<std::string>* problems) {
     std::vector<ServiceDef> out;
     if (!fs::is_directory(dir)) {
         throw std::runtime_error("no services directory at " + dir.string());
@@ -311,7 +314,15 @@ std::vector<ServiceDef> load_services(const fs::path& dir) {
             }
             out.push_back(std::move(def));
         } catch (const std::exception& e) {
-            throw std::runtime_error(entry.path().string() + ": " + e.what());
+            std::string problem = entry.path().string() + ": " + e.what() + " (this service is skipped; the others still run)";
+            if (problems) {
+                problems->push_back(std::move(problem));
+            } else {
+                static std::mutex mu;
+                static std::set<std::string> told;
+                std::lock_guard lock(mu);
+                if (told.insert(problem).second) std::cerr << "maid: " << problem << "\n";
+            }
         }
     }
     std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.name < b.name; });

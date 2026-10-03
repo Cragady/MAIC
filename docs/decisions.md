@@ -4,6 +4,11 @@ An index of decisions and findings, newest first, so none is lost. Each line say
 
 ## 2026-10-03
 
+* **Degraded beats halted.** Something adjacent going wrong (one bad service file, an unset variable, one failing provider) degrades that one piece, says so, and lets the rest run; it never stops a whole chain such as `maid up`. Service files: a file that doesn't load is skipped with a warning. [service.hpp](../core/include/maid/service.hpp)
+* **An installed maid reads the files it shipped with,** never a checkout that has moved on since its release. [paths.cpp](../core/src/paths.cpp)
+* **When tool calls get refused, look at the paths first.** Agents working here use full absolute paths, never truncated or partial ones (a plain read of a cut-off path was stopped by a safety check mid-fix). Nothing in this repo should hard-stop an agent's ordinary work.
+* **Messages in the TUI take no history space:** notices and agent messages show as floating windows or collapsible blocks, so the history Micaiah wants to keep stays readable. [roadmap backlog](roadmap.md)
+* **Dropped: a Lua layer for talking to the shell's color settings.** The test environment now unsets `FORCE_COLOR` and `PYTHON_COLORS`, which fixes the flaky test at its source; a Lua layer would add moving parts without helping.
 * **`maid liaison *` allowlisted in Claude Code** (Micaiah's approval in her own words; global settings).
 * **The docs audit also documents what `auto` lets through per level,** and how `auto` shuts down or degrades. [roadmap backlog](roadmap.md)
 * **Thinking stays on;** harness-driven tool calls written into the transcript; Flash as a fast subagent. [roadmap backlog](roadmap.md)
