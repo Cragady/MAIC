@@ -226,6 +226,50 @@ void usage(std::ostream& out = std::cerr) {
                  "modes: manual, auto-read, edit, auto, plan\n";
 }
 
+// The usage block of the command a help page is about: what `maic server` and `maic artifact` print, else the lines
+// `maic help` gives that command, with "usage: maic " in front so the columns stay where they were. Empty for a page that
+// is not about a command.
+std::string help_usage(const maic::HelpPage& page) {
+    for (std::string tag : maic::help_tags(page)) {
+        if (tag.rfind("maic ", 0) == 0) tag.erase(0, 5);
+        if (tag.rfind(":", 0) == 0) tag.erase(0, 1);
+        if (std::string own = maic::server::usage_text(tag); !own.empty()) return own;
+        std::ostringstream all;
+        usage(all);
+        std::istringstream lines(all.str());
+        std::string block, line;
+        bool in_command = false;
+        while (std::getline(lines, line)) {
+            if (line.rfind("  ", 0) != 0 || line.size() < 3) {
+                in_command = false;
+            } else if (line[2] != ' ') {
+                in_command = line.compare(2, tag.size(), tag) == 0 && (line.size() == 2 + tag.size() || line[2 + tag.size()] == ' ');
+                if (in_command) block += (block.empty() ? "usage: maic " : "       maic ") + line.substr(2) + "\n";
+            } else if (in_command) {
+                block += "          " + line + "\n";
+            }
+        }
+        if (!block.empty()) return block;
+    }
+    return "";
+}
+
+// `maic help TOPIC`: the page for a terminal (maic::render_help), painted with the theme when colour is allowed.
+std::string help_for_terminal(const std::string& topic, bool text_base) {
+    maic::Settings settings;
+    bool paint = maic::color_output(text_base, STDOUT_FILENO);
+    if (paint) {
+        try {
+            settings = maic::load_settings();
+        } catch (const std::exception&) {
+            maic::apply_theme(settings, maic::Theme{"default"});  // the built-in styles; the commands that need settings report the error
+        }
+    }
+    auto page = maic::help_page(topic);
+    if (!page) return maic::render_markdown(maic::help_text(topic), paint ? &settings : nullptr);
+    return maic::render_help(*page, help_usage(*page), paint ? &settings : nullptr);
+}
+
 // cai-tools (docs/cai.md). The `cai` wrapper is the one entry point: `maic cai TOOL ...`, `maic trans-fairy ...`,
 // `maic trans-fairy-write ...` and `maic help cai|TOOL` exec it with the arguments untouched, before any option of
 // maic's own is read, so a cai flag (--json, --model, -h) is never taken for one of maic's. The exec keeps stdin,
@@ -1444,7 +1488,7 @@ int main(int argc, char** argv) {
             else if (a == "-h" || a == "--help" || a == "help") {
                 if (i + 1 < args.size()) {
                     if (args[i + 1] == "diction") return exec_diction({"--help"});
-                    std::cout << maic::help_text(args[i + 1]) << "\n";
+                    std::cout << help_for_terminal(args[i + 1], text_base || std::find(args.begin(), args.end(), "--text-base") != args.end()) << "\n";
                     return 0;
                 }
                 usage(std::cout);  // asked for: stdout, so it pipes

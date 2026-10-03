@@ -385,7 +385,7 @@ service	llamacpp	running	host	gpu	pid 4242	http://127.0.0.1:8081	model: Qwen3.5-
 service	comfyui	stopped	host	gpu	-	http://127.0.0.1:8188	-
 ```
 
-The flag is accepted by every command; the others print no colour already, so for them it changes nothing. `maic ... --json` stays as it was and is separate.
+The flag is accepted by every command; the others print no colour already, so for them it changes nothing. `maic help TOPIC` follows the same three rules: a page is laid out like a man page (NAME, SYNOPSIS with the command's usage block, DESCRIPTION, FILES, SEE ALSO), its headings, tag line, `code` and **bold** take the `md_heading`, `md_link`, `md_code` and `md_bold` roles on a terminal, and the markers are dropped in every case. `maic ... --json` stays as it was and is separate.
 
 ## Project layers, trust and the chain
 
