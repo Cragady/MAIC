@@ -24,6 +24,10 @@ Names come in role groups. Each group has a base role, the names that belong to 
 * **Active:** ComfyMaid (Claude, in Claude Code).
 * **Why:** ComfyMaid ties back to comfymaid-review and ComfyUI, where this began; HeadMaid says the rank outright. The group also names the old observation that management has the easiest job.
 
+## Role-prefixed names (proposed convention)
+
+For more than one maid in a role: a prefix from the group's base name, an underscore, then a personal name: **`MM_`** for a reader (MadMaid), **`BM_`** for a writer (BlindMaid), **`CM_`** for an overseer (ComfyMaid). For example `MM_Sarah`, `BM_Johnny`, `CM_Donnah`, `MM_Bee`. The prefix says the role at a glance; the name tells maids in the same role apart. Part of following this protocol: a setup with a loose protocol, or none, names its agents however it likes, and that is respected.
+
 ## Rules
 
 1. **Distinct across groups, alike within.** Names in one group may resemble each other; names in different groups must be distinct at a glance.
