@@ -150,7 +150,7 @@ async function httpLoad() { // the saved document, or undefined when this server
 }
 async function httpSave(snap) {
   const guard = backend.etag ? { "If-Match": backend.etag } : { "If-None-Match": "*" };
-  const r = await fetch(DATA_URL, { method: "PUT", cache: "no-store", headers: httpHeaders(Object.assign({ "Content-Type": "application/json" }, guard)), body: JSON.stringify(snap) });
+  const r = await fetch(DATA_URL, { method: "PUT", cache: "no-store", keepalive: leaving && JSON.stringify(snap).length < 60000, headers: httpHeaders(Object.assign({ "Content-Type": "application/json" }, guard)), body: JSON.stringify(snap) });
   if (r.status === 409 || r.status === 412) throw Object.assign(new Error("another writer saved first"), { name: "Conflict" });
   if (!r.ok) throw Object.assign(new Error("http " + r.status), { name: "HTTP" + r.status });
   backend.etag = r.headers.get("ETag");
@@ -593,7 +593,12 @@ const Root = { template: "#tpl-app", setup: () => Object.assign({}, ctx, {
 
 // ---- start ----
 function flushLocal() { try { meta.rev++; meta.savedAt = new Date().toISOString(); REVIEW_STORE.setItem(LOCAL, JSON.stringify(snapshot())); } catch (e) {} }
-window.addEventListener("pagehide", () => { if (timer) { clearTimeout(timer); timer = null; flushLocal(); } });
+// Leaving the page (a new tab, another window, closing it) saves at once instead of waiting out the debounce;
+// keepalive lets the last write finish even if the page is going away.
+let leaving = false;
+function saveNow() { if (timer) { leaving = true; enqueue().then(() => { leaving = false; }); flushLocal(); } }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") saveNow(); });
+window.addEventListener("pagehide", saveNow);
 
 const first = newest([readLocal(), readBeside()]);
 if (first) adopt(first);
