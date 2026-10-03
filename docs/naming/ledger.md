@@ -10,3 +10,4 @@ Changes to the base naming protocol ([protocol.md](protocol.md)), oldest first. 
 | 1791065137 | all | (none) -> role-prefixed names `MM_`, `BM_`, `CM_` plus a personal name (proposed convention) | Several maids per role stay distinct, and the prefix carries the role; loose or no protocol is respected. |
 | 1791065289 | all | (none) -> rule: a role spelled out in a name implies a single carrier | A second carrier of that role needs an inclusive name or a rename, reassignment or decommission of the first. |
 | 1791065410 | writer | (none) -> compound names: qualifiers around a base role (BlindWriter = Blind + Writer) | The base role is the center; qualifiers allow or restrict around it; a name describes the profile, never grants it, and a mismatch is flagged. |
+| 1791065491 | writer | (none) -> candidate RunningBlindWriter | Running + Blind + Writer: may run builds and tests, still reviewed by the reader; and the idiom says it too. |
