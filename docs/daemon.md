@@ -39,6 +39,23 @@ Two things differ for a session in the daemon:
 * **No nvim host.** A daemon is no nvim's child, so a write is not opened in nvim, an approval has no nvim diff and there is no `diagnostics` tool, even when the TUI runs inside nvim.
 * **`!cmd` runs in the daemon's environment** (its PATH, its virtualenv), not the terminal's.
 
+## The liaison
+
+`maid liaison` lets another agent (Claude Code, a script) hand turns to a long-lived session the daemon holds while your own window stays attached to it.
+
+```
+maid liaison send ID (TEXT | --file FILE) [--out FILE] [--timeout SECONDS]
+maid liaison approve ID APPROVAL yes|no
+maid liaison status ID
+```
+
+* **`send`** connects as the client `liaison`, resumes the session if it is parked, and sends the text with `response.create` like any window (behind a running turn, in order). It prints the turn's last reply on stdout, or writes it to `--out FILE` through `FILE.partial` in the same directory, renamed. `--file -` reads stdin.
+* **Exit codes:** 0 done; 2 the response failed (its message on stderr); 3 no daemon runs (it never starts one); 4 the turn waits for an approval, said on stderr as one line `approval<TAB>ID<TAB>TOOL<TAB>SUMMARY` and left waiting; 5 no reply within `--timeout` seconds (default 600), the turn keeps running.
+* **`approve`** answers a waiting approval yes or no. It refuses `always`: that is for a person at their own window.
+* **`status`** prints one tab separated line: `idle`, `working`, `paused` or `parked`, the model, `queued=N`, and `approvals=` with the waiting ones' ids (`-` for none).
+* **It never takes focus.** The session stays in your window's focus, and the liaison leaving changes nothing about it.
+* **Nothing new travels.** It uses the protocol's ordinary client calls (`maid.session.resume`, `maid.session.attach`, `response.create`, `maid.approval.answer`), so the harness, approvals and trust judge its input as they judge a window's. It never reads or handles a key, and prints only the model's reply.
+
 ## Where it lives
 
 * **The socket** is `$XDG_RUNTIME_DIR/maid/engine.sock` (without a runtime directory, `~/.local/state/maid/run/engine.sock`, never `/tmp`), 0600 in a 0700 directory that must be yours. Every connection's peer is checked to be you (`SO_PEERCRED`). The command sandbox hides both directories, so a sandboxed command cannot reach the daemon and answer its own approvals.

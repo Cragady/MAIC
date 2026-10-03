@@ -117,6 +117,11 @@ void usage(std::ostream& out = std::cerr) {
                  "                             validate the catalog offline\n"
                  "  daemon start|stop|status [--json|--text-base]   one engine in the background that holds sessions: maid and maid.nvim open\n"
                  "                             theirs in it while it runs, so a session outlives its window (maid help daemon)\n"
+                 "  liaison send ID (TEXT | --file FILE) [--out FILE] [--timeout SECONDS]   a turn on a session the daemon holds,\n"
+                 "                             for another agent: prints the reply; exit 4 and an approval line at an approval,\n"
+                 "                             2 failed, 3 no daemon, 5 timed out (the turn keeps running; maid help liaison)\n"
+                 "  liaison approve ID APPROVAL yes|no   answers that approval (never always)\n"
+                 "  liaison status ID          one line: idle, working, paused or parked, the model, queued, pending approvals\n"
                  "  diction [ARGS...]          narrate out loud into a markdown document: mic, whisper-server, a local scribe\n"
                  "                             (maid help diction is its own --help; docs/diction.md)\n"
                  "  lua [FILE [args...] | -e CODE]   Lua (vendored LuaJIT) here, with the maid table; no arguments: a REPL (maid help lua)\n"
@@ -1415,6 +1420,14 @@ int main(int argc, char** argv) {
     if (argc >= 2 && std::string(argv[1]) == "daemon") {
         try {
             return maid::cmd_daemon(std::vector<std::string>(argv + 2, argv + argc));
+        } catch (const std::exception& e) {
+            std::cerr << "maid: " << e.what() << "\n";
+            return 1;
+        }
+    }
+    if (argc >= 2 && std::string(argv[1]) == "liaison") {
+        try {
+            return maid::cmd_liaison(std::vector<std::string>(argv + 2, argv + argc));
         } catch (const std::exception& e) {
             std::cerr << "maid: " << e.what() << "\n";
             return 1;
