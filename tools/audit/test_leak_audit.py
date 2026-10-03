@@ -731,6 +731,16 @@ class LeakAuditTest(unittest.TestCase):
     def test_outcome(self):
         self.assertEqual(leak_audit.outcome(SESSIONS["dbus"][2]), ("allow", "yes", "exit 0"))
         self.assertEqual(leak_audit.outcome(SESSIONS["afunix"][2]), ("ask, user answered no", "no", "not run"))
+        # An unattended turn's denial is the engine's: it never reads as the user's answer, from a session record
+        # or from a trail entry (whose judged_by is what says so).
+        away = dict(SESSIONS["afunix"][2], judged_by="unattended")
+        self.assertEqual(leak_audit.outcome(away), ("ask, denied: the turn was unattended (the owner was away)", "no", "not run"))
+        late = dict(SESSIONS["afunix"][2], judged_by="timeout")
+        self.assertEqual(leak_audit.outcome(late), ("ask, denied: nobody answered in time", "no", "not run"))
+        self.assertEqual(leak_audit.trail_outcome(entry(1, "run_shell", {"command": "x"}, decision="ask", approval="no", judged_by="unattended", ran=False, ok=False)),
+                         ("ask, denied: the turn was unattended (the owner was away)", "no", "not run"))
+        self.assertEqual(leak_audit.trail_outcome(entry(2, "run_shell", {"command": "y"}, decision="ask", approval="no", judged_by="timeout", ran=False, ok=False)),
+                         ("ask, denied: nobody answered in time", "no", "not run"))
         timed = shell("busctl", "terminated: the command exceeded its timeout of 120 s.", ok=False, review={"verdict": "allow"})
         self.assertEqual(leak_audit.outcome(timed), ("allow, reviewer allow", "yes", "timed out"))
 

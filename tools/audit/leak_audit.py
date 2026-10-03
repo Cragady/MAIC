@@ -198,7 +198,13 @@ def outcome(rec: dict) -> tuple[str, str, str]:
     """(decision, ran, end) for a tool record, as the harness recorded them."""
     decision = str(rec.get("decision") or "none recorded")
     if rec.get("approval"):
-        decision += f", user answered {rec['approval']}"
+        # An unattended or timed-out denial is the engine's, nobody refused: it must never read as the user's answer.
+        if rec.get("judged_by") == "unattended":
+            decision += ", denied: the turn was unattended (the owner was away)"
+        elif rec.get("judged_by") == "timeout":
+            decision += ", denied: nobody answered in time"
+        else:
+            decision += f", user answered {rec['approval']}"
     review = rec.get("review")
     if isinstance(review, dict) and review.get("verdict"):
         decision += f", reviewer {review['verdict']}"
@@ -328,7 +334,7 @@ def read_trail(d: Path) -> tuple[list[dict], int]:
 
 def trail_outcome(rec: dict) -> tuple[str, str, str]:
     """(decision, ran, end) for a trail entry, which keeps them as fields instead of a result."""
-    decision, _, _ = outcome({k: v for k, v in rec.items() if k in ("decision", "approval", "review")})
+    decision, _, _ = outcome({k: v for k, v in rec.items() if k in ("decision", "approval", "review", "judged_by")})
     if not isinstance(rec.get("ran"), bool):
         return decision, "unknown", "unknown"
     if not rec["ran"]:

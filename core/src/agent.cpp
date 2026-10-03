@@ -30,6 +30,12 @@ namespace {
 constexpr size_t kMaxLoggedResult = 64 * 1024;
 constexpr size_t kMaxDelegateResult = 16 * 1024;  // a subagent's report, as the parent's tool result
 
+// The result the model gets when an approval was denied because the turn is unattended (nobody was there to answer
+// it): "Approvals are off in this turn by design (the owner is away). Continue without this action, or say what
+// you would need."
+const char* const kUnattendedDenial =
+    "Approvals are off in this turn by design (the owner is away). Continue without this action, or say what you would need.";
+
 // A model the cli kind runs: Claude Code, on the user's own Claude plan.
 bool on_cli(const std::vector<Provider>& providers, const std::string& model) {
     try {
@@ -156,6 +162,7 @@ struct ChildEvents : AgentEvents {
         return parent.ask(r);
     }
     std::string question(const std::string& text, const std::vector<std::string>& options) override { return parent.question(agent + ": " + text, options); }
+    bool unattended() override { return parent.unattended(); }
     bool can_ask() override { return parent.can_ask(); }
 };
 
@@ -839,6 +846,7 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
     int ban_attempts = 0;
     int context_retries = 0;
     denials_ = 0;
+    unattended_denials_ = 0;
     for (int step = 0; step < max_steps; ++step) {
         if (drain_mailbox(events)) events.on_notice("delivered your queued message");
         origin = turn_origin_;  // a remote message delivered into the turn makes the rest of it remote
@@ -860,6 +868,12 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
         if (denials_ >= denials_limit) {
             events.on_notice(std::to_string(denials_) + " denials this turn; stopping so you can say what you want instead");
             push({"user", "[stopped: the user denied " + std::to_string(denials_) + " actions this turn; wait for new instructions]"});
+            return;
+        }
+        if (unattended_denials_ >= unattended_denials_limit) {
+            // Nobody refused anything: the owner is away, so the turn ends quietly, counted apart from the user's.
+            events.on_notice("stopping: " + std::to_string(unattended_denials_) + " actions needed approval while the owner is away");
+            push({"user", "[stopped: " + std::to_string(unattended_denials_) + " actions needed the owner's approval while they were away; wait for their return]"});
             return;
         }
         // The context window: the last call's report, else what the provider says it is.
@@ -1109,7 +1123,9 @@ void Agent::audit_tool_call(const nlohmann::json& record, bool ran, bool ok, con
             if (from["review"].contains("judged_by")) out["review"]["judged_by"] = from["review"]["judged_by"];
             out["judged_by"] = "reviewer";
         }
-        if (from.contains("approval")) out["judged_by"] = "user";
+        // An approval denied with nobody there to answer it is nobody's refusal: the trail says who refused it
+        // (`unattended` or `timeout`), never the user.
+        if (from.contains("approval")) out["judged_by"] = from.contains("unattended") ? "unattended" : from.contains("timed_out") ? "timeout" : "user";
         return out;
     };
     nlohmann::json entry = pick(record);
@@ -1302,6 +1318,9 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         ran = true;
         std::string answer = events.question(call.arguments["question"].get<std::string>(), options);
         record["answer"] = answer;
+        // In an unattended turn the engine answers at once with nothing: that counts like a denial toward the
+        // turn's own limit (unattended_denials_limit), since nobody was asked and nobody refused.
+        if (events.unattended()) ++unattended_denials_;
         return result(answer.empty() ? "(the user gave no answer)" : answer, true);
     }
     if (name == "todo") {
@@ -1495,8 +1514,18 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
                 d.verdict = Verdict::Allow;
                 break;
             case Approval::No:
+                // An unattended denial is nobody's refusal: it is counted on its own line, and the model is told the
+                // approvals are turned aside by design rather than that the user said no.
+                if (answer.unattended) {
+                    ++unattended_denials_;
+                    record["unattended"] = true;
+                    return {Verdict::Deny, kUnattendedDenial};
+                }
                 ++denials_;
-                if (answer.timed_out) return {Verdict::Deny, "NOT ANSWERED" + waited_within(answer.feedback) + "; treated as denied. Continue without this action, or say what you need."};
+                if (answer.timed_out) {
+                    record["timed_out"] = true;  // the trail says the engine denied it, not the user
+                    return {Verdict::Deny, "NOT ANSWERED" + waited_within(answer.feedback) + "; treated as denied. Continue without this action, or say what you need."};
+                }
                 if (!answer.feedback.empty()) return {Verdict::Deny, "DENIED by the user, who says: " + answer.feedback};
                 return {Verdict::Deny, "DENIED by the user. Ask what they want instead of retrying."};
             case Approval::Trip:
@@ -1688,6 +1717,7 @@ void Agent::make_subagent(Agent& child, const AgentDef& def, const ModelPick& pi
     child.repeat_limit = repeat_limit;
     child.repeat_trip = repeat_trip;
     child.denials_limit = denials_limit;
+    child.unattended_denials_limit = unattended_denials_limit;
     child.harness_.set_permission(harness_.permission());
     child.harness_.set_forbid(harness_.forbid());
     child.harness_.set_confined(harness_.confined());

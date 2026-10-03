@@ -608,7 +608,7 @@ int cmd_daemon(const std::vector<std::string>& args) {
 namespace {
 
 const char* kLiaisonUsage =
-    "maid liaison send ID (TEXT | --file FILE) [--as NAME] [--out FILE] [--timeout SECONDS] | approve ID APPROVAL yes|no | status ID";
+    "maid liaison send ID (TEXT | --file FILE) [--as NAME] [--out FILE] [--timeout SECONDS] [--unattended] | approve ID APPROVAL yes|no | status ID";
 
 std::unique_ptr<DaemonClient> liaison_connect(std::function<void()> wake = {}, const std::string& as = "liaison") {
     auto d = DaemonClient::connect(std::move(wake));
@@ -656,6 +656,7 @@ int liaison_send(const std::vector<std::string>& args) {
     std::string id, text, out, as = "liaison";
     std::optional<std::string> file;
     long timeout = 600;
+    bool unattended = false;  // --unattended: the owner is away, so this one turn's approvals are denied at once
     for (size_t i = 1; i < args.size(); ++i) {
         const std::string& a = args[i];
         if ((a == "--file" || a == "--out" || a == "--timeout" || a == "--as") && i + 1 >= args.size()) throw std::runtime_error(a + " takes a value");
@@ -667,6 +668,8 @@ int liaison_send(const std::vector<std::string>& args) {
             out = args[++i];
         } else if (a == "--timeout") {
             timeout = std::stol(args[++i]);
+        } else if (a == "--unattended") {
+            unattended = true;
         } else if (id.empty()) {
             id = a;
         } else if (text.empty()) {
@@ -707,7 +710,9 @@ int liaison_send(const std::vector<std::string>& args) {
         std::cerr << "maid liaison: " << error_of(att) << "\n";
         return 1;
     }
-    json created = d->call(request("response.create", {{"conversation", sid}, {"input", text}}));
+    json create = {{"conversation", sid}, {"input", text}};
+    if (unattended) create["maid"] = {{"unattended", true}};
+    json created = d->call(request("response.create", std::move(create)));
     if (!created.contains("result")) {
         std::cerr << "maid liaison: " << error_of(created) << "\n";
         return 2;
@@ -729,7 +734,7 @@ int liaison_send(const std::vector<std::string>& args) {
             json rmaid = resp.value("maid", json::object());
             bool this_turn = rmaid.value("turn", -1L) == turn;
             if (type == "response.created" && this_turn) ours = true;
-            if (type == "maid.approval.requested" && ours) {
+            if (type == "maid.approval.requested" && ours && !e.value("unattended", false)) {
                 std::cerr << "approval\t" << e.value("id", "") << "\t" << e.value("tool", "") << "\t" << one_line(e.value("summary", "")) << "\n";
                 return 4;
             }

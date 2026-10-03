@@ -266,7 +266,8 @@ json settings_json(const fs::path& file, const fs::path& dir) {
 // harness, the providers it defines, its instruction files and its tools.
 json capabilities(const ProjectDir& p) {
     json caps = {{"allow", json::array()}, {"ask", json::array()}, {"deny", json::array()}, {"mode", ""}, {"harness", ""}, {"tripwire", ""},
-                 {"allow_isolated", false}, {"dumb_auto_ok", false}, {"approvals_timeout", json()}, {"providers", json::object()}, {"error", ""},
+                 {"allow_isolated", false}, {"dumb_auto_ok", false}, {"approvals_timeout", json()}, {"approvals_unattended", json()}, {"unattended_denials_limit", json()},
+                 {"providers", json::object()}, {"error", ""},
                  {"instructions", json::array()}, {"lua_tools", json::array()}, {"script_tools", json::object()}};
     for (const auto& f : p.settings) {
         json j;
@@ -299,6 +300,17 @@ json capabilities(const ProjectDir& p) {
             int v = static_cast<int>(j["approvals_timeout"].get<double>());
             int had = caps["approvals_timeout"].is_number() ? static_cast<int>(caps["approvals_timeout"].get<double>()) : -1;
             caps["approvals_timeout"] = (v == 0 || had == 0) ? 0 : std::max(v, had);
+        }
+        // The same for the two unattended guards: "wait" (the weaker of the pair: approvals wait for a person) and
+        // the highest limit any of them asks for (more such denials before the turn ends).
+        if (j.contains("approvals_unattended") && j["approvals_unattended"].is_string()) {
+            std::string v = j["approvals_unattended"].get<std::string>();
+            if ((v == "wait" || v == "deny") && caps["approvals_unattended"] != "wait") caps["approvals_unattended"] = v;
+        }
+        if (j.contains("unattended_denials_limit") && j["unattended_denials_limit"].is_number()) {
+            int v = static_cast<int>(j["unattended_denials_limit"].get<double>());
+            int had = caps["unattended_denials_limit"].is_number() ? static_cast<int>(caps["unattended_denials_limit"].get<double>()) : -1;
+            caps["unattended_denials_limit"] = std::max(v, had);
         }
         if (j.contains("providers") && j["providers"].is_object()) {
             for (const auto& [name, pj] : j["providers"].items()) caps["providers"][name] = pj.dump();
@@ -359,15 +371,37 @@ std::vector<std::string> widenings(const json& old_caps, const json& now) {
     for (const char* key : {"allow_isolated", "dumb_auto_ok"}) {
         if (now.value(key, false) && !old.value(key, false)) out.push_back(std::string(key) + " = true");
     }
+    // The approval guards: what is in force with no project file of its own is the global file's value (its
+    // defaults where it sets none), so a project that weakens one over that is what is reported here.
+    std::string g_away;
+    int g_timeout = 300, g_limit = 5;
+    {
+        std::lock_guard lock(g_mu);
+        g_away = config().approvals_unattended;
+        g_timeout = config().approvals_timeout;
+        g_limit = config().unattended_denials_limit;
+    }
     // approvals_timeout: a project may tighten the guard (a smaller number of seconds) but not weaken it: 0 (no
-    // timeout at all), or more than the value in force without its own files (the default, 300), is a widening.
-    auto timeout_of = [](const json& j) {
-        return j.is_number() ? static_cast<int>(j.get<double>()) : 300;
+    // timeout at all), or more than the value in force without its own files, is a widening.
+    auto timeout_of = [&](const json& j) {
+        return j.is_number() ? static_cast<int>(j.get<double>()) : g_timeout;
     };
     if (now.contains("approvals_timeout") && now["approvals_timeout"].is_number()) {
         int nt = timeout_of(now["approvals_timeout"]), ot = timeout_of(old.value("approvals_timeout", json()));
         if (nt == 0) out.push_back("approvals_timeout = 0 (no timeout)");
         else if (nt > ot) out.push_back("approvals_timeout " + std::to_string(ot) + " -> " + std::to_string(nt));
+    }
+    // approvals_unattended: "deny" is the tighter of the pair, so "wait" where the value in force is "deny" hands
+    // the guard back. unattended_denials_limit: a higher limit lets more approvals be denied before a turn ends.
+    auto away_of = [&](const json& j) {
+        return j.contains("approvals_unattended") && j["approvals_unattended"].is_string() ? j["approvals_unattended"].get<std::string>() : g_away;
+    };
+    if (now.contains("approvals_unattended") && away_of(now) == "wait" && away_of(old) == "deny") out.push_back("approvals_unattended = \"wait\"");
+    auto limit_of = [&](const json& j) {
+        return j.contains("unattended_denials_limit") && j["unattended_denials_limit"].is_number() ? static_cast<int>(j["unattended_denials_limit"].get<double>()) : g_limit;
+    };
+    if (now.contains("unattended_denials_limit") && limit_of(now) > limit_of(old)) {
+        out.push_back("unattended_denials_limit " + std::to_string(limit_of(old)) + " -> " + std::to_string(limit_of(now)));
     }
     json op = old.value("providers", json::object()), np = now.value("providers", json::object());
     for (const auto& [name, v] : np.items()) {

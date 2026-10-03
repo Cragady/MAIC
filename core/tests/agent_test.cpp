@@ -443,6 +443,52 @@ int main() {
         else unsetenv("XDG_RUNTIME_DIR");
     }
 
+    section("unattended approvals: denied at once, counted apart from the user's refusals");
+    {
+        FakeServer fake;
+        int n = 0;
+        fake.tool_call_for = [&](const json&) {
+            // A different call each time: the repeat guard is not what ends this turn.
+            return json{{"name", "write_file"}, {"arguments", {{"path", "away" + std::to_string(++n) + ".txt"}, {"content", "x"}}}};
+        };
+        Agent agent(ws, "test");
+        agent.providers = {fake.provider()};
+        agent.mode = Mode::Manual;
+        agent.audit.enabled = true;
+        agent.unattended_denials_limit = 3;
+        Recorder r;
+        r.reply = {Approval::No, "", false, false, true};  // unattended: the engine denied it; nobody refused
+        agent.submit("write them anyway", Origin::Local, r, no_cancel);
+        expect(r.asked.size() == 3 && has_result(r, "Approvals are off in this turn by design (the owner is away)"),
+               "three unattended approvals, each denied at once with the by-design wording");
+        expect(has_notice(r, "stopping: 3 actions needed approval while the owner is away"), "the third ends the turn, with its own notice");
+        expect(!has_notice(r, "denials this turn"), "and none of them counts as a refusal of the user's");
+        bool wrote = false;
+        for (int i = 1; i <= 3; ++i) wrote = wrote || fs::exists(ws / ("away" + std::to_string(i) + ".txt"));
+        expect(!wrote, "nothing was written: a denial is still a denial");
+        // The trail says who turned it aside: unattended, never the user.
+        std::string raw;
+        for (const auto& e : fs::directory_iterator(audit_trail_dir(), ec_ignore())) {
+            std::ifstream in(e.path());
+            raw += std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        expect(raw.find("\"judged_by\":\"unattended\"") != std::string::npos && raw.find("\"judged_by\":\"user\"") == std::string::npos,
+               "the audit trail records judged_by unattended, not user");
+        // A timed-out approval is the engine's too: nobody answered, so the trail says timeout.
+        Recorder late;
+        late.reply = {Approval::No, "approval timed out after 1 s; treated as denied", false, true};
+        agent.submit("write it late", Origin::Local, late, no_cancel);
+        expect(has_result(late, "NOT ANSWERED within 1 s"), "a timed-out approval is reported to the model as not answered");
+        std::string late_raw;
+        for (const auto& e : fs::directory_iterator(audit_trail_dir(), ec_ignore())) {
+            std::ifstream in(e.path());
+            late_raw += std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        expect(late_raw.find("\"judged_by\":\"timeout\"") != std::string::npos && late_raw.find("\"judged_by\":\"user\"") == std::string::npos,
+               "and the audit trail records judged_by timeout, not user");
+        fs::remove_all(audit_trail_dir());
+    }
+
     section("undo points and nested instructions");
     {
         FakeServer fake;

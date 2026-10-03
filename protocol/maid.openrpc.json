@@ -878,12 +878,15 @@
         },
         {
           "name": "maid",
-          "description": "MAID's own: `now` delivers the input into the running response at once, its model call abandoned (`:w now`); with no input, what is already queued goes in now.",
+          "description": "MAID's own: `now` delivers the input into the running response at once, its model call abandoned (`:w now`); with no input, what is already queued goes in now. `unattended` marks this one turn unattended (the owner is away): an approval in it is denied at once, by design, and counts as no refusal of the user's.",
           "required": false,
           "schema": {
             "type": "object",
             "properties": {
               "now": {
+                "type": "boolean"
+              },
+              "unattended": {
                 "type": "boolean"
               }
             }

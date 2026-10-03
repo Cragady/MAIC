@@ -950,7 +950,8 @@
             "proposed_size": {
               "type": "integer",
               "minimum": 0
-            }
+            },
+              "unattended": {"type": "boolean", "description": "Present, true, when the turn is unattended: the engine answers this approval at once (denied), so no client should wait on it."}
           },
           "required": [
             "type",
@@ -999,6 +1000,10 @@
             "timed_out": {
               "type": "boolean",
               "description": "Present, true, only when nobody answered within approvals_timeout and the engine denied it on the user's behalf (`by` then names timeout)."
+            },
+            "unattended": {
+              "type": "boolean",
+              "description": "Present, true, only when the turn is unattended (approvals_unattended = \"deny\", or the maid.unattended of its response.create): the approval was denied at once, by design, and is no refusal of the user's (`by` then names unattended)."
             }
           },
           "required": [
@@ -1073,6 +1078,10 @@
             "timed_out": {
               "type": "boolean",
               "description": "Present, true, only when nobody answered within approvals_timeout (`by` then names timeout, and the answer is empty)."
+            },
+            "unattended": {
+              "type": "boolean",
+              "description": "Present, true, only when the turn is unattended (approvals_unattended = \"deny\", or the maid.unattended of its response.create): the question was answered at once with nothing, by design (`by` then names unattended)."
             }
           },
           "required": [

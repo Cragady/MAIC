@@ -662,9 +662,9 @@ def daemon_smoke(maid, port):
 
 def liaison_smoke(maid, port):
     """`maid liaison`: turns handed to a session the daemon holds while a window stays attached to it, the reply on
-    stdout and through --out, status, an approval left waiting (exit 4) and answered, a timeout (exit 5), the sender's
-    voice (--as, maid's line to the model, [liaison:NAME] in sessions read, the records), and exit 3 with no daemon.
-    Every daemon started here is stopped."""
+    stdout and through --out, status, an approval left waiting (exit 4) and answered, a timeout (exit 5), --unattended
+    (the approval denied at once, by design, so nothing waits), the sender's voice (--as, maid's line to the model,
+    [liaison:NAME] in sessions read, the records), and exit 3 with no daemon. Every daemon started here is stopped."""
     import signal
     home, env = make_home(port)
     results = []
@@ -717,6 +717,25 @@ def liaison_smoke(maid, port):
                "approve refuses always, and yes lets the command run", [always, yes, ran])
         r = run("liaison", "send", sid, "slow: wait", "--timeout", "1")
         report(r.returncode == 5 and "keeps running" in r.stderr, "send exits 5 at its timeout", r)
+
+        # --unattended: the owner is away, so the approval is denied at once, by design: the turn never waits
+        # (exit 4 cannot happen), the command never runs, and the window is told one line per denial.
+        r = run("liaison", "send", sid, "--unattended", "shell:echo away-$((20+1))")
+        got = w.wait(lambda m: m.get("method") == "maid.event" and m["params"].get("type") == "maid.approval.answered"
+                     and m["params"].get("unattended") is True, 30)
+        answered = next((e for e in w.events(sid) if e["type"] == "maid.approval.answered" and e.get("unattended")), None)
+        noticed = any(e["type"] == "maid.notice" and "the owner is away" in e.get("text", "") for e in w.events(sid))
+        ran = json.dumps([e for e in w.events(sid) if e["type"].startswith("response.shell_call_output")])
+        # Extra: if this fails, these name the cause -- the daemon's protocol log and the session's last records.
+        prot = os.path.join(env["XDG_STATE_HOME"], "maid", "engine", "protocol.log")
+        log = open(prot).read()[-1500:] if os.path.exists(prot) else "no protocol.log"
+        trail = ""
+        transcript = entry.get("transcript", "")
+        if transcript and os.path.exists(transcript):
+            trail = "".join(open(transcript).readlines()[-6:])
+        report(r.returncode == 0 and "approval\t" not in r.stderr and bool(got) and answered is not None and answered["choice"] == "no"
+               and answered["by"]["name"] == "unattended" and noticed and "away-21" not in ran,
+               "send --unattended denies the approval at once and the command never runs", [r, answered, noticed, log, trail])
 
         # Voices: the turn is the sender's, told to the model by maid's own line, which the text cannot fake.
         refused = [run("liaison", "send", sid, "--as", name, "hi") for name in ("Micaiah", "user", "LOCAL", "a/b")]

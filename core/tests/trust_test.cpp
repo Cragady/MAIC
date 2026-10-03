@@ -713,6 +713,24 @@ int main() {
         widened("return { mode = 'edit', harness = 'dumb' }\n", "harness = \"dumb\"");
         widened("return { mode = 'edit', tripwire = 'isolated', allow_isolated = true }\n", "allow_isolated = true");
         widened("return { mode = 'edit', providers = { lab = { kind = 'openai', base_url = 'http://example.com/v1' } } }\n", "provider lab is new or changed");
+        // The approval guards: over a global "deny", a project that says "wait" hands the guard back; raising the
+        // limit lets more approvals be denied before an unattended turn ends. Both are widenings; lowering is not.
+        fs::path global_away = g_home / ".config" / "maid" / "settings.lua";
+        write_file(global_away, "return { approvals_unattended = 'deny', unattended_denials_limit = 5 }\n");
+        load_settings(g_home);  // the global file's values are what a project layer is measured against
+        widened("return { approvals_unattended = 'wait' }\n", "approvals_unattended = \"wait\"");
+        widened("return { unattended_denials_limit = 9 }\n", "unattended_denials_limit 5 -> 9");
+        widened("return { approvals_timeout = 900 }\n", "approvals_timeout 300 -> 900");
+        {
+            fs::path tight = project("relaxed-tighter", false);
+            trust_dir(project_dir(tight), Origin::Local, "relaxed", "sandbox");
+            // The project's own mode stays as it was: dropping it would be a mode widening of its own.
+            write_file(tight / ".maid" / "settings.lua", "return { mode = 'edit', approvals_unattended = 'deny', unattended_denials_limit = 2, approvals_timeout = 60 }\n");
+            TrustStatus s = trust_status(project_dir(tight));
+            expect(s.trust == Trust::Trusted, "a project that only tightens the guards passes under relaxed: " + joined(s.reasons));
+        }
+        fs::remove(global_away);
+        load_settings(g_home);  // back to the defaults for what follows
         fs::path t = project("relaxed-tools", false);
         write_file(t / ".maid" / "tools" / "pick" / "tool.json", R"({"name": "pick", "description": "x", "run": ["sh", "main.sh"], "writes": []})");
         trust_dir(project_dir(t), Origin::Local, "relaxed");

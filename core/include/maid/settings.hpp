@@ -241,6 +241,10 @@ struct Settings {
     Checkers checkers;              // global file only: the checker panel (no judges: the reviewer alone)
     bool dumb_auto_ok = true;       // false: entering auto mode under a dumb harness warns and asks first
     int approvals_timeout = 300;    // seconds an approval waits for an answer before it is denied; 0 = no limit
+    // "wait": someone answers each approval (an unanswered one is denied after approvals_timeout). "deny": the
+    // session is unattended, so every approval is denied at once, by design, and counts as no refusal of the user's.
+    std::string approvals_unattended = "wait";
+    int unattended_denials_limit = 5;  // approvals one unattended turn may have denied before it ends, with a notice
     // Read from the global file only (a project's copy is ignored with a warning; docs/settings.md):
     std::string global_lua = "full";         // the tier of your own Lua data files: full, sandbox or restricted (written literally)
     int lua_memory_mb = 256;                 // the memory cap of settings Lua below full trust

@@ -67,6 +67,12 @@ struct TrustConfig {
     std::vector<std::string> project_markers = {".git", ".maid", "MAID.md"};  // instructions.project_markers
     std::string bound = "project";                    // instructions.bound: "project" or "home"
     InstructionOptions instructions;                  // which files count as instruction files, for the hash
+    // What is in force with no project file of its own, for judging a widening a project places over it: the
+    // global settings' approvals_timeout, approvals_unattended ("wait"/"deny") and unattended_denials_limit
+    // (widenings, trust.cpp).
+    int approvals_timeout = 300;
+    std::string approvals_unattended = "wait";
+    int unattended_denials_limit = 5;
 };
 void set_trust_config(TrustConfig config);
 bool valid_trust_level(const std::string& level);
