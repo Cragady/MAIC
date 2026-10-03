@@ -869,6 +869,86 @@ int main() {
         }
         expect(told, "what it printed reaches the model with the next message");
 
+        // Ordering: a `!cmd` on an idle session starts no turn, and its result leads the next request, before the
+        // message; one run while a turn waits on an approval is in that turn's very next request.
+        auto position = [&](const std::string& needle) {
+            std::lock_guard lock(fake.mu);
+            const json& messages = fake.requests.back()["messages"];
+            for (size_t i = 0; i < messages.size(); ++i) {
+                if (FakeServer::text_of(messages[i]["content"]).find(needle) != std::string::npos) return static_cast<long>(i);
+            }
+            return -1L;
+        };
+        auto request_count = [&] {
+            std::lock_guard lock(fake.mu);
+            return fake.requests.size();
+        };
+        size_t before_idle = request_count();
+        mark = a.events.size();
+        json idle_result = a.ok("maid.session.shell", {{"session", lid}, {"command", "printf 'idle\\n'"}});
+        a.pump(100ms);
+        expect(request_count() == before_idle && !a.find("response.created", mark) && idle_result["in_turn"] == false,
+               "a !cmd on an idle session starts no turn and asks the model nothing; its answer says so");
+        auto [lua_reply, lua_text] = run("lua print('whisker')");
+        expect(request_count() == before_idle && lua_text.find("result added; the agent sees it with your next message") != std::string::npos, "so does :lua: no turn, and the line says it waits");
+        mark = a.events.size();
+        a.ok("response.create", {{"conversation", lid}, {"input", "and now?"}});
+        a.until_idle(mark);
+        long ran = position("`printf 'idle");
+        expect(ran >= 0 && position("`print('whisker')") > ran, "the :lua result follows the !cmd's, both before the message");
+        long put = position("and now?");
+        expect(ran >= 0 && put > ran && request_count() == before_idle + 1, "the next message's request has the !cmd's result before the message");
+        std::string log = slurp(fs::path(snap["entry"]["transcript"].get<std::string>()));
+        size_t logged_ran = log.find("`printf 'idle"), logged_asked = log.find("\"text\":\"and now?\"");
+        expect(logged_ran != std::string::npos && logged_asked != std::string::npos && logged_ran < logged_asked, "the transcript records the result before the message");
+
+        mark = a.events.size();
+        plan({shell("echo working")});
+        a.ok("response.create", {{"conversation", lid}, {"input", "work on it"}});
+        long waiting = a.until_type("maid.approval.requested", mark);
+        size_t before_turn = request_count();
+        json during_result = a.ok("maid.session.shell", {{"session", lid}, {"command", "printf 'during\\n'"}});
+        if (waiting > 0) a.ok("maid.approval.answer", {{"session", lid}, {"approval", a.events[waiting]["id"]}, {"choice", "yes"}});
+        a.until_idle(mark);
+        long tool_result = position("working");
+        long during = position("`printf 'during");
+        expect(waiting > 0 && during_result["in_turn"] == true && during > tool_result && tool_result > 0 && request_count() == before_turn + 1 && a.text(mark).find("echo: [The user ran this in their shell: `printf 'during") != std::string::npos,
+               "a !cmd run while a turn waits is in its next request, after the tool result, and the same turn answers it");
+
+        // A !cmd that ends after the turn's last model call, while the first turn's title is being made, is not held
+        // back for the next message: a turn of its own answers it.
+        {
+            LocalSession ts;
+            ts.workspace = ws;
+            ts.settings = st;
+            ts.log = std::make_unique<SessionLog>("tui", root / "state" / "local");
+            ts.setup = [&](Agent& agent, SessionLog& log) {
+                configure_agent(agent, st);
+                agent.mode = Mode::Manual;
+                agent.set_log(&log);
+            };
+            std::string tid = local.open_local(a.id, std::move(ts));
+            a.ok("maid.session.attach", {{"session", tid}});
+            fake.hold_when = [](const json& body) { return FakeServer::text_of(body["messages"][0]["content"]).find("Write a title") == 0; };
+            int streamed = 0;
+            {
+                std::lock_guard lock(fake.mu);
+                streamed = fake.streaming;
+            }
+            mark = a.events.size();
+            a.ok("response.create", {{"conversation", tid}, {"input", "wag the tail"}});
+            fake.wait_streaming(streamed + 2);  // the reply, then the title held
+            a.pump(0ms);
+            long replied = a.until_type("response.completed", mark);
+            expect(replied > 0, "the turn's reply is out while its title is made");
+            size_t before_late = request_count();
+            a.ok("maid.session.shell", {{"session", tid}, {"command", "printf 'late\\n'"}});
+            fake.hold_when = nullptr;
+            expect(a.until_idle(replied) > 0 && a.find("response.created", replied), "the !cmd's turn opens before the session goes idle");
+            a.pump(500ms);
+            expect(request_count() > before_late && position("`printf 'late") >= 0, "the !cmd that ended before the turn closed reaches the model without waiting for the next message");
+        }
+
         // A write's content for a diff beside its approval.
         mark = a.events.size();
         plan({{{"name", "write_file"}, {"arguments", {{"path", "whiskers.txt"}, {"content", "long and white"}}}}});

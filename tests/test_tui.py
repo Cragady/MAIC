@@ -137,6 +137,17 @@ class TuiTest(unittest.TestCase):
         self.assertIn("exit code 0", text, "the result took the live view's place")
         self.assertIn("live-two", text)
 
+    def test_a_bang_command_says_it_starts_no_turn(self):
+        tui = self.start()
+        tui.send("i!printf 'paw-%s\\n' print<esc>:w<cr>", settle=False)
+        text = tui.wait_for("result added; the agent sees it with your next message")
+        self.assertIn("paw-print", text)
+        self.assertNotIn("echo:", text, "a !cmd starts no turn")
+        self.assertLess(text.index("paw-print"), text.index("result added"), "the line comes after the output")
+        tui.send("ithen this<esc>:w<cr>", settle=False)
+        text = tui.wait_for("echo: then this")
+        self.assertLess(text.index("result added"), text.index("echo: then this"), "the agent answers the next message after the notice")
+
     def test_a_long_output_is_kept_whole_and_labelled(self):
         tui = self.start()
         tui.send("ishell:seq 1 20000<esc>:w<cr>", settle=False)
