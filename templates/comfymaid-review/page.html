@@ -228,7 +228,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   var LOCAL = "review-draft:" + DATA.id;
   var STATES = ["open", "addressed", "resolved"];
   var state = { answers: {}, status: {}, doc_status: "open", folded: {}, merges: {}, kept: {}, side_prompts: [], after_prompts: [], splits: [], picked: {}, flags: { ctrl_g_bridge: false }, resolve_requested: false, submitted: false, submittedAt: null, savedAt: null };
-  var VERSION = 16;
+  var VERSION = 17;
   var VIEW = "v" + Math.random().toString(36).slice(2, 10);
   var role = "editor"; // one view edits at a time; the others watch live and write nothing
   var leaseTimer = null, wantTimer = null, unsubMain = null, unsubWant = null;
@@ -238,7 +238,11 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     else if (b.respond === false) QUIET[b.id] = 1;
   }); });
   DATA.issues.forEach(function (it) { QUIET[it.id + "-more"] = 1; });
-  function isFolded(id) { return id in state.folded ? !!state.folded[id] : !!QUIET[id] && !/\S/.test(state.answers[id] || ""); }
+  var LINKS = DATA.links || {}; // a box id to the box whose answer it shares
+  function canon(id) { return LINKS[id] || id; }
+  function sharers(key) { var out = [key]; Object.keys(LINKS).forEach(function (k) { if (LINKS[k] === key) out.push(k); }); return out; }
+  function cardOf(fid) { var all = allCards(); for (var i = 0; i < all.length; i++) { var c = all[i]; if (fid.indexOf(c.id + "-") === 0 || (c.fields || []).some(function (f) { return f.id === fid; })) return c; } return null; }
+  function isFolded(id) { return id in state.folded ? !!state.folded[id] : !!QUIET[id] && !/\S/.test(state.answers[canon(id)] || ""); }
   var db = null, comments = null, timer = null, queue = Promise.resolve(), pending = 0, replies = [];
   function logEvent(what, ok, detail) {
     state.events = (state.events || []).concat([{ at: new Date().toISOString(), what: what, ok: ok, detail: detail || "" }]).slice(-30);
@@ -252,7 +256,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   window.addEventListener("error", function (e) { showError((e.message || "error") + (e.lineno ? " (line " + e.lineno + ")" : "")); });
   window.addEventListener("unhandledrejection", function (e) { showError("unhandled: " + (e.reason && (e.reason.code || e.reason.message) || e.reason)); });
   var KEY = {
-    version: 8,
+    version: 9,
     note: "One-off definition: this key describes how this submission's data is laid out. It holds until the next submit from this page; that submit carries its own key, the same one if nothing is applied differently, a changed one if it is.",
     answers: "Reply text by field id.",
     ids: {
@@ -275,6 +279,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     merges: "Combined boxes by merge id: card, members (field ids in order), text (each part starts with a line '── <field id> ──'), originals (each member's text when combined). A member's own answers entry is stale while it is merged; read the merge text.",
     kept: "Field id to combined text kept beside that box after a back-to-default whose marker lines were damaged.",
     side_prompts: "Sent side prompts in order: { text, at, with ('own' or 'document'), refs (field ids referenced as [[field id]] in the text), after_reply (id of the most recent reply when it was sent, or null) }. A side prompt's reply is the item in review-replies whose side_prompt is its 1-based position.",
+    links: "In the page data: links maps a box id to the box whose answer it shares; both boxes show and edit answers[that id]. Answers written in both places before linking were joined once, the second marked '── also written beside: <card> ──'.",
     after_prompts: "After Prompts archived by the overall Submit, in order: { text, at, after_reply (id of the most recent reply then, or null) }. A reply to one is the review-replies item whose after_prompt is its 1-based position.",
     flags: "Feature switches the viewer set: ctrl_g_bridge (true or false) records the choice for the Ctrl+G bridge, which is not built; the switch changes nothing else yet.",
     splits: "Split requests in order: { id, cards (card ids to move), relation (tight: resolving there resolves here; linked: this page waits for that one; loose: related only), note, at, status (requested, then done once Claude made the new page) }.",
@@ -350,7 +355,13 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     fold.addEventListener("click", function () { state.folded[id] = !folded; touch(); render(); });
     head.appendChild(fold);
     if (label) { var l = el("label", "fl", label); l.htmlFor = "f-" + id; head.appendChild(l); }
-    if (folded) { head.appendChild(el("span", "preview", QUIET[id] && !/\S/.test(state.answers[id] || "") ? "no reply needed; open to write one" : preview(state.answers[id]))); wrap.classList.add("folded"); }
+    var key = canon(id), others = sharers(key).filter(function (x) { return x !== id; });
+    if (folded) { head.appendChild(el("span", "preview", QUIET[id] && !/\S/.test(state.answers[key] || "") ? "no reply needed; open to write one" : preview(state.answers[key]))); wrap.classList.add("folded"); }
+    if (others.length) {
+      var lk = el("span", "xref"); lk.appendChild(document.createTextNode("Linked with "));
+      others.forEach(function (o, i) { var c = cardOf(o); if (i) lk.appendChild(document.createTextNode(", ")); var a = el("a", null, c ? (c.label || c.title) : o); a.href = "#f-" + o; a.addEventListener("click", function (e) { e.preventDefault(); var t = $("f-" + o); if (t) { var d = t.closest("details"); if (d) d.open = true; delete state.folded[o]; t.scrollIntoView({ block: "center" }); t.focus(); } }); lk.appendChild(a); });
+      head.appendChild(lk);
+    }
     if (id !== "side-prompt" && id !== "after-prompt") {
       var on = (state.answers["side-prompt"] || "").indexOf("[[" + id + "]]") >= 0;
       var inc = btn(on ? "↪ referenced" : "↪ reference", "small"); inc.setAttribute("aria-pressed", on ? "true" : "false");
@@ -361,8 +372,13 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     wrap.appendChild(head);
     var ta = el("textarea"); ta.id = "f-" + id; ta.dataset.field = id; ta.rows = rows || 2;
     if (!label) ta.setAttribute("aria-label", "Your reply to the text above");
-    ta.value = state.answers[id] || "";
-    ta.addEventListener("input", function () { state.answers[id] = ta.value; touch(); counts(); if (id === "side-prompt") $("side-dot").hidden = !/\S/.test(ta.value); });
+    ta.dataset.canon = key;
+    ta.value = state.answers[key] || "";
+    ta.addEventListener("input", function () {
+      state.answers[key] = ta.value; touch(); counts();
+      document.querySelectorAll('textarea[data-canon="' + key + '"]').forEach(function (t) { if (t !== ta) t.value = ta.value; });
+      if (id === "side-prompt") $("side-dot").hidden = !/\S/.test(ta.value);
+    });
     wrap.appendChild(ta);
     var pick = el("label", "pick"); var cb = el("input"); cb.type = "checkbox"; cb.dataset.field = id; cb.id = "p-" + id; pick.appendChild(cb); pick.appendChild(document.createTextNode("include in combine"));
     wrap.appendChild(pick);
@@ -386,7 +402,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     if (cur.indexOf(tag) >= 0) {
       state.answers["side-prompt"] = cur.split(tag).join("").replace(/[ \t]+\n/g, "\n").replace(/^\s+|\s+$/g, "");
       say("Reference removed: " + refLabel(id), true); logEvent("reference removed", true, id);
-    } else if (!/\S/.test(state.answers[id] || "") && !mergedFor(id)) {
+    } else if (!/\S/.test(state.answers[canon(id)] || "") && !mergedFor(id)) {
       say("Can't add a reference to an empty box. Type something in it first.", false); logEvent("reference refused", false, id + " is empty"); return;
     } else {
       state.answers["side-prompt"] = cur + (cur && !/\s$/.test(cur) ? " " : "") + tag + " ";
@@ -612,7 +628,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     DATA.issues.forEach(function (it) { if (cardState(it) === "open") it.fields.forEach(function (f) { ids.push(f.id); }); });
     return ids;
   }
-  function answered(id) { var mid = mergedFor(id); return mid ? /\S/.test(state.merges[mid].text.replace(/^── \S+ ──$/gm, "")) : /\S/.test(state.answers[id] || ""); }
+  function answered(id) { var mid = mergedFor(id); return mid ? /\S/.test(state.merges[mid].text.replace(/^── \S+ ──$/gm, "")) : /\S/.test(state.answers[canon(id)] || ""); }
   function counts() {
     var ids = openFields(), done = ids.filter(answered).length;
     var cards = allCards(), closed = cards.filter(function (c) { return cardState(c) === "resolved"; }).length;
@@ -917,7 +933,18 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     state.splits = state.splits || []; state.picked = state.picked || {}; state.after_prompts = state.after_prompts || [];
     state.status = state.status || {}; state.folded = state.folded || {}; state.side_prompts = state.side_prompts || []; state.doc_status = state.doc_status || "open";
   }
+  function joinLinked() {
+    var moved = 0;
+    Object.keys(LINKS).forEach(function (a) {
+      var t = (state.answers[a] || "").trim(), key = LINKS[a]; if (!t) return;
+      var cur = state.answers[key] || "";
+      if (cur.indexOf(t) < 0) { var c = cardOf(a); state.answers[key] = (cur.trim() ? cur.replace(/\s+$/, "") + "\n\n── also written beside: " + (c ? (c.label || c.title) : a) + " ──\n" : "") + t; }
+      delete state.answers[a]; moved++;
+    });
+    if (moved) { logEvent("joined linked answers", true, String(moved)); enqueue(); render(); }
+  }
   function archiveOld() {
+    joinLinked();
     var ap = (state.answers["after-prompt"] || "").trim();
     if (state.submittedAt && ap && !state.after_prompts.length) {
       state.after_prompts.push({ text: ap, at: state.submittedAt, after_reply: null }); delete state.answers["after-prompt"];
@@ -927,8 +954,8 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   function rescue() {
     var got = 0;
     document.querySelectorAll("textarea[data-field]").forEach(function (t) {
-      var id = t.dataset.field;
-      if (/\S/.test(t.value) && !/\S/.test(state.answers[id] || "") && !mergedFor(id)) { state.answers[id] = t.value; got++; }
+      var id = t.dataset.canon || t.dataset.field;
+      if (/\S/.test(t.value) && !/\S/.test(state.answers[id] || "") && !mergedFor(t.dataset.field)) { state.answers[id] = t.value; got++; }
     });
     if (got) { logEvent("rescued text from boxes", true, String(got)); touch(); say("Recovered " + got + " box" + (got === 1 ? "" : "es") + " of text the page had not saved. It is saving now.", true); }
   }
@@ -952,7 +979,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
         render(); refreshNotify();
         if (r && (!lastReply || r.at !== lastReply.at)) { lastReply = r; showRecent(r); var t = Date.parse(r.at); if (t && (!state.submittedAt || t > Date.parse(state.submittedAt))) $("side-dot").hidden = false; }
       }, function () {});
-      var typed = {}; document.querySelectorAll("textarea[data-field]").forEach(function (t) { if (/\S/.test(t.value)) typed[t.dataset.field] = t.value; });
+      var typed = {}; document.querySelectorAll("textarea[data-field]").forEach(function (t) { if (/\S/.test(t.value) && !LINKS[t.dataset.field]) typed[t.dataset.field] = t.value; });
       render();
       Object.keys(typed).forEach(function (id) { var t = $("f-" + id); if (t && !/\S/.test(t.value)) t.value = typed[id]; });
       rescue();

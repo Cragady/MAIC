@@ -28,6 +28,7 @@ python3 -c "import sys; p=open('page.html').read(); d=open('review.json').read()
 * After Prompt history: the overall Submit archives the After Prompt into `after_prompts` (with the reply it followed); a collapsed history under the box shows each with its reply (`after_prompt` on a review-replies item), like the Side Prompt history.
 * Statuses the agent settles go in the page data's `agent_status` and take precedence; More boxes start closed; a progress bar shows topics resolved and a thin bar at the top shows scroll position; each decision links to the messages it came from (`source`) and back.
 * Data flow: anything resolved where it lands is not brought in as unresolved; anything resolved elsewhere is marked resolved in the page; new work lands in the page only when the agent asks to work through it and the user agrees.
+* Linked boxes: `links` in the page data maps a box to the box whose answer it shares (a decision box and the question it answers in a message). Both show and edit one answer, each with a link to the other; answers written in both places beforehand are joined once, the second marked "also written beside".
 * Sending notifies by default: Send to Claude saves a side prompt and tells Claude in one click (`comments.sendToClaude`); Save only leaves it unanswered by choice; Send all unanswered (N) tells Claude about every side prompt without a reply in one notice. When the view can't reach a Claude session, sending still saves and says why. The overall Submit notifies the same way when it can. Needs the full `comments` capability.
 * Saves go through a queue: each waits for the one before it.
 * Side Prompt floats: a fixed panel beside the page on wide screens, a chat button that opens a sheet on narrow ones. Its own Submit sends only it into `side_prompts`; one left unsent goes out with the overall Submit. The ↪ beside a box adds a `[[field id]]` reference.
@@ -49,6 +50,8 @@ The user ticks Pick for split on cards, chooses a relationship and requests the 
 Relationships: `tight` (resolving the topics there resolves them here), `linked` (the parent cannot be resolved until the child is), `loose` (related only; each resolves on its own).
 
 ## Future
+
+* No frameworks for now: plain JavaScript. If one is ever needed, Vue (Nuxt only when warranted); never React (Micaiah, 2026-10-03).
 
 * Adding textareas (more boxes than the blocks give).
 * More expressive references from the Side Prompt (ranges, excerpts, whole cards).
