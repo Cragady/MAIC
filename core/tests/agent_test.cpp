@@ -1040,6 +1040,10 @@ int main() {
             Agent::UsageReport u = a->usage();
             expect(pro && std::abs(u.cost - 4 * each) < 1e-12 && u.currency == "USD" && transcript.find("\"cost\":") != std::string::npos,
                    "each call is costed from the catalog's prices and summed for the session, and the usage records carry it: " + std::to_string(u.cost));
+            auto mu = u.by_model.find("deepseek/deepseek-v4-pro");
+            expect(u.by_model.size() == 1 && mu != u.by_model.end() && mu->second.calls == 4 && mu->second.input == 480 && mu->second.cached == 256 && mu->second.output == 120 &&
+                       std::abs(mu->second.cost - u.cost) < 1e-12 && u.last_model == "deepseek/deepseek-v4-pro" && u.last_served.empty(),
+                   "the usage is also kept per model, as it was asked for");
             fs::remove(log.path());
         }
         // A subagent from deepseek-pro on deepseek-flash: the same account, so no question.
@@ -1062,6 +1066,11 @@ int main() {
             double expected = 0;
             for (const auto& q : ds.requests) expected += call_cost(*(from_child(q) ? flash : pro), 120, 64, 30, std::time(nullptr));
             expect(std::abs(a->usage().cost - expected) < 1e-12, "the subagent's cost, at Flash's prices, counts in the parent's estimate");
+            Agent::UsageReport pu = a->usage();
+            auto pro_use = pu.by_model.find("deepseek/deepseek-v4-pro"), flash_use = pu.by_model.find("deepseek/deepseek-flash");
+            expect(pro_use != pu.by_model.end() && flash_use != pu.by_model.end() && pro_use->second.calls == 2 && flash_use->second.calls == 1 &&
+                       std::abs(flash_use->second.cost - call_cost(*flash, 120, 64, 30, std::time(nullptr))) < 1e-12,
+                   "and the subagent's calls are in the parent's per-model figures, on its own model");
         }
         // From a local session the parent model asking for deepseek-flash is not Micaiah asking: she is asked.
         {

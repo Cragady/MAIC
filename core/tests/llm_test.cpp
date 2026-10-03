@@ -692,6 +692,9 @@ int main() {
         expect(done == 5 && ds.max_active == 2, "five at once with a cap of two: all answered, never more than two open (" + std::to_string(ds.max_active.load()) + ")");
         expect(count("this one waits for a slot") >= 1 && count("2 of the 2 concurrent requests MAID allows are open") == 1,
                "the ones past the cap are told they wait, and passing half the cap is told once: " + json(told).dump());
+        AccountState idle = account_state(p, "deepseek-flash");
+        expect(idle.cap == 2 && idle.open == 0 && idle.waiting == 0 && idle.hold_ms == 0 && !idle.breaker, "account_state: the cap, and nothing open, waiting or held once they are answered");
+        expect(account_state(p, "deepseek-v4-pro").cap == 0, "and no cap for the model with none");
         ds.max_active = 0;
         ChatOptions pro{"deepseek-v4-pro", false};
         std::thread a([&] { chat(p, pro, hello, json::array(), [](std::string_view, bool) {}, no_cancel); });
@@ -895,12 +898,16 @@ int main() {
         try { chat(lab, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError& e) { opened = e.what(); }
         expect(calls == 5 && opened.find("5 rate limits in a short time") != std::string::npos && opened.find("circuit breaker") != std::string::npos,
                "the fifth 429 opens the breaker and says so plainly, ending the retries: " + opened);
+        AccountState tripped = account_state(lab, "test-model");
+        expect(tripped.breaker && tripped.hold_ms > 0 && tripped.hold_ms <= 600, "account_state shows the breaker open, with the time left: " + std::to_string(tripped.hold_ms) + " ms");
         try { chat(lab, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError& e) { held = e.what(); }
         expect(calls == 5 && held.find("this request was not sent") != std::string::npos, "while it is open nothing is sent: " + held);
         limited = false;
         std::this_thread::sleep_for(std::chrono::milliseconds(650));
         auto m = chat(lab, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
         expect(m.content == "ok" && calls == 6, "after the window it closes, and requests go again");
+        AccountState closed = account_state(lab, "test-model");
+        expect(!closed.breaker && closed.hold_ms == 0, "and account_state shows it closed");
     }
     {
         Fake f;

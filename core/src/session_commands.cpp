@@ -17,7 +17,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <fstream>
 #include <sstream>
 
@@ -42,7 +44,7 @@ const std::vector<std::vector<std::string>>& spellings() {
         {"rename", "title"}, {"budget"},       {"compact"},     {"clear"},   {"trip"},           {"status"},  {"todo"},
         {"tools"},         {"init"},           {"cd"},          {"ban"},     {"sampling", "sampler"}, {"image", "img"},
         {"forbid"},        {"allow"},          {"rule", "rules"}, {"ctx", "context-size", "ctx2"}, {"prefill", "prefix"},
-        {"system"},        {"instructions"},   {"session"},     {"lua", "luafile"}, {"trust"},   {"steering"},
+        {"system"},        {"instructions"},   {"session"},     {"lua", "luafile"}, {"trust"},   {"steering"}, {"usage"},
     };
     return all;
 }
@@ -83,6 +85,132 @@ std::string cost_line(const Agent::UsageReport& u) {
     return out.empty() ? "" : "cost (estimate from the catalog's prices): " + out + "\n";
 }
 
+// "12.3k" for a count over a thousand, as the status strip writes it.
+std::string kilo(long n) {
+    char buf[32];
+    if (n >= 1000) std::snprintf(buf, sizeof(buf), "%.1fk", n / 1000.0);
+    else std::snprintf(buf, sizeof(buf), "%ld", n);
+    return buf;
+}
+
+std::string seconds_text(long ms) {
+    return std::to_string((ms + 999) / 1000) + " s";
+}
+
+// What the last call sent as the conversation, of the model's window, as the status strip shows it; then the
+// turns and model calls so far.
+std::string context_line(const Agent::UsageReport& u, const Provider& provider, int turns) {
+    long window = u.last.context > 0 ? u.last.context : provider.options.value("context_window", 0);
+    std::string out = "context: ";
+    if (u.last.input <= 0) out += "not measured yet (no model call since the session opened or was cleared)";
+    else {
+        out += kilo(u.last.input) + " tokens";
+        if (window > 0) out += " of " + kilo(window) + " (" + std::to_string(static_cast<int>(100.0 * u.last.input / window)) + "%)";
+    }
+    return out + "; " + std::to_string(turns) + (turns == 1 ? " turn, " : " turns, ") + std::to_string(u.calls) + (u.calls == 1 ? " model call" : " model calls") + "\n";
+}
+
+// The reasoning effort MAID sends to `provider`, "" when it sends none and the provider's default applies: Anthropic's
+// from its options, an OpenAI-compatible server's from the sampling or the provider's extra_body.
+std::string effort_text(const Provider& provider, const Agent& agent) {
+    auto text = [](const json& j, const char* key) { return j.is_object() && j.contains(key) && j[key].is_string() ? j[key].get<std::string>() : std::string(); };
+    if (provider.kind == "anthropic") return text(provider.options, agent.think ? "think_effort" : "effort");
+    std::string effort = text(agent.sampling, "reasoning_effort");
+    return effort.empty() ? text(provider.options.value("extra_body", json::object()), "reasoning_effort") : effort;
+}
+
+// The workspace and whether the project files in it (and above it, up to the project root) are trusted.
+std::string workspace_line(const fs::path& ws) {
+    size_t dirs = 0;
+    std::string untrusted;
+    for (const auto& d : project_dirs(ws)) {
+        ++dirs;
+        if (!trusted(d.dir)) untrusted += (untrusted.empty() ? "" : ", ") + d.dir.string();
+    }
+    return "workspace: " + ws.string() + "  (" +
+           (dirs == 0 ? "no project files here, nothing to trust"
+            : untrusted.empty() ? "trusted"
+                                : "NOT trusted: " + untrusted + "; its MAID.md, settings and tools are not used until :trust") +
+           ")\n";
+}
+
+// The key a provider takes, by the variable that supplies it and whether that is set; never the value.
+std::string key_text(const Provider& provider) {
+    std::string out;
+    if (!provider.api_key_env.empty()) {
+        const char* v = std::getenv(provider.api_key_env.c_str());
+        out = provider.api_key_env + ": " + (v && *v ? "set" : "not set");
+    }
+    if (!provider.api_key_command.empty()) out += (out.empty() ? "" : "; ") + std::string("api_key_command configured");
+    return out.empty() ? "no key" : out;
+}
+
+// What a 429 left on the account behind `provider`, shared by every session of this process.
+std::string hold_text(const AccountState& a) {
+    if (a.breaker) return "CIRCUIT BREAKER open: nothing is sent to it for " + seconds_text(a.hold_ms) + " more (five rate limits in a short time)";
+    if (a.hold_ms > 0) return "rate limit: every request holds " + seconds_text(a.hold_ms) + " more";
+    return "no rate-limit hold";
+}
+
+// :usage: per model what this session sent and the catalog-priced estimate of it, the account's concurrency and holds,
+// the session's total, and what is kept across sessions. Estimates throughout, never a bill.
+std::string usage_text(const SessionCommands::Session& s) {
+    const Agent& agent = s.agent;
+    const Agent::UsageReport u = agent.usage();
+    auto [current, current_name] = resolve_model(agent.providers, agent.model);
+    auto provider_of = [&](const std::string& name) -> const Provider* {
+        for (const auto& p : agent.providers) {
+            if (p.name == name) return &p;
+        }
+        return nullptr;
+    };
+    std::string out = "usage this session (estimates: tokens as the providers reported them, spend from the catalog's prices, not a bill)\n";
+    if (u.by_model.empty()) out += "no model call yet\n";
+    long hit = 0, calls = 0;
+    std::set<std::string> providers = {current.name};
+    for (const auto& [key, m] : u.by_model) {
+        providers.insert(m.provider);
+        hit += m.cached;
+        calls += m.calls;
+        out += key + "\n  requests " + std::to_string(m.calls) + "; tokens in " + std::to_string(m.input) + " (cache hit " + std::to_string(m.cached) + ", cache miss " +
+               std::to_string(m.input - m.cached) + "), out " + std::to_string(m.output) + "\n";
+        const Provider* p = provider_of(m.provider);
+        if (const ApiModel* priced = find_api_model(api_models(), m.provider, m.model)) {
+            std::string period = price_period(priced->pricing, std::time(nullptr)).value("name", "");
+            out += "  spend ~" + format_cost(m.cost, priced->pricing.value("currency", "")) + " est." + (period.empty() ? "" : " (prices in force now: " + period + ")") + "\n";
+        } else if (p && !p->remote()) {
+            out += "  no spend: a local model\n";
+        } else {
+            out += std::string("  no spend counted: the catalog does not price it") + (p && p->metered() ? " (it is metered: its bill or plan has the real figure)" : "") + "\n";
+        }
+        if (p) {
+            AccountState a = account_state(*p, m.model);
+            out += a.cap > 0 ? "  concurrency: " + std::to_string(a.open) + " open of " + std::to_string(a.cap) + " (max_concurrent), " + std::to_string(a.waiting) + " waiting\n"
+                             : "  concurrency: no cap (max_concurrent is not set for it)\n";
+        }
+    }
+    if (!u.by_model.empty()) {
+        out += "session total: " + std::to_string(calls) + " requests; tokens in " + std::to_string(u.total_input) + " (cache hit " + std::to_string(hit) + ", cache miss " +
+               std::to_string(u.total_input - hit) + "), out " + std::to_string(u.total_output) + "; " +
+               (u.cost > 0 ? "spend ~" + format_cost(u.cost, u.currency) + " est." : "no spend counted") + "\n";
+    }
+    out += context_line(u, current, s.turns);
+    if (agent.budget_tokens > 0) out += "budget: " + std::to_string(u.total_input + u.total_output) + " of " + std::to_string(agent.budget_tokens) + " tokens (:budget)\n";
+    out += "providers (the account's holds and open requests are shared by every session in this process):\n";
+    for (const auto& name : providers) {
+        const Provider* p = provider_of(name);
+        if (p) out += "  " + name + "  " + key_text(*p) + "; " + hold_text(account_state(*p, "")) + "\n";
+    }
+    std::string kept;
+    for (const auto& a : session_cost_averages()) {
+        kept += (kept.empty() ? "" : "; ") + std::to_string(a.sessions) + " sessions, ~" + format_cost(a.average * a.sessions, a.currency) + " in all, average ~" + format_cost(a.average, a.currency);
+    }
+    out += "all sessions: tokens per provider account are not kept across sessions; each session's cost estimate is, locally in <state>/costs.json" +
+           (kept.empty() ? std::string(", and none is there yet") : ": " + kept) + "\n";
+    out += "Output counts reasoning tokens where the provider includes them in it; MAID does not break them out. Spend of a subagent and of the reviewer is in the totals.";
+    return out;
+}
+
 std::string todo_text(const std::vector<TodoItem>& todo) {
     if (todo.empty()) return "";
     size_t done = 0;
@@ -109,7 +237,7 @@ bool SessionCommands::owns(const std::string& name) {
 }
 
 // Section 7: :mode (tightening freely, loosening up to edit), :model, :think, :compact, :rename, :todo, :tools,
-// :status, adding a :forbid term, lowering :budget and :trip. Everything else is local only.
+// :status, :usage, adding a :forbid term, lowering :budget and :trip. Everything else is local only.
 bool SessionCommands::remote_allowed(const std::string& line, Mode current, std::string& why) {
     std::istringstream in(line);
     std::string typed, arg;
@@ -117,7 +245,7 @@ bool SessionCommands::remote_allowed(const std::string& line, Mode current, std:
     std::getline(in >> std::ws, arg, '\0');
     std::string cmd = command_name(typed);
     why = "`:" + typed + "` is not available to a remote client";
-    static const std::set<std::string> open = {"model", "think", "compact", "rename", "todo", "tools", "status", "trip", "steering"};
+    static const std::set<std::string> open = {"model", "think", "compact", "rename", "todo", "tools", "status", "usage", "trip", "steering"};
     if (open.count(cmd)) return true;
     if (cmd == "mode") {
         auto m = parse_mode(arg);
@@ -486,19 +614,34 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
             StatusReport report = status_report(services());
             report.lazy_lock = lazy_lock_summary(lazy_lock_state(lazy_lock_path(s.settings.lazy_lock)));
             std::string text = format_status(report);
+            const Agent::UsageReport u = agent.usage();
+            text += "session: " + s.id + (s.title.empty() ? "  (untitled)" : "  \"" + s.title + "\"") + "\n";
+            text += "transcript: " + log_path(s) + "\n";
             text += "model: " + name + " via " + provider.name + " at " + provider.base_url + (provider.remote() ? "  [REMOTE: data leaves this machine]" : "  [local]") + "\n";
-            text += "session: " + log_path(s) + "\n";
-            text += cost_line(agent.usage());
+            std::string answered = u.last_served.empty() ? u.last_model : u.last_served + " (asked for " + u.last_model + ")";
+            if (!answered.empty() && answered != provider.name + "/" + name) text += "last answered by: " + answered + "\n";
+            std::string effort = effort_text(provider, agent);
+            text += std::string("thinking: ") + (agent.think ? "on" : "off") + (effort.empty() ? (agent.think ? ", the provider's default reasoning effort" : "") : ", reasoning effort " + effort) + "\n";
+            text += context_line(u, provider, s.turns);
+            text += cost_line(u);
             text += "mode: " + std::string(mode_name(agent.mode.load())) + (s.running ? "  (working)" : "  (idle)");
-            if (!s.tier.empty()) text += "\n" + s.tier;
             if (size_t q = agent.queued()) text += "  " + std::to_string(q) + " queued  -> :w now";
+            text += std::string("\nharness: ") + (agent.review_with_model ? "smart (a model reviews what the rules allow)" : "dumb (the rule list alone)");
+            if (!s.tier.empty()) text += "\n" + s.tier;
+            text += "\n" + workspace_line(agent.harness().workspace());
+            text += s.daemon + "\n";
+            text += "background tasks: " + (s.settings.max_tasks <= 0 ? std::string("off (max_tasks = 0)")
+                                            : std::to_string(s.tasks_running) + " running of " + std::to_string(s.tasks_started) + " started (max_tasks " + std::to_string(s.settings.max_tasks) + ")");
             if (!agent.tools().empty() || !agent.script_tools().empty()) {
                 text += "\ntools:";
                 for (const auto& t : agent.tools()) text += " " + t.name;
                 for (const auto& t : agent.script_tools()) text += " " + t.name;
             }
             if (std::string todo = todo_text(agent.todo()); !todo.empty()) text += "\n" + todo;
+            text += "\n:usage has the tokens, estimated spend, concurrency and rate-limit state per model";
             out.info(text);
+        } else if (cmd == "usage") {
+            out.info(usage_text(s));
         } else if (cmd == "steering") {
             const SteeringSettings& st = s.settings.steering;
             auto list = [](const std::vector<std::string>& v) {
