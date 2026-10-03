@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ComfyMaid Review (local)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app"><p style="padding:16px">Loading the review. If this stays, vendor/vue.global.prod.js or data.js is missing from this folder: run build_local.py again.</p></div>
+
+<script type="text/x-template" id="tpl-app">
+<div class="wrap">
+  <header>
+    <h1>{{ DATA.title }}</h1>
+    <p class="sub">Since: {{ DATA.since }}. Every box saves itself half a second after you stop typing. Page version {{ VERSION }}.</p>
+  </header>
+  <div class="scrollcue" aria-hidden="true"><span :style="{ width: scrollPct + '%' }"></span></div>
+  <p class="errbar" v-if="pageErr">Something broke on this page: {{ pageErr }}. Tell Claude; the details are saved with your answers.</p>
+  <div class="panel" id="conflict" role="alert" v-if="conflict">
+    <span>Another writer saved this review first, so your last change was not written, and the page now shows their version. Nothing was merged. Your version is kept until you leave this page.</span>
+    <div class="row"><button type="button" class="primary" id="conflict-mine" @click="downloadMine">Download my version</button><button type="button" id="conflict-ok" @click="dismissConflict">Keep their version</button></div>
+  </div>
+  <div class="bar">
+    <span class="grow">
+      <span class="status" :class="{ warn: status.warn }" role="status">{{ status.text }}</span><br>
+      <span class="counts" id="counts">{{ counts.done }} of {{ counts.total }} open decision boxes answered<template v-if="meta.submitted"> · submitted</template></span>
+      <span class="prog" aria-hidden="true" :title="counts.closed + ' of ' + counts.cards + ' topics resolved'"><span :style="{ width: counts.pct + '%' }"></span></span>
+    </span>
+    <span class="folder" :class="{ warn: backend.name === 'fsaccess' && (folder.mode === 'error' || folder.mode === 'needs-permission') }" id="folder-line">{{ storageLine }}
+      <button type="button" class="small" id="link-folder" v-if="backend.name === 'fsaccess' && (folder.mode === 'unlinked' || folder.mode === 'none')" @click="linkFolder">Link this folder</button>
+      <button type="button" class="small" id="relink-folder" v-if="backend.name === 'fsaccess' && (folder.mode === 'needs-permission' || folder.mode === 'error')" @click="regrant">Allow folder access</button>
+      <button type="button" class="small" id="change-folder" v-if="backend.name === 'fsaccess' && folder.mode === 'linked'" @click="linkFolder">Change folder</button>
+    </span>
+    <span class="flag"><label class="switch" for="flag-bridge"><input type="checkbox" role="switch" id="flag-bridge" v-model="state.flags.ctrl_g_bridge" @change="onBridge"><span class="slider" aria-hidden="true"></span> Ctrl+G bridge</label><span class="fb err" aria-live="polite">{{ state.flags.ctrl_g_bridge ? 'Not built yet: the switch only records your choice.' : '' }}</span></span>
+    <button type="button" id="save-file" @click="saveFile" title="Download the full state as an answers file">Save answers to file</button>
+    <button type="button" id="load-file" @click="$refs.file.click()" title="Restore from an answers file saved here or from the claude.ai version">Load answers from file</button>
+    <input type="file" ref="file" id="file-input" accept=".json,application/json" hidden @change="loadFile">
+    <button type="button" id="pull" @click="refresh" title="Save what you have, then read replies.js, answers.js and this browser's saved answers again">Data Refresh</button>
+    <button type="button" id="fold-all" @click="collapseAll">Collapse all boxes</button>
+    <button type="button" id="unfold-all" @click="expandAll">Expand all boxes</button>
+    <button type="button" class="primary" id="submit" @click="onSubmit('top')">Submit</button>
+  </div>
+  <confirm-panel where="top"></confirm-panel>
+  <div id="components" class="list">
+    <section class="comp" v-for="def in comps" :key="def.id" :aria-label="def.title">
+      <div class="comp-head"><h2>{{ def.title }}</h2><button type="button" class="small" v-if="def.removable !== false" :aria-label="'Remove ' + def.title + ' from this page'" title="Remove from this page (until it reloads)" @click="removed[def.id] = true">×</button></div>
+      <component :is="COMPONENTS[def.id]" :def="def"></component>
+    </section>
+  </div>
+  <div class="docstate" id="docstate">
+    <strong>This document:</strong>
+    <span class="chip" :class="state.doc_status">{{ state.doc_status }}</span>
+    <span class="note">{{ doc.open }} open · {{ doc.addressed }} addressed · {{ doc.resolved }} resolved</span>
+    <span class="note" v-if="state.doc_status === 'staged'">Staged for resolution{{ state.resolve_requested ? ', marked by you' : '' }}. Claude resolves it once every topic is resolved, or when you ask.</span>
+    <button type="button" @click="state.doc_status = state.doc_status === 'open' ? 'addressed' : 'open'">{{ state.doc_status === 'open' ? 'Mark document addressed' : 'Reopen document' }}</button>
+    <button type="button" v-if="state.doc_status !== 'resolved'" :disabled="(state.doc_status !== 'addressed' && state.doc_status !== 'staged') || doc.resolved !== counts.cards" :title="((state.doc_status !== 'addressed' && state.doc_status !== 'staged') || doc.resolved !== counts.cards) ? 'Every topic must be resolved, and the document addressed, first' : ''" @click="state.doc_status = 'resolved'">Mark document resolved</button>
+    <span class="note" v-if="state.doc_status === 'open'">Topics can be marked resolved once the document is marked addressed.</span>
+    <span class="note" v-if="doc.open === 0 && doc.resolved < counts.cards">Everything is addressed. A topic that has grown new depth gets a new artifact rather than more here.</span>
+  </div>
+  <section aria-labelledby="h-split" class="splitbox"><h2 id="h-split">Split and lineage <span class="chip addressed">beta · active development</span></h2>
+    <div id="lineage" class="list">
+      <p class="note" v-if="lineage.parent">Split from <a :href="lineage.parent.url" target="_blank" rel="noopener">{{ lineage.parent.id || lineage.parent.url }}</a></p>
+      <p class="note" v-for="c in (lineage.children || [])" :key="c.url">Split into <a :href="c.url" target="_blank" rel="noopener">{{ c.id || c.url }}</a> · {{ relName(c.relation) }} · {{ (c.cards || []).length }} topics</p>
+      <div class="group" v-if="lineage.deltas && lineage.deltas.length"><span class="fl">Changes across linked pages</span><p class="note" v-for="(d, i) in lineage.deltas" :key="i"><inl :text="(d.at ? fmt(d.at) + ': ' : '') + d.text"></inl></p></div>
+      <p class="note" v-if="!lineage.parent && !(lineage.children || []).length">No splits yet; this page has no parent.</p>
+    </div>
+    <p class="note">Tick Pick for split on any cards, choose how tightly the new page stays tied to this one, and request the split. Claude makes the new page, links both ways, and marks the moved topics here.</p>
+    <fieldset class="rel" id="rel"><legend class="fl">Relationship</legend>
+      <label class="check"><input type="radio" name="rel" value="tight" v-model="rel"> Tight: resolving them there resolves them here</label>
+      <label class="check"><input type="radio" name="rel" value="linked" v-model="rel"> Linked: this page can't be resolved until that one is</label>
+      <label class="check"><input type="radio" name="rel" value="loose" v-model="rel"> Loose: related only; each resolves on its own</label>
+    </fieldset>
+    <field-box id="split-note" label="Note for the split (optional)"></field-box>
+    <div class="row"><button type="button" id="split-go" @click="requestSplit">Request split{{ Object.keys(state.picked).length ? ' (' + Object.keys(state.picked).length + ' topic' + (Object.keys(state.picked).length === 1 ? '' : 's') + ')' : '' }}</button><span class="fb" :class="splitMsg.ok ? 'ok' : 'err'" aria-live="polite">{{ splitMsg.text }}</span></div>
+    <div id="split-list" class="list"><p class="note" v-for="sp in state.splits" :key="sp.id">Split {{ sp.id }} · {{ sp.cards.length }} topics · {{ relName(sp.relation) }} · {{ sp.status }} · {{ fmt(sp.at) }}</p></div>
+  </section>
+  <div class="legend" aria-label="Status colors"><span class="chip open">open: needs attention</span><span class="chip addressed">addressed: answered, not closed</span><span class="chip resolved">resolved: closed</span><span class="note">Micaiah's prompts are on warm cards with a solid label; Claude's on plain cards.</span></div>
+  <section aria-labelledby="h-issues"><h2 id="h-issues">Decisions waiting on you</h2><div id="issues" class="list"><review-card v-for="c in DATA.issues" :key="c.id" :item="c" kind="issue"></review-card></div></section>
+  <section aria-labelledby="h-msgs"><h2 id="h-msgs">The conversation since you stopped reading</h2><div id="messages" class="list"><review-card v-for="c in DATA.messages" :key="c.id" :item="c" :kind="c.who"></review-card></div></section>
+  <section aria-labelledby="h-misc" id="misc-sec" v-if="misc.length"><h2 id="h-misc">Misc / Uncovered / Ungrouped</h2><p class="note">Things that don't slot in above, oldest first.</p><div id="misc" class="list"><review-card v-for="c in misc" :key="c.id" :item="c" :kind="c.who"></review-card></div></section>
+  <section aria-labelledby="h-own"><h2 id="h-own">This page's own improvements and to-do</h2><div id="own" class="list">
+    <div class="group" v-for="g in own" :key="g[0]"><h3>{{ g[0] }}</h3><ul><li v-for="(t, i) in g[1]" :key="i"><inl :text="t"></inl></li></ul></div>
+  </div></section>
+  <section aria-labelledby="h-after"><h2 id="h-after">After Prompt</h2><p class="note">Anything you'd otherwise send as a separate message, so threads don't drift apart.</p>
+    <div id="after"><field-box id="after-prompt" label="After Prompt" :rows="6"></field-box></div>
+    <details class="sent" id="after-hist-box"><summary id="after-hist-sum">After Prompt history ({{ state.after_prompts.length }})</summary><div id="after-hist" class="list">
+      <p class="note" v-if="!afterHist.length">No After Prompts submitted yet.</p>
+      <div class="hist" v-for="e in afterHist" :key="e.n">
+        <span class="lbl">Followed reply</span><p class="note">{{ e.before ? excerpt(e.before.text) : 'none before it' }}</p>
+        <span class="lbl">After Prompt #{{ e.n }} · {{ fmt(e.p.at) }}</span><p>{{ e.p.text }}</p>
+        <span class="lbl">Reply</span><p :class="e.reply ? 'reply' : 'note'">{{ e.reply ? e.reply.text : 'No reply yet.' }}</p>
+        <button type="button" class="small" v-if="e.reply && e.reply.sorted_into && hasCard(e.reply.sorted_into)" @click="jump(e.reply.sorted_into)">Read the full reply</button>
+      </div>
+    </div></details>
+    <div class="row"><label class="check" for="resolve-mark"><input type="checkbox" id="resolve-mark" :checked="state.resolve_requested" @click="onMark"> Mark for resolution</label><button type="button" class="primary" id="submit-end" @click="onSubmit('end')">Submit</button><span class="note">Tab here from the last box; Enter or Space works on both.</span></div>
+    <confirm-panel where="end"></confirm-panel>
+  </section>
+
+  <div class="modal" id="modal" v-if="modalOpen" role="dialog" aria-modal="true" aria-labelledby="modal-title" @keydown="modalKey">
+    <div class="modal-box">
+      <h2 id="modal-title">Mark this document for resolution?</h2>
+      <p class="note">On Submit it is staged and flagged so Claude resolves it once every topic is resolved. You can untick it before submitting.</p>
+      <div class="row"><button type="button" class="primary" id="modal-yes" @click="closeModal(true)">Confirm resolution marker</button><button type="button" id="modal-no" @click="closeModal(false)">Cancel</button></div>
+    </div>
+  </div>
+
+  <aside id="side-panel" :class="{ open: sideOpen }" aria-labelledby="h-side">
+    <div class="row side-head"><h2 id="h-side">Side Prompt</h2><button type="button" class="small" id="side-close" aria-label="Close the Side Prompt" @click="openSide(false)">Close</button></div>
+    <div class="recent" id="recent" aria-live="polite"><strong>Most Recent Reply</strong>
+      <p class="note" id="recent-body" v-if="!recent">No reply yet. Claude's answer to a side prompt appears here once it has been sorted into the page and replies.js is read again (Data Refresh).</p>
+      <template v-else>
+        <p id="recent-body">{{ recent.text }}</p>
+        <span class="note">{{ recent.canned ? 'Note from this page' : 'Reply' + (recent.side_prompt ? ' to side prompt #' + recent.side_prompt : '') + (recent.at ? ', ' + fmt(recent.at) : '') }}</span>
+        <a v-if="recent.sorted_into && hasCard(recent.sorted_into)" :href="'#c-' + recent.sorted_into" @click.prevent="jump(recent.sorted_into)"> · see it in the page</a>
+      </template>
+    </div>
+    <p class="note">Send to Claude saves this prompt and hands the answers file over (beside the page when the folder is linked, otherwise a download). Save only keeps it unanswered, by your choice; Send all unanswered hands over the file for every side prompt still without a reply. One left unsent goes out with the overall Submit. The ↪ beside a box adds a reference to it here.</p>
+    <p class="errbar" v-if="pageErr">Something broke on this page: {{ pageErr }}. Tell Claude; the details are saved with your answers.</p>
+    <div id="side-refs" class="row">
+      <span class="refchip" v-for="id in refs" :key="id">{{ refLabel(id) }}<button type="button" :aria-label="'Go to ' + id" @click="goto(id)">go</button><button type="button" :aria-label="'Remove the reference to ' + id" @click="includeRef(id)">×</button></span>
+    </div>
+    <div id="side"><field-box id="side-prompt" label="Side Prompt" :rows="4"></field-box></div>
+    <div class="row"><button type="button" class="primary" id="side-notify" @click="sideSubmit(true)">Send to Claude</button><button type="button" id="side-submit" @click="sideSubmit(false)">Save only</button><button type="button" id="side-all" @click="sideAll">Send all unanswered</button></div>
+    <p class="fb" :class="msg.ok ? 'ok' : 'err'" id="side-msg" aria-live="polite">{{ msg.text }}</p>
+    <p class="note" :class="{ warn: status.warn }" id="side-save">{{ status.text }}</p>
+    <h3 class="hist-h">History</h3>
+    <div id="side-sent" class="list">
+      <p class="note" v-if="!sideHist.length">No side prompts sent yet.</p>
+      <div class="hist" v-for="e in sideHist" :key="e.n">
+        <span class="lbl">Followed reply</span><p class="note">{{ e.before ? excerpt(e.before.text) : 'none before it' }}</p>
+        <span class="lbl">Side prompt #{{ e.n }} · {{ fmt(e.p.at) }}{{ e.p.with === 'document' ? ' · sent with the document' : '' }}</span><p>{{ e.p.text }}</p>
+        <span class="lbl">Reply</span><p :class="e.reply ? 'reply' : 'note'">{{ e.reply ? e.reply.text : 'No reply yet.' }}</p>
+        <button type="button" class="small" v-if="e.reply && e.reply.sorted_into && hasCard(e.reply.sorted_into)" @click="jump(e.reply.sorted_into)">Read the full reply</button>
+      </div>
+    </div>
+    <details class="sent evlog" id="events-box"><summary>Events ({{ meta.events.length }}, last 30)</summary>
+      <p v-for="(e, i) in meta.events.slice().reverse()" :key="i">{{ new Date(e.at).toLocaleTimeString() }} · {{ e.what }} · {{ e.ok ? 'ok' : 'failed' }}{{ e.detail ? ' · ' + e.detail : '' }}</p>
+    </details>
+    <p class="note" id="side-ver">Page version {{ VERSION }}.</p>
+  </aside>
+  <button id="side-bubble" type="button" aria-controls="side-panel" :aria-expanded="sideOpen ? 'true' : 'false'" aria-label="Open the Side Prompt" @click="openSide(!sideOpen)"><svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v10H9l-5 4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span id="side-dot" v-if="sideDot"></span></button>
+</div>
+</script>
+
+<script type="text/x-template" id="tpl-confirm">
+<div class="panel" id="confirm" v-if="confirmAt === where">
+  <span>{{ confirmText }}</span>
+  <div class="row"><button type="button" class="primary" id="confirm-yes" @click="submit">Submit anyway</button><button type="button" id="confirm-no" @click="confirmAt = null">Keep answering</button></div>
+</div>
+</script>
+
+<script type="text/x-template" id="tpl-field">
+<div class="blk" :class="{ folded: folded }">
+  <div class="fhead">
+    <button type="button" class="fold" :aria-label="folded ? 'Expand this box' : 'Collapse this box'" @click="state.folded[id] = !folded">{{ folded ? '▸' : '▾' }}</button>
+    <label class="fl" v-if="label" :for="'f-' + id">{{ label }}</label>
+    <span class="preview" v-if="folded">{{ quietEmpty ? 'no reply needed; open to write one' : preview(state.answers[key]) }}</span>
+    <span class="xref" v-if="others.length">Linked with <template v-for="(o, i) in others" :key="o"><template v-if="i">, </template><a :href="'#f-' + o" @click.prevent="goto(o)">{{ cardLabel(o) }}</a></template></span>
+    <button type="button" class="small" v-if="!special" :aria-pressed="refOn ? 'true' : 'false'" :title="refOn ? 'Remove this box\'s reference from the Side Prompt' : 'Add a reference to this box to the Side Prompt'" @click="includeRef(id)">{{ refOn ? '↪ referenced' : '↪ reference' }}</button>
+  </div>
+  <textarea :id="'f-' + id" :data-field="id" :data-canon="key" :rows="rows || 2" :aria-label="label ? null : 'Your reply to the text above'" v-model="state.answers[key]"></textarea>
+  <label class="pick"><input type="checkbox" :id="'p-' + id" :data-field="id" v-model="picks[id]">include in combine</label>
+  <div class="blk kept" v-if="state.kept[id]">
+    <label class="fl" :for="'k-' + id">Kept from a combined box (edit or clear it as you like)</label>
+    <textarea :id="'k-' + id" v-model="keptText"></textarea>
+  </div>
+</div>
+</script>
+
+<script type="text/x-template" id="tpl-slot">
+<field-box v-if="!mid" :id="id" :label="label" :rows="rows"></field-box>
+<p class="note" v-else-if="merge.members[0] !== id">Your reply here is in the combined box above.</p>
+<div class="blk" v-else>
+  <label class="fl" :for="'m-' + mid">Combined box for {{ merge.members.length }} parts (keep the ── lines to split it back cleanly)</label>
+  <textarea class="combined" :id="'m-' + mid" v-model="merge.text"></textarea>
+  <div class="row"><button type="button" @click="revert(mid)">Back to default</button><span class="note">Nothing is lost: parts go back to their boxes, or the whole text is kept beside the first box.</span></div>
+</div>
+</script>
+
+<script type="text/x-template" id="tpl-block">
+<template v-if="b.type === 'code'"><pre>{{ b.text }}</pre><slot-box :id="b.id"></slot-box></template>
+<div class="blk" v-else-if="b.type === 'p'"><p class="txt"><inl :text="b.text"></inl></p><slot-box :id="b.id"></slot-box></div>
+<div class="group" v-else>
+  <template v-if="b.header"><p class="txt"><inl :text="b.header.text"></inl></p><slot-box :id="b.header.id"></slot-box></template>
+  <component :is="b.ordered ? 'ol' : 'ul'"><li v-for="it in b.items" :key="it.id" :style="it.depth ? { marginLeft: it.depth + 'em' } : null"><p class="txt"><inl :text="it.text"></inl></p><slot-box :id="it.id"></slot-box></li></component>
+</div>
+</script>
+
+<script type="text/x-template" id="tpl-card">
+<details class="card" :class="['st-' + st, kind === 'you' ? 'you' : '', { combining: combining[item.id] }]" :id="'c-' + item.id" :open="openCards[item.id]" @toggle="openCards[item.id] = $event.target.open">
+  <summary><span class="who" :class="kind">{{ kindLabel }}</span><span class="ttl"><inl :text="item.label || item.title"></inl></span><span class="chip" :class="st">{{ st }}</span><a class="moved" v-if="moved" :href="moved" target="_blank" rel="noopener">moved to a split page</a></summary>
+  <div class="body">
+    <p class="note" v-if="item.at">{{ fmt(item.at) }}</p>
+    <p class="ctx" v-if="item.context"><inl :text="item.context"></inl></p>
+    <p class="xref" v-if="xrefs.length"><template v-for="(l, i) in xrefs" :key="l[1]"><template v-if="i"> · </template><a :href="'#c-' + l[1]" @click.prevent="jump(l[1])">{{ l[0] }}</a></template></p>
+    <div v-if="item.fields" :class="item.fields.length > 1 ? 'group' : 'blk'">
+      <slot-box v-for="f in item.fields" :key="f.id" :id="f.id" :label="f.label"></slot-box>
+      <slot-box :id="item.id + '-more'" label="More (one bullet per line, if you need it)"></slot-box>
+    </div>
+    <block-view v-else v-for="b in item.blocks" :key="b.id" :b="b"></block-view>
+    <p class="note warn" v-if="combineMsg[item.id]">{{ combineMsg[item.id] }}</p>
+    <div class="row">
+      <label class="check"><input type="checkbox" :id="'a-' + item.id" :checked="st !== 'open'" @change="onAddressed">Addressed</label>
+      <label class="check" :title="resolveTip"><input type="checkbox" :id="'r-' + item.id" :checked="st === 'resolved'" :disabled="resolveLocked" @change="onResolved">Resolved</label>
+      <label class="check"><input type="checkbox" :id="'s-' + item.id" v-model="pickForSplit">Pick for split</label>
+      <button type="button" @click="foldIds(ids, true)">Collapse boxes</button>
+      <button type="button" @click="foldIds(ids, false)">Expand boxes</button>
+      <button type="button" @click="toggleCombine">{{ combining[item.id] ? 'Cancel combining' : 'Combine boxes' }}</button>
+      <button type="button" v-if="combining[item.id]" @click="combine(item)">Combine selected</button>
+    </div>
+  </div>
+</details>
+</script>
+
+<script type="text/x-template" id="tpl-click">
+<div class="ct">
+  <p class="note">Click the button, or Ctrl+click the test link, once. Two clicks closer than 80 ms apart are flagged as a double fire.</p>
+  <div class="row">
+    <button type="button" class="target" @mousedown="hit($event)" @mouseup="hit($event)" @click="hit($event)" @dblclick="hit($event)" @auxclick="hit($event)">Click me once</button>
+    <a href="#click-test" @mousedown="hit($event, true)" @mouseup="hit($event, true)" @click="hit($event, true)" @dblclick="hit($event, true)" @auxclick="hit($event, true)">Ctrl+click this test link</a>
+  </div>
+  <div class="ctr">
+    <div v-for="l in labels" :key="l[0]"><b>{{ c[l[0]] }}</b>{{ l[1] }}</div>
+    <div><b>{{ last }}</b>since previous click</div>
+  </div>
+  <p class="fb err">{{ flag }}</p>
+  <button type="button" class="small" @click="reset">Reset counts</button>
+  <label class="fl" for="ct-msg">Message with the count (optional)</label>
+  <textarea id="ct-msg" rows="2" v-model="note"></textarea>
+  <div class="row"><button type="button" class="primary" id="ct-send" :disabled="busy" @click="send">Submit click</button></div>
+  <p class="fb" :class="result.ok ? 'ok' : 'err'">{{ result.text }}</p>
+</div>
+</script>
+
+<!-- Classic scripts only (module imports are blocked over file://). Served by MAIC over http the shared copy of Vue is used, otherwise the one in this folder. -->
+<script>
+  window.REVIEW_HTTP = /^https?:$/.test(location.protocol);
+  document.write('<script src="' + (window.REVIEW_HTTP ? '../_vendor/vue/vue.global.prod.js' : './vendor/vue.global.prod.js') + '"><\/script>');
+</script>
+<script>
+  if (!window.Vue) document.write('<script src="./vendor/vue.global.prod.js"><\/script>');
+  if (!window.REVIEW_HTTP) document.write('<script src="./answers.js"><\/script>');
+</script>
+<script src="./data.js"></script>
+<script src="./replies.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>

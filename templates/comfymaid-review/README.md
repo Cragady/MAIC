@@ -49,9 +49,35 @@ The user ticks Pick for split on cards, chooses a relationship and requests the 
 
 Relationships: `tight` (resolving the topics there resolves them here), `linked` (the parent cannot be resolved until the child is), `loose` (related only; each resolves on its own).
 
+## Local version
+
+`local/` is the same page in Vue 3, built to run from plain files (`file://`) with no server, no packages and no network request. It does not run on claude.ai: the shared store, editing leases, comment notifications and live snapshots are gone. Everything else is kept: the same field ids, statuses, `folded`, `merges`, `kept`, `side_prompts`, `after_prompts`, `splits`, `picked`, `flags`, `events` and `key`, so an answers file moves between the two versions.
+
+```sh
+python3 local/build_local.py review.json            # writes ~/.local/state/maic/reviews/<id>/
+python3 local/build_local.py review.json -o DIR     # or somewhere else
+```
+
+Open `<folder>/index.html` (the command prints the `file://` URL). `example.json` style input also works: the script runs `build.py` on it first. The folder is generated and holds unique data; never commit it.
+
+* Files: `index.html` (the Vue templates), `app.js`, `style.css`, `vendor/vue.global.prod.js` (copied from `vendor/vue/`), `data.js` (`window.REVIEW_DATA`, rewritten on every build), `replies.js` (`window.REVIEW_REPLIES = {items: [], latest: null}`, written by Claude, never overwritten by a build) and `answers.js` (see Storage).
+* Why classic scripts: browsers block ES module imports over `file://` (Chrome and Firefox), but `<script src="./relative.js">` works. The app uses the global `Vue` build, which includes the in-page template compiler, so there is no build step.
+* Reactivity: every box is a `v-model` on `answers[id]`. Linked boxes (`links` in the data) bind the same entry, so editing one updates its partner in the same frame. A deep watcher on the saved state schedules the autosave, so no code path can change an answer without saving it.
+* Storage: one adapter, three backends, tried in this order, with the choice shown under the save status. The browser's `localStorage` (`review-draft:<id>`) is the per-browser draft in all three.
+  1. `http`, when MAIC serves the page over http(s). `GET data/answers.json` (relative to the page) returns the state with its revision in the `ETag`; `PUT` with `If-Match: <ETag>` writes it and returns the new `ETag`. With nothing stored yet the page sends `If-None-Match: *`. A 409 (or 412) means another writer saved first: the page loads their version, merges nothing, shows a banner, and offers "Download my version". The per-artifact token is read from `<meta name="maic-artifact-token">` and sent as `X-Maic-Artifact-Token`. Vue then loads from `../_vendor/vue/vue.global.prod.js`, falling back to `./vendor/`.
+  2. `fsaccess`, in Chromium over `file://`. "Link this folder" asks once for the page's own folder (it must contain `index.html`); the handle is kept in IndexedDB and the browser asks again each session ("Allow folder access", one click). While linked, every save also writes `answers.json` and `answers.js` (`window.REVIEW_ANSWERS = {...};`) beside `index.html`, one write at a time.
+  3. `download`, everywhere else (Firefox over `file://`). The page says plainly that it cannot write beside itself.
+* Which copy is newer: the saved state carries `rev` (a save counter) and `savedAt`. On load, and on Data Refresh, the page uses the newest of `localStorage`, `answers.js` and the server copy, by `rev` and then `savedAt`. A file from the claude.ai page has no `rev` and is ordered by `savedAt`.
+* Save answers to file downloads `<id>-answers.json` (the full state plus `key`); Load answers from file restores one, after which it is saved like any edit. Submit, Send to Claude and Send all unanswered hand the answers over through the active backend (the server, or `answers.json` beside the page) and download the file when neither works, saying where it went (`~/Downloads`). Save only keeps a side prompt unanswered without handing anything over.
+* Replies: Claude writes `replies.js` into the folder. Data Refresh saves, then re-reads `replies.js` by inserting a fresh `<script src="replies.js?t=...">` (tested: the changing query makes Chrome read the file again over `file://`), and re-reads the saved answers. Most Recent Reply, the Side Prompt history and the After Prompt history work as on the claude.ai page. Edits to `data.js` (statuses the agent settled, new cards) need a page reload; the draft survives it.
+* The click test has no comment channel to use, so its Submit click copies the counts to the clipboard and adds a `click test` entry to `events`, which goes out with the next answers file.
+* The page shows the Ctrl+G bridge switch and records `flags.ctrl_g_bridge`, as before; it still does nothing else.
+* Combine and Back to default read and write a linked box through its shared answer, so a linked partner's text is never lost on the way through.
+* The fonts are not fetched; the stacks fall back to local fonts. TypeScript is not used: nothing in a classic script setup makes it free.
+
 ## Future
 
-* No frameworks for now: plain JavaScript. If one is ever needed, Vue (Nuxt only when warranted); never React (Micaiah, 2026-10-03).
+* No frameworks in `page.html` for now: plain JavaScript. The local version (below) uses Vue 3; Nuxt only when warranted; never React (Micaiah, 2026-10-03).
 
 * Adding textareas (more boxes than the blocks give).
 * More expressive references from the Side Prompt (ranges, excerpts, whole cards).
