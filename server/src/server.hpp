@@ -49,6 +49,9 @@ int run_server_command(const std::vector<std::string>& args);
 // `maic artifact list|add|open|allow-insecure|watch|protocol ...` (docs/artifacts.md). Returns the exit code.
 int run_artifact_command(const std::vector<std::string>& args, bool text_base = false);
 
+// The usage block `maic server` or `maic artifact` prints, for `maic help`; empty for any other command.
+std::string usage_text(const std::string& command);
+
 // `maic channel [--artifact ID]... [--doc NAME]`: an MCP server on stdio for Claude Code's channels, one notification
 // per artifact event (docs/agent-kit.md). Returns the exit code.
 int run_channel_command(const std::vector<std::string>& args);

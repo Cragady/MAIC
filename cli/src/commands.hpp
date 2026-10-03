@@ -39,6 +39,23 @@ std::vector<std::string> complete_argument(const std::string& command, const std
 // ("modes", "harness", "sessions"). Prefix matching like vim; several matches give a list.
 std::string help_text(const std::string& topic);
 
+// One page of `:h`: its name as shown (":w" for a command), one-line summary and Markdown text.
+struct HelpPage {
+    std::string name;
+    std::string summary;
+    std::string text;
+};
+// The page `topic` names; none for the index, an unknown topic or several matches.
+std::optional<HelpPage> help_page(const std::string& topic);
+// The tags of a page's first line: `*artifact* *maic artifact*` gives "artifact" and "maic artifact".
+std::vector<std::string> help_tags(const HelpPage& page);
+// Markdown for a terminal, as `maic help` prints it: the tag line, `code` and **bold** styled by the theme of `paint`
+// (none: plain), the markers dropped either way. The wording and line breaks are the text's.
+std::string render_markdown(const std::string& text, const Settings* paint);
+// A page laid out like a man page: NAME, SYNOPSIS (`usage`, when the page's command has one), DESCRIPTION (the text,
+// rendered), FILES and SEE ALSO (the paths, docs and topics the text mentions).
+std::string render_help(const HelpPage& page, const std::string& usage, const Settings* paint);
+
 // What `maic open NAME` / `:open NAME` should run: a service opens its URL in the chosen browser (the remote
 // maic-server's copy when `remote` is set and answers), anything else opens the place's path with xdg-open.
 // With `folder`, the containing directory is opened in the file manager instead: a file place's parent, a

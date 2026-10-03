@@ -6,11 +6,13 @@
 #include "maic/http.hpp"
 #include "maic/places.hpp"
 #include "maic/status.hpp"
+#include "maic/theme.hpp"
 #include "maic/vendor.hpp"
 
 #include <algorithm>
 #include <cstdlib>
 #include <cctype>
+#include <regex>
 
 namespace maic {
 
@@ -530,47 +532,214 @@ std::vector<std::string> complete_argument(const std::string& command, const std
     return out;
 }
 
-std::string help_text(const std::string& topic_in) {
+namespace {
+
+// The page `topic` names, normalised and trimmed; when it names several, their names go to `several`.
+std::optional<HelpPage> find_page(const std::string& topic_in, std::vector<std::string>& several) {
     std::string topic = normalize(topic_in);
     while (!topic.empty() && topic.back() == ' ') topic.pop_back();
-    if (topic.empty() || topic == "topics") {
+    // Exact matches first, then prefixes, across commands and topics.
+    std::vector<HelpPage> exact, prefix;
+    auto consider = [&](const std::string& name, const std::vector<std::string>& aliases, const std::string& summary, const std::string& text, const std::string& shown) {
+        std::vector<std::string> names = aliases;
+        names.push_back(name);
+        for (const auto& n : names) {
+            if (normalize(n) == topic) {
+                exact.push_back({shown, summary, text});
+                return;
+            }
+        }
+        for (const auto& n : names) {
+            if (normalize(n).rfind(topic, 0) == 0) {
+                prefix.push_back({shown, summary, text});
+                return;
+            }
+        }
+    };
+    for (const auto& c : commands()) consider(c.name, c.aliases, c.summary, c.help, ":" + c.name);
+    for (const auto& t : topics()) consider(t.name, t.aliases, t.summary, t.text, t.name);
+    if (!exact.empty()) return exact.back();  // a topic and a command of the same name: the topic's page
+    if (prefix.size() == 1) return prefix.front();
+    // Several matches that are one name (a `:harness` command and a `harness` topic): the topic's page.
+    bool one_name = true;
+    auto bare = [](std::string n) { return n.rfind(":", 0) == 0 ? n.substr(1) : n; };
+    for (const auto& page : prefix) one_name = one_name && bare(page.name) == bare(prefix.front().name);
+    if (!prefix.empty() && one_name) return prefix.back();
+    for (const auto& page : prefix) several.push_back(page.name);
+    return std::nullopt;
+}
+
+bool is_index(const std::string& topic_in) {
+    std::string topic = normalize(topic_in);
+    while (!topic.empty() && topic.back() == ' ') topic.pop_back();
+    return topic.empty() || topic == "topics";
+}
+
+}  // namespace
+
+std::optional<HelpPage> help_page(const std::string& topic) {
+    std::vector<std::string> several;
+    if (is_index(topic)) return std::nullopt;
+    return find_page(topic, several);
+}
+
+std::string help_text(const std::string& topic_in) {
+    if (is_index(topic_in)) {
         std::string out = "*help* Type `:h TOPIC` (or `maic help TOPIC`) for one of these; a unique prefix is enough:\n\n**commands**\n";
         for (const auto& c : commands()) out += "  :" + c.name + (c.args.empty() ? "" : " " + c.args) + "  " + c.summary + "\n";
         out += "\n**topics and keys**\n";
         for (const auto& t : topics()) out += "  " + t.name + "  " + t.summary + "\n";
         return out;
     }
-    // Exact matches first, then prefixes, across commands and topics.
-    std::vector<std::pair<std::string, const std::string*>> exact, prefix;
-    auto consider = [&](const std::string& name, const std::vector<std::string>& aliases, const std::string& text, const std::string& shown) {
-        std::vector<std::string> names = aliases;
-        names.push_back(name);
-        for (const auto& n : names) {
-            std::string nn = normalize(n);
-            if (nn == topic) {
-                exact.push_back({shown, &text});
-                return;
-            }
-        }
-        for (const auto& n : names) {
-            if (normalize(n).rfind(topic, 0) == 0) {
-                prefix.push_back({shown, &text});
-                return;
-            }
-        }
-    };
-    for (const auto& c : commands()) consider(c.name, c.aliases, c.help, ":" + c.name);
-    for (const auto& t : topics()) consider(t.name, t.aliases, t.text, t.name);
-    if (!exact.empty()) return *exact.back().second;  // a topic and a command of the same name: the topic's page
-    if (prefix.size() == 1) return *prefix.front().second;
-    // Several matches that are one name (a `:harness` command and a `harness` topic): the topic's page.
-    bool one_name = true;
-    auto bare = [](std::string n) { return n.rfind(":", 0) == 0 ? n.substr(1) : n; };
-    for (const auto& [name, text] : prefix) one_name = one_name && bare(name) == bare(prefix.front().first);
-    if (!prefix.empty() && one_name) return *prefix.back().second;
-    if (prefix.empty()) return "no help for '" + topic_in + "'. `:h` lists the topics.";
+    std::vector<std::string> several;
+    if (auto page = find_page(topic_in, several)) return page->text;
+    if (several.empty()) return "no help for '" + topic_in + "'. `:h` lists the topics.";
     std::string out = "'" + topic_in + "' matches several topics:\n";
-    for (const auto& [name, text] : prefix) out += "  " + name + "\n";
+    for (const auto& name : several) out += "  " + name + "\n";
+    return out;
+}
+
+namespace {
+
+// The `*tag*` tokens a line starts with, one space apart (`\*` is an asterisk inside one); `rest` is what follows them.
+std::vector<std::string> leading_tags(const std::string& line, std::string& rest) {
+    std::vector<std::string> tags;
+    size_t i = 0;
+    while (i < line.size() && line[i] == '*') {
+        std::string tag;
+        size_t j = i + 1;
+        for (; j < line.size() && line[j] != '*'; ++j) {
+            if (line[j] == '\\' && j + 1 < line.size() && line[j + 1] == '*') ++j;
+            tag += line[j];
+        }
+        if (j >= line.size() || tag.empty() || (j + 1 < line.size() && line[j + 1] != ' ')) break;
+        tags.push_back(tag);
+        i = j + 2;
+    }
+    rest = line.substr(std::min(i, line.size()));
+    return tags;
+}
+
+struct Painter {
+    const Settings* settings;
+    ColorDepth depth;
+    explicit Painter(const Settings* paint) : settings(paint), depth(paint ? color_depth(paint->colors) : ColorDepth::Ansi16) {}
+    std::string operator()(const std::string& text, const char* role) const { return settings ? ansi_paint(text, settings->style(role), depth) : text; }
+};
+
+// Where the code span opened by the backticks at `open` ends: the next run of as many backticks (two or more let
+// the span hold a single one).
+size_t code_end(const std::string& line, size_t open) {
+    size_t ticks = line.find_first_not_of('`', open);
+    ticks = (ticks == std::string::npos ? line.size() : ticks) - open;
+    for (size_t at = open + ticks; (at = line.find('`', at)) != std::string::npos;) {
+        size_t run = line.find_first_not_of('`', at);
+        run = (run == std::string::npos ? line.size() : run) - at;
+        if (run == ticks) return at;
+        at += run;
+    }
+    return std::string::npos;
+}
+
+std::string render_inline(const std::string& line, const Painter& in) {
+    std::string out;
+    for (size_t i = 0; i < line.size();) {
+        size_t end = std::string::npos;
+        if (line.compare(i, 2, "**") == 0 && (end = line.find("**", i + 2)) != std::string::npos && end > i + 2) {
+            std::string bold = line.substr(i + 2, end - i - 2);
+            bold.erase(std::remove(bold.begin(), bold.end(), '`'), bold.end());
+            out += in(bold, "md_bold");
+            i = end + 2;
+        } else if (line[i] == '`' && (end = code_end(line, i)) != std::string::npos) {
+            size_t ticks = line.find_first_not_of('`', i);
+            if (ticks == std::string::npos) ticks = line.size();
+            ticks -= i;
+            std::string code = line.substr(i + ticks, end - i - ticks);
+            if (code.size() > 1 && code.front() == ' ' && code.back() == ' ') code = code.substr(1, code.size() - 2);
+            out += in(code, "md_code");
+            i = end + ticks;
+        } else {
+            out += line[i++];
+        }
+    }
+    return out;
+}
+
+std::string render_text(const std::string& text, const Painter& in) {
+    std::string out;
+    bool first = true;
+    for (size_t pos = 0; pos < text.size();) {
+        size_t nl = text.find('\n', pos);
+        std::string line = text.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+        if (first) {
+            std::string rest;
+            auto tags = leading_tags(line, rest);
+            for (size_t k = 0; k < tags.size(); ++k) out += (k ? "  " : "") + in(tags[k], "md_link");
+            if (!tags.empty() && !rest.empty()) out += " ";
+            line = rest;
+            first = false;
+        }
+        out += render_inline(line, in);
+        if (nl == std::string::npos) break;
+        out += "\n";
+        pos = nl + 1;
+    }
+    return out;
+}
+
+// The distinct first groups of `re` in `text`, in order.
+std::vector<std::string> mentions(const std::string& text, const std::regex& re) {
+    std::vector<std::string> found;
+    for (std::sregex_iterator it(text.begin(), text.end(), re), end; it != end; ++it) {
+        std::string m = (*it)[1];
+        while (!m.empty() && m.back() == '.') m.pop_back();
+        if (!m.empty() && m.find("..") == std::string::npos && std::find(found.begin(), found.end(), m) == found.end()) found.push_back(m);
+    }
+    return found;
+}
+
+}  // namespace
+
+std::vector<std::string> help_tags(const HelpPage& page) {
+    std::string rest;
+    return leading_tags(page.text.substr(0, page.text.find('\n')), rest);
+}
+
+std::string render_markdown(const std::string& text, const Settings* paint) {
+    return render_text(text, Painter(paint));
+}
+
+std::string render_help(const HelpPage& page, const std::string& usage, const Settings* paint) {
+    Painter in(paint);
+    auto trimmed = [](std::string s) {
+        while (!s.empty() && s.back() == '\n') s.pop_back();
+        return s;
+    };
+    std::vector<std::string> sections;
+    auto section = [&](const char* heading, const std::string& body) { sections.push_back(in(heading, "md_heading") + "\n" + trimmed(body)); };
+    section("NAME", in(page.name, "md_bold") + (page.summary.empty() ? "" : " - " + page.summary));
+    if (!usage.empty()) section("SYNOPSIS", usage);
+    section("DESCRIPTION", render_text(page.text, in));
+    static const std::regex path_re(R"((?:^|[^\w.~$/])((?:~|\.maic|\$XDG_[A-Z_]+)/[\w.<>{}*$/+-]*))");
+    std::string files;
+    for (const auto& f : mentions(page.text, path_re)) files += (files.empty() ? "" : "\n") + in(f, "md_code");
+    if (!files.empty()) section("FILES", files);
+    static const std::regex doc_re(R"((docs/[\w./-]*\.md))");
+    static const std::regex topic_re(R"((?::h|maic help) ([\w.:+-]+))");
+    std::string also;
+    auto add = [&](const std::string& item) { also += (also.empty() ? "" : ", ") + item; };
+    for (const auto& d : mentions(page.text, doc_re)) add(d);
+    std::vector<std::string> seen = {page.name};
+    for (const auto& t : mentions(page.text, topic_re)) {
+        if (t.size() > 1 && std::none_of(t.begin(), t.end(), [](unsigned char c) { return std::islower(c); })) continue;  // a placeholder: TOPIC
+        auto other = help_page(t);
+        if (!other || std::find(seen.begin(), seen.end(), other->name) != seen.end()) continue;
+        seen.push_back(other->name);
+        add("maic help " + t);
+    }
+    if (!also.empty()) section("SEE ALSO", also);
+    std::string out;
+    for (const auto& s : sections) out += (out.empty() ? "" : "\n\n") + s;
     return out;
 }
 

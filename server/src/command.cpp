@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <thread>
 
 namespace maic::server {
@@ -314,6 +315,13 @@ int run_artifact_command(const std::vector<std::string>& args, bool text_base) {
     }
     artifact_usage(std::cerr);
     return 2;
+}
+
+std::string usage_text(const std::string& command) {
+    std::ostringstream out;
+    if (command == "server") usage(out);
+    else if (command == "artifact") artifact_usage(out);
+    return out.str();
 }
 
 int run_server_command(const std::vector<std::string>& args) {

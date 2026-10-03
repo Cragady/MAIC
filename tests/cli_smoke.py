@@ -910,7 +910,7 @@ def models_smoke(maic, port):
     r = run("models", "remove", "qwen3.5-4b", "--yes")
     report(r.returncode == 0 and not os.path.exists(os.path.join(mdir, "llamacpp", "Qwen3.5-4B-Q4_K_M")), "with --yes it removes the files and the folder", r)
     r = run("help", "models")
-    report(r.returncode == 0 and "*models*" in r.stdout and "llama.vim" in r.stdout, "maic help models is the catalog page", r)
+    report(r.returncode == 0 and r.stdout.startswith("NAME\nmodels - ") and "llama.vim" in r.stdout, "maic help models is the catalog page", r)
     return all(results)
 
 
@@ -1236,6 +1236,34 @@ def color_smoke(maic, port):
         report(r.returncode == 3 and re.fullmatch(r"daemon\tstopped\t-\t\S+\n", r.stdout), "daemon status --text-base: a record, exit 3 when it is not running", r)
         r = run("--text-base", "protocol", "hash")
         report(r.returncode == 0 and r.stdout.startswith("sha256:"), "the flag is accepted before any command", r)
+        # maic help TOPIC: NAME, then the command's usage block, then the prose with its Markdown rendered.
+        plain = run("help", "artifact")
+        usage = run("artifact", "nope").stderr  # an unknown subcommand prints the block
+        head = plain.stdout.split("\n\nDESCRIPTION\n")[0]
+        report(plain.returncode == 0 and plain.stdout.startswith("NAME\nartifact - pages maic-server serves sandboxed") and head.split("\n\nSYNOPSIS\n")[1] == usage.rstrip("\n"),
+               "help artifact: NAME, then the usage block `maic artifact` prints", plain)
+        report("\nDESCRIPTION\nartifact  maic artifact\nAn artifact is a built page folder" in plain.stdout and "\n\nFILES\n~/.local/state/maic/artifacts/ID/\n" in plain.stdout
+               and "\n\nSEE ALSO\ndocs/artifacts.md, docs/agent-kit.md" in plain.stdout,
+               "help artifact: the tag line names the topic, the paths and docs it mentions close the page", plain)
+        report("\x1b" not in plain.stdout and not re.search(r"`|\*\*|\*artifact\*", plain.stdout) and "`maic artifact add DIR" not in plain.stdout and "maic artifact add DIR [--id ID]" in plain.stdout,
+               "help artifact piped: no escapes and no Markdown markers", plain)
+        styled = run("help", "artifact", tty=True)
+        report(re.search(r"\x1b\[[0-9;]*mNAME\x1b\[0m", styled.stdout) and re.search(r"\x1b\[[0-9;]*mmaic artifact add DIR \[--id ID\]\x1b\[0m", styled.stdout)
+               and re.search(r"\x1b\[[0-9;]*mmaic artifact\x1b\[0m", styled.stdout) and re.sub(r"\x1b\[[0-9;]*m", "", styled.stdout) == plain.stdout,
+               "help artifact on a terminal: headings, tags and code spans styled, the text otherwise the plain text", styled)
+        for what, r in (("--text-base", run("help", "artifact", "--text-base", tty=True)), ("NO_COLOR", run("help", "artifact", tty=True, extra={"NO_COLOR": "1"}))):
+            report(r.stdout == plain.stdout, "help artifact on a terminal with " + what + ": the plain text", r)
+        modes = run("help", "modes")
+        report(modes.stdout.startswith("NAME\nmodes - ") and "SYNOPSIS" not in modes.stdout and "\n\nDESCRIPTION\nmodes\nShift-Tab cycles them; :mode NAME sets one;" in modes.stdout,
+               "help modes: a topic without a command has no SYNOPSIS", modes)
+        for topic, first in (("server", "usage: maic server start"), ("daemon", "usage: maic daemon start|stop|status"), ("models", "usage: maic models [--text-base]"),
+                             ("status", "usage: maic status [--text-base]"), ("gpu", "usage: maic gpu [--text-base] [free"), ("settings", "usage: maic settings init [--json]|path")):
+            r = run("help", topic)
+            report("\n\nSYNOPSIS\n" + first in r.stdout, "help " + topic + ": its usage block follows NAME", r)
+        names = [l.split()[0] for l in run("help", "topics").stdout.split("topics and keys\n")[-1].splitlines() if l.strip()]
+        # keys, y and m are about the backtick key itself
+        stray = [t for t in names if t not in ("keys", "y", "m") and re.search(r"`|(^|\s)\*\*\w", run("help", t).stdout)]
+        report(len(names) > 40 and not stray, "no topic page keeps a backtick or a **bold marker: " + ", ".join(stray), plain)
     finally:
         run("down", "fake-gpu")
     shutil.rmtree(home, ignore_errors=True)
