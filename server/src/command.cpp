@@ -9,8 +9,11 @@
 #include "maic/harness.hpp"
 #include "maic/paths.hpp"
 #include "maic/settings.hpp"
+#include "maic/theme.hpp"
 
 #include "maic/http.hpp"
+
+#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
@@ -208,6 +211,8 @@ void artifact_usage(std::ostream& out) {
            "       maic artifact add DIR [--id ID]  copy a built page folder in (index.html at its top); again to update it,\n"
            "                                    its saved data/ is kept\n"
            "       maic artifact open ID           a one-time link for a browser on this machine, valid 2 minutes\n"
+           "       maic artifact allow-insecure ID [--off]   add 'unsafe-eval' to that artifact's script policy (asks you to type\n"
+           "                                    \"allow insecure\" at a terminal); --off removes it without asking\n"
            "\n"
            "Artifacts live in ~/.local/state/maic/artifacts/ and are served sandboxed at /a/ID/ by maic server start.\n"
            "docs/artifacts.md\n";
@@ -226,14 +231,24 @@ std::string local_server_url(const Settings& settings) {
 
 }  // namespace
 
-int run_artifact_command(const std::vector<std::string>& args) {
+int run_artifact_command(const std::vector<std::string>& args, bool text_base) {
     fs::path root = state_dir() / "artifacts";
     std::string sub = args.empty() ? "list" : args[0];
     if (sub == "list" && args.size() <= 1) {
         auto all = list_artifacts(root);
         if (all.empty()) std::cout << "no artifacts yet: maic artifact add DIR\n";
+        Settings settings;
+        bool color = color_output(text_base, STDOUT_FILENO);
+        if (color) {
+            try {
+                settings = load_settings();
+            } catch (const std::exception&) {
+                apply_theme(settings, Theme{"default"});  // the built-in styles paint it; the commands that need settings report the error
+            }
+        }
         for (const auto& a : all) {
             std::cout << a.id << "  " << a.trust << (a.added.empty() ? "" : "  added " + a.added);
+            if (a.allow_insecure) std::cout << "  " << (color ? ansi_paint("ALLOW_INSECURE", settings.style("notice"), color_depth(settings.colors)) : "ALLOW_INSECURE");
             for (size_t i = 0; i < a.data.size(); ++i) std::cout << (i ? ", " : "  data: ") << a.data[i];
             std::cout << "\n";
         }
@@ -258,6 +273,33 @@ int run_artifact_command(const std::vector<std::string>& args) {
         std::cout << local_server_url(load_settings()) << "/a/_login?code=" << code << "&to=" << args[1] << "\n\n"
                   << "Open it in a browser on this machine within two minutes; it works once and logs that browser in to\n"
                   << "artifacts for 12 hours (afterwards /a/" << args[1] << "/ opens it directly). maic server start must be running.\n";
+        return 0;
+    }
+    if (sub == "allow-insecure" && (args.size() == 2 || (args.size() == 3 && args[2] == "--off"))) {
+        std::error_code ec;
+        if (!artifact_name_ok(args[1]) || !fs::is_directory(root / args[1], ec)) throw std::runtime_error("no artifact " + args[1] + "; maic artifact list");
+        fs::path dir = root / args[1];
+        if (args.size() == 3) {
+            set_artifact_allow_insecure(dir, false);
+            std::cout << args[1] << ": ALLOW_INSECURE is off; its script policy has no 'unsafe-eval'\n";
+            return 0;
+        }
+        std::cout << "ALLOW_INSECURE for " << args[1] << " adds 'unsafe-eval' to that artifact's script policy only, which lets its page\n"
+                  << "compile templates and run strings as code (Vue's in-page template compiler needs it). The sandbox, the opaque\n"
+                  << "origin and the network limits stay. Every load of its index.html is written to the server's audit log, and\n"
+                  << "maic artifact list shows it. Turn it off with: maic artifact allow-insecure " << args[1] << " --off\n";
+        if (!isatty(STDIN_FILENO)) {
+            std::cerr << "maic artifact: allowing insecure asks you to type a phrase at a terminal; run it in one. Nothing was changed.\n";
+            return 2;
+        }
+        std::cout << "type \"allow insecure\" to turn it on: " << std::flush;
+        std::string line;
+        if (!std::getline(std::cin, line) || line != "allow insecure") {
+            std::cout << "nothing changed\n";
+            return 1;
+        }
+        set_artifact_allow_insecure(dir, true);
+        std::cout << args[1] << ": ALLOW_INSECURE is on\n";
         return 0;
     }
     if (sub == "help" || sub == "-h" || sub == "--help") {

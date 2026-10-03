@@ -162,6 +162,23 @@ std::string artifact_trust(const fs::path& dir) {
     return j.is_object() && j.value("trust", json()) == "trusted" ? "trusted" : "sandboxed";
 }
 
+bool artifact_allow_insecure(const fs::path& dir) {
+    std::ifstream in(dir / ".maic-artifact.json");
+    json j = in ? json::parse(in, nullptr, false) : json();
+    return j.is_object() && j.value("ALLOW_INSECURE", json()) == json(true);
+}
+
+void set_artifact_allow_insecure(const fs::path& dir, bool on) {
+    fs::path file = dir / ".maic-artifact.json";
+    std::ifstream in(file);
+    json meta = in ? json::parse(in, nullptr, false) : json();
+    in.close();
+    if (!meta.is_object()) meta = {{"trust", "sandboxed"}};
+    if (on) meta["ALLOW_INSECURE"] = true;
+    else meta.erase("ALLOW_INSECURE");
+    write_0600(file, meta.dump(2) + "\n");
+}
+
 std::vector<ArtifactInfo> list_artifacts(const fs::path& root) {
     std::vector<ArtifactInfo> out;
     std::error_code ec;
@@ -170,7 +187,7 @@ std::vector<ArtifactInfo> list_artifacts(const fs::path& root) {
         if (!artifact_name_ok(id) || !e.is_directory(ec)) continue;
         std::ifstream in(e.path() / ".maic-artifact.json");
         json meta = in ? json::parse(in, nullptr, false) : json();
-        ArtifactInfo a{id, artifact_trust(e.path()), meta.is_object() ? meta.value("added", "") : "", {}};
+        ArtifactInfo a{id, artifact_trust(e.path()), artifact_allow_insecure(e.path()), meta.is_object() ? meta.value("added", "") : "", {}};
         for (const auto& d : fs::directory_iterator(e.path() / "data", ec)) {
             std::string name = d.path().stem().string();
             if (d.path().extension() == ".json" && artifact_name_ok(name) && d.is_regular_file(ec)) a.data.push_back(name);

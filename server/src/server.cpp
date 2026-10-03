@@ -187,21 +187,35 @@ struct Server::Impl {
         return tokens.verify(auth.substr(7));
     }
 
-    void audit(const httplib::Request& req, const httplib::Response& res) {
-        // A request out of the relay tunnel arrives from our own HomeLink on loopback; it names the phone.
+    // A request out of the relay tunnel arrives from our own HomeLink on loopback; it names the phone.
+    static std::string request_source(const httplib::Request& req) {
         std::string source = req.remote_addr;
         if (req.has_header("X-Maic-Via") && (source == "127.0.0.1" || source == "::1")) source = req.get_header_value("X-Maic-Via");
-        // An artifact capability in a path is a credential: the log keeps where it was used, never what it was.
-        std::string path = req.path;
-        if (size_t t = path.find('~'); path.rfind("/a/", 0) == 0 && t != std::string::npos) path.replace(t + 1, path.find('/', t) - t - 1, "*");
-        std::string line = utc_now() + " " + source + " " + token_name(req).value_or("-") + " " + req.method + " " + path + " " +
-                           std::to_string(res.status) + "\n";
+        return source;
+    }
+
+    void write_audit(const std::string& line) {
         std::lock_guard lock(audit_mu);
         int fd = open((options.state / "audit.log").c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
         if (fd < 0) return;
         ssize_t n = write(fd, line.data(), line.size());
         (void)n;
         close(fd);
+    }
+
+    // An extra line for a request that did something the plain one-line record would not show.
+    void audit_line(const std::string& what, const httplib::Request& req) {
+        write_audit(utc_now() + " " + request_source(req) + " " + token_name(req).value_or("-") + " " + what + "\n");
+    }
+
+    void audit(const httplib::Request& req, const httplib::Response& res) {
+        std::string source = request_source(req);
+        // An artifact capability in a path is a credential: the log keeps where it was used, never what it was.
+        std::string path = req.path;
+        if (size_t t = path.find('~'); path.rfind("/a/", 0) == 0 && t != std::string::npos) path.replace(t + 1, path.find('/', t) - t - 1, "*");
+        std::string line = utc_now() + " " + source + " " + token_name(req).value_or("-") + " " + req.method + " " + path + " " +
+                           std::to_string(res.status) + "\n";
+        write_audit(line);
     }
 
     static void fail(httplib::Response& res, int status, const std::string& message) {
@@ -279,13 +293,14 @@ struct Server::Impl {
 
     // An artifact's files: scripts from its own files and /a/_vendor/ only, no network but its own data routes, and
     // an opaque origin, so it never acts with the server's cookies or storage. The sources are absolute, built from
-    // Host, because 'self' in a sandboxed page is not dependable across browsers.
-    std::string artifact_csp(const httplib::Request& req, const std::string& prefix) {
+    // Host, because 'self' in a sandboxed page is not dependable across browsers. An artifact with ALLOW_INSECURE
+    // gets 'unsafe-eval' in script-src and nothing else.
+    std::string artifact_csp(const httplib::Request& req, const std::string& prefix, bool insecure) {
         std::string host = req.get_header_value("Host");
         bool plain = !host.empty() && std::all_of(host.begin(), host.end(), [](unsigned char c) { return std::isalnum(c) || c == '.' || c == '-' || c == ':' || c == '[' || c == ']'; });
         if (!plain) throw HttpError{400, "an artifact request needs a plain Host header"};
         std::string origin = (tls ? "https://" : "http://") + host, own = origin + prefix;
-        return "sandbox allow-scripts allow-forms allow-modals allow-downloads; default-src 'none'; script-src " + own + " " + origin + "/a/_vendor/; style-src " + own +
+        return "sandbox allow-scripts allow-forms allow-modals allow-downloads; default-src 'none'; script-src " + own + " " + origin + "/a/_vendor/" + (insecure ? " 'unsafe-eval'" : "") + "; style-src " + own +
                " 'unsafe-inline'; img-src " + own + " data: blob:; font-src " + own + " data:; media-src " + own + " blob:; connect-src " + own +
                "data/; form-action 'none'; base-uri 'none'; frame-ancestors 'none'";
     }
@@ -315,7 +330,8 @@ struct Server::Impl {
     void serve_artifact(const httplib::Request& req, httplib::Response& res, const std::string& id, const std::string& prefix, const std::string& rel,
                         const std::string& cap) {
         fs::path dir = artifact_dir(id);
-        set_csp(res, artifact_csp(req, prefix));
+        bool insecure = artifact_allow_insecure(dir);
+        set_csp(res, artifact_csp(req, prefix, insecure));
         if (rel.rfind("data/", 0) == 0) {
             std::string name = data_name(rel.substr(5));
             auto file = artifact_file(dir, "data/" + name + ".json");
@@ -329,6 +345,7 @@ struct Server::Impl {
         auto file = artifact_file(dir, rel);
         if (!file) throw HttpError{404, "no file " + rel + " in artifact " + id};
         std::string body = read_file(*file);
+        if (insecure && (rel.empty() || rel == "index.html")) audit_line("ALLOW_INSECURE " + req.method + " /a/" + id + "/ index.html served with 'unsafe-eval'", req);
         if (!cap.empty() && (rel.empty() || rel == "index.html")) body = page_with_token(std::move(body), cap);
         res.set_content(body, artifact_content_type(*file));
     }

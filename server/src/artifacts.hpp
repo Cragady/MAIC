@@ -40,9 +40,15 @@ std::string page_with_token(std::string html, const std::string& token);
 // "sandboxed" for anything else, missing or unreadable. Nothing reads it to loosen the sandbox.
 std::string artifact_trust(const std::filesystem::path& dir);
 
+// ALLOW_INSECURE beside the trust (`.maic-artifact.json`): true only when it is the JSON value true, and false for
+// anything else, missing or unreadable. It adds 'unsafe-eval' to that artifact's script policy and nothing else.
+bool artifact_allow_insecure(const std::filesystem::path& dir);
+void set_artifact_allow_insecure(const std::filesystem::path& dir, bool on);
+
 struct ArtifactInfo {
     std::string id;
     std::string trust;
+    bool allow_insecure = false;
     std::string added;
     std::vector<std::string> data;  // the data documents' names
 };

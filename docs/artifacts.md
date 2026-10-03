@@ -8,7 +8,7 @@ An artifact is a page MAIC serves itself: a built folder (an `index.html` at its
 maic artifact add ~/builds/review --id review   # copy a built folder in (again later to update it; its saved data/ is kept)
 maic server start                               # if it is not running
 maic artifact open review                       # prints a one-time link; open it in a browser on this machine
-maic artifact list                              # what is there, its trust, its data documents
+maic artifact list                              # what is there, its trust, its data documents, ALLOW_INSECURE when on
 ```
 
 `open` prints something like `http://127.0.0.1:7373/a/_login?code=...&to=review`. The link works once, within two minutes, and logs that browser in to artifacts for 12 hours: after that, `http://127.0.0.1:7373/a/review/` opens the artifact directly until the login ends or the server restarts. Open the link by clicking it in the terminal or pasting it into the address bar.
@@ -19,7 +19,7 @@ On disk, `~/.local/state/maic/artifacts/ID/` (`$XDG_STATE_HOME/maic/artifacts/`)
 | :--- | :--- |
 | `index.html`, other files | the page, served as they are |
 | `data/NAME.json` | the page's data documents, written by the page through the server, readable and editable by agents |
-| `.maic-artifact.json` | `{trust, added, source}`, written by `maic artifact add`; never served |
+| `.maic-artifact.json` | `{trust, added, source}`, written by `maic artifact add`; `ALLOW_INSECURE` joins it when turned on (below); never served |
 
 `add` skips dotfiles (`.git`, `.env`) and symlinks, and names it cannot serve, and says which. An artifact id is 1 to 64 letters, digits, `_` or `-`, not starting with `_` or `-`. File names are letters, digits, `.`, `_` and `-`, never with a leading dot.
 
@@ -98,7 +98,7 @@ The sequence `templates/comfymaid-review/local/app.js` runs, and `server_test` d
 ## Writing a page for MAIC
 
 * Load scripts from files beside the page (`<script src="app.js">`), never inline.
-* Vue: `<script src="../_vendor/vue/vue.global.prod.js"></script>`, the pinned copy in `vendor/vue/` ([vendor/VENDORING](../vendor/VENDORING)). Its in-page template compiler builds functions at run time, which the policy refuses, so give components `render` functions (`h(...)`) rather than `template` strings or `x-template` blocks, or precompile the templates. Whether to allow `'unsafe-eval'` for the compiler instead is an open decision (below).
+* Vue: `<script src="../_vendor/vue/vue.global.prod.js"></script>`, the pinned copy in `vendor/vue/` ([vendor/VENDORING](../vendor/VENDORING)). Its in-page template compiler builds functions at run time, which the policy refuses, so give components `render` functions (`h(...)`) rather than `template` strings or `x-template` blocks, or precompile the templates. Or turn on [ALLOW_INSECURE](#allow_insecure-per-artifact) for that one artifact, which lets the compiler run.
 * Read and write data with `fetch("data/NAME.json")` as above.
 * Styles and inline `style` attributes are fine; web fonts from elsewhere are not (no outbound requests).
 
@@ -123,16 +123,33 @@ The routes are part of `maic-server` and work wherever it does: on the LAN under
 
 `.maic-artifact.json` holds `trust`: `sandboxed` (the default, written by `add`) or `trusted`. The server resolves it on its side: exactly `trusted` reads as trusted, and anything else, missing or unreadable reads as sandboxed. `maic artifact list` shows it. It changes nothing today: a trusted artifact is served exactly as a sandboxed one. If trust ever does something, it widens or narrows what the capability may do, never the sandbox, as [Security model](#security-model) says.
 
+## ALLOW_INSECURE, per artifact
+
+An explicit, audited escape hatch for a page that needs `'unsafe-eval'`, such as one using Vue's in-page template compiler (`templates/comfymaid-review/local/`). It is off for every artifact and is turned on for one at a time:
+
+```sh
+maic artifact allow-insecure ID          # prints what it does, then asks you to type: allow insecure
+maic artifact allow-insecure ID --off    # turns it off, no question
+```
+
+* **Asked at a terminal, in exact words.** Turning it on needs the exact phrase `allow insecure` typed at a prompt, and is refused when stdin is not a terminal. Turning it off asks nothing.
+* **What it changes.** That artifact's `script-src` gains `'unsafe-eval'`, and nothing else in its policy moves: the sandbox flags, the opaque origin, the script sources and the network limits stay. Other artifacts are unaffected.
+* **Where it is stored.** `"ALLOW_INSECURE": true` in the artifact's `.maic-artifact.json`, beside its trust, read by the server on every request. Anything other than the JSON value `true` (a string, a number, a missing or unreadable file) is off. `maic artifact add` again leaves it as it was.
+* **Audited.** Every request that serves the artifact's `index.html` writes a line to `<state>/server/audit.log` that says `ALLOW_INSECURE` (`... ALLOW_INSECURE GET /a/ID/ index.html served with 'unsafe-eval'`), next to the usual request line.
+* **Visible.** `maic artifact list` shows `ALLOW_INSECURE` on that artifact, in the notice (yellow) style of the theme on a terminal, plain under `--text-base` or `NO_COLOR`.
+
+With it on, anything that reaches a template (the page's data, say) can run as code inside the sandbox; it still cannot reach the network or MAIC.
+
 ## Room for accounts
 
 The server reads every artifact through one root (`ServerOptions::artifacts`), and capabilities and logins are per server. Accounts ([roadmap.md](roadmap.md) item 6) would choose the root per login, giving each account its own artifacts and file storage beside them, and fold the login cookie into the account's session. Nothing here is built for accounts.
 
 ## Open decisions
 
-* **Runtime template compilation.** The vendored Vue build compiles templates with `new Function`, and the policy has no `'unsafe-eval'`, so `templates/comfymaid-review/local/` (which uses `x-template` blocks) will not run until its templates become render functions or the policy allows `'unsafe-eval'` for artifacts. Allowing it would let anything that reaches a template (the page's data, say) run as code inside the sandbox; it still could not reach the network or MAIC.
+* **Runtime template compilation.** The vendored Vue build compiles templates with `new Function`, and the default policy has no `'unsafe-eval'`, so `templates/comfymaid-review/local/` (which uses `x-template` blocks) needs its templates turned into render functions, or [ALLOW_INSECURE](#allow_insecure-per-artifact) for that artifact. Allowing it for artifacts in general is not decided.
 * **Inline scripts.** Refused. Allowing a page's own inline scripts by their hashes is possible (the server would hash each `<script>` in `index.html` and list it in the policy).
 * **Lifetimes.** Capabilities and logins last 12 hours and end with the server.
 
 ## Tests
 
-`build/server/server_test` (`ctest -R server`), section `artifacts`: `add` skipping dotfiles and symlinks and keeping data on update, ids outside the charset refused, `list`, trust resolution (an unknown value reads as sandboxed); a 401 without a login; a bearer token redirected to a capability; the page with its meta tag; the policy (sandbox flags, no `allow-same-origin`, script, connect and frame sources, no `'unsafe-eval'`), `nosniff`, `DENY`, `no-referrer` and CORS on files; content types; traversal (plain and percent-encoded), dotfiles, a symlink out of the folder or onto a dotfile, folders and empty components all 404; the vendored Vue without a login; sandbox headers on every error and redirect; a capability refused for another artifact, as a bearer token and as a login; the session API refusing `X-Maic-Artifact-Token` and `Origin: null`; the preflight; the comfymaid-review data sequence (404, create with `If-None-Match: *`, read, write with `If-Match`, 409 on a stale revision and on creating what exists, an agent's edit on disk making the next write stale), 428, 400, the 1 MiB cap, data names, no temporary file left; data through a bearer token; the one-time link (cookie flags, works once, expired refused), the cookie refused with `Origin: null` or cross-site and by the session API; and the audit log free of capabilities and codes. Browsers' enforcement of these headers is not exercised.
+`build/server/server_test` (`ctest -R server`), section `artifacts`: `add` skipping dotfiles and symlinks and keeping data on update, ids outside the charset refused, `list`, trust resolution (an unknown value reads as sandboxed); ALLOW_INSECURE (off by default, on adds `'unsafe-eval'` to that artifact's `script-src` only and writes the audit line, a junk value or unreadable record counts as off); a 401 without a login; a bearer token redirected to a capability; the page with its meta tag; the policy (sandbox flags, no `allow-same-origin`, script, connect and frame sources, no `'unsafe-eval'`), `nosniff`, `DENY`, `no-referrer` and CORS on files; content types; traversal (plain and percent-encoded), dotfiles, a symlink out of the folder or onto a dotfile, folders and empty components all 404; the vendored Vue without a login; sandbox headers on every error and redirect; a capability refused for another artifact, as a bearer token and as a login; the session API refusing `X-Maic-Artifact-Token` and `Origin: null`; the preflight; the comfymaid-review data sequence (404, create with `If-None-Match: *`, read, write with `If-Match`, 409 on a stale revision and on creating what exists, an agent's edit on disk making the next write stale), 428, 400, the 1 MiB cap, data names, no temporary file left; data through a bearer token; the one-time link (cookie flags, works once, expired refused), the cookie refused with `Origin: null` or cross-site and by the session API; and the audit log free of capabilities and codes. Browsers' enforcement of these headers is not exercised.

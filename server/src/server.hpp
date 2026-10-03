@@ -46,7 +46,7 @@ private:
 // `maic server start|token|status ...`, also main() of maic-server. Returns the exit code.
 int run_server_command(const std::vector<std::string>& args);
 
-// `maic artifact list|add|open ...` (docs/artifacts.md). Returns the exit code.
-int run_artifact_command(const std::vector<std::string>& args);
+// `maic artifact list|add|open|allow-insecure ...` (docs/artifacts.md). Returns the exit code.
+int run_artifact_command(const std::vector<std::string>& args, bool text_base = false);
 
 }  // namespace maic::server

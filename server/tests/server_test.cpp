@@ -591,6 +591,18 @@ int main() {
         expect(server::artifact_trust(arts / "other") == "sandboxed", "an unknown trust value counts as sandboxed");
         std::ofstream(arts / "other" / ".maic-artifact.json") << "{\"trust\": \"trusted\"}";
         expect(server::artifact_trust(arts / "other") == "trusted", "the trusted flag is recorded (and loosens nothing)");
+        expect(!server::artifact_allow_insecure(arts / "demo") && !list[0].allow_insecure, "ALLOW_INSECURE is off by default");
+        server::set_artifact_allow_insecure(arts / "other", true);
+        expect(server::artifact_allow_insecure(arts / "other") && server::artifact_trust(arts / "other") == "trusted", "turning it on is read back and keeps the trust record");
+        server::set_artifact_allow_insecure(arts / "other", false);
+        expect(!server::artifact_allow_insecure(arts / "other") && server::artifact_trust(arts / "other") == "trusted", "turning it off is read back");
+        for (std::string junk : {"\"true\"", "1", "\"yes\"", "null", "[true]", "{}"}) {
+            std::ofstream(arts / "other" / ".maic-artifact.json") << "{\"trust\": \"trusted\", \"ALLOW_INSECURE\": " << junk << "}";
+            expect(!server::artifact_allow_insecure(arts / "other"), "a junk ALLOW_INSECURE value counts as off: " + junk);
+        }
+        std::ofstream(arts / "other" / ".maic-artifact.json") << "not json";
+        expect(!server::artifact_allow_insecure(arts / "other"), "an unreadable record counts as off");
+        std::ofstream(arts / "other" / ".maic-artifact.json") << "{\"trust\": \"trusted\"}";
         // Planted after the copy: what add never makes, the server must still refuse.
         std::ofstream(root / "outside" / "secret.txt") << "secret\n";
         std::ofstream(arts / "demo" / ".hidden") << "hidden\n";
@@ -629,6 +641,46 @@ int main() {
         expect(r && r->get_header_value("X-Frame-Options") == "DENY" && r->get_header_value("Referrer-Policy") == "no-referrer" &&
                    r->get_header_value("Access-Control-Allow-Origin") == "*",
                "no framing, no referrer, and CORS for the page's own opaque origin");
+        {
+            // ALLOW_INSECURE: only that artifact's script-src gains 'unsafe-eval'; the rest of its policy is the same, and loading its page is audited.
+            auto script_src = [](const std::string& p) {
+                size_t at = p.find("script-src ");
+                return p.substr(at, p.find(';', at) - at);
+            };
+            auto without_eval = [](std::string p) {
+                if (size_t at = p.find(" 'unsafe-eval'"); at != std::string::npos) p.erase(at, 14);
+                return p;
+            };
+            auto open_cap = [&](const std::string& id) {
+                auto o = c.Get("/a/" + id + "/", bearer);
+                std::string loc = o ? o->get_header_value("Location") : "";
+                return loc.size() > id.size() + 5 ? loc.substr(id.size() + 4, loc.size() - id.size() - 5) : std::string();
+            };
+            auto audit_text = [&]() { return slurp(state / "audit.log"); };
+            expect(audit_text().find("ALLOW_INSECURE") == std::string::npos, "no ALLOW_INSECURE line in the audit log while it is off");
+            server::set_artifact_allow_insecure(arts / "demo", true);
+            r = c.Get(page);
+            std::string on = r ? r->get_header_value("Content-Security-Policy") : "";
+            expect(r && r->status == 200 && script_src(on) == script_src(csp) + " 'unsafe-eval'" && without_eval(on) == csp,
+                   "ALLOW_INSECURE adds 'unsafe-eval' to script-src and changes nothing else: " + on);
+            std::string other_cap = open_cap("other");
+            auto ro = c.Get("/a/other~" + other_cap + "/");
+            expect(ro && ro->status == 200 && ro->get_header_value("Content-Security-Policy").find("'unsafe-eval'") == std::string::npos,
+                   "another artifact is not affected");
+            auto rjs = c.Get(page + "app.js");
+            expect(rjs && rjs->get_header_value("Content-Security-Policy").find("'unsafe-eval'") != std::string::npos, "nor are the artifact's other files left out");
+            std::string log = audit_text();
+            size_t first = log.find("ALLOW_INSECURE");
+            expect(first != std::string::npos && log.find("ALLOW_INSECURE", first + 1) == std::string::npos && log.find("/a/demo/ index.html", first) != std::string::npos &&
+                       log.find(cap) == std::string::npos,
+                   "each load of its index.html writes one ALLOW_INSECURE audit line, without the capability");
+            server::set_artifact_allow_insecure(arts / "demo", false);
+            r = c.Get(page);
+            expect(r && r->get_header_value("Content-Security-Policy") == csp, "turned off, the policy is the strict one again");
+            std::ofstream(arts / "demo" / ".maic-artifact.json") << "{\"trust\": \"sandboxed\", \"ALLOW_INSECURE\": \"true\"}";
+            r = c.Get(page);
+            expect(r && r->get_header_value("Content-Security-Policy") == csp, "a junk ALLOW_INSECURE value served as off: no 'unsafe-eval'");
+        }
         bool types = true;
         for (auto [f, t] : std::vector<std::pair<std::string, std::string>>{{"app.js", "text/javascript; charset=utf-8"}, {"style.css", "text/css; charset=utf-8"},
                                                                             {"img.png", "image/png"}, {"sub/page.txt", "text/plain; charset=utf-8"}, {"inner.js", "text/javascript; charset=utf-8"}}) {
