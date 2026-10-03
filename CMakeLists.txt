@@ -55,6 +55,7 @@ add_test(NAME panel_check COMMAND python3 -m unittest -q test_panel_check
 # cases that run maid itself (model resolve, the diction pass-through).
 add_test(NAME diction COMMAND python3 -m unittest -q diction.test_diction WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 set_tests_properties(diction PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;MAID_BIN=$<TARGET_FILE:maid>")
+set_tests_properties(diction PROPERTIES ENVIRONMENT_MODIFICATION "FORCE_COLOR=unset:;PYTHON_COLORS=unset:")  # argparse colors its help when these are set
 # The leak audit against made-up sessions and a fake local judge (docs/leak-audit.md); never a real transcript.
 add_test(NAME leak_audit COMMAND python3 -m unittest -q test_leak_audit
          WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/tools/audit)

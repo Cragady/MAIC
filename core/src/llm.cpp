@@ -382,6 +382,7 @@ struct Account {
     std::condition_variable freed;
     std::map<std::string, int> open;
     std::set<std::string> past_half;  // models told they passed half their cap
+    std::map<std::string, int> waiting;  // requests per model waiting for a slot
     Clock::time_point hold_until{};
     bool breaker = false;  // open until hold_until
     std::deque<Clock::time_point> limited;
@@ -421,6 +422,18 @@ void enter(Account& a, const Provider& provider, const ChatOptions& options, int
         options.notice(text);
         lock.lock();
     };
+    bool queued = false;
+    struct Unqueue {
+        Account& a;
+        std::unique_lock<std::mutex>& lock;
+        const std::string& model;
+        bool& queued;
+        ~Unqueue() {
+            if (!queued) return;
+            if (!lock.owns_lock()) lock.lock();
+            --a.waiting[model];
+        }
+    } unqueue{a, lock, options.model, queued};
     for (;;) {
         if (cancel.load()) throw Cancelled();
         auto now = Clock::now();
@@ -442,6 +455,10 @@ void enter(Account& a, const Provider& provider, const ChatOptions& options, int
         if (cap <= 0) return;
         int& n = a.open[options.model];
         if (n >= cap) {
+            if (!queued) {
+                queued = true;
+                ++a.waiting[options.model];
+            }
             if (!told_queue) {
                 told_queue = true;
                 tell(provider.name + "/" + options.model + ": all " + std::to_string(cap) + " concurrent requests MAID allows are open (max_concurrent); this one waits for a slot");
@@ -463,7 +480,9 @@ void leave(Account& a, const std::string& model, int cap) {
     if (cap <= 0) return;
     std::lock_guard lock(a.mu);
     int n = --a.open[model];
-    if (4 * n <= cap) a.past_half.erase(model);  // told again only after falling to a quarter, so a count that hovers at half is told once
+    // Told again only after falling to a quarter with nobody waiting, so a count that hovers at half, or dips while a
+    // queue drains, is told once.
+    if (4 * n <= cap && a.waiting[model] == 0) a.past_half.erase(model);
     a.freed.notify_all();
 }
 

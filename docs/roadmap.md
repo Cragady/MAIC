@@ -143,7 +143,6 @@ Everything below is covered by tests against fake servers; these runs confirm it
 
 ## Marked for review
 
-* **Two flaky tests** (2026-10-03): the diction test fails when the shell sets `FORCE_COLOR` (argparse colors its help), and an llm `max_concurrent` timing test failed once in three runs.
 * **Tests touching real state** (2026-10-03): robustness_test writes a session into the real `~/.local/state`, and session_test uses a fixed `~/.cache` folder two runs would share. Move both into temporary directories.
 * **One engine resuming one parked session for two clients at once** can refuse itself: `session_resume` checks, then reopens, with no lock held in between.
 * **comfymaid-review on Vue, when packages are allowed** (2026-10-03, Micaiah: no packages yet): rebuild the page data-driven, `v-model` for the linked two-way boxes, TypeScript if it fits (Deno can transpile TypeScript with no packages). Loading Vue: `file:///` does not work, because browsers refuse module imports from `file://` (and a claude.ai page cannot reach local files at all); MAID serving the page and a vendored, pinned Vue over local HTTP does, and a claude.ai artifact can carry the file alongside the page.
