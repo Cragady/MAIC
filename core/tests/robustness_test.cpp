@@ -592,6 +592,20 @@ int main() {
         write_file(proj / ".maid" / "settings.lua", "return 42");
         expect(skipped_with(load_settings(proj), (proj / ".maid" / "settings.lua").string()), "a settings.lua that does not return a table is skipped with a warning");
         fs::remove(proj / ".maid" / "settings.lua");
+        write_file(proj / ".maid" / "settings.lua", "return { approvals_timeout = 60, approvals_unattended = 'deny', unattended_denials_limit = 2 }");
+        Settings au = load_settings(proj);
+        expect(au.approvals_timeout == 60 && au.approvals_unattended == "deny" && au.unattended_denials_limit == 2,
+               "approvals_timeout, approvals_unattended and unattended_denials_limit load from a project layer");
+        write_file(proj / ".maid" / "settings.lua", "return { approvals_unattended = 'no' }");
+        threw = false;
+        try {
+            load_settings(proj);
+        } catch (const std::exception& e) {
+            threw = std::string(e.what()).find("refused rather than skipped") != std::string::npos &&
+                    std::string(e.what()).find("approvals_unattended") != std::string::npos;
+        }
+        expect(threw, "a broken project layer that names approvals_unattended is refused, not skipped: it is guarded now");
+        fs::remove(proj / ".maid" / "settings.lua");
         Lua lt(ws);
         auto j = lt.eval_table("return { a = 1, b = 'x', c = { 1, 2, 3 }, d = { k = true }, e = 1.5 }");
         expect(j["a"] == 1 && j["b"] == "x" && j["c"].is_array() && j["c"].size() == 3 && j["d"]["k"] == true && j["e"] == 1.5, "eval_table converts scalars, arrays and nested tables");

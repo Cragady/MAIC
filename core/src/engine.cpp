@@ -398,6 +398,7 @@ struct PendingQuestion {
     json by;
     bool withdrawn = false;  // a steer took its place
     bool timed_out = false;  // nobody answered within approvals_timeout
+    bool unattended = false;  // nobody can answer: the turn is unattended
 };
 
 // The response being run: what its events carry.
@@ -411,6 +412,7 @@ struct Run {
     long next_index = 0;  // the next output_index
     Agent::UsageReport usage_before;
     long cause = -1;  // the event it answers (maid.input.added), maid.cause on its response.created
+    bool unattended = false;  // the turn is unattended: an approval in it is denied at once, by design
 };
 
 // A steer of section 11, from a client or a ban entry.
@@ -457,6 +459,7 @@ struct Session {
     json cancel_by;
     std::thread worker;
     std::optional<Run> run;
+    bool unattended = false;  // the running turn is unattended: kept here too, so a replaced response cannot lose it
     std::map<std::string, PendingApproval> approvals;
     std::set<std::string> answered;  // approvals and questions already answered, for maid_already_answered
     std::map<std::string, PendingQuestion> questions;
@@ -812,6 +815,7 @@ struct Engine::Impl {
         a.compaction.keep_results = st.compact_keep_results;
         a.compaction.model = st.compact_model;
         a.budget_tokens = st.budget_tokens;
+        a.unattended_denials_limit = st.unattended_denials_limit;  // approvals one unattended turn may have denied
         a.full_output = st.full_output;
         a.full_output_max_mb = static_cast<size_t>(st.full_output_max_mb);
         a.set_instruction_options(st.instructions);
@@ -1289,7 +1293,7 @@ struct Engine::Impl {
         Settings st;
         fs::path ws;
         std::string tier, model;
-        bool dumb_ok;
+        bool dumb_ok, unattended;
         {
             std::lock_guard lock(p.mu);
             long running = std::count_if(p.tasks.begin(), p.tasks.end(), [](const auto& kv) { return kv.second.state == "running"; });
@@ -1303,6 +1307,8 @@ struct Engine::Impl {
             tier = p.tier;
             model = p.agent.model;
             dumb_ok = p.commands.dumb_auto_ok;
+            // A task started from an unattended turn is unattended too: it only tightens what the task may run.
+            unattended = (p.run && p.run->unattended) || p.settings.approvals_unattended == "deny";
         }
         const AgentDef* def = find_agent_def(st.agents, t.agent);
         std::string agent_tier = def ? def->protocol_tier : "";
@@ -1336,7 +1342,7 @@ struct Engine::Impl {
         json by = {{"client", "engine"}, {"name", "task"}, {"origin", origin_name(t.origin)}};
         open_session(s, by, lineage);
         std::lock_guard lock(s->mu);
-        start_or_queue(s, t.prompt, t.origin, by);
+        start_or_queue(s, t.prompt, t.origin, by, nullptr, unattended);
         return s->id;
     }
 
@@ -2141,6 +2147,7 @@ struct Engine::Impl {
         r.previous = s.last.id;
         r.created_at = static_cast<long>(std::time(nullptr));
         r.origin = s.last.origin == Origin::Remote ? Origin::Remote : origin;
+        r.unattended = s.last.unattended || (s.run && s.run->unattended);  // a turn keeps the flag it started with
         return r;
     }
 
@@ -2157,6 +2164,7 @@ struct Engine::Impl {
         if (r.cause < 0 && !r.previous.empty()) r.cause = s.note_cause;
         s.note_cause = -1;
         s.run = std::move(r);
+        s.unattended = s.run->unattended;  // the turn's flag, beside the response itself
         s.accepted = json::array();
         json created = {{"type", "response.created"}, {"response", response_object(s, *s.run, "in_progress")}};
         if (s.run->cause >= 0) created["maid"] = {{"cause", s.run->cause}};
@@ -2184,6 +2192,7 @@ struct Engine::Impl {
         emit(s, {{"type", type}, {"response", resp}});
         s.last = std::move(r);
         s.run.reset();
+        if (final) s.unattended = false;  // the turn is over: the flag goes with it
     }
 
     // A halted turn's error, OpenAI's error event, before its maid.response.cancelled.
@@ -2218,6 +2227,9 @@ struct Engine::Impl {
         // maid.now: delivered into the running response at once, its model call abandoned (`:w now`); with no
         // input, what is already queued goes in now.
         bool now = p.contains("maid") && p["maid"].is_object() && p["maid"].value("now", false);
+        // maid.unattended: this one turn is unattended (the liaison's `maid liaison send --unattended`), so an
+        // approval in it is denied at once rather than waiting for someone who is not there.
+        bool unattended = p.contains("maid") && p["maid"].is_object() && p["maid"].value("unattended", false);
         if (now && !c.voice.empty()) throw refuse("maid_steer_disabled", "a voice's input waits its turn: maid.now is the owner's", "maid");
         std::string text = p.contains("input") || !now ? input_text(p.at("input")) : "";
         if (text.empty() && !now) throw bad_params("the input is empty", "input");
@@ -2241,9 +2253,11 @@ struct Engine::Impl {
             emit(*s, {{"type", "maid.input.added"}, {"item", item}, {"queued", false}, {"by", c.by()}});
             if (!s->resume) {
                 s->resume = Session::Queued{successor(*s, c.origin), text, c.origin, c.from()};
+                s->resume->run.unattended = s->resume->run.unattended || unattended;
                 s->resume->run.cause = s->next - 1;
             } else {
                 s->resume->text += "\n\n" + text;
+                s->resume->run.unattended = s->resume->run.unattended || unattended;
                 if (!c.voice.empty()) s->resume->from = c.from();
             }
             s->cv.notify_all();
@@ -2257,6 +2271,7 @@ struct Engine::Impl {
             emit(*s, {{"type", "response.steer.accepted"}, {"steer", {{"id", id}, {"previous_response_id", s->run->id}}}});
             emit(*s, {{"type", "maid.input.added"}, {"item", item}, {"queued", true}, {"by", c.by()}});
             s->accepted.push_back({{"id", id}, {"previous_response_id", s->run->id}, {"text", text}, {"cause", s->next - 1}});
+            if (unattended) s->run->unattended = true;  // into a running response: the turn stays as it was, or tighter
             s->agent.post_message(text, c.origin);
             s->agent.deliver_now();
             index_changed(*s);
@@ -2265,17 +2280,18 @@ struct Engine::Impl {
             r["maid"]["sequence_number"] = before;
             return r;
         }
-        return start_or_queue(s, text, c.origin, c.by(), c.from());
+        return start_or_queue(s, text, c.origin, c.by(), c.from(), unattended);
     }
 
     // A message that starts a turn on an idle session, or waits on a busy one's lane for a turn of its own once the
     // running one (and those queued before it) end: OpenAI's FIFO. The caller holds s->mu.
-    json start_or_queue(const std::shared_ptr<Session>& s, const std::string& text, Origin origin, const json& by, const json& from = nullptr) {
+    json start_or_queue(const std::shared_ptr<Session>& s, const std::string& text, Origin origin, const json& by, const json& from = nullptr, bool unattended = false) {
         long before = s->next - 1;
         json item = {{"id", "~" + std::to_string(s->next)}, {"type", "message"}, {"role", "user"}, {"content", {{{"type", "input_text"}, {"text", text}}}}};
         if (from.is_object()) item["maid"] = {{"from", from}};
         if (s->running) {
             Run r = reserve_turn(*s, origin);
+            r.unattended = unattended;
             emit(*s, {{"type", "maid.input.added"}, {"item", item}, {"queued", true}, {"by", by}});
             r.cause = s->next - 1;
             s->lane.push_back({r, text, origin, from});
@@ -2289,6 +2305,7 @@ struct Engine::Impl {
         if (auto pics = s->agent.pending_images(); !pics.empty()) item["maid"]["images"] = pics;
         emit(*s, {{"type", "maid.input.added"}, {"item", item}, {"queued", false}, {"by", by}});
         Run run = reserve_turn(*s, origin);
+        run.unattended = unattended;
         run.cause = s->next - 1;
         json r = response_object(*s, run, "in_progress");
         start_turn(s, std::move(run), text, origin, from);
@@ -3013,6 +3030,12 @@ public:
         e_.emit(s_, {{"type", "maid.file.written"}, {"path", path.string()}, {"tool", tool}});
     }
 
+    // Whether this turn is unattended: the session's setting says so, or response.create marked the running
+    // response with maid.unattended (a task session started from such a turn carries the flag too).
+    bool unattended() override {
+        return s_.settings.approvals_unattended == "deny" || s_.unattended || (s_.run && s_.run->unattended);
+    }
+
     ApprovalAnswer ask(const ApprovalRequest& r) override {
         std::unique_lock lock(s_.mu);
         std::string id = "a" + std::to_string(++e_.approvals_made);
@@ -3028,6 +3051,8 @@ public:
             ev["call_id"] = call_id;
             ev["item_id"] = calls_.front().item_id;
         }
+        // Marked when the turn is unattended: it is answered at once below, so no client should wait on it.
+        if (unattended()) ev["unattended"] = true;
         e_.emit(s_, ev);
         ev["sequence_number"] = s_.next - 1;
         ev["stream_id"] = s_.id;
@@ -3035,10 +3060,17 @@ public:
         if (!s_.parent.empty()) e_.mirror(s_, id, ev);
         e_.set_activity(s_, "waiting", {{"kind", "approval"}, {"id", id}, {"tool", r.tool}, {"summary", r.summary}});
         // Waited for at most approvals_timeout seconds (0: with no limit): an approval nobody answers must not hold
-        // the session forever. A timeout is a denial, answered by the engine itself.
+        // the session forever. A timeout is a denial, answered by the engine itself. An unattended turn is denied at
+        // once instead, by design, and the owner's window gets one line saying so.
         int timeout_s = s_.settings.approvals_timeout;
         auto has_answer = [&] { return s_.approvals[id].answer.has_value() || s_.cancel.load(); };
-        if (timeout_s > 0) {
+        if (unattended()) {
+            ApprovalAnswer denied;
+            denied.unattended = true;
+            s_.approvals[id].answer = denied;
+            s_.approvals[id].by = json{{"client", "engine"}, {"name", "unattended"}, {"origin", "local"}};
+            e_.emit(s_, {{"type", "maid.notice"}, {"text", "unattended (the owner is away): " + r.tool + " denied: " + r.summary}, {"level", "info"}});
+        } else if (timeout_s > 0) {
             if (!s_.cv.wait_for(lock, std::chrono::seconds(timeout_s), has_answer)) {
                 s_.approvals[id].answer = ApprovalAnswer{Approval::No, "approval timed out after " + std::to_string(timeout_s) + " s; treated as denied"};
                 s_.approvals[id].answer->timed_out = true;
@@ -3054,6 +3086,7 @@ public:
         json by = p.by.is_null() ? (s_.cancel_by.is_null() ? json{{"client", "engine"}, {"name", "engine"}, {"origin", "local"}} : s_.cancel_by) : p.by;
         json done = {{"type", "maid.approval.answered"}, {"id", id}, {"choice", answer.withdrawn ? "withdrawn" : choice_name(answer.choice)}, {"by", by}};
         if (answer.timed_out) done["timed_out"] = true;
+        if (answer.unattended) done["unattended"] = true;
         if (!call_id.empty()) done["call_id"] = call_id;
         e_.emit(s_, done);
         if (!s_.parent.empty()) e_.mirror(s_, id, done);
@@ -3070,11 +3103,14 @@ public:
         ev["stream_id"] = s_.id;
         s_.questions[id] = PendingQuestion{ev, std::nullopt, nullptr};
         e_.set_activity(s_, "waiting", {{"kind", "question"}, {"id", id}, {"summary", text}});
-        // As ask() above: waited for at most approvals_timeout seconds (0: with no limit). A question nobody
-        // answers comes back empty, marked timed out, and the model is told to go on with what it assumed.
+        // As ask() above: an unattended turn answers at once, and otherwise the question waits for at most
+        // approvals_timeout seconds (0: with no limit). A question nobody answers comes back empty, marked timed out,
+        // and the model is told to go on with what it assumed.
         int timeout_s = s_.settings.approvals_timeout;
         auto has_answer = [&] { return s_.questions[id].answer.has_value() || s_.cancel.load(); };
-        if (timeout_s > 0) {
+        if (unattended()) {
+            s_.questions[id].unattended = true;
+        } else if (timeout_s > 0) {
             if (!s_.cv.wait_for(lock, std::chrono::seconds(timeout_s), has_answer)) s_.questions[id].timed_out = true;
         } else {
             s_.cv.wait(lock, has_answer);
@@ -3084,10 +3120,13 @@ public:
         s_.answered.insert(id);
         json by = q.by.is_null() ? (s_.cancel_by.is_null() ? json{{"client", "engine"}, {"name", "engine"}, {"origin", "local"}} : s_.cancel_by) : q.by;
         if (q.timed_out) by = json{{"client", "engine"}, {"name", "timeout"}, {"origin", "local"}};  // nobody's answer: the engine's
+        else if (q.unattended) by = json{{"client", "engine"}, {"name", "unattended"}, {"origin", "local"}};  // nobody is there to ask
         json answered = {{"type", "maid.question.answered"}, {"id", id}, {"by", by}, {"withdrawn", q.withdrawn}};
         if (q.timed_out) answered["timed_out"] = true;
+        if (q.unattended) answered["unattended"] = true;
         e_.emit(s_, answered);
         settle_activity();
+        if (q.unattended) return "no questions are answered in this unattended turn (the owner is away); continue with your best judgement and say what you assumed.";
         if (q.timed_out) return "no answer within " + std::to_string(timeout_s) + " s; continue with your best judgement and say what you assumed.";
         return q.answer.value_or("");
     }
@@ -3587,6 +3626,7 @@ void configure_agent(Agent& a, const Settings& st) {
     a.compaction.keep_results = st.compact_keep_results;
     a.compaction.model = st.compact_model;
     a.budget_tokens = st.budget_tokens;
+    a.unattended_denials_limit = st.unattended_denials_limit;  // approvals one unattended turn may have denied
     a.full_output = st.full_output;
     a.full_output_max_mb = static_cast<size_t>(st.full_output_max_mb);
     a.set_instruction_options(st.instructions);

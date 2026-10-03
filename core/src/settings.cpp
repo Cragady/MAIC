@@ -735,6 +735,12 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.dumb_auto_ok = j.value("dumb_auto_ok", s.dumb_auto_ok);
         s.approvals_timeout = j.value("approvals_timeout", s.approvals_timeout);
         if (s.approvals_timeout < 0) throw std::runtime_error(path.string() + ": approvals_timeout must be 0 or more seconds");
+        s.approvals_unattended = j.value("approvals_unattended", s.approvals_unattended);
+        if (s.approvals_unattended != "wait" && s.approvals_unattended != "deny") {
+            throw std::runtime_error(path.string() + ": approvals_unattended must be \"wait\" or \"deny\", not \"" + s.approvals_unattended + "\"");
+        }
+        s.unattended_denials_limit = j.value("unattended_denials_limit", s.unattended_denials_limit);
+        if (s.unattended_denials_limit < 1) throw std::runtime_error(path.string() + ": unattended_denials_limit must be 1 or more");
         if (j.contains("steering")) read_steering(s.steering, j["steering"], path.string() + ": steering", global, !global, s.warnings);
         if (j.contains("bans")) {
             Bans b = Bans::from_json(j["bans"]);
@@ -838,7 +844,7 @@ bool names_guarded_field(const fs::path& json_path) {
     std::error_code ec;
     std::ifstream in(fs::is_regular_file(lua_path, ec) ? lua_path : json_path);
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    static const std::regex guarded(R"(\b(permission|allow|forbid|harness|reviewer_model|dumb_auto_ok|approvals_timeout|tripwire|allow_isolated|agents|profiles)\b)");
+    static const std::regex guarded(R"(\b(permission|allow|forbid|harness|reviewer_model|dumb_auto_ok|approvals_timeout|approvals_unattended|unattended_denials_limit|tripwire|allow_isolated|agents|profiles)\b)");
     return std::regex_search(text, guarded);
 }
 
@@ -847,7 +853,7 @@ bool names_guarded_field(const fs::path& json_path) {
 Settings load_settings(const fs::path& workspace) {
     Settings s;
     apply_file(s, settings_path(), workspace, true, LuaTier::Full, s.lua_memory_mb);
-    set_trust_config({s.trust_strictness, s.trust_identities, s.trust_levels, s.project_markers, s.instructions_bound, s.instructions});
+    set_trust_config({s.trust_strictness, s.trust_identities, s.trust_levels, s.project_markers, s.instructions_bound, s.instructions, s.approvals_timeout, s.approvals_unattended, s.unattended_denials_limit});
     set_lua_data_limits({*parse_lua_tier(s.global_lua), size_t(s.lua_memory_mb)});
     // audit.lua is the user's own file, at their Lua level; no project layer below can touch it. A broken one
     // stops only the audit's own path (audit_gate, maid audit-trail), never every command.
@@ -1092,6 +1098,10 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"dumb_auto_ok", d.dumb_auto_ok},
         {"approvals_timeout", d.approvals_timeout},
         {"//approvals_timeout", "seconds an approval or a question waits for an answer before it is treated as denied (0: no limit); a project's settings may only lower it, and setting it to 0 or above the value here makes the directory ask again"},
+        {"approvals_unattended", d.approvals_unattended},
+        {"//approvals_unattended", "wait: someone answers each approval (an unanswered one is denied after approvals_timeout); deny: every approval is denied at once, by design, as if the owner were away, and counts as no refusal of theirs"},
+        {"unattended_denials_limit", d.unattended_denials_limit},
+        {"//unattended_denials_limit", "how many approvals one unattended turn may have denied before it ends by itself, with one notice saying so (a normal end, never a trip); beside denials_limit, the user's own refusals"},
         {"protocol_tier", d.protocol_tier},
         {"//protocol_tier", "this file only: how closely the engine checks its protocol. open: no checks (an unchecked session shows OPEN); guarded: every check runs and logs what it finds (<state>/engine/protocol.log); airtight: refuses what fails (needs a build that passed conformance). protocol_tiers = { [\"~/scratch\"] = \"open\" } sets one per directory, as does maid trust DIR --protocol TIER; agents.NAME.protocol_tier one per agent; :tier tightens a session. docs/design/protocol-security.md"},
         {"protocol_tiers", json::object()},

@@ -45,12 +45,14 @@ struct ApprovalRequest {
 // The user's answer; `feedback` is a sentence for the model when the answer is No ("use the test config").
 // `withdrawn`: a steer took the approval's place, and `feedback` is what the call's result says instead.
 // `timed_out`: nobody answered within approvals_timeout, and the engine denied it on the user's behalf; `feedback`
-// then names the seconds it waited.
+// then names the seconds it waited. `unattended`: the turn is unattended (approvals_unattended = "deny", or the
+// liaison's maid.unattended), so the engine denied it at once, by design: not the user's refusal.
 struct ApprovalAnswer {
     Approval choice = Approval::No;
     std::string feedback;
     bool withdrawn = false;
     bool timed_out = false;
+    bool unattended = false;
 };
 
 // What a turn its front end stopped does next (AgentEvents::stopped): a cancel ends it; the steering actions of
@@ -106,6 +108,9 @@ public:
     // Whether a question would reach someone now: false for a session no client has in focus (a background task
     // nobody watches), where an ask that must not wait counts as a no.
     virtual bool can_ask() { return true; }
+    // Whether this turn is unattended (the owner is away): the engine answers every approval and question at once,
+    // and a question so answered counts like a denial toward unattended_denials_limit (agent.cpp, the question tool).
+    virtual bool unattended() { return false; }
     // The model replaced its plan.
     virtual void on_todo(const std::vector<TodoItem>& items) { (void)items; }
     // Right after on_tool_call: the tool by name and the path it names as the model gave it ("" for none).
@@ -293,6 +298,9 @@ public:
     int repeat_trip = 5;
     // This many denials by the user in one turn end the turn.
     int denials_limit = 3;
+    // This many approvals denied while the owner is away (unattended) in one turn end it the same way, with their
+    // own notice: nobody refused anything, so they are counted apart from denials_limit.
+    int unattended_denials_limit = 5;
     // Model calls per turn before the agent stops and waits for the user (an agent definition sets a subagent's).
     int max_steps = 40;
     int steps() const { return steps_; }  // model calls so far
@@ -512,6 +520,7 @@ private:
     std::string last_call_;
     int repeats_ = 0;
     int denials_ = 0;
+    int unattended_denials_ = 0;  // approvals denied because the turn is unattended; not the user's refusals
     int steps_ = 0;
     bool stuck_ = false;  // the same harmless call kept repeating: end the turn, do not trip
     std::shared_ptr<NvimHost> nvim_;

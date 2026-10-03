@@ -2483,6 +2483,181 @@ int main() {
         timed.finish();
     }
 
+    section("an unattended turn denies at once, by design, and its denials are nobody's refusals");
+    {
+        EngineOptions au = o;
+        au.settings.unattended_denials_limit = 3;  // short: three such denials end a turn here
+        au.index_file = root / "state" / "engine-unattended" / "index.json";
+        au.protocol_log = root / "state" / "engine-unattended" / "protocol.log";
+        Engine e(au);
+        Recording away("unattended");
+        TestClient a(e, away, Origin::Local, "tui");
+        a.hello();
+        std::string uid = a.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}}).value("id", "");
+        a.ok("maid.session.subscribe", {{"session", uid}});
+        a.pump(0ms);
+        auto noticed = [&](size_t from, const std::string& part) {
+            for (size_t i = from; i < a.events.size(); ++i) {
+                if (a.events[i]["type"] == "maid.notice" && a.events[i].value("text", "").find(part) != std::string::npos) return true;
+            }
+            return false;
+        };
+        auto request_count = [&] {
+            std::lock_guard lock(fake.mu);
+            return fake.requests.size();
+        };
+        auto says_since = [&](size_t from, const std::string& needle) {
+            std::lock_guard lock(fake.mu);
+            for (size_t i = from; i < fake.requests.size(); ++i) {
+                for (const auto& m : fake.requests[i]["messages"]) {
+                    if (m.contains("content") && FakeServer::text_of(m["content"]).find(needle) != std::string::npos) return true;
+                }
+            }
+            return false;
+        };
+
+        // 1. maid.unattended on one turn: the approval is answered at once, not after approvals_timeout (300 here).
+        size_t mark = a.events.size();
+        size_t before = request_count();
+        plan({shell("echo away")});
+        a.ok("response.create", {{"conversation", uid}, {"input", "run it"}, {"maid", {{"unattended", true}}}});
+        long at = a.until_type("maid.approval.requested", mark);
+        auto began = std::chrono::steady_clock::now();
+        long ans = a.until_type("maid.approval.answered", mark);
+        auto waited = std::chrono::steady_clock::now() - began;
+        const json* done = ans > 0 ? &a.events[ans] : nullptr;
+        expect(at > 0 && done && (*done)["choice"] == "no" && (*done)["by"]["client"] == "engine" && (*done)["by"]["name"] == "unattended" &&
+                   (*done)["by"]["origin"] == "local" && (*done)["unattended"] == true && !done->contains("timed_out"),
+               "an unattended turn denies at once: choice no, by unattended, unattended true");
+        expect(waited < 5s, "and it does not wait for approvals_timeout (300 s here)");
+        expect(noticed(mark, "unattended (the owner is away): run_shell denied"), "the owner's window gets one line per denial");
+        expect(a.until_idle(mark) > 0 && says_since(before, "Approvals are off in this turn by design (the owner is away)"),
+               "the turn goes on, and the model is told the approvals are disabled by design");
+
+        // 2. The bound: the third such denial ends the turn, calmly, with its own notice.
+        mark = a.events.size();
+        plan({shell("echo a"), shell("echo b"), shell("echo c"), shell("echo d")});
+        a.ok("response.create", {{"conversation", uid}, {"input", "run them all"}, {"maid", {{"unattended", true}}}});
+        expect(a.until_idle(mark) > 0, "the turn ends by itself");
+        expect(noticed(mark, "stopping: 3 actions needed approval while the owner is away"), "with the notice unattended_denials_limit names");
+        expect(!noticed(mark, "denials this turn") && !a.find("error", mark) && !a.find("maid.response.cancelled", mark) && a.find("response.completed", mark),
+               "a normal end: no refusal count, no error, no cancel");
+
+        // 3. The session's own setting does the same for every turn, with no flag on the response.
+        EngineOptions aset = o;
+        aset.settings.approvals_unattended = "deny";
+        aset.index_file = root / "state" / "engine-unattended-setting" / "index.json";
+        aset.protocol_log = root / "state" / "engine-unattended-setting" / "protocol.log";
+        Engine es(aset);
+        Recording alone("unattended-setting");
+        TestClient b(es, alone, Origin::Local, "tui");
+        b.hello();
+        std::string bid = b.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}}).value("id", "");
+        b.ok("maid.session.subscribe", {{"session", bid}});
+        b.pump(0ms);
+        mark = b.events.size();
+        plan({shell("echo setting")});
+        b.ok("response.create", {{"conversation", bid}, {"input", "run it"}});
+        long ask = b.until_type("maid.approval.answered", mark);
+        expect(ask > 0 && b.events[ask]["by"]["name"] == "unattended" && b.events[ask]["unattended"] == true,
+               "approvals_unattended = \"deny\": a turn with no flag is unattended too");
+        expect(b.until_idle(mark) > 0, "and the turn goes on");
+        mark = b.events.size();
+        size_t before_q = request_count();
+        plan({json{{"name", "question"}, {"arguments", {{"question", "which cat?"}, {"options", json::array({"whiskers", "felix"})}}}}});
+        b.ok("response.create", {{"conversation", bid}, {"input", "ask me which cat"}});
+        long asked = b.until_type("maid.question.answered", mark);
+        expect(asked > 0 && b.events[asked]["unattended"] == true && b.events[asked]["by"]["name"] == "unattended" && !b.events[asked].contains("timed_out"),
+               "a question in an unattended turn is answered at once with nothing, marked unattended");
+        expect(b.until_idle(mark) > 0 && says_since(before_q, "in this unattended turn"),
+               "and the model is told to go on with what it assumed");
+        alone.finish();
+
+        // 4. The user's own refusals still count: three of them end a turn, as before.
+        mark = a.events.size();
+        size_t cursor = mark;
+        plan({shell("echo a"), shell("echo b"), shell("echo c"), shell("echo d")});
+        a.ok("response.create", {{"conversation", uid}, {"input", "run them for real"}});
+        for (int i = 0; i < 3; ++i) {
+            long asked_at = a.until_type("maid.approval.requested", cursor);
+            if (asked_at < 0) break;
+            cursor = static_cast<size_t>(asked_at) + 1;
+            a.ok("maid.approval.answer", {{"session", uid}, {"approval", a.events[asked_at]["id"]}, {"choice", "no"}});
+        }
+        expect(a.until_idle(mark) > 0 && noticed(mark, "denials this turn; stopping so you can say what you want instead"),
+               "three refusals of the user's still end the turn, with the refusal notice");
+
+        // 5. A turn queued on the lane carries its own flag, and 6. the next ordinary turn is not unattended.
+        auto saved_call_for = fake.tool_call_for;
+        int calls = 0;
+        fake.tool_call_for = [&](const json&) -> json {
+            // One call for the first request (the turn that waits) and one for the third (the queued turn): the
+            // requests between them echo, so each turn asks exactly once.
+            return (++calls == 1 || calls == 3) ? shell("echo call" + std::to_string(calls)) : json();
+        };
+        mark = a.events.size();
+        a.ok("response.create", {{"conversation", uid}, {"input", "turn A"}});
+        long waitA = a.until_type("maid.approval.requested", mark);
+        json queued = a.ok("response.create", {{"conversation", uid}, {"input", "turn B"}, {"maid", {{"unattended", true}}}});
+        expect(waitA > 0 && queued.value("status", "") == "queued" && queued["maid"]["queued"] == true,
+               "a message that arrives while a turn waits on an approval is queued");
+        if (waitA > 0) a.ok("maid.approval.answer", {{"session", uid}, {"approval", a.events[waitA]["id"]}, {"choice", "yes"}});
+        expect(a.until_idle(mark) > 0, "both turns end");
+        const json* last_answered = nullptr;
+        for (size_t i = mark; i < a.events.size(); ++i) {
+            if (a.events[i]["type"] == "maid.approval.answered") last_answered = &a.events[i];
+        }
+        expect(last_answered && last_answered->value("unattended", false) && (*last_answered)["by"]["name"] == "unattended",
+               "the queued turn's own approval is denied at once: the lane carries the flag");
+
+        fake.tool_call_for = saved_call_for;
+        mark = a.events.size();
+        plan({shell("echo plain")});
+        a.ok("response.create", {{"conversation", uid}, {"input", "an ordinary turn"}});
+        long waitPlain = a.until_type("maid.approval.requested", mark);
+        a.pump(1000ms);
+        expect(waitPlain > 0 && !a.find("maid.approval.answered", mark), "the next ordinary turn is not unattended: its approval waits");
+        if (waitPlain > 0) a.ok("maid.approval.answer", {{"session", uid}, {"approval", a.events[waitPlain]["id"]}, {"choice", "yes"}});
+        expect(a.until_idle(mark) > 0, "and the answer lets it finish");
+
+        // 7. A task session started from an unattended turn inherits the flag (it only tightens).
+        auto saved_task_call = fake.tool_call_for;
+        int parents = 0, children = 0;
+        fake.tool_call_for = [&](const json& body) -> json {
+            bool parent = false;
+            for (const auto& t : body.value("tools", json::array())) parent = parent || t.value("function", json::object()).value("name", "") == "task";
+            if (parent) {
+                if (++parents > 1) return json();  // the delegation itself, once
+                return json{{"name", "task"}, {"arguments", {{"agent", "general"}, {"prompt", "run a command"}, {"background", true}}}};
+            }
+            return ++children == 1 ? shell("echo tasky") : json();
+        };
+        mark = a.events.size();
+        a.ok("response.create", {{"conversation", uid}, {"input", "delegate it"}, {"maid", {{"unattended", true}}}});
+        long created = a.until([&](const json& e) { return e["type"] == "maid.task.created"; }, mark);
+        long child_ask = a.until([&](const json& e) { return e["type"] == "maid.approval.answered" && e.value("unattended", false); }, mark);
+        expect(created > 0 && child_ask > 0 && a.events[child_ask]["choice"] == "no" && a.events[child_ask]["by"]["name"] == "unattended",
+               "a task started from an unattended turn is unattended too: its own approval is denied at once");
+        expect(a.until_idle(mark) > 0, "the parent's turn and the task end");
+        fake.tool_call_for = saved_task_call;
+
+        // 8. A voice's turn (the liaison's) carries the flag the same way: one that speaks as `liaison`.
+        Recording voice("unattended-voice");
+        TestClient v(e, voice, Origin::Local, "liaison");
+        v.ok("maid.hello", {{"protocol", 1}, {"client", {{"name", "liaison"}, {"version", "0"}}}, {"as", "liaison"}, {"capabilities", {"tool_output"}}});
+        v.ok("maid.session.subscribe", {{"session", uid}});
+        v.pump(0ms);
+        mark = v.events.size();
+        plan({shell("echo by voice")});
+        v.ok("response.create", {{"conversation", uid}, {"input", "run it as a voice"}, {"maid", {{"unattended", true}}}});
+        long voice_ask = v.until([&](const json& ev) { return ev["type"] == "maid.approval.answered" && ev.value("unattended", false); }, mark);
+        expect(voice_ask > 0 && v.events[voice_ask]["choice"] == "no" && v.events[voice_ask]["by"]["name"] == "unattended",
+               "a voice's unattended turn denies its approval at once, as the liaison's does");
+        expect(v.until_idle(mark) > 0, "and that turn ends");
+        voice.finish();
+        away.finish();
+    }
+
     section("one bad item degrades only itself: a service file that doesn't load, a vendor manifest that doesn't parse");
     {
         // A maid tree of its own: the real one's files, a bad service beside a healthy one, and a corrupt manifest.

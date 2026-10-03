@@ -76,9 +76,9 @@ int bridge_to_daemon(int sock, int in, int out);
 // maid daemon start | stop [--yes] | status [--json] | run | unit [install|remove]
 int cmd_daemon(const std::vector<std::string>& args);
 
-// maid liaison send ID (TEXT | --file FILE) [--out FILE] [--timeout SECONDS] | approve ID APPROVAL yes|no | status ID:
-// another agent's turns on a session the daemon holds. Exit 3 when no daemon runs; send exits 4 at an approval,
-// 2 when the response fails and 5 at its timeout.
+// maid liaison send ID (TEXT | --file FILE) [--out FILE] [--timeout SECONDS] [--unattended] | approve ID APPROVAL yes|no | status ID:
+// another agent's turns on a session the daemon holds. Exit 3 when no daemon runs; send exits 4 at an approval (never
+// with --unattended), 2 when the response fails and 5 at its timeout.
 int cmd_liaison(const std::vector<std::string>& args);
 
 }  // namespace maid
