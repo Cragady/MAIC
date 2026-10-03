@@ -2677,6 +2677,7 @@ struct Engine::Impl {
 
     // `!cmd`: the user's own shell, unsandboxed, its output as maid.tool.output.delta with no output_index (it is
     // no response's item); then what it printed reaches the model as context, as a message typed mid-turn does.
+    // It starts no turn: on an idle session it is context for the next message, and `in_turn` says which it was.
     json session_shell(Client& c, const json& p) {
         (void)c;
         auto s = session(p.at("session"));
@@ -2717,12 +2718,13 @@ struct Engine::Impl {
         if (output.size() > 32 * 1024) output = output.substr(0, 32 * 1024) + "\n[truncated]";
         std::string context = "[The user ran this in their shell: `" + command + "`]\n" + output + tail;
         std::lock_guard lock(s->mu);
-        if (s->running) s->agent.post_message(context);
+        bool in_turn = s->running;
+        if (in_turn) s->agent.post_message(context);
         else s->agent.add_context(context);
         s->shell_running = false;
         s->cv.notify_all();
         settle_if_done(s);
-        return {{"exit_code", rc}, {"item_id", id}};
+        return {{"exit_code", rc}, {"item_id", id}, {"in_turn", in_turn}};
     }
 
     // A write's content after it, for a diff beside the approval (maid.approval.requested says only its size).
@@ -3330,16 +3332,22 @@ void Engine::Impl::run_turns(std::shared_ptr<Session> s, std::string text, Origi
                 if (!title.empty()) retitle(*s, title, "auto", nullptr);
             }
         }
-        if (s->lane.empty() || stopped.load() || s->unloading.load()) {
+        if ((s->lane.empty() && s->agent.queued() == 0) || stopped.load() || s->unloading.load()) {
             s->running = false;
             flush_notes(*s);
             set_activity(*s, "idle");
             settle_if_done(s);
             return;
         }
-        // The next turn on the lane: what a cancel left in the mailbox joins it.
-        Session::Queued next = std::move(s->lane.front());
-        s->lane.pop_front();
+        // The next turn on the lane: what a cancel left in the mailbox joins it. With the lane empty, what reached
+        // the mailbox after the turn's last check (a `!cmd` that ended, a steer) is that turn's input.
+        Session::Queued next;
+        if (s->lane.empty()) {
+            next = {reserve_turn(*s, Origin::Local), "", Origin::Local};
+        } else {
+            next = std::move(s->lane.front());
+            s->lane.pop_front();
+        }
         s->cancel = false;
         s->cancel_by = nullptr;
         text = next.text;

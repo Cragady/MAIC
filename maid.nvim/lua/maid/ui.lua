@@ -800,6 +800,7 @@ local function shell(ui, command)
         grow(ui, b, -1)
       end
       if r and r.exit_code and r.exit_code ~= 0 then append(ui, b, "\n[exit code " .. r.exit_code .. "]") end
+      notice(ui, r and r.in_turn and "result queued; it reaches the model at the turn's next step" or "result added; the agent sees it with your next message")
     end
     fold(ui, ui.shell)
   end)

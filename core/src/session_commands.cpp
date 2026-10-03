@@ -486,8 +486,10 @@ void SessionCommands::lua(Session& s, CommandOutput& out, const std::string& cod
     out.ok = r.ok;
     if (!r.output.empty()) {
         std::string context = "[The user ran Lua in MAID: `" + code + "`]\n" + (r.output.size() > 32 * 1024 ? r.output.substr(0, 32 * 1024) + "\n[truncated]" : r.output);
-        if (s.running) s.agent.post_message(context);
+        bool in_turn = s.running;
+        if (in_turn) s.agent.post_message(context);
         else s.agent.add_context(context);
+        out.line(in_turn ? "result queued; it reaches the model at the turn's next step" : "result added; the agent sees it with your next message", "info");
     }
 }
 

@@ -2020,7 +2020,10 @@ void App::run_shell(const std::string& command) {
         screen_.Post([this, reply] {
             drain();
             if (reply.contains("error")) post(Kind::Error, reply["error"].value("message", "the command did not run"));
-            else if (int rc = result(reply).value("exit_code", 0); rc != 0) view_.append_to_last(Kind::ToolOk, "\n[exit code " + std::to_string(rc) + "]");
+            else {
+                if (int rc = result(reply).value("exit_code", 0); rc != 0) view_.append_to_last(Kind::ToolOk, "\n[exit code " + std::to_string(rc) + "]");
+                post(Kind::Notice, result(reply).value("in_turn", false) ? "result queued; it reaches the model at the turn's next step" : "result added; the agent sees it with your next message");
+            }
             shell_busy_ = false;
         });
         screen_.PostEvent(Event::Custom);
