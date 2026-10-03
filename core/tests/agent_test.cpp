@@ -6,6 +6,7 @@
 #include "fake_server.hpp"
 
 #include "maic/agent.hpp"
+#include "maic/models.hpp"
 #include "maic/audit_trail.hpp"
 #include "maic/jsonschema.hpp"
 #include "maic/settings.hpp"
@@ -21,7 +22,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -1031,6 +1034,12 @@ int main() {
             std::string transcript((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
             expect(!leaked && transcript.find(ds.key) == std::string::npos && transcript.find("thought 1") != std::string::npos,
                    "the key is in no tool result and not in the transcript, which keeps the reasoning to replay on resume");
+            // Four calls of 120 prompt tokens (64 from the cache) and 30 out, at the catalog's price for when they ran.
+            const ApiModel* pro = find_api_model(api_models(), "deepseek", "deepseek-v4-pro");
+            double each = pro ? call_cost(*pro, 120, 64, 30, std::time(nullptr)) : 0;
+            Agent::UsageReport u = a->usage();
+            expect(pro && std::abs(u.cost - 4 * each) < 1e-12 && u.currency == "USD" && transcript.find("\"cost\":") != std::string::npos,
+                   "each call is costed from the catalog's prices and summed for the session, and the usage records carry it: " + std::to_string(u.cost));
             fs::remove(log.path());
         }
         // A subagent from deepseek-pro on deepseek-flash: the same account, so no question.
@@ -1048,6 +1057,11 @@ int main() {
             std::string desc;
             for (const auto& t : ds.requests[0]["tools"]) if (t["function"]["name"] == "task") desc = t["function"]["description"];
             expect(desc.find("deepseek-flash (tier 25)") != std::string::npos && desc.find("metered") == std::string::npos, "and the list shows no meter for its own account: " + desc);
+            const ApiModel* pro = find_api_model(api_models(), "deepseek", "deepseek-v4-pro");
+            const ApiModel* flash = find_api_model(api_models(), "deepseek", "deepseek-flash");
+            double expected = 0;
+            for (const auto& q : ds.requests) expected += call_cost(*(from_child(q) ? flash : pro), 120, 64, 30, std::time(nullptr));
+            expect(std::abs(a->usage().cost - expected) < 1e-12, "the subagent's cost, at Flash's prices, counts in the parent's estimate");
         }
         // From a local session the parent model asking for deepseek-flash is not Micaiah asking: she is asked.
         {

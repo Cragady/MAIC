@@ -7,6 +7,7 @@
 #include "maic/places.hpp"
 #include "maic/script_tools.hpp"
 #include "maic/service.hpp"
+#include "maic/models.hpp"
 #include "maic/status.hpp"
 #include "maic/tools.hpp"
 #include "maic/tripwire.hpp"
@@ -69,6 +70,17 @@ std::string init_project(const fs::path& ws) {
         made += "created MAIC.md (transcripts for this project now go under sessions/projects/)\n";
     }
     return made;
+}
+
+// The cost estimate for :status: this session's, from the catalog's prices, and the average per session kept in
+// <state>/costs.json. "" when neither has anything to say.
+std::string cost_line(const Agent::UsageReport& u) {
+    std::string out;
+    if (u.cost > 0) out = "~" + format_cost(u.cost, u.currency) + " this session";
+    for (const auto& a : session_cost_averages()) {
+        out += (out.empty() ? "" : "; ") + std::string("average ~") + format_cost(a.average, a.currency) + " per session over " + std::to_string(a.sessions);
+    }
+    return out.empty() ? "" : "cost (estimate from the catalog's prices): " + out + "\n";
 }
 
 std::string todo_text(const std::vector<TodoItem>& todo) {
@@ -476,6 +488,7 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
             std::string text = format_status(report);
             text += "model: " + name + " via " + provider.name + " at " + provider.base_url + (provider.remote() ? "  [REMOTE: data leaves this machine]" : "  [local]") + "\n";
             text += "session: " + log_path(s) + "\n";
+            text += cost_line(agent.usage());
             text += "mode: " + std::string(mode_name(agent.mode.load())) + (s.running ? "  (working)" : "  (idle)");
             if (!s.tier.empty()) text += "\n" + s.tier;
             if (size_t q = agent.queued()) text += "  " + std::to_string(q) + " queued  -> :w now";

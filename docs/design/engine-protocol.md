@@ -218,7 +218,7 @@ Every event is one notification, `maic.event`, whose params are the event object
 | `maic.session.settings` | whichever of `mode`, `model`, `remote_model`, `think`, `harness`, `judge`, `agent`, `tier` changed, `by` |
 | `maic.session.title` | `text`, `source` (`auto`, `rename`) |
 | `maic.session.compacted` | `bytes_before`, `bytes_after`, `ref`: a compaction between responses |
-| `maic.usage.updated` | `usage` (OpenAI's shape) for the last model call, `calls`, `context`, `last_input`, `budget` |
+| `maic.usage.updated` | `usage` (OpenAI's shape) for the last model call, `calls`, `context`, `last_input`, `budget`, and `cost` (`estimate`, `currency`) once a priced model was called |
 | `maic.task.created` | `task` (the child's session id), `agent`, `model`, `model_reason`, `background`, `prompt_head`, `call_id` |
 | `maic.task.completed`, `maic.task.failed` | `task`, `agent`, `steps`, `tokens`, `answer_size`, `ref`; `reason` on `failed` |
 | `maic.side.opened`, `maic.side.merged` | `thread` (its id), `kind`, `ref` |

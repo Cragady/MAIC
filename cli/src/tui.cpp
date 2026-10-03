@@ -11,8 +11,10 @@
 #include "maic/artifacts.hpp"
 #include "maic/clipboard.hpp"
 #include "maic/full_output.hpp"
+#include "maic/helper.hpp"
 #include "maic/image.hpp"
 #include "maic/lazy_lock.hpp"
+#include "maic/models.hpp"
 #include "maic/places.hpp"
 #include "maic/protocol.hpp"
 #include "maic/vendor.hpp"
@@ -1416,7 +1418,11 @@ Element App::render_bottom_status() {
             if (pct >= 85) style = "harness_tripped";
             else if (pct >= 60) style = "notice";
         }
-        parts.push_back(text(ctx + " · Σ↑" + k(total.value("input", 0L)) + " ↓" + k(total.value("output", 0L)) + "  ") | decorate(settings_.style(style)));
+        std::string cost;
+        if (const auto c = usage_.value("cost", nlohmann::json::object()); c.contains("estimate") && c["estimate"].is_number()) {
+            cost = " · ~" + format_cost(c["estimate"].get<double>(), c.value("currency", "")) + " est.";
+        }
+        parts.push_back(text(ctx + " · Σ↑" + k(total.value("input", 0L)) + " ↓" + k(total.value("output", 0L)) + cost + "  ") | decorate(settings_.style(style)));
     }
     parts.push_back(text(focus_ == Focus::Conversation ? "Ctrl-W j: input · v y / · :help  " : "Ctrl-W k: conversation · :help  ") |
                     decorate(settings_.style("status_dim")));
@@ -2180,7 +2186,7 @@ void App::run_command(const std::string& line) {
                 post(unlock_session() ? Kind::Notice : Kind::Error, unlock_session() ? "session lock removed; carry on" : "session lock removed, but the machine lock is set: `maic unlock` (sudo)");
             } else {
                 screen_.WithRestoredIO([] {
-                    [[maybe_unused]] int rc = std::system("echo 'Unlocking the MAIC harness.'; sudo -k && sudo /usr/local/sbin/maic-lock reset");
+                    [[maybe_unused]] int rc = run_helper("echo 'Unlocking the MAIC harness.'; sudo -k && sudo /usr/local/sbin/maic-lock reset");
                 })();
                 post(Kind::Notice, tripwire_state() ? "still tripped" : "harness unlocked; carry on");
             }
@@ -2286,7 +2292,7 @@ void App::run_command(const std::string& line) {
                 bool folder = flag == "folder" || flag == "--folder";
                 if (!folder && flag != "--browser") browser = flag;  // `:open comfyui firefox`
                 auto [cmdline, what] = open_command(name, settings_, ws_, services(), std::filesystem::path(transcript_), browser, folder);
-                post(std::system(cmdline.c_str()) == 0 ? Kind::Notice : Kind::Error, "opened " + what);
+                post(run_helper(cmdline) == 0 ? Kind::Notice : Kind::Error, "opened " + what);
             } catch (const std::exception& e) {
                 post(Kind::Error, e.what());
             }

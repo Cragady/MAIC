@@ -1,10 +1,16 @@
 #include "llm_http.hpp"
 
 #include "maic/http.hpp"
+#include "maic/paths.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <condition_variable>
 #include <cstdio>
+#include <ctime>
+#include <deque>
+#include <fstream>
+#include <memory>
 #include <random>
 #include <cstdlib>
 #include <filesystem>
@@ -165,9 +171,13 @@ std::vector<Provider> default_providers() {
         // the request turns it off; while it is on, temperature and the penalties do nothing and top_p is raised to
         // 0.95, without it top_p is fixed at 1.0, so none of those is sent where it would mislead. Its thinking turns'
         // reasoning_content goes back with every later request that carries tools. Pictures only to deepseek-flash. An
-        // empty `stop` reply is sent again. Metered: billed per token to the key's account.
+        // empty `stop` reply is sent again. Metered: billed per token to the key's account. GET /models is read at first
+        // use for each model's window, output cap and thinking levels. Its 429 counts open requests per account (2,500
+        // Flash, 500 V4 Pro): MAIC keeps to a third of each (Micaiah, 2026-10-02).
         {"deepseek", "openai", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "",
          {{"context_window", 1000000},
+          {"read_models", true},
+          {"max_concurrent", {{"deepseek-flash", 833}, {"deepseek-v4-pro", 166}}},
           {"max_tokens", 65536},
           {"think_on", {{"thinking", {{"type", "enabled"}}}}},
           {"think_off", {{"thinking", {{"type", "disabled"}}}}},
@@ -211,6 +221,23 @@ std::pair<std::string, std::string> split_base_url(const std::string& base_url) 
     return {base_url.substr(0, slash), base_url.substr(slash)};
 }
 
+// vcpkg's OpenSSL doesn't know the system's certificate location.
+void trust_system_cas([[maybe_unused]] httplib::Client& client) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+    if (const char* f = std::getenv("SSL_CERT_FILE"); f && *f) {
+        client.set_ca_cert_path(f);
+    } else {
+        for (const char* bundle : {"/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/cert.pem"}) {
+            if (fs::exists(bundle)) {
+                client.set_ca_cert_path(bundle);
+                break;
+            }
+        }
+    }
+    client.enable_server_certificate_verification(true);
+#endif
+}
+
 }  // namespace
 
 bool server_answers(const Provider& provider) {
@@ -223,6 +250,7 @@ bool server_answers(const Provider& provider) {
 std::vector<std::string> list_openai_models(const Provider& provider) {
     auto [host, prefix] = split_base_url(provider.base_url);
     httplib::Client client(host);
+    trust_system_cas(client);
     client.set_connection_timeout(5);
     httplib::Headers headers;
     if (!provider.api_key_env.empty() || !provider.api_key_command.empty()) headers.emplace("Authorization", "Bearer " + provider.api_key());
@@ -234,6 +262,96 @@ std::vector<std::string> list_openai_models(const Provider& provider) {
     }
     std::sort(out.begin(), out.end());
     return out;
+}
+
+namespace {
+
+// <state>/api-models/<provider>.json: {base_url, read_at, data}, data as GET /models gave it. Only for a provider
+// whose name can be a file name.
+fs::path facts_path(const Provider& provider) {
+    bool plain = !provider.name.empty() && provider.name[0] != '.' &&
+                 std::all_of(provider.name.begin(), provider.name.end(), [](unsigned char c) { return std::isalnum(c) || c == '-' || c == '_' || c == '.'; });
+    return plain ? state_dir() / "api-models" / (provider.name + ".json") : fs::path();
+}
+
+ApiModelFacts facts_from(const nlohmann::json& data) {
+    ApiModelFacts f;
+    if (!data.is_array()) return f;
+    for (const auto& m : data) {
+        if (!m.is_object() || !m.contains("id") || !m["id"].is_string()) continue;
+        ModelFacts mf;
+        if (m.contains("context_window") && m["context_window"].is_number_integer()) mf.context = m["context_window"];
+        if (m.contains("max_output_tokens") && m["max_output_tokens"].is_number_integer()) mf.output = m["max_output_tokens"];
+        if (m.contains("effort") && m["effort"].is_object()) {
+            const auto& e = m["effort"];
+            for (const auto& level : e.value("supported_levels", nlohmann::json::array())) {
+                if (level.is_string()) mf.efforts.push_back(level);
+            }
+            if (e.contains("default_level") && e["default_level"].is_string()) mf.default_effort = e["default_level"];
+        }
+        f.models[m["id"].get<std::string>()] = mf;
+    }
+    return f;
+}
+
+}  // namespace
+
+ApiModelFacts saved_model_facts(const Provider& provider) {
+    fs::path path = facts_path(provider);
+    std::ifstream in(path);
+    if (path.empty() || !in) return {};
+    auto j = nlohmann::json::parse(in, nullptr, false);
+    if (!j.is_object() || j.value("base_url", "") != provider.base_url) return {};
+    ApiModelFacts f = facts_from(j.value("data", nlohmann::json::array()));
+    f.read_at = j.value("read_at", 0L);
+    f.saved = true;
+    return f;
+}
+
+ApiModelFacts api_model_facts(const Provider& provider, bool refresh) {
+    // One lock for every provider: a first use waits for the read in flight rather than starting its own.
+    static std::mutex mu;
+    static std::map<std::string, ApiModelFacts> read;
+    std::lock_guard lock(mu);
+    std::string key = provider.name + " " + provider.base_url;
+    if (auto it = read.find(key); it != read.end() && !refresh) return it->second;
+    ApiModelFacts f;
+    try {
+        auto [host, prefix] = split_base_url(provider.base_url);
+        httplib::Client client(host);
+        trust_system_cas(client);
+        client.set_connection_timeout(2);
+        client.set_read_timeout(3);
+        httplib::Headers headers;
+        if (!provider.api_key_env.empty() || !provider.api_key_command.empty()) headers.emplace("Authorization", "Bearer " + provider.api_key());
+        auto res = client.Get(prefix + "/models", headers);
+        auto body = res && res->status == 200 ? nlohmann::json::parse(res->body, nullptr, false) : nlohmann::json();
+        if (!res) f.error = "can't reach " + provider.base_url + " (" + httplib::to_string(res.error()) + ")";
+        else if (res->status != 200) f.error = "GET /models returned HTTP " + std::to_string(res->status);
+        else if (!body.is_object() || !body.contains("data") || !body["data"].is_array()) f.error = "GET /models sent no model list";
+        else {
+            f = facts_from(body["data"]);
+            f.read_at = static_cast<long>(std::time(nullptr));
+            if (fs::path path = facts_path(provider); !path.empty()) {
+                std::error_code ec;
+                fs::create_directories(path.parent_path(), ec);
+                fs::path tmp = path;
+                tmp += ".tmp";
+                std::ofstream(tmp, std::ios::trunc) << nlohmann::json{{"base_url", provider.base_url}, {"read_at", f.read_at}, {"data", body["data"]}}.dump(1) << "\n";
+                fs::rename(tmp, path, ec);
+            }
+        }
+    } catch (const std::exception& e) {
+        f.error = e.what();
+    }
+    if (!f.error.empty()) {
+        if (ApiModelFacts saved = saved_model_facts(provider); !saved.models.empty()) {
+            saved.error = f.error;
+            f = saved;
+        }
+    }
+    read[key] = f;
+    return f;
 }
 
 namespace {
@@ -254,35 +372,164 @@ bool sleep_unless_cancelled(int ms, const std::atomic<bool>& cancel) {
     return !cancel.load();
 }
 
+using Clock = std::chrono::steady_clock;
+using std::chrono::milliseconds;
+
+// What every request to one provider account shares: the requests open per model against `max_concurrent`, the hold
+// a 429 puts on all of them, and the 429s the breaker counts.
+struct Account {
+    std::mutex mu;
+    std::condition_variable freed;
+    std::map<std::string, int> open;
+    std::set<std::string> past_half;  // models told they passed half their cap
+    Clock::time_point hold_until{};
+    bool breaker = false;  // open until hold_until
+    std::deque<Clock::time_point> limited;
+};
+
+constexpr size_t kBreakerAfter = 5;
+
+Account& account_of(const Provider& provider) {
+    static std::mutex mu;
+    static std::map<std::string, std::unique_ptr<Account>> all;
+    std::lock_guard lock(mu);
+    auto& a = all[provider.name + " " + provider.base_url];
+    if (!a) a = std::make_unique<Account>();
+    return *a;
+}
+
+// `max_concurrent`: a number for every model of the provider, or one per model; 0 (or none) for no cap.
+int concurrency_cap(const Provider& provider, const std::string& model) {
+    const nlohmann::json c = provider.options.value("max_concurrent", nlohmann::json());
+    if (c.is_number_integer()) return c.get<int>();
+    if (c.is_object() && c.contains(model) && c[model].is_number_integer()) return c[model].get<int>();
+    return 0;
+}
+
+std::string in_seconds(Clock::duration d) {
+    return std::to_string((std::chrono::duration_cast<milliseconds>(d).count() + 999) / 1000) + " s";
+}
+
+// Before each attempt: waits out the account's hold (an open breaker fails at once, nothing sent), then for a slot
+// under the cap. Notices are told outside the lock.
+void enter(Account& a, const Provider& provider, const ChatOptions& options, int cap, const std::atomic<bool>& cancel) {
+    std::unique_lock lock(a.mu);
+    bool told_hold = false, told_queue = false;
+    auto tell = [&](const std::string& text) {
+        if (!options.notice) return;
+        lock.unlock();
+        options.notice(text);
+        lock.lock();
+    };
+    for (;;) {
+        if (cancel.load()) throw Cancelled();
+        auto now = Clock::now();
+        if (a.hold_until > now) {
+            if (a.breaker) {
+                throw ApiError(429, provider.name + ": MAIC is sending nothing to it for " + in_seconds(a.hold_until - now) + " more, after " + std::to_string(kBreakerAfter) +
+                                        " rate limits in a short time (the circuit breaker); this request was not sent",
+                               0, "maic_breaker");
+            }
+            if (!told_hold && a.hold_until - now >= std::chrono::seconds(1)) {
+                told_hold = true;
+                tell(provider.name + ": waiting " + in_seconds(a.hold_until - now) + " after a rate limit, with every other request to it");
+                continue;
+            }
+            a.freed.wait_until(lock, std::min(a.hold_until, now + milliseconds(50)));
+            continue;
+        }
+        a.breaker = false;
+        if (cap <= 0) return;
+        int& n = a.open[options.model];
+        if (n >= cap) {
+            if (!told_queue) {
+                told_queue = true;
+                tell(provider.name + "/" + options.model + ": all " + std::to_string(cap) + " concurrent requests MAIC allows are open (max_concurrent); this one waits for a slot");
+                continue;
+            }
+            a.freed.wait_for(lock, milliseconds(50));
+            continue;
+        }
+        ++n;
+        if (2 * n > cap && a.past_half.insert(options.model).second) {
+            tell(provider.name + "/" + options.model + ": " + std::to_string(n) + " of the " + std::to_string(cap) +
+                 " concurrent requests MAIC allows are open (max_concurrent); past that, requests wait");
+        }
+        return;
+    }
+}
+
+void leave(Account& a, const std::string& model, int cap) {
+    if (cap <= 0) return;
+    std::lock_guard lock(a.mu);
+    int n = --a.open[model];
+    if (4 * n <= cap) a.past_half.erase(model);  // told again only after falling to a quarter, so a count that hovers at half is told once
+    a.freed.notify_all();
+}
+
+// A rate limit: every request to the account holds for `wait_ms`, and the fifth within `window_ms` opens the
+// breaker for the window instead. True when this one opened it.
+bool rate_limited(Account& a, int wait_ms, int window_ms) {
+    std::lock_guard lock(a.mu);
+    auto now = Clock::now();
+    a.limited.push_back(now);
+    while (a.limited.front() < now - milliseconds(window_ms)) a.limited.pop_front();
+    if (a.limited.size() >= kBreakerAfter) {
+        a.limited.clear();
+        a.breaker = true;
+        a.hold_until = now + milliseconds(window_ms);
+        return true;
+    }
+    a.hold_until = std::max(a.hold_until, now + milliseconds(wait_ms));
+    return false;
+}
+
 }  // namespace
+
+int retry_wait_ms(int attempt, int base_ms) {
+    thread_local std::mt19937 rng{std::random_device{}()};
+    long long ceiling = std::min<long long>(60LL * base_ms, static_cast<long long>(base_ms) << std::min(attempt, 30));
+    return std::uniform_int_distribution<int>(0, static_cast<int>(ceiling))(rng);
+}
 
 Message chat(const Provider& provider, const ChatOptions& options, const std::vector<Message>& messages,
              const nlohmann::json& tools, const TextSink& on_text, const std::atomic<bool>& cancel) {
-    std::mt19937 rng{std::random_device{}()};
+    Account& account = account_of(provider);
+    const int cap = concurrency_cap(provider, options.model);
+    const int window_ms = 60 * options.retry_base_ms;
     for (int attempt = 0;; ++attempt) {
         bool streamed = false;
         auto sink = [&](std::string_view d, bool t) {
             streamed = true;
             on_text(d, t);
         };
-        int wait_ms = 0;
+        int wait_ms = retry_wait_ms(attempt, options.retry_base_ms);
         std::string why;
+        enter(account, provider, options, cap, cancel);
         try {
-            return chat_once(provider, options, messages, tools, sink, cancel);
+            Message reply = chat_once(provider, options, messages, tools, sink, cancel);
+            leave(account, options.model, cap);
+            return reply;
         } catch (const ApiError& e) {
-            bool retryable = (e.status == 429 && !is_usage_limit(e)) || e.status == 408 || e.status == 409 || e.status >= 500;
+            leave(account, options.model, cap);
+            bool limit = e.status == 429 && !is_usage_limit(e);
+            wait_ms = std::max(wait_ms, e.retry_after_ms);
+            if (limit && rate_limited(account, wait_ms, window_ms)) {
+                throw ApiError(429, std::string(e.what()) + "; that is " + std::to_string(kBreakerAfter) + " rate limits in a short time, so MAIC sends nothing to " + provider.name +
+                                        " for " + in_seconds(milliseconds(window_ms)) + " (the circuit breaker)",
+                               e.retry_after_ms, e.type);
+            }
+            bool retryable = limit || e.status == 408 || e.status == 409 || e.status >= 500;
             if (!retryable || streamed || attempt >= options.retries) throw;
-            wait_ms = e.retry_after_ms;
             why = "HTTP " + std::to_string(e.status);
         } catch (const TransportError& e) {
+            leave(account, options.model, cap);
             // An answer lost while being read may mean the request ran to the end; on a metered provider that is billed again.
             if (streamed || attempt >= options.retries || (provider.metered() && !e.retry_safe)) throw;
             why = e.what();
-        }
-        if (wait_ms <= 0) {
-            int base = options.retry_base_ms << attempt;  // 2 s, 4 s, 8 s
-            std::uniform_int_distribution<int> jitter(-base / 4, base / 4);
-            wait_ms = std::min(30000, base + jitter(rng));
+        } catch (...) {
+            leave(account, options.model, cap);
+            throw;
         }
         if (options.notice) {
             options.notice(provider.name + ": " + why + "; retrying in " + std::to_string((wait_ms + 500) / 1000) + " s (" + std::to_string(attempt + 1) +
@@ -368,20 +615,7 @@ HttpResult stream_post(const std::string& base_url, const std::string& path,
     if (!client.is_valid()) throw std::runtime_error("bad base_url (https needs OpenSSL support): " + base_url);
     client.set_connection_timeout(10);
     client.set_read_timeout(600);
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-    // vcpkg's OpenSSL doesn't know the system's certificate location.
-    if (const char* f = std::getenv("SSL_CERT_FILE"); f && *f) {
-        client.set_ca_cert_path(f);
-    } else {
-        for (const char* bundle : {"/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/cert.pem"}) {
-            if (fs::exists(bundle)) {
-                client.set_ca_cert_path(bundle);
-                break;
-            }
-        }
-    }
-    client.enable_server_certificate_verification(true);
-#endif
+    trust_system_cas(client);
 
     httplib::Request req;
     req.method = "POST";

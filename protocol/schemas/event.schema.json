@@ -1432,7 +1432,7 @@
       ]
     },
     "maic.usage.updated": {
-      "description": "The last model call's usage in OpenAI's shape, the call count, the context window and the session's totals.",
+      "description": "The last model call's usage in OpenAI's shape, the call count, the context window, the session's totals and its cost estimate.",
       "allOf": [
         {
           "$ref": "#/$defs/Envelope"
@@ -1475,6 +1475,23 @@
               "required": [
                 "input",
                 "output"
+              ]
+            },
+            "cost": {
+              "description": "An estimate of the session's cost so far from the catalog's prices (models.md, API models): only calls to a model the catalog prices count.",
+              "type": "object",
+              "properties": {
+                "estimate": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "currency": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "estimate",
+                "currency"
               ]
             },
             "normalized": {

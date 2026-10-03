@@ -2,6 +2,8 @@
 
 #include "msgpack.hpp"
 
+#include "maic/helper.hpp"
+
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
@@ -115,6 +117,13 @@ void NvimHighlighter::start() {
         dead_ = true;
         return;
     }
+    // Built before fork, like the arguments: nvim is a fixed helper here and gets no model key.
+    std::vector<std::string> args = {nvim_, "--embed", "--headless", "-u", "NONE", "-i", "NONE", "-n"}, env = keyless_environ();
+    std::vector<char*> argv, envp;
+    for (auto& a : args) argv.push_back(a.data());
+    for (auto& kv : env) envp.push_back(kv.data());
+    argv.push_back(nullptr);
+    envp.push_back(nullptr);
     pid_ = fork();
     if (pid_ < 0) {
         error_ = std::string("fork: ") + std::strerror(errno);
@@ -126,7 +135,7 @@ void NvimHighlighter::start() {
         dup2(out[1], STDOUT_FILENO);
         int null_fd = open("/dev/null", O_WRONLY);
         if (null_fd >= 0) dup2(null_fd, STDERR_FILENO);
-        execlp(nvim_.c_str(), nvim_.c_str(), "--embed", "--headless", "-u", "NONE", "-i", "NONE", "-n", nullptr);
+        execvpe(argv[0], argv.data(), envp.data());
         int e = errno;
         [[maybe_unused]] ssize_t w = write(err[1], &e, sizeof e);
         _exit(127);
