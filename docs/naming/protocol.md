@@ -30,6 +30,8 @@ A name can be built as qualifiers around a base role: **BlindWriter** is the bas
 
 Candidate: **RunningBlindWriter**: *Running* (may run commands, such as builds and tests in her worktree) + *Blind* (still can't judge her own work; the reader reviews it) + *Writer*. The name is also the idiom: running blind. It is the natural next step for a writer who needs to see her own build failures (trial 2).
 
+Candidate: **RunningBlindMaid**, the household form of the same (as BlindMaid is to BlindWriter), in the writer group: a maid running blind through the house.
+
 ## Role-prefixed names (proposed convention)
 
 For more than one maid in a role: a prefix from the group's base name, an underscore, then a personal name: **`MM_`** for a reader (MadMaid), **`BM_`** for a writer (BlindMaid), **`CM_`** for an overseer (ComfyMaid). For example `MM_Sarah`, `BM_Johnny`, `CM_Donnah`, `MM_Bee`. The prefix says the role at a glance; the name tells maids in the same role apart. Part of following this protocol: a setup with a loose protocol, or none, names its agents however it likes, and that is respected.
