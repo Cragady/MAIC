@@ -279,9 +279,10 @@ def main():
     trail_ok = audit_trail_smoke(maid, port)
     rpc_ok = rpc_smoke(maid, port)
     daemon_ok = daemon_smoke(maid, port)
+    liaison_ok = liaison_smoke(maid, port)
     ui_ok = nvim_ui_smoke(maid, port)
     srv.shutdown()
-    sys.exit(0 if kit_ok and rpc_ok and daemon_ok and ui_ok and ok and stream_ok and trust_ok and color_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok and mcp_ok else 1)
+    sys.exit(0 if kit_ok and rpc_ok and daemon_ok and liaison_ok and ui_ok and ok and stream_ok and trust_ok and color_ok and trail_ok and setup_ok and check_ok and new_ok and bad_ok and proto_ok and list_ok and themes_ok and cai_ok and wrap_ok and help_ok and exit_ok and lazy_ok and backup_ok and output_ok and rehome_ok and read_ok and models_ok and mcp_ok else 1)
 
 
 class RpcClient:
@@ -647,6 +648,77 @@ def daemon_smoke(maid, port):
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+    shutil.rmtree(home, ignore_errors=True)
+    return all(results)
+
+
+def liaison_smoke(maid, port):
+    """`maid liaison`: turns handed to a session the daemon holds while a window stays attached to it, the reply on
+    stdout and through --out, status, an approval left waiting (exit 4) and answered, a timeout (exit 5), and exit 3
+    with no daemon. Every daemon started here is stopped."""
+    import signal
+    home, env = make_home(port)
+    results = []
+
+    def report(ok, what, extra=""):
+        results.append(ok)
+        print(("ok" if ok else "FAIL") + ": maid liaison " + what + ("" if ok else "\n" + str(extra)[-3000:]))
+
+    def run(*args, timeout=60):
+        return subprocess.run([maid, *args], capture_output=True, text=True, env=env, cwd=home, stdin=subprocess.DEVNULL, timeout=timeout)
+
+    pid_file = os.path.join(env["XDG_RUNTIME_DIR"], "maid", "engine.pid")
+    pid = None
+    try:
+        run("daemon", "start")
+        with open(pid_file) as f:
+            pid = int(f.read().split()[0])
+        # The person's window: it creates the session and keeps it in focus throughout.
+        w = RpcClient(maid, env, home)
+        w.call("maid.hello", {"protocol": 1, "client": {"name": "window", "version": "0"}})
+        sid = (w.call("createConversation", {"maid": {"workspace": home}}) or {}).get("result", {}).get("id", "")
+        w.call("maid.session.subscribe", {"session": sid})
+        r = run("liaison", "send", sid, "ping")
+        report(r.returncode == 0 and r.stdout == "echo: ping\n", "send prints the reply", r)
+        out = os.path.join(home, "reply.txt")
+        r = run("liaison", "send", sid, "--out", out, "--file", "-")
+        report(r.returncode == 1 and "input is empty" in r.stderr, "refuses an empty input", r)
+        with open(os.path.join(home, "msg.txt"), "w") as f:
+            f.write("pong\n")
+        r = run("liaison", "send", sid, "--file", os.path.join(home, "msg.txt"), "--out", out)
+        text = open(out).read() if os.path.exists(out) else ""
+        report(r.returncode == 0 and r.stdout == "" and text == "echo: pong" and not os.path.exists(out + ".partial"), "send --file --out writes the reply there", [r, text])
+        r = run("liaison", "status", sid)
+        state = run("daemon", "status", "--json")
+        entry = next((e for e in json.loads(state.stdout or "{}").get("sessions", []) if e["id"] == sid), {})
+        report(r.returncode == 0 and r.stdout == "idle\tfake/fake\tqueued=0\tapprovals=-\n" and entry.get("state") == "live", "status says idle, and the window keeps its focus", [r, entry])
+
+        # run_shell in manual mode: the approval is said and left waiting; status lists it; yes lets the turn finish.
+        r = run("liaison", "send", sid, "shell:echo liaison-$((40+2))")
+        m = re.fullmatch(r"approval\t(\S+)\trun_shell\t(.*)\n", r.stderr)
+        report(r.returncode == 4 and m and r.stdout == "", "send exits 4 at an approval with its line on stderr", r)
+        aid = m.group(1) if m else "none"
+        st = run("liaison", "status", sid)
+        report(st.stdout == "working\tfake/fake\tqueued=0\tapprovals=%s\n" % aid, "status lists the waiting approval", st)
+        always = run("liaison", "approve", sid, aid, "always")
+        yes = run("liaison", "approve", sid, aid, "yes")
+        done = w.wait(lambda m: m.get("method") == "maid.event" and m["params"].get("type") == "response.completed" and m["params"]["response"]["maid"]["turn"] == 3, 60)
+        ran = json.dumps([e for e in w.events(sid) if e["type"].startswith("response.shell_call_output")])
+        report(always.returncode == 1 and "yes or no" in always.stderr and yes.returncode == 0 and done and "liaison-42" in ran,
+               "approve refuses always, and yes lets the command run", [always, yes, ran])
+        r = run("liaison", "send", sid, "slow: wait", "--timeout", "1")
+        report(r.returncode == 5 and "keeps running" in r.stderr, "send exits 5 at its timeout", r)
+        w.close()
+    finally:
+        if pid:
+            run("daemon", "stop", "--yes")
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    gone = run("liaison", "send", "nope", "hi")
+    st = run("liaison", "status", "nope")
+    report(gone.returncode == 3 and st.returncode == 3 and "no daemon" in gone.stderr, "exits 3 when no daemon runs", [gone, st])
     shutil.rmtree(home, ignore_errors=True)
     return all(results)
 

@@ -30,6 +30,7 @@
 #include <fstream>
 #include <iostream>
 #include <list>
+#include <optional>
 #include <sstream>
 
 // The daemon (docs/design/engine-protocol.md, section 8 and build step 13; docs/daemon.md): one engine behind a
@@ -596,6 +597,227 @@ int cmd_daemon(const std::vector<std::string>& args) {
     if (sub == "status") return status_daemon(has("--json"), has("--text-base"));
     if (sub == "unit") return unit_daemon(args.size() > 1 ? args[1] : "");
     throw std::runtime_error("maid daemon start | stop [--yes] | status [--json|--text-base] | run | unit [install|remove]");
+}
+
+// ---------- maid liaison ----------
+
+// Another agent's client of the daemon (docs/daemon.md, "The liaison"): ordinary client input on a session the
+// daemon holds, never a focus of its own, so a window attached to the session keeps it and leaving changes nothing.
+
+namespace {
+
+const char* kLiaisonUsage =
+    "maid liaison send ID (TEXT | --file FILE) [--out FILE] [--timeout SECONDS] | approve ID APPROVAL yes|no | status ID";
+
+std::unique_ptr<DaemonClient> liaison_connect(std::function<void()> wake = {}) {
+    auto d = DaemonClient::connect(std::move(wake));
+    if (!d) return nullptr;
+    d->call(request("maid.hello", {{"protocol", 1},
+                                   {"client", {{"name", "liaison"}, {"version", MAID_VERSION}}},
+                                   {"exclude", {"response.output_text.delta", "response.reasoning_text.delta"}}}));
+    return d;
+}
+
+int no_daemon() {
+    std::cerr << "maid liaison: no daemon is running (maid daemon start runs one)\n";
+    return 3;
+}
+
+// The daemon's index entry for `id`, or a unique prefix of one; null when there is none.
+json liaison_entry(DaemonClient& d, const std::string& id) {
+    json found;
+    int matches = 0;
+    for (const auto& e : d.call(request("maid.index.get")).value("result", json::object()).value("entries", json::array())) {
+        std::string eid = e.value("id", "");
+        if (eid == id) return e;
+        if (eid.rfind(id, 0) == 0) {
+            found = e;
+            ++matches;
+        }
+    }
+    return matches == 1 ? found : json();
+}
+
+std::string one_line(std::string s) {
+    for (char& c : s) {
+        if (c == '\t' || c == '\n' || c == '\r') c = ' ';
+    }
+    return s;
+}
+
+std::string error_of(const json& reply) {
+    return reply.value("error", json::object()).value("message", "the daemon refused it");
+}
+
+int liaison_send(const std::vector<std::string>& args) {
+    std::string id, text, out;
+    std::optional<std::string> file;
+    long timeout = 600;
+    for (size_t i = 1; i < args.size(); ++i) {
+        const std::string& a = args[i];
+        if ((a == "--file" || a == "--out" || a == "--timeout") && i + 1 >= args.size()) throw std::runtime_error(a + " takes a value");
+        if (a == "--file") {
+            file = args[++i];
+        } else if (a == "--out") {
+            out = args[++i];
+        } else if (a == "--timeout") {
+            timeout = std::stol(args[++i]);
+        } else if (id.empty()) {
+            id = a;
+        } else if (text.empty()) {
+            text = a;
+        } else {
+            throw std::runtime_error(kLiaisonUsage);
+        }
+    }
+    if (id.empty() || text.empty() == !file) throw std::runtime_error(kLiaisonUsage);
+    if (file) {
+        std::ifstream in(*file == "-" ? "/dev/stdin" : *file);
+        if (!in) throw std::runtime_error("cannot read " + *file);
+        text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    if (text.empty()) throw std::runtime_error("the input is empty");
+
+    std::mutex mu;
+    std::condition_variable cv;
+    bool woke = false;
+    auto d = liaison_connect([&] {
+        std::lock_guard lock(mu);
+        woke = true;
+        cv.notify_all();
+    });
+    if (!d) return no_daemon();
+    // Loaded (a parked one is resumed) without moving any client's focus, then followed from here on.
+    json res = d->call(request("maid.session.resume", {{"session", id}, {"focus", false}}));
+    if (!res.contains("result")) {
+        std::cerr << "maid liaison: " << error_of(res) << "\n";
+        return 1;
+    }
+    std::string sid = res["result"].value("id", id);
+    json att = d->call(request("maid.session.attach", {{"session", sid}, {"exchanges", 0}}));
+    if (!att.contains("result")) {
+        std::cerr << "maid liaison: " << error_of(att) << "\n";
+        return 1;
+    }
+    json created = d->call(request("response.create", {{"conversation", sid}, {"input", text}}));
+    if (!created.contains("result")) {
+        std::cerr << "maid liaison: " << error_of(created) << "\n";
+        return 2;
+    }
+    long turn = created["result"].value("maid", json::object()).value("turn", 0L);
+
+    // A turn can span several responses (steers make successors): the reply is the last assistant message of the
+    // turn, and it ends on a terminal event marked final. An approval counts only once this turn has started.
+    bool ours = false;
+    std::string reply;
+    auto until = std::chrono::steady_clock::now() + std::chrono::seconds(timeout);
+    for (;;) {
+        for (const auto& m : d->take()) {
+            if (m.value("method", "") != "maid.event") continue;
+            const json& e = m["params"];
+            if (e.value("stream_id", "") != sid) continue;
+            std::string type = e.value("type", "");
+            json resp = e.value("response", json::object());
+            json rmaid = resp.value("maid", json::object());
+            bool this_turn = rmaid.value("turn", -1L) == turn;
+            if (type == "response.created" && this_turn) ours = true;
+            if (type == "maid.approval.requested" && ours) {
+                std::cerr << "approval\t" << e.value("id", "") << "\t" << e.value("tool", "") << "\t" << one_line(e.value("summary", "")) << "\n";
+                return 4;
+            }
+            bool terminal = type == "response.completed" || type == "response.failed" || type == "response.incomplete" || type == "maid.response.cancelled";
+            if (!terminal || !this_turn) continue;
+            for (const auto& item : resp.value("output", json::array())) {
+                if (item.value("type", "") != "message" || item.value("role", "") != "assistant") continue;
+                if (item.contains("maid") && item["maid"].value("status", "") == "discarded") continue;
+                reply.clear();
+                for (const auto& part : item.value("content", json::array())) reply += part.value("text", "");
+            }
+            if (!rmaid.value("final", false)) continue;
+            if (type != "response.completed") {
+                json err = resp.value("error", json());
+                std::string why = err.is_object() ? err.value("message", "") : "";
+                std::cerr << "maid liaison: the response " << resp.value("status", "ended") << (why.empty() ? "" : ": " + why) << "\n";
+                return 2;
+            }
+            if (out.empty()) {
+                std::cout << reply << (reply.empty() || reply.back() != '\n' ? "\n" : "") << std::flush;
+                return 0;
+            }
+            fs::path partial = out + ".partial";
+            {
+                std::ofstream f(partial, std::ios::binary | std::ios::trunc);
+                f << reply;
+                if (!f.flush()) throw std::runtime_error("cannot write " + partial.string());
+            }
+            fs::rename(partial, out);
+            return 0;
+        }
+        if (d->gone()) {
+            std::cerr << "maid liaison: the daemon has gone (maid daemon status)\n";
+            return 3;
+        }
+        std::unique_lock lock(mu);
+        if (!cv.wait_until(lock, until, [&] { return woke; })) {
+            std::cerr << "maid liaison: no reply within " << timeout << " s; the turn keeps running (maid liaison status " << sid << ")\n";
+            return 5;
+        }
+        woke = false;
+    }
+}
+
+int liaison_approve(const std::vector<std::string>& args) {
+    if (args.size() != 4) throw std::runtime_error(kLiaisonUsage);
+    const std::string& choice = args[3];
+    if (choice == "always") throw std::runtime_error("the liaison answers yes or no: always is for a person at their own window");
+    if (choice != "yes" && choice != "no") throw std::runtime_error(kLiaisonUsage);
+    auto d = liaison_connect();
+    if (!d) return no_daemon();
+    json e = liaison_entry(*d, args[1]);
+    if (e.is_null()) {
+        std::cerr << "maid liaison: the daemon holds no session " << args[1] << "\n";
+        return 1;
+    }
+    json r = d->call(request("maid.approval.answer", {{"session", e["id"]}, {"approval", args[2]}, {"choice", choice}}));
+    if (!r.contains("result")) {
+        std::cerr << "maid liaison: " << error_of(r) << "\n";
+        return 1;
+    }
+    std::cout << "answered " << choice << "\n";
+    return 0;
+}
+
+int liaison_status(const std::vector<std::string>& args) {
+    if (args.size() != 2) throw std::runtime_error(kLiaisonUsage);
+    auto d = liaison_connect();
+    if (!d) return no_daemon();
+    json e = liaison_entry(*d, args[1]);
+    if (e.is_null()) {
+        std::cerr << "maid liaison: the daemon holds no session " << args[1] << "\n";
+        return 1;
+    }
+    json waiting = e.value("waiting", json());
+    std::string state = e.value("state", "") == "parked"                                   ? "parked"
+                        : e.value("activity", "idle") == "idle"                            ? "idle"
+                        : waiting.is_object() && waiting.value("kind", "") == "steer" ? "paused"
+                                                                                       : "working";
+    std::string approvals;
+    if (state != "parked") {
+        json snap = d->call(request("maid.session.attach", {{"session", e["id"]}, {"exchanges", 0}})).value("result", json::object());
+        for (const auto& a : snap.value("pending", json::array())) approvals += (approvals.empty() ? "" : ",") + a.value("id", "");
+    }
+    std::cout << state << "\t" << e.value("model", "") << "\tqueued=" << e.value("queued", 0) << "\tapprovals=" << (approvals.empty() ? "-" : approvals) << "\n";
+    return 0;
+}
+
+}  // namespace
+
+int cmd_liaison(const std::vector<std::string>& args) {
+    std::string sub = args.empty() ? "" : args[0];
+    if (sub == "send") return liaison_send(args);
+    if (sub == "approve") return liaison_approve(args);
+    if (sub == "status") return liaison_status(args);
+    throw std::runtime_error(kLiaisonUsage);
 }
 
 }  // namespace maid
