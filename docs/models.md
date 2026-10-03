@@ -193,6 +193,28 @@ Each has a 1M context, the four as its `subagents` list, and `deepseek-flash-not
 
 **The live check** (needs a real key; MAIC's tests never call the API): `DEEPSEEK_API_KEY=sk-... maic --model deepseek-pro`, ask for something that reads two files, send a second message, quit, `maic -r` and send a third; then `:model deepseek-flash-nothink` and once more. Every turn should succeed, and `cached` in the transcript's usage records should rise.
 
+## API keys: the environment variable names
+
+Until MAIC has its own keystore (planned: keys stored encrypted with argon2id), API keys come from the environment, or from a command. Keys never go in a settings file (`api_key` there is an error). The names MAIC reads:
+
+| Provider | Variable | Notes |
+| :- | :- | :- |
+| `anthropic` (the paid API) | `ANTHROPIC_API_KEY` | Not needed for `claude-cli`, which uses your Claude Code login. |
+| `deepseek` | `DEEPSEEK_API_KEY` | For `deepseek-pro`, `deepseek-flash` and their `-nothink` variants. |
+| `openrouter` | `OPENROUTER_API_KEY` | |
+| A provider you add | whatever its `api_key_env` names | In your global settings file only. |
+
+Set the variable in the shell that starts `maic` (or the daemon); MAIC reads it from its own environment:
+
+```sh
+export DEEPSEEK_API_KEY=sk-...
+maic --model deepseek-pro
+```
+
+To keep a key out of the environment, give the provider `api_key_command` instead: MAIC runs the command and reads the key from its output, for example `api_key_command = "pass show deepseek/api-key"`.
+
+Either way, MAIC strips every key variable (any `*_API_KEY`, and any name a provider's `api_key_env` gives) from the commands a model runs in the sandbox, from `claude -p`, and from the helper programs it starts, and redacts a key that shows up in an error.
+
 ## Code completion
 
 Copilot-style suggestions in neovim come from [llama.vim](https://github.com/ggml-org/llama.vim) talking to `services/llamacpp-fim.json`: llama-server on `127.0.0.1:8084` serving a Qwen2.5-Coder **base** model (Instruct models are worse at fill-in-the-middle) through `/infill`. It is not a chat model, so there is no chat provider for it.
