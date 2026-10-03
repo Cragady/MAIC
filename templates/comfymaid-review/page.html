@@ -85,6 +85,12 @@ button:disabled { opacity: .45; cursor: default; }
 .check { display: inline-flex; gap: 6px; align-items: center; font-size: .9rem; color: var(--muted); }
 .sent { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; display: grid; gap: 4px; }
 .sent p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prog { display: block; height: 6px; background: var(--line); border-radius: 999px; margin-top: 4px; max-width: 320px; overflow: hidden; }
+.prog span { display: block; height: 100%; width: 0; background: var(--res); transition: width .2s; }
+.scrollcue { position: fixed; left: 0; right: 0; top: env(safe-area-inset-top, 0px); height: 3px; z-index: 30; }
+.scrollcue span { display: block; height: 100%; width: 0; background: var(--accent); }
+.xref { font-size: .85rem; }
+.xref a { color: var(--accent); }
 .role { font-size: .85rem; font-weight: 700; }
 .role.viewer { color: var(--open); }
 .role.editor { color: var(--res); }
@@ -149,9 +155,10 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     <h1 id="title">Review</h1>
     <p class="sub" id="since"></p>
   </header>
-  <p class="errbar" id="page-err" hidden></p>
+  <div class="scrollcue" aria-hidden="true"><span id="scroll-bar"></span></div>
+<p class="errbar" id="page-err" hidden></p>
   <div class="bar">
-    <span class="grow"><span class="status" id="status">Loading saved answers…</span><br><span class="counts" id="counts"></span></span>
+    <span class="grow"><span class="status" id="status">Loading saved answers…</span><br><span class="counts" id="counts"></span><span class="prog" aria-hidden="true"><span id="prog-bar"></span></span></span>
     <span class="flag"><label class="switch" for="flag-bridge"><input type="checkbox" role="switch" id="flag-bridge"><span class="slider" aria-hidden="true"></span> Ctrl+G bridge</label><span class="fb err" id="flag-bridge-msg" aria-live="polite"></span></span>
     <span class="role" id="role"></span>
     <button id="take" type="button" hidden>Take over editing</button>
@@ -166,7 +173,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   </div>
   <div id="components" class="list"></div>
   <div class="docstate" id="docstate"></div>
-  <section aria-labelledby="h-split" class="splitbox"><h2 id="h-split">Split and lineage</h2>
+  <section aria-labelledby="h-split" class="splitbox"><h2 id="h-split">Split and lineage <span class="chip addressed">beta · active development</span></h2>
     <div id="lineage" class="list"></div>
     <p class="note">Tick Pick for split on any cards, choose how tightly the new page stays tied to this one, and request the split. Claude makes the new page, links both ways, and marks the moved topics here.</p>
     <fieldset class="rel" id="rel"><legend class="fl">Relationship</legend>
@@ -184,6 +191,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   <section aria-labelledby="h-misc" id="misc-sec"><h2 id="h-misc">Misc / Uncovered / Ungrouped</h2><p class="note">Things that don't slot in above, oldest first.</p><div id="misc" class="list"></div></section>
   <section aria-labelledby="h-own"><h2 id="h-own">This page's own improvements and to-do</h2><div id="own" class="list"></div></section>
   <section aria-labelledby="h-after"><h2 id="h-after">After Prompt</h2><p class="note">Anything you'd otherwise send as a separate message, so threads don't drift apart.</p><div id="after"></div>
+    <details class="sent" id="after-hist-box"><summary id="after-hist-sum">After Prompt history</summary><div id="after-hist" class="list"></div></details>
     <div class="row"><label class="check" for="resolve-mark"><input type="checkbox" id="resolve-mark"> Mark for resolution</label><button class="primary" id="submit-end" type="button">Submit</button><span class="note">Tab here from the last box; Enter or Space works on both.</span></div>
   </section>
 </div>
@@ -219,8 +227,8 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   var DOC = "review/" + DATA.id;
   var LOCAL = "review-draft:" + DATA.id;
   var STATES = ["open", "addressed", "resolved"];
-  var state = { answers: {}, status: {}, doc_status: "open", folded: {}, merges: {}, kept: {}, side_prompts: [], splits: [], picked: {}, flags: { ctrl_g_bridge: false }, resolve_requested: false, submitted: false, submittedAt: null, savedAt: null };
-  var VERSION = 15;
+  var state = { answers: {}, status: {}, doc_status: "open", folded: {}, merges: {}, kept: {}, side_prompts: [], after_prompts: [], splits: [], picked: {}, flags: { ctrl_g_bridge: false }, resolve_requested: false, submitted: false, submittedAt: null, savedAt: null };
+  var VERSION = 16;
   var VIEW = "v" + Math.random().toString(36).slice(2, 10);
   var role = "editor"; // one view edits at a time; the others watch live and write nothing
   var leaseTimer = null, wantTimer = null, unsubMain = null, unsubWant = null;
@@ -229,6 +237,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     if (b.type === "list") { if (b.header && b.header.respond === false) QUIET[b.header.id] = 1; b.items.forEach(function (it) { if (it.respond === false) QUIET[it.id] = 1; }); }
     else if (b.respond === false) QUIET[b.id] = 1;
   }); });
+  DATA.issues.forEach(function (it) { QUIET[it.id + "-more"] = 1; });
   function isFolded(id) { return id in state.folded ? !!state.folded[id] : !!QUIET[id] && !/\S/.test(state.answers[id] || ""); }
   var db = null, comments = null, timer = null, queue = Promise.resolve(), pending = 0, replies = [];
   function logEvent(what, ok, detail) {
@@ -239,10 +248,11 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     ["page-err", "side-err"].forEach(function (id) { var e = $(id); if (e) { e.textContent = "Something broke on this page: " + msg + ". Tell Claude; the details are saved with your answers."; e.hidden = false; } });
     logEvent("page error", false, msg);
   }
+  window.addEventListener("scroll", function () { var h = document.documentElement; var p = h.scrollTop / Math.max(1, h.scrollHeight - h.clientHeight); var b = document.getElementById("scroll-bar"); if (b) b.style.width = Math.round(100 * p) + "%"; }, { passive: true });
   window.addEventListener("error", function (e) { showError((e.message || "error") + (e.lineno ? " (line " + e.lineno + ")" : "")); });
   window.addEventListener("unhandledrejection", function (e) { showError("unhandled: " + (e.reason && (e.reason.code || e.reason.message) || e.reason)); });
   var KEY = {
-    version: 7,
+    version: 8,
     note: "One-off definition: this key describes how this submission's data is laid out. It holds until the next submit from this page; that submit carries its own key, the same one if nothing is applied differently, a changed one if it is.",
     answers: "Reply text by field id.",
     ids: {
@@ -265,6 +275,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     merges: "Combined boxes by merge id: card, members (field ids in order), text (each part starts with a line '── <field id> ──'), originals (each member's text when combined). A member's own answers entry is stale while it is merged; read the merge text.",
     kept: "Field id to combined text kept beside that box after a back-to-default whose marker lines were damaged.",
     side_prompts: "Sent side prompts in order: { text, at, with ('own' or 'document'), refs (field ids referenced as [[field id]] in the text), after_reply (id of the most recent reply when it was sent, or null) }. A side prompt's reply is the item in review-replies whose side_prompt is its 1-based position.",
+    after_prompts: "After Prompts archived by the overall Submit, in order: { text, at, after_reply (id of the most recent reply then, or null) }. A reply to one is the review-replies item whose after_prompt is its 1-based position.",
     flags: "Feature switches the viewer set: ctrl_g_bridge (true or false) records the choice for the Ctrl+G bridge, which is not built; the switch changes nothing else yet.",
     splits: "Split requests in order: { id, cards (card ids to move), relation (tight: resolving there resolves here; linked: this page waits for that one; loose: related only), note, at, status (requested, then done once Claude made the new page) }.",
     picked: "Card ids ticked for the next split (view state).",
@@ -325,7 +336,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   }
 
   // ---- status ----
-  function cardState(item) { return state.status[item.id] || (item.addressed ? "addressed" : "open"); }
+  function cardState(item) { return (DATA.agent_status || {})[item.id] || state.status[item.id] || (item.addressed ? "addressed" : "open"); }
   function allCards() { return DATA.issues.concat(DATA.messages, DATA.misc || []); }
   function setCardState(id, st) { state.status[id] = st; touch(); render(); }
 
@@ -477,12 +488,23 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     b.items.forEach(function (it) { var li = el("li"); if (it.depth) li.style.marginLeft = it.depth + "em"; li.appendChild(inline(it.text, el("p", "txt"))); li.appendChild(slot(it.id)); list.appendChild(li); });
     grp.appendChild(list); into.appendChild(grp);
   }
+  function jump(id) { var c = $("c-" + id); if (c) { c.open = true; c.scrollIntoView({ block: "start" }); } }
+  function xrefs(m, into) {
+    var links = [];
+    if (m.source) m.source.forEach(function (sid) { var src = allCards().filter(function (x) { return x.id === sid; })[0]; if (src) links.push(["From: " + (src.label || src.title), sid]); });
+    DATA.issues.forEach(function (it) { if ((it.source || []).indexOf(m.id) >= 0) links.push(["Decision: " + it.title + " (" + cardState(it) + ")", it.id]); });
+    if (!links.length) return;
+    var p = el("p", "xref");
+    links.forEach(function (l, i) { if (i) p.appendChild(document.createTextNode(" · ")); var a = el("a", null, l[0]); a.href = "#c-" + l[1]; a.addEventListener("click", function (e) { e.preventDefault(); jump(l[1]); }); p.appendChild(a); });
+    into.appendChild(p);
+  }
   function renderCards(items, into, kindOf) {
     into.textContent = "";
     items.forEach(function (m) {
       var c = card(m, kindOf(m), m.label || m.title);
       if (m.at) c.body.appendChild(el("p", "note", new Date(m.at).toLocaleString()));
       if (m.context) c.body.appendChild(inline(m.context, el("p", "ctx")));
+      xrefs(m, c.body);
       if (m.fields) {
         var grp = el("div", m.fields.length > 1 ? "group" : "blk");
         m.fields.forEach(function (f) { grp.appendChild(slot(f.id, f.label)); });
@@ -562,6 +584,20 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     $("side-ver").textContent = "Page version " + VERSION + ".";
     $("side-dot").hidden = !/\S/.test(state.answers["side-prompt"] || "");
     var af = $("after"); af.textContent = ""; af.appendChild(field("after-prompt", "After Prompt", 6));
+    var ah = $("after-hist"); ah.textContent = "";
+    $("after-hist-sum").textContent = "After Prompt history (" + state.after_prompts.length + ")";
+    if (!state.after_prompts.length) ah.appendChild(el("p", "note", "No After Prompts submitted yet."));
+    state.after_prompts.slice().reverse().forEach(function (p) {
+      var n = state.after_prompts.indexOf(p) + 1, box = el("div", "hist");
+      var before = p.after_reply && replies.filter(function (r) { return r.id === p.after_reply; })[0];
+      box.appendChild(el("span", "lbl", "Followed reply")); box.appendChild(el("p", "note", before ? excerpt(before.text) : "none before it"));
+      box.appendChild(el("span", "lbl", "After Prompt #" + n + " · " + new Date(p.at).toLocaleString()));
+      box.appendChild(el("p", null, p.text));
+      var after = replies.filter(function (r) { return r.after_prompt === n; })[0];
+      box.appendChild(el("span", "lbl", "Reply")); box.appendChild(el("p", after ? "reply" : "note", after ? after.text : "No reply yet."));
+      if (after && after.sorted_into && $("c-" + after.sorted_into)) { var full = btn("Read the full reply", "small"); full.addEventListener("click", function () { jump(after.sorted_into); }); box.appendChild(full); }
+      ah.appendChild(box);
+    });
     var sn = $("split-note"); sn.textContent = ""; sn.appendChild(field("split-note", "Note for the split (optional)"));
     if (typeof renderSplit === "function") renderSplit();
     document.querySelectorAll("details.card").forEach(function (d) { if (d.id in openNow) d.open = openNow[d.id]; });
@@ -579,6 +615,9 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   function answered(id) { var mid = mergedFor(id); return mid ? /\S/.test(state.merges[mid].text.replace(/^── \S+ ──$/gm, "")) : /\S/.test(state.answers[id] || ""); }
   function counts() {
     var ids = openFields(), done = ids.filter(answered).length;
+    var cards = allCards(), closed = cards.filter(function (c) { return cardState(c) === "resolved"; }).length;
+    $("prog-bar").style.width = Math.round(100 * closed / Math.max(1, cards.length)) + "%";
+    $("prog-bar").parentNode.title = closed + " of " + cards.length + " topics resolved";
     $("counts").textContent = done + " of " + ids.length + " open decision boxes answered" + (state.submitted ? " · submitted" : "");
   }
 
@@ -663,6 +702,8 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
   $("confirm-yes").addEventListener("click", function () { $("confirm").hidden = true; submit(); });
   function submit() {
     sendSide("document");
+    var ap = (state.answers["after-prompt"] || "").trim();
+    if (ap) { state.after_prompts.push({ text: ap, at: new Date().toISOString(), after_reply: replies.length ? replies[replies.length - 1].id : null }); delete state.answers["after-prompt"]; }
     state.submitted = true; state.submittedAt = new Date().toISOString();
     if (state.doc_status !== "resolved") state.doc_status = "staged";
     state.resolve_requested = $("resolve-mark").checked;
@@ -751,7 +792,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     role = next; logEvent("role", true, next);
     if (next === "viewer") { clearTimeout(timer); render(); return; }
     // becoming the editor: start from the latest saved state, never from a stale copy
-    db.doc(DOC).get().then(function (snap) { if (snap.exists) adopt(snap.data()); render(); showFlag(); mark.checked = !!state.resolve_requested; setStatus("Editing in this view; loaded the latest data."); });
+    db.doc(DOC).get().then(function (snap) { if (snap.exists) adopt(snap.data()); render(); showFlag(); mark.checked = !!state.resolve_requested; setStatus("Editing in this view; loaded the latest data."); archiveOld(); });
   }
   function holdLease() {
     clearTimeout(leaseTimer);
@@ -873,8 +914,15 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
     }
     delete state.addressed;
     state.flags = state.flags || { ctrl_g_bridge: false };
-    state.splits = state.splits || []; state.picked = state.picked || {};
+    state.splits = state.splits || []; state.picked = state.picked || {}; state.after_prompts = state.after_prompts || [];
     state.status = state.status || {}; state.folded = state.folded || {}; state.side_prompts = state.side_prompts || []; state.doc_status = state.doc_status || "open";
+  }
+  function archiveOld() {
+    var ap = (state.answers["after-prompt"] || "").trim();
+    if (state.submittedAt && ap && !state.after_prompts.length) {
+      state.after_prompts.push({ text: ap, at: state.submittedAt, after_reply: null }); delete state.answers["after-prompt"];
+      logEvent("archived the submitted After Prompt", true, ""); enqueue(); render();
+    }
   }
   function rescue() {
     var got = 0;
@@ -908,6 +956,7 @@ button.small[aria-pressed="true"] { background: var(--accent); color: var(--surf
       render();
       Object.keys(typed).forEach(function (id) { var t = $("f-" + id); if (t && !/\S/.test(t.value)) t.value = typed[id]; });
       rescue();
+      if (role === "editor" || !db) archiveOld();
       mark.checked = !!state.resolve_requested; showFlag(); setStatus(state.savedAt ? "Loaded answers saved " + new Date(state.savedAt).toLocaleString() : "Ready. Nothing saved yet.");
     });
   }).catch(function () { setStatus("Shared store unavailable: answers save in this browser only", true); });
