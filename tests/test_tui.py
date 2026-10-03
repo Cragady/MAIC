@@ -673,6 +673,50 @@ class TuiTest(unittest.TestCase):
         tui.send(":q<cr>", settle=False)
         self.assertEqual(tui.wait_exit(), 0)
 
+    def test_resume_by_id_opens_that_session_or_says_why_not(self):
+        """maid -r ID of a session the daemon holds parked resumes exactly it, its conversation shown: from this
+        directory, and from a directory deleted under the shell (in the session's workspace then, said so). An id
+        that matches nothing is an error. None of them starts another transcript."""
+        run = lambda *a: subprocess.run([MAID, *a], capture_output=True, text=True, env=self.env, cwd=self.ws, stdin=subprocess.DEVNULL, timeout=60)
+        r = run("daemon", "start")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.addCleanup(lambda: run("daemon", "stop", "--yes"))
+        c = cli_smoke.RpcClient(MAID, self.env, self.ws)
+        c.call("maid.hello", {"protocol": 1, "client": {"name": "resume-test", "version": "0"}})
+        sid = c.call("createConversation", {"maid": {"workspace": self.ws}})["result"]["id"]
+        c.call("response.create", {"conversation": sid, "input": "ping"})
+        c.wait(lambda m: m.get("method") == "maid.event" and m["params"].get("type") == "response.completed", 30)
+        c.call("maid.session.leave", {"as": "park"})
+        c.close()
+        transcripts = lambda: {os.path.join(d, f) for top in (self.env["XDG_STATE_HOME"], self.env["XDG_RUNTIME_DIR"])
+                               for d, _, fs in os.walk(os.path.join(top, "maid", "sessions")) for f in fs if f.endswith(".jsonl")}
+        before = transcripts()
+
+        tui = Tui([MAID, "-r", sid], env=self.env, cwd=self.ws)
+        self.addCleanup(tui.close)
+        text = tui.wait_for(STRIP)
+        self.assertIn("resumed session " + sid + " in the daemon", text)
+        self.assertIn("echo: ping", text, "the resumed session's conversation is on the screen")
+        tui.send(":q --park<cr>", settle=False)
+        self.assertEqual(tui.wait_exit(), 0)
+        self.assertIn(sid + ".jsonl", tui.raw.decode("utf-8", "replace").split("resume it with:")[-1])
+
+        # From a directory deleted under the shell: the session's own workspace, and a line that says so.
+        gone = os.path.join(self.home, "gone")
+        tui = Tui(["sh", "-c", 'mkdir "$1" && cd "$1" && rmdir "$1" && exec "$0" -r "$2"', MAID, gone, sid], env=self.env, cwd=self.home)
+        self.addCleanup(tui.close)
+        text = tui.wait_for(STRIP)
+        self.assertIn("this shell's directory no longer exists", text)
+        self.assertIn("resumed session " + sid + " in the daemon", text)
+        self.assertIn("echo: ping", text)
+        tui.send(":q<cr>", settle=False)
+        self.assertEqual(tui.wait_exit(), 0)
+        self.assertIn(sid + ".jsonl", tui.raw.decode("utf-8", "replace").split("resume it with:")[-1])
+
+        r = run("-r", "nosuchsession")
+        self.assertTrue(r.returncode != 0 and "no session matching 'nosuchsession'" in r.stderr, r.stdout + r.stderr)
+        self.assertEqual(transcripts(), before, "no resume started another transcript")
+
     def test_quit_prints_the_transcript_line(self):
         tui = self.start()
         tui.send(":q<cr>", settle=False)

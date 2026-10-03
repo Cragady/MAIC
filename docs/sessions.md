@@ -55,6 +55,8 @@ The move (`SessionLog::relocate`) never loses a record. Under the log's lock, wr
 
 Unrecorded sessions (`--no-record`, `maid -p` without `--record`) go to the runtime directory instead (`$XDG_RUNTIME_DIR/maid/sessions`, cleared at logout) and are never listed, though `maid -r PATH` can still open one.
 
+`maid -r ID` opens exactly that session, or exits non-zero saying why (an id that matches nothing, a prefix that matches several); it never starts another. From a shell whose directory was deleted it resumes in the session's own workspace and says so in one line.
+
 ## Full output
 
 The model gets at most 24 KiB of a command's head and 8 KiB of its tail ([tools.md](tools.md#live-output)). When a `run_shell` command or a script tool prints more than that (either stream), MAID also keeps the whole output beside the session, so it can be read later, or reflowed into a fork that gives the model what it was reaching for. **It is display only**: nothing in it was delivered to the model, and every reader says so with the same label, `full output, display only: the model saw the capped result`.
