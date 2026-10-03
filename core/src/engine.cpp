@@ -3558,8 +3558,9 @@ void apply_sampling(Agent& a, const Settings& st, const json& live) {
     a.operator_note_in_turn = provider.options.value("operator_note", provider.kind != "anthropic");
 }
 
-std::string failure_text(const Agent& agent, const std::exception& e) {
-    std::string text = e.what();
+namespace {
+
+void add_failure_hint(const Agent& agent, const std::exception& e, std::string& text) {
     if (const auto* api = dynamic_cast<const ApiError*>(&e); api && is_usage_limit(*api)) {
         // The session never switches by itself: say where the next tier is.
         auto p = preset_for_model(agent.presets, agent.model);
@@ -3609,6 +3610,18 @@ std::string failure_text(const Agent& agent, const std::exception& e) {
             text += "\nllama.cpp serves the GGUFs under " + llamacpp_models_root().string() + " by file name (:models lists them, maid vendor model fetches one)";
             if (name.find(':') != std::string::npos) text += "; a name like " + name + " is a tag, not a file name here";
         }
+    }
+}
+
+}  // namespace
+
+// Runs inside run_turns' catch, so it never throws: a hint that can't be worked out (a bad service file, a bad
+// manifest) is dropped and the error alone is shown.
+std::string failure_text(const Agent& agent, const std::exception& e) {
+    std::string text = e.what();
+    try {
+        add_failure_hint(agent, e, text);
+    } catch (const std::exception&) {
     }
     return text;
 }
