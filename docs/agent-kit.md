@@ -93,3 +93,7 @@ claude --dangerously-load-development-channels server:maic
 ## Route 3: a headless session MAIC drives
 
 MAIC already runs Claude Code headless as a provider (`claude -p --input-format stream-json --output-format stream-json`, the `claude-cli` provider, [settings.md](settings.md#claude-code-as-a-provider)). A MAIC session on that provider can run `maic artifact watch ID --once` as a command and take the line it prints as its next cue, judged by MAIC's harness like any other command (it is not on the default allow list, so it is asked about); the same rule holds there.
+
+## The open-items pointer
+
+An agent working through a review page ends each reply with `↪ Open items: maic artifact open <id>` while that page has open items (see templates/comfymaid-review/README.md).

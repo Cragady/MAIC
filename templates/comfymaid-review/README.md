@@ -39,6 +39,16 @@ python3 -c "import sys; p=open('page.html').read(); d=open('review.json').read()
 * The user's prompts and the agent's messages are told apart by card color and label.
 * `improvements` and `todo` in the data render on the page itself, so each artifact carries its own improvement list.
 
+## The open-items pointer
+
+While a page has open items, every agent reply in the conversation ends with one line pointing at it, in this shape:
+
+```
+↪ Open items: maic artifact open <id>
+```
+
+`<id>` is the page holding the active open items (after a split, usually the newest child). After a set number of chat rounds with the page unresolved (3 suggested), the agent answers only with a short acknowledgement and this line.
+
 ## Splitting a page
 
 The user ticks Pick for split on cards, chooses a relationship and requests the split; the request lands in the saved state's `splits` with `status: "requested"`. The agent then:
