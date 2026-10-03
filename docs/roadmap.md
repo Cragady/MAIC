@@ -34,6 +34,7 @@ Either can be merged back into the main conversation:
 * `:merge summary` (the default): `small_model` drafts a short note of what was found, and the user edits it before it lands.
 * `:merge all`: every side turn grafted in, marked as from a side thread.
 * `:merge pick`: the user chooses the turns.
+* **Forks merge back too** (Micaiah, 2026-10-03): a `:fork` session can be merged into the session it came from with the same three forms, `summary`, `all` and `pick`. One engine per transcript still holds: the fork is its own transcript until the merge writes into its parent, and the merged turns are marked with the fork they came from (the fork's epoch and numbers, as `maic.merged_from` already does for streams).
 
 What lands is a clearly marked note with a pointer to the side session, never a fabricated main-thread turn. Side threads are sessions listed under their parent (like subagents) and can be resumed; the harness treats their actions like any other, and an approval names the thread it comes from. On a local server with one slot, a side thread and a running main turn take turns. Builds on forks, `maic sessions graft` and `inject`. opencode has no equivalent (no `/btw` in its source as of 2fa3363c92); the name is Micaiah's.
 
