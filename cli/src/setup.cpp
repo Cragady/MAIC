@@ -3,6 +3,7 @@
 #include "setup.hpp"
 
 #include "doctor.hpp"
+#include "maic/helper.hpp"
 #include "maic/models.hpp"
 #include "maic/paths.hpp"
 #include "maic/service.hpp"
@@ -135,7 +136,7 @@ int run_setup() {
         fs::path script = root_dir() / "harness" / "install-tripwire.sh";
         if (ask("Install the tripwire (sudo " + script.string() + "; asks for your password)?")) {
             step("tripwire", [&] {
-                if (std::system(("sudo '" + script.string() + "'").c_str()) != 0) throw std::runtime_error("the installer did not finish");
+                if (run_helper("sudo '" + script.string() + "'") != 0) throw std::runtime_error("the installer did not finish");
             });
         }
     } else {

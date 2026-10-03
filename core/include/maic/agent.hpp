@@ -376,6 +376,9 @@ public:
         long total_output = 0;
         int calls = 0;
         std::map<std::string, int> normalized;  // adapter rules applied to what the providers sent (normalize_openai), by rule
+        // An estimate for the calls to models the catalog prices (call_cost), in its currency; 0 and "" when none was.
+        double cost = 0;
+        std::string currency;
     };
     UsageReport usage() const;
 
@@ -430,6 +433,8 @@ private:
     // ChatOptions::normalized for a call to `provider`: counts the rule in usage_ and writes a `normalized` record
     // {rule, provider, upstream, count}, so a server's departure from OpenAI's shapes is never silent.
     std::function<void(const std::string&, int)> count_normalized(const Provider& provider);
+    // Adds the estimate for one call to usage_ (held by the caller) and returns it; 0 for a model the catalog does not price.
+    double add_cost(const Provider& provider, const std::string& model, const Usage& u);
 
     Harness harness_;
     std::vector<Message> messages_;

@@ -11,6 +11,7 @@
 #include <fstream>
 #include <thread>
 
+#include "maic/helper.hpp"
 #include "maic/paths.hpp"
 #include "maic/tripwire.hpp"
 #include "maic/vendor.hpp"
@@ -124,12 +125,10 @@ void set_fim_evictors(const std::vector<std::string>& names) {
     for (const auto& n : names) out << n << "\n";
 }
 
-std::string first_line(const char* command) {
-    FILE* p = popen(command, "r");
-    if (!p) return "";
-    char buf[256] = "";
-    std::string out = fgets(buf, sizeof(buf), p) ? buf : "";
-    pclose(p);
+std::string first_line(const std::string& command) {
+    std::string out;
+    run_helper(command, &out);
+    out = out.substr(0, out.find('\n'));
     while (!out.empty() && (out.back() == '\n' || out.back() == ' ')) out.pop_back();
     return out;
 }
@@ -627,7 +626,7 @@ std::string comfyui_torch_cuda() {
     std::filesystem::path python = vendor_link(*e) / ".venv" / "bin" / "python";
     std::error_code ec;
     if (!std::filesystem::exists(python, ec)) return "";
-    std::string out = first_line(("'" + python.string() + "' -c 'import torch; print(torch.version.cuda or \"\")' 2>/dev/null").c_str());
+    std::string out = first_line("'" + python.string() + "' -c 'import torch; print(torch.version.cuda or \"\")' 2>/dev/null");
     return out == "None" ? "" : out;
 }
 

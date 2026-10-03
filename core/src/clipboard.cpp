@@ -1,5 +1,7 @@
 #include "maic/clipboard.hpp"
 
+#include "maic/helper.hpp"
+
 #include <unistd.h>
 
 #include <cstdio>
@@ -46,10 +48,7 @@ bool has_program(const char* name) {
 }
 
 bool pipe_to(const char* command, const std::string& text) {
-    FILE* p = popen(command, "w");
-    if (!p) return false;
-    fwrite(text.data(), 1, text.size(), p);
-    return pclose(p) == 0;
+    return run_helper(command, nullptr, &text) == 0;
 }
 
 }  // namespace
@@ -76,13 +75,8 @@ std::string paste_from_clipboard() {
     const char* needs[] = {"wl-paste", "xclip", "xsel"};
     for (int i = 0; i < 3; ++i) {
         if (!has_program(needs[i])) continue;
-        FILE* p = popen(commands[i], "r");
-        if (!p) continue;
         std::string out;
-        char buf[4096];
-        size_t n;
-        while ((n = fread(buf, 1, sizeof(buf), p)) > 0) out.append(buf, n);
-        if (pclose(p) == 0 && !out.empty()) return out;
+        if (run_helper(commands[i], &out) == 0 && !out.empty()) return out;
     }
     return "";
 }

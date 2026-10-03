@@ -1,6 +1,7 @@
 // Every model provider against a fake server that misbehaves on purpose. No network, no API keys.
 #include "check.hpp"
 
+#include "maic/helper.hpp"
 #include "maic/llm.hpp"
 
 #include "maic/http.hpp"
@@ -20,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <thread>
 
@@ -78,6 +80,10 @@ const json kTools = json::array({{{"type", "function"},
 
 int main() {
     std::vector<Message> hello = {{"system", "be brief"}, {"user", "hi"}};
+    // GET /models's saved copies go under a scratch state directory, never ~/.local/state/maic.
+    const std::filesystem::path scratch_state = std::filesystem::temp_directory_path() / ("maic-llm-test-state-" + std::to_string(getpid()));
+    std::filesystem::remove_all(scratch_state);
+    setenv("XDG_STATE_HOME", scratch_state.c_str(), 1);
 
     section("model strings");
     auto provs = default_providers();
@@ -432,8 +438,10 @@ int main() {
         o.sampling = {{"temperature", 0.7}, {"top_p", 0.5}, {"presence_penalty", 0.2}, {"frequency_penalty", 0.1}, {"max_tokens", 4096}};
         Message m = chat(p, o, hello, json::array(), sink_into(&text, &thought), no_cancel);
         json b = ds.last();
-        expect(m.content == "done" && text == "done" && thought == "thought 1" && m.usage.input == 120 && m.usage.output == 30 && m.usage.cached == 64 && m.usage.context == 1000000,
-               "thinking on: reasoning streams as thinking, the answer as text, usage from the final chunk with its cache hits, the 1M window: " + text + " / " + thought);
+        expect(m.content == "done" && text == "done" && thought == "thought 1" && m.usage.input == 120 && m.usage.output == 30 && m.usage.cached == 64 && m.usage.context == 1048576,
+               "thinking on: reasoning streams as thinking, the answer as text, usage from the final chunk with its cache hits, the window GET /models gave: " + text + " / " + thought);
+        expect(ds.models_reads == 1 && std::filesystem::exists(scratch_state / "maic" / "api-models" / "deepseek.json"),
+               "GET /models is read at the first use, and kept under the state directory with the time it was read");
         expect(m.raw.value("model", "") == "deepseek-flash" && m.raw.value("system_fingerprint", "") == "fp_fake", "the model that answered and its fingerprint are kept with the turn");
         expect(b["thinking"] == json{{"type", "enabled"}} && b["stream"] == true, "thinking on is asked for with DeepSeek's own field: " + b.dump());
         expect(!b.contains("temperature") && !b.contains("presence_penalty") && !b.contains("frequency_penalty") && !b.contains("top_p") && b["max_tokens"] == 4096,
@@ -450,6 +458,23 @@ int main() {
         expect(m.content == "done" && thought.empty() && !m.raw.contains("reasoning_content") && b["thinking"] == json{{"type", "disabled"}} && b["temperature"] == 0.7 && !b.contains("top_p") &&
                    b["max_tokens"] == 65536,
                "thinking off: DeepSeek is told so, nothing is thought, temperature goes, top_p (fixed at 1.0 there) does not, max_tokens is the provider's");
+        expect(ds.models_reads == 1 && m.usage.context == 1048576, "GET /models is read once per process, not per request");
+        {
+            Provider big = p;
+            big.options["max_tokens"] = 1000000;
+            std::vector<std::string> told;
+            ChatOptions eo{"deepseek-flash", true};
+            eo.notice = [&](const std::string& n) { told.push_back(n); };
+            big.options["think_on"] = {{"thinking", {{"type", "enabled"}}}, {"reasoning_effort", "turbo"}};
+            m = chat(big, eo, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+            expect(m.content == "done" && ds.last()["max_tokens"] == 393216, "a max_tokens over the output cap GET /models gives is sent as that cap: " + ds.last().dump());
+            expect(!ds.last().contains("reasoning_effort") && told.size() == 1 && told[0].find("takes reasoning_effort low, high, max") != std::string::npos &&
+                       told[0].find("its default (high) applies") != std::string::npos,
+                   "an effort GET /models does not list is not sent, and that is told: " + json(told).dump());
+            big.options["think_on"] = {{"thinking", {{"type", "enabled"}}}, {"reasoning_effort", "max"}};
+            chat(big, eo, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+            expect(ds.last()["reasoning_effort"] == "max" && told.size() == 1, "one it lists is sent");
+        }
 
         // Tool use over several turns: the fake refuses, as DeepSeek does, a request with tools whose earlier assistant
         // turns lack their reasoning_content.
@@ -563,6 +588,7 @@ int main() {
         // metered provider never sends it again.
         Provider gone = p;
         gone.options["metered"] = true;  // on loopback the default would say no
+        gone.options.erase("read_models");  // the chat request alone reaches these servers
         gone.base_url = "http://127.0.0.1:9";  // the discard port: nothing listens
         ChatOptions go{"deepseek-flash", false};
         go.retries = 1;
@@ -604,6 +630,74 @@ int main() {
         why.clear();
         try { plain.api_key(); } catch (const std::exception& e) { why = e.what(); }
         expect(why.find("not https") != std::string::npos, "a key never goes to a remote host over plain http: " + why);
+        unsetenv("DEEPSEEK_API_KEY");
+    }
+
+    section("deepseek: GET /models fails, and the shipped figures stand");
+    {
+        FakeDeepSeek ds;
+        ds.models_status = 503;
+        Provider p = by_name("deepseek");
+        p.base_url = ds.url();
+        setenv("DEEPSEEK_API_KEY", ds.key.c_str(), 1);
+        ChatOptions o{"deepseek-flash", false};
+        auto started = std::chrono::steady_clock::now();
+        Message m = chat(p, o, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+        long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+        expect(m.content == "done" && m.usage.context == 1000000 && ds.last()["max_tokens"] == 65536 && ms < 2000,
+               "the turn goes on at once with the provider's window and max_tokens (" + std::to_string(ms) + " ms)");
+        chat(p, o, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+        expect(ds.models_reads == 1, "a failed read is not tried again for every request");
+        ds.models_status = 200;
+        ds.flash_context = 2000000;
+        ApiModelFacts facts = api_model_facts(p, true);
+        m = chat(p, o, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+        expect(ds.models_reads == 2 && facts.error.empty() && facts.models.at("deepseek-flash").context == 2000000 && m.usage.context == 2000000,
+               "a refresh (maic models refresh) reads it again, and the new window is used");
+        ds.models_status = 503;
+        facts = api_model_facts(p, true);
+        expect(facts.saved && facts.error.find("HTTP 503") != std::string::npos && facts.models.at("deepseek-flash").context == 2000000 && facts.read_at > 0,
+               "when a later read fails, the copy saved with its time stands in: " + facts.error);
+        Provider elsewhere = p;
+        elsewhere.base_url = "http://127.0.0.1:9";
+        expect(saved_model_facts(elsewhere).models.empty(), "a saved copy is used only for the base_url it was read from");
+        unsetenv("DEEPSEEK_API_KEY");
+    }
+
+    section("deepseek: MAIC's own cap on concurrent requests");
+    {
+        FakeDeepSeek ds;
+        Provider p = by_name("deepseek");
+        expect(p.options["max_concurrent"] == json{{"deepseek-flash", 833}, {"deepseek-v4-pro", 166}}, "shipped: a third of DeepSeek's 2,500 (Flash) and 500 (V4 Pro)");
+        p.base_url = ds.url();
+        p.options["max_concurrent"] = {{"deepseek-flash", 2}};
+        setenv("DEEPSEEK_API_KEY", ds.key.c_str(), 1);
+        ds.delay_ms = 300;
+        std::mutex told_mu;
+        std::vector<std::string> told;
+        std::vector<std::thread> threads;
+        std::atomic<int> done{0};
+        for (int i = 0; i < 5; ++i) {
+            threads.emplace_back([&] {
+                ChatOptions o{"deepseek-flash", false};
+                o.notice = [&](const std::string& n) {
+                    std::lock_guard lock(told_mu);
+                    told.push_back(n);
+                };
+                if (chat(p, o, hello, json::array(), [](std::string_view, bool) {}, no_cancel).content == "done") ++done;
+            });
+        }
+        for (auto& t : threads) t.join();
+        auto count = [&](const std::string& what) { return std::count_if(told.begin(), told.end(), [&](const std::string& n) { return n.find(what) != std::string::npos; }); };
+        expect(done == 5 && ds.max_active == 2, "five at once with a cap of two: all answered, never more than two open (" + std::to_string(ds.max_active.load()) + ")");
+        expect(count("this one waits for a slot") >= 1 && count("2 of the 2 concurrent requests MAIC allows are open") == 1,
+               "the ones past the cap are told they wait, and passing half the cap is told once: " + json(told).dump());
+        ds.max_active = 0;
+        ChatOptions pro{"deepseek-v4-pro", false};
+        std::thread a([&] { chat(p, pro, hello, json::array(), [](std::string_view, bool) {}, no_cancel); });
+        chat(p, pro, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+        a.join();
+        expect(ds.max_active == 2, "the cap is per model: deepseek-v4-pro, with none set, is not held back");
         unsetenv("DEEPSEEK_API_KEY");
     }
 
@@ -710,6 +804,124 @@ int main() {
         std::string msg;
         try { chat({"lab", "openai", "http://127.0.0.1:1"}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const TransportError& e) { msg = e.what(); }
         expect(notices.size() == 2 && msg.find("can't reach") != std::string::npos, "connection failures are retried too, then reported as TransportError");
+    }
+
+    {
+        bool bounded = true;
+        int widest_first = 0, widest_fifth = 0, widest_capped = 0;
+        for (int i = 0; i < 2000; ++i) {
+            for (int attempt : {0, 4, 9}) {
+                int w = retry_wait_ms(attempt, 100);
+                bounded = bounded && w >= 0 && w <= std::min(6000, 100 << attempt);
+                int& widest = attempt == 0 ? widest_first : attempt == 4 ? widest_fifth : widest_capped;
+                widest = std::max(widest, w);
+            }
+        }
+        expect(bounded && widest_first <= 100 && widest_fifth > 800 && widest_capped > 3000 && widest_capped <= 6000,
+               "full jitter: each wait is within 0 to min(60 s, base * 2^attempt) at base 1 s scaled down, and the range grows to the cap (" +
+                   std::to_string(widest_first) + ", " + std::to_string(widest_fifth) + ", " + std::to_string(widest_capped) + ")");
+    }
+    {
+        Fake f;
+        int calls = 0;
+        f.srv.Post("/chat/completions", [&](const httplib::Request&, httplib::Response& res) {
+            if (++calls == 1) {
+                res.status = 429;
+                res.set_header("Retry-After", "1");
+                res.set_content(R"({"error":{"message":"slow down","type":"rate_limit_error"}})", "application/json");
+                return;
+            }
+            res.set_content("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n", "text/event-stream");
+        });
+        f.start();
+        ChatOptions opt{"test-model"};
+        opt.retry_base_ms = 1;
+        auto started = std::chrono::steady_clock::now();
+        auto m = chat({"lab", "openai", f.url()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+        long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+        expect(m.content == "ok" && calls == 2 && ms >= 1000, "Retry-After is honoured when it asks for longer than the backoff (" + std::to_string(ms) + " ms)");
+    }
+    {
+        // One 429 holds every request to the account: the second, started meanwhile, waits out the first's Retry-After.
+        Fake f;
+        std::mutex mu;
+        std::vector<std::chrono::steady_clock::time_point> arrived;
+        f.srv.Post("/chat/completions", [&](const httplib::Request&, httplib::Response& res) {
+            size_t n;
+            {
+                std::lock_guard lock(mu);
+                arrived.push_back(std::chrono::steady_clock::now());
+                n = arrived.size();
+            }
+            if (n == 1) {
+                res.status = 429;
+                res.set_header("Retry-After", "1");
+                res.set_content(R"({"error":{"message":"slow down","type":"rate_limit_error"}})", "application/json");
+                return;
+            }
+            res.set_content("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n", "text/event-stream");
+        });
+        f.start();
+        ChatOptions opt{"test-model"};
+        opt.retry_base_ms = 1;
+        Provider lab{"lab-shared", "openai", f.url()};
+        std::thread first([&] { chat(lab, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        chat(lab, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+        first.join();
+        long gap = arrived.size() == 3 ? std::chrono::duration_cast<std::chrono::milliseconds>(std::min(arrived[1], arrived[2]) - arrived[0]).count() : 0;
+        expect(arrived.size() == 3 && gap >= 950, "a request started during the hold is not sent until it ends (" + std::to_string(gap) + " ms after the 429)");
+    }
+    {
+        // Five 429s within the window (60 times the base) open the breaker: nothing is sent until it closes.
+        Fake f;
+        std::atomic<int> calls{0};
+        std::atomic<bool> limited{true};
+        f.srv.Post("/chat/completions", [&](const httplib::Request&, httplib::Response& res) {
+            ++calls;
+            if (limited) {
+                res.status = 429;
+                res.set_content(R"({"error":{"message":"slow down","type":"rate_limit_error"}})", "application/json");
+                return;
+            }
+            res.set_content("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n", "text/event-stream");
+        });
+        f.start();
+        ChatOptions opt{"test-model"};
+        opt.retries = 10;
+        opt.retry_base_ms = 10;
+        Provider lab{"lab-breaker", "openai", f.url()};
+        std::string opened, held;
+        try { chat(lab, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError& e) { opened = e.what(); }
+        expect(calls == 5 && opened.find("5 rate limits in a short time") != std::string::npos && opened.find("circuit breaker") != std::string::npos,
+               "the fifth 429 opens the breaker and says so plainly, ending the retries: " + opened);
+        try { chat(lab, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError& e) { held = e.what(); }
+        expect(calls == 5 && held.find("this request was not sent") != std::string::npos, "while it is open nothing is sent: " + held);
+        limited = false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(650));
+        auto m = chat(lab, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
+        expect(m.content == "ok" && calls == 6, "after the window it closes, and requests go again");
+    }
+    {
+        Fake f;
+        std::atomic<int> calls{0}, status{400};
+        f.srv.Post("/chat/completions", [&](const httplib::Request&, httplib::Response& res) {
+            ++calls;
+            res.status = status;
+            res.set_content(R"({"error":{"message":"no","type":"invalid_request_error"}})", "application/json");
+        });
+        f.start();
+        ChatOptions opt{"test-model"};
+        opt.retries = 3;
+        opt.retry_base_ms = 1;
+        bool none = true;
+        for (int code : {400, 401, 402, 403}) {
+            status = code;
+            calls = 0;
+            try { chat({"lab-final", "openai", f.url()}, opt, hello, json::array(), [](std::string_view, bool) {}, no_cancel); } catch (const ApiError&) {}
+            none = none && calls == 1;
+        }
+        expect(none, "400, 401, 402 and 403 are never retried");
     }
 
     section("usage limits");
@@ -1113,5 +1325,27 @@ int main() {
         unsetenv("MAIC_TEST_WORK_TOKEN");
     }
 
+    section("fixed helpers start without keys");
+    {
+        setenv("DEEPSEEK_API_KEY", "sk-helper-must-not-see", 1);
+        setenv("SOMEONES_API_KEY", "sk-nor-this", 1);
+        setenv("MAIC_TEST_HELPER_TOKEN", "named-by-a-provider", 1);
+        setenv("MAIC_TEST_HELPER_PLAIN", "kept", 1);
+        add_key_envs({Provider{"helper-work", "openai", "https://llm.example.com/v1", "MAIC_TEST_HELPER_TOKEN", "", json::object()}});
+        std::string env;
+        int rc = run_helper("env", &env);
+        expect(rc == 0 && env.find("MAIC_TEST_HELPER_PLAIN=kept") != std::string::npos && env.find("DEEPSEEK_API_KEY") == std::string::npos &&
+                   env.find("SOMEONES_API_KEY") == std::string::npos && env.find("MAIC_TEST_HELPER_TOKEN") == std::string::npos && env.find("sk-helper-must-not-see") == std::string::npos &&
+                   env.find("named-by-a-provider") == std::string::npos,
+               "a helper's environment has no *_API_KEY and no variable a provider's api_key_env names");
+        std::string echoed, input = "through stdin\n";
+        expect(run_helper("cat", &echoed, &input) == 0 && echoed == input && run_helper("exit 3") == 3, "input reaches its stdin, output comes back, and so does its exit code");
+        unsetenv("DEEPSEEK_API_KEY");
+        unsetenv("SOMEONES_API_KEY");
+        unsetenv("MAIC_TEST_HELPER_TOKEN");
+        unsetenv("MAIC_TEST_HELPER_PLAIN");
+    }
+
+    std::filesystem::remove_all(scratch_state);
     return finish();
 }

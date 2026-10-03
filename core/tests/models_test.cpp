@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <cstdlib>
 #include <filesystem>
@@ -143,6 +144,30 @@ int main() {
         expect(p.find("api_models x: checked must be") != std::string::npos && p.find("limits.context and limits.output") != std::string::npos &&
                    p.find("input_cache_miss must be a price") != std::string::npos && p.find("utc ranges are HH:MM-HH:MM") != std::string::npos,
                "check names a bad date, a missing limit, a negative price and a malformed hour range: " + p);
+
+        // 2026-10-05 is a Monday: 02:00 UTC is peak, 04:00 (the end of the first range) and 12:00 are not; Saturday never is.
+        const std::time_t mon_0200 = 1791165600, mon_0400 = 1791172800, mon_1200 = 1791201600, sat_0200 = 1790992800;
+        expect(flash && price_period(flash->pricing, mon_0200).value("name", "") == "peak" && price_period(flash->pricing, mon_0400).value("name", "") == "off-peak" &&
+                   price_period(flash->pricing, mon_1200).value("name", "") == "off-peak" && price_period(flash->pricing, sat_0200).value("name", "") == "off-peak",
+               "the period in force: peak on a weekday inside its UTC hours only");
+        // DeepSeek's usage for one call: 120 prompt tokens, 64 of them from the cache, 30 out.
+        double off = flash ? call_cost(*flash, 120, 64, 30, mon_1200) : 0, peak = flash ? call_cost(*flash, 120, 64, 30, mon_0200) : 0;
+        expect(std::abs(off - (64 * 0.003 + 56 * 0.15 + 30 * 0.6) / 1e6) < 1e-12 && std::abs(peak - (64 * 0.006 + 56 * 0.3 + 30 * 1.2) / 1e6) < 1e-12,
+               "a call's cost: cache hits, misses and output each at the period's price (" + std::to_string(off) + ", " + std::to_string(peak) + ")");
+        expect(pro && std::abs(call_cost(*pro, 1000000, 0, 0, sat_0200) - 0.66) < 1e-12 && format_cost(0.66, "USD") == "0.6600 USD" && format_cost(12.5, "USD") == "12.50 USD",
+               "a million uncached input tokens on Pro off-peak cost its miss price, written to four places under 1");
+        expect(find_api_model(api_models(), "deepseek", "deepseek-flash") && !find_api_model(api_models(), "llamacpp", "deepseek-flash"), "API models are found by provider and model");
+
+        expect(session_cost_averages().empty(), "no sessions costed yet, no average");
+        add_session_cost("s1", 0.25, "USD");
+        add_session_cost("s1", 0.25, "USD");
+        add_session_cost("s2", 0.10, "USD");
+        add_session_cost("s3", 0, "USD");
+        auto avg = session_cost_averages();
+        expect(avg.size() == 1 && avg[0].sessions == 2 && std::abs(avg[0].average - 0.30) < 1e-12 && avg[0].currency == "USD",
+               "each session's costs add up under its id, and the average runs across the sessions that cost anything");
+        std::ifstream costs(state / "maic" / "costs.json");
+        expect(costs.good(), "kept in the state directory");
     }
 
     section("check catches a broken catalog");

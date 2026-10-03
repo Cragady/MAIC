@@ -6,11 +6,12 @@ MAIC keeps a catalog of the models it knows how to install: `models/catalog.json
 
 | Command | Does |
 | :--- | :--- |
-| `maic models` | the table: id, role, size, installed, which entry is linked as current for its server, the presets that use it |
+| `maic models` | the table: id, role, size, installed, which entry is linked as current for its server, the presets that use it; then the API models with their window and output (from `GET /models` where it was read, with when; nothing is fetched) and the average cost per session |
 | `maic models info ID` | the brief first (what it is good at, what it is weak at, when to pick it), then license, source and commit, every file with its URL and SHA-256, the VRAM estimates, presets, notes, and which installed entry needs it |
 | `maic models install ID [--link]` | each file into `<models_dir>/<root>/<dir>/` through the same checked download as `maic vendor model` (curl, then SHA-256; a mismatch keeps nothing). A file already there with the catalog's size counts as present and is not fetched again, so the models already on a drive show as installed without a download. An entry that `shares` another's weights makes only its relative link, installing the other entry first. `--link` makes it the current model of its server. Prints the VRAM estimate and the presets |
 | `maic models verify ID` | hashes the files that are there against the catalog (through a link for a shared entry) |
 | `maic models remove ID [--yes]` | asks on a terminal; off one it refuses without `--yes`. Never removes weights another installed entry links to: removing `qwen3.5-9b` while `qwen3.5-9b-text` is installed is refused and names it. Removing `qwen3.5-9b-text` removes its folder and link only. The current model of a server is not removed either; link another first |
+| `maic models refresh` | reads `GET /models` again from every provider with `options.read_models` (the shipped `deepseek`; it needs the key), saves what it says, and lists the API models (API models, below) |
 | `maic models check` | validates the catalog offline: every file has a URL, a SHA-256 and a size; Hugging Face URLs are pinned to the entry's revision; ids are unique; shares resolve to a file of the same hash and size; roles, kinds and roots are known; every VRAM figure agrees with the arithmetic below |
 
 "Current" means a different link per server: `llamacpp` serves `~/.local/state/maic/vendor/llamacpp/current-model.gguf` as `llamacpp/current` ([llamacpp.md](llamacpp.md)), `whisper` loads `<models_dir>/whisper/current.bin` ([diction.md](diction.md)), and `llamacpp-fim` serves `<models_dir>/fim/current.gguf` as its model `current` (Code completion, below). A llama server reads its folder at start, so a newly installed folder appears after `maic down` and `maic up` of that server.
@@ -111,6 +112,18 @@ Some models are not installed but reached over an API that bills per token. Thei
 
 Peak is 01:00 to 04:00 and 06:00 to 10:00 UTC, Monday to Friday. Figures from [DeepSeek's pricing page](https://api-docs.deepseek.com/quick_start/pricing/), checked 2026-10-02.
 
+**What the API says wins over the catalog.** A provider with `options.read_models` (the shipped `deepseek`) has its `GET /models` read once per process, at its first use, with a short timeout (2 s to connect, 3 s to answer) and no retry, so a turn never waits on it for long. Each model's `context_window` is then its window (the readout and compaction), its `max_output_tokens` caps `max_tokens` (the shipped 65536 is lower and stays), and a `reasoning_effort` outside its `effort.supported_levels` is not sent, which is told once. What it said is saved with the time in `<state>/api-models/<provider>.json`; when a later read fails, that copy stands in, and with no copy the provider's options and the figures above do. `maic models` shows which, and `maic models refresh` reads again.
+
+**Cost is an estimate.** Each model call to a model the catalog prices is costed from its usage record: the cached input tokens at `input_cache_hit`, the rest of the input at `input_cache_miss` and the output at `output`, in the period in force when the reply came (peak by UTC weekday and hour). The usage record in the transcript carries `cost`, the session's sum shows in the status line (`~0.0123 USD est.`) and in `:status`, and a subagent's or background task's counts in its parent's. Each session's estimate is kept locally in `<state>/costs.json` (the newest 1000 sessions, never sent anywhere), and `:status` and `maic models` give the average per session from it. Calls to a model the catalog does not price (local models, Anthropic, Claude Code) count nothing. DeepSeek's own bill is the truth: its prices change, and the catalog says when they were read.
+
+### Rate limits and retries
+
+Every API provider retries the same way, so a key is never hammered into a ban. A 429 that is not a used-up allowance, a 408, a 409, a 5xx and a refused connection are retried, at most `retries` times (3), and only while nothing has streamed. The wait is full jitter: a random time from 0 to the smaller of 60 s and 1 s doubled per attempt (1, 2, 4, 8 s), or the provider's `Retry-After` when it asks for longer. 400, 401, 402 and 403 are never retried, and a metered request whose answer was lost after it went out is not sent again.
+
+Requests to one provider account (its name and `base_url`) share what they learn. A 429 holds every request to it, the ones already waiting and the ones that start, until that wait is over, with a notice when it is a second or more. Five 429s within 60 s open a circuit breaker: MAIC sends nothing to that provider for 60 s, the request that opened it ends with an error saying so, and every request meanwhile fails at once, unsent, saying how long is left. Then the breaker closes and requests go again.
+
+`options.max_concurrent` caps MAIC's own open requests per model, below the provider's: DeepSeek's 429 counts open requests per account (2,500 for Flash, 500 for V4 Pro), so the shipped `deepseek` keeps to a third of each, 833 and 166. A request past the cap waits for a slot (said once per request), and passing half the cap is told once until it falls back to a quarter. Any provider takes the option, as a number for all its models or a table by model.
+
 ### Adding an OpenAI-compatible API
 
 Any service that speaks OpenAI's `/chat/completions` takes a provider entry and a preset or two in `settings.lua`. The key stays in the environment: the entry names the variable, never the key.
@@ -149,7 +162,9 @@ providers = {
     base_url = "https://api.deepseek.com",
     api_key_env = "DEEPSEEK_API_KEY",
     options = {
-      context_window = 1000000,
+      context_window = 1000000,  -- GET /models' figure replaces it when the read works
+      read_models = true,        -- GET /models at first use: each model's window, output cap and effort levels
+      max_concurrent = { ["deepseek-flash"] = 833, ["deepseek-v4-pro"] = 166 },  -- a third of DeepSeek's per-account limits
       max_tokens = 65536,  -- the API allows 384K; a lower cap bounds what one runaway reply costs
       think_on = { thinking = { type = "enabled" } },
       think_off = { thinking = { type = "disabled" } },
@@ -174,7 +189,7 @@ providers = {
 
 Thinking depth is DeepSeek's top-level `reasoning_effort` (`low`, `high`, the default, or `max`): `think_on = { thinking = { type = "enabled" }, reasoning_effort = "max" }` under `providers.deepseek.options` asks for the most. Titles and other calls MAIC makes with thinking off send `thinking = { type = "disabled" }`, since DeepSeek thinks unless told not to. MAIC never sends `tool_choice` (DeepSeek refuses a forced one while thinking), `user_id`, or any field DeepSeek does not document: no session ids, no telemetry.
 
-Each has a 1M context, the four as its `subagents` list, and `deepseek-flash-nothink` as its reviewer. They work as the session's model, as a `task` subagent's, and with `:model`, which also says METERED. A thinking turn's `reasoning_content` is kept in the transcript with the turn, as received, and replayed on every assistant turn while tools are in the request, so tool use over many turns works, after a resume too; a turn without one (another model wrote it, or thinking was off) goes back with an empty one, which DeepSeek's documentation does not settle (the live check below covers it). Each `usage` record in the transcript carries `cached`, the prompt tokens DeepSeek served from its cache. A tool call cut off by `max_tokens` (`finish_reason: length`) is dropped, never run; `insufficient_system_resource` and `aborted` end the call with an error saying so, and `content_filter` keeps the text with a note.
+Each has a 1M context, the four as its `subagents` list, and `deepseek-flash-nothink` as its reviewer. They work as the session's model, as a `task` subagent's, and with `:model`, which also says METERED. A thinking turn's `reasoning_content` is kept in the transcript with the turn, as received, and replayed on every assistant turn while tools are in the request, so tool use over many turns works, after a resume too; a turn without one (another model wrote it, or thinking was off) goes back with an empty one, which DeepSeek's documentation does not settle (the live check below covers it). Each `usage` record in the transcript carries `cached`, the prompt tokens DeepSeek served from its cache, and `cost`, the estimate for that call. A tool call cut off by `max_tokens` (`finish_reason: length`) is dropped, never run; `insufficient_system_resource` and `aborted` end the call with an error saying so, and `content_filter` keeps the text with a note.
 
 **The live check** (needs a real key; MAIC's tests never call the API): `DEEPSEEK_API_KEY=sk-... maic --model deepseek-pro`, ask for something that reads two files, send a second message, quit, `maic -r` and send a third; then `:model deepseek-flash-nothink` and once more. Every turn should succeed, and `cached` in the transcript's usage records should rise.
 

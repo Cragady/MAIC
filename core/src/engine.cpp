@@ -5,6 +5,7 @@
 
 #include "maic/full_output.hpp"
 #include "maic/llm.hpp"
+#include "maic/models.hpp"
 #include "maic/paths.hpp"
 #include "maic/protocol.hpp"
 #include "maic/session.hpp"
@@ -466,6 +467,7 @@ struct Session {
     std::atomic<bool> shell_cancel{false};
     long shells = 0;
     int reported_calls = 0;      // the model calls the last maic.usage.updated covered
+    double cost_recorded = 0;    // of the agent's cost estimate, what is in <state>/costs.json already
     size_t reported_queued = 0;  // the queued messages the index last showed
 
     // Responses and turns: ids <session>.r<k> by `responses`; queued turns reserve their number at arrival.
@@ -1208,7 +1210,17 @@ struct Engine::Impl {
                     {"total", {{"input", u.total_input}, {"output", u.total_output}}}};
         if (s.agent.budget_tokens > 0) out["budget"] = s.agent.budget_tokens;
         if (!u.normalized.empty()) out["normalized"] = u.normalized;
+        if (u.cost > 0) out["cost"] = {{"estimate", u.cost}, {"currency", u.currency}};
         return out;
+    }
+
+    // What the session's estimate grew by since the last record goes into the average across sessions; a background
+    // task's reaches it through its parent, which absorbs the task's usage.
+    void record_cost(Session& s) {
+        if (s.kind == "sub") return;
+        Agent::UsageReport u = s.agent.usage();
+        if (u.cost > s.cost_recorded) add_session_cost(s.id, u.cost - s.cost_recorded, u.currency);
+        s.cost_recorded = u.cost;
     }
 
     // Mid-response: a model call finished since the last report, or a queued message was delivered.
@@ -1360,6 +1372,7 @@ struct Engine::Impl {
             std::lock_guard lock(p->mu);
             if (!p->unloading.load() && (p->state == "live" || p->state == "background")) {
                 p->agent.absorb_usage(s->agent);
+                record_cost(*p);
                 auto t = p->tasks.find(s->id);
                 bool awaited = false;
                 if (t != p->tasks.end()) {
@@ -2147,6 +2160,7 @@ struct Engine::Impl {
         usage["type"] = "maic.usage.updated";
         s.reported_calls = usage["calls"];
         emit(s, usage);
+        record_cost(s);
         json resp = response_object(s, r, status);
         for (const auto& [k, v] : extra.items()) resp[k] = v;
         if (!ended_by.empty()) resp["maic"]["ended_by"] = ended_by;

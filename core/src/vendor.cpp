@@ -1,5 +1,6 @@
 #include "maic/vendor.hpp"
 
+#include "maic/helper.hpp"
 #include "maic/paths.hpp"
 #include "maic/settings.hpp"
 #include "maic/tripwire.hpp"
@@ -27,7 +28,7 @@ std::string link_name(const VendorEntry& e) {
 
 int run(const std::string& command) {
     std::cout << std::flush;
-    return std::system(command.c_str());
+    return run_helper(command);
 }
 
 std::string sh(const std::string& s) {
@@ -37,11 +38,9 @@ std::string sh(const std::string& s) {
 }
 
 std::string capture(const std::string& command) {
-    FILE* p = popen(command.c_str(), "r");
-    if (!p) return "";
-    char buf[512] = "";
-    std::string out = fgets(buf, sizeof(buf), p) ? buf : "";
-    pclose(p);
+    std::string out;
+    run_helper(command, &out);
+    out = out.substr(0, out.find('\n'));
     while (!out.empty() && (out.back() == '\n' || out.back() == ' ')) out.pop_back();
     return out;
 }
@@ -391,12 +390,9 @@ fs::path vendor_model(const VendorEntry& e, const std::string& url, const std::s
 }
 
 std::string file_sha256(const fs::path& p) {
-    std::string have;
-    FILE* f = popen(("sha256sum " + sh(p.string()) + " 2>/dev/null").c_str(), "r");
-    char buf[128] = "";
-    if (f && fgets(buf, sizeof(buf), f) && std::string(buf).size() >= 64) have = std::string(buf).substr(0, 64);
-    if (f) pclose(f);
-    return have;
+    std::string out;
+    run_helper("sha256sum " + sh(p.string()) + " 2>/dev/null", &out);
+    return out.size() >= 64 ? out.substr(0, 64) : "";
 }
 
 fs::path download_verified(const std::string& url, const std::string& sha256, const fs::path& dir, std::string name) {

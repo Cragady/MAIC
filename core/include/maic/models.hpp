@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <ctime>
 #include <filesystem>
 #include <ostream>
 #include <string>
@@ -56,6 +57,28 @@ struct ApiModel {
     nlohmann::json pricing;
     std::vector<std::string> presets;
 };
+
+// The API models of the catalog and of the user's file (an id there replaces the shipped entry), read once per
+// process; empty when neither can be read.
+const std::vector<ApiModel>& api_models();
+const ApiModel* find_api_model(const std::vector<ApiModel>& all, const std::string& provider, const std::string& model);
+// The pricing period in force at `when`: the first timed one whose UTC weekday and hours hold it, else the default.
+const nlohmann::json& price_period(const nlohmann::json& pricing, std::time_t when);
+// An estimate of what one call cost at `when`, in the pricing's currency: `cached` input tokens at input_cache_hit,
+// the rest of `input` at input_cache_miss, `output` at output. The provider's own bill is the truth.
+double call_cost(const ApiModel& m, long input, long cached, long output, std::time_t when);
+// "0.0123 USD"
+std::string format_cost(double cost, const std::string& currency);
+
+// The cost of sessions, kept locally in <state>/costs.json and never sent anywhere: each session's estimate by id
+// (the newest 1000), so the average per session runs across sessions.
+void add_session_cost(const std::string& session, double cost, const std::string& currency);
+struct CostAverage {
+    std::string currency;
+    double average = 0;
+    int sessions = 0;
+};
+std::vector<CostAverage> session_cost_averages();
 
 // models/catalog.json under the MAIC root, and the user's own file ($XDG_CONFIG_HOME/maic/models.json).
 std::filesystem::path catalog_path();

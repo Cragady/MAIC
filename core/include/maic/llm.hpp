@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <functional>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -100,11 +101,16 @@ std::string generate_title(const Provider& provider, const std::string& model, c
 struct ChatOptions {
     std::string model;  // without the provider prefix
     bool think = false;
-    // Retry on 429 (not a usage limit), 5xx and connection failures, only while nothing has been streamed yet: 2 s, doubling,
-    // 25% jitter, 30 s cap, Retry-After honoured. `notice` hears about each wait. A metered provider is not retried when
-    // its answer was lost while being read (TransportError::retry_safe), since the request may have run and been billed.
+    // Retry on 429 (not a usage limit), 408, 409, 5xx and connection failures, only while nothing has been streamed yet,
+    // at most `retries` times: full jitter, a wait drawn from 0 to min(cap, base * 2^attempt), the cap 60 times the
+    // base (1 s and 60 s), or Retry-After when the provider asks for longer. 400, 401, 402 and 403 never are. `notice`
+    // hears about each wait. A metered provider is not retried when its answer was lost while being read
+    // (TransportError::retry_safe), since the request may have run and been billed.
+    // Every request to one provider (its name and base_url) shares the account's state: a 429 holds them all for its
+    // wait, five 429s within the cap open a breaker that sends nothing for the cap and fails each request at once with
+    // a message saying so, and `options.max_concurrent` queues what is past the cap (docs/models.md, Rate limits).
     int retries = 3;
-    int retry_base_ms = 2000;
+    int retry_base_ms = 1000;
     std::function<void(const std::string&)> notice;
     // Generation controls. `stop` and `sampling` go to every provider that has them; `logit_bias` only to
     // OpenAI-compatible ones ({"<token id or text>": -100}).
@@ -115,6 +121,9 @@ struct ChatOptions {
     // shape (normalize_openai) and how many times it applied, before the reply returns or the error is thrown.
     std::function<void(const std::string& rule, int count)> normalized;
 };
+
+// The wait before retry number `attempt` (0 for the first): full jitter, uniform in [0, min(60 * base_ms, base_ms * 2^attempt)].
+int retry_wait_ms(int attempt, int base_ms);
 
 struct Cancelled : std::runtime_error {
     Cancelled() : std::runtime_error("cancelled") {}
@@ -147,6 +156,28 @@ using TextSink = std::function<void(std::string_view delta, bool thinking)>;
 
 // GET <base_url>/models on an OpenAI-compatible server (llama.cpp's router lists every GGUF it can load).
 std::vector<std::string> list_openai_models(const Provider& provider);
+
+// What an API's GET /models says about one model, as far as it says: DeepSeek's `context_window`, `max_output_tokens`
+// and `effort` (`supported_levels`, `default_level`). 0 or empty where it says nothing.
+struct ModelFacts {
+    long context = 0;
+    long output = 0;
+    std::vector<std::string> efforts;
+    std::string default_effort;
+};
+struct ApiModelFacts {
+    std::map<std::string, ModelFacts> models;  // by the provider's model id
+    long read_at = 0;   // when they were read (unix time); 0 when never
+    bool saved = false; // from <state>/api-models/<provider>.json, because the read failed
+    std::string error;  // why the last read failed; "" when it did not
+};
+// For a provider with `options.read_models`: GET /models once per process, at its first use, with a short timeout
+// (2 s to connect, 3 s to answer) and no retry, kept for the process and saved with the time in
+// <state>/api-models/<provider>.json. When the read fails, the saved copy for the same base_url stands in, else nothing
+// does and the provider's options (and the catalog) apply as before. `refresh` reads again (`maic models refresh`).
+ApiModelFacts api_model_facts(const Provider& provider, bool refresh = false);
+// The saved copy alone, without a request (`maic models`): empty when there is none for this base_url.
+ApiModelFacts saved_model_facts(const Provider& provider);
 // Whether something answers HTTP at the provider's host (GET /health, any status): a local server that is up.
 bool server_answers(const Provider& provider);
 

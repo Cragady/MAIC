@@ -1,6 +1,7 @@
 #include "maic/agent.hpp"
 
 #include "maic/full_output.hpp"
+#include "maic/models.hpp"
 
 #include "maic/paths.hpp"
 #include "maic/settings.hpp"
@@ -981,9 +982,11 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
             usage_.total_input += reply.usage.input;
             usage_.total_output += reply.usage.output;
             ++usage_.calls;
+            double cost = add_cost(provider, options.model, reply.usage);
             if (log_) {
                 nlohmann::json u = {{"input", reply.usage.input}, {"output", reply.usage.output}, {"context", reply.usage.context}};
                 if (reply.usage.cached) u["cached"] = reply.usage.cached;
+                if (cost > 0) u["cost"] = cost;
                 log_->write("usage", u);
             }
         }
@@ -1664,11 +1667,25 @@ std::string Agent::final_answer() const {
     return "";
 }
 
+double Agent::add_cost(const Provider& provider, const std::string& model, const Usage& u) {
+    const ApiModel* priced = find_api_model(api_models(), provider.name, model);
+    std::string currency = priced ? priced->pricing.value("currency", "") : "";
+    if (!priced || (!usage_.currency.empty() && usage_.currency != currency)) return 0;
+    double cost = call_cost(*priced, u.input, u.cached, u.output, std::time(nullptr));
+    usage_.cost += cost;
+    usage_.currency = currency;
+    return cost;
+}
+
 void Agent::absorb_usage(const Agent& child) {
     std::lock_guard lock(usage_mu_);
     std::lock_guard child_lock(child.usage_mu_);
     usage_.total_input += child.usage_.total_input;
     usage_.total_output += child.usage_.total_output;
+    if (child.usage_.cost > 0 && (usage_.currency.empty() || usage_.currency == child.usage_.currency)) {
+        usage_.cost += child.usage_.cost;
+        usage_.currency = child.usage_.currency;
+    }
     for (const auto& [rule, n] : child.usage_.normalized) usage_.normalized[rule] += n;
     reviewer_tokens_ += child.reviewer_tokens_;
     reviewer_failed_.insert(child.reviewer_failed_.begin(), child.reviewer_failed_.end());
@@ -1900,6 +1917,8 @@ Judgement Agent::judge(const std::string& m, bool think, int timeout_s, const st
         usage_.total_input += reply.usage.input;
         usage_.total_output += reply.usage.output;
         reviewer_tokens_ += reply.usage.input + reply.usage.output;
+        auto [provider, name] = resolve_model(providers, m);
+        add_cost(provider, name, reply.usage);
     }
     std::string t = reply.content;
     if (auto p = t.find("</think>"); p != std::string::npos) t = t.substr(p + 8);

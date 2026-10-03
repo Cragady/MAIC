@@ -8,11 +8,15 @@
 // tool_choice required or named while thinking. It is stricter than the real API where MAIC must not send misleading
 // or extra data: a top_p while thinking outside 0.95 to 1.0 (the API raises it), any top_p without thinking (the API
 // fixes it at 1.0), and any field DeepSeek does not document (the API's behaviour is unstated; MAIC sends only standard
-// fields, no ids or telemetry). Nothing here reaches the network.
+// fields, no ids or telemetry). GET /models answers with the documented per-model facts (window, output cap, effort
+// levels), or with `models_status` when that is not 200. Nothing here reaches the network.
 #include "maic/http.hpp"
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <functional>
 #include <mutex>
 #include <set>
@@ -39,6 +43,21 @@ struct FakeDeepSeek {
     int empty_left = 0;             // this many replies are empty: no text, reasoning or tool call, finish_reason stop
     std::string served_as;          // the model replies say they come from ("" = the one asked for), as a silent re-route would
     int served = 0;
+    int models_status = 200;        // what GET /models answers with
+    int models_reads = 0;
+    long flash_context = 1048576;   // what GET /models says deepseek-flash's window is
+    int delay_ms = 0;               // each chat request is held this long before it is answered
+    std::atomic<int> active{0}, max_active{0};  // chat requests open at once, and the most there were
+
+    // GET /models as the documentation's example gives it: every field MAIC reads, and some it does not.
+    static nlohmann::json model_list(long flash_context) {
+        auto model = [](const std::string& id, long context, nlohmann::json modalities, const std::string& prompt_update) {
+            return nlohmann::json{{"id", id}, {"object", "model"}, {"owned_by", "deepseek"}, {"context_window", context}, {"max_output_tokens", 393216},
+                                  {"input_modalities", modalities}, {"effort", {{"supported_levels", {"low", "high", "max"}}, {"default_level", "high"}}},
+                                  {"api_capabilities", {{"anthropic_messages", {{"system_prompt_update", prompt_update}}}}}};
+        };
+        return {{"object", "list"}, {"data", {model("deepseek-flash", flash_context, {"text", "image"}, "in-history"), model("deepseek-v4-pro", 1048576, {"text"}, "leading-only")}}};
+    }
 
     static nlohmann::json error(const std::string& message, const std::string& type) {
         return {{"error", {{"message", message}, {"type", type}, {"param", nullptr}, {"code", "invalid_request_error"}}}};
@@ -63,7 +82,7 @@ struct FakeDeepSeek {
         if (thinking && b.contains("top_p") && (!b["top_p"].is_number() || b["top_p"] < 0.95 || b["top_p"] > 1.0)) return "top_p must be between 0.95 and 1.0 in thinking mode";
         if (!thinking && b.contains("top_p")) return "(fake) top_p is fixed at 1.0 without thinking: sending it misleads";
         if (thinking && b.contains("tool_choice") && b["tool_choice"] != "auto" && b["tool_choice"] != "none") return "tool_choice required or a named function is not supported in thinking mode";
-        if (b.value("max_tokens", 0) > 384000) return "max_tokens must be at most 384000";
+        if (b.value("max_tokens", 0) > 393216) return "max_tokens must be at most 393216";
         bool tools = b.contains("tools") && b["tools"].is_array() && !b["tools"].empty();
         for (const auto& m : b["messages"]) {
             if (tools && m["role"] == "assistant" && !(m.contains("reasoning_content") && m["reasoning_content"].is_string())) {
@@ -86,7 +105,25 @@ struct FakeDeepSeek {
 
     FakeDeepSeek() {
         port = srv.bind_to_any_port("127.0.0.1");
+        srv.Get("/models", [this](const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard lock(mu);
+            ++models_reads;
+            if (req.get_header_value("Authorization") != "Bearer " + key) {
+                res.status = 401;
+                res.set_content(error("Authentication Fails", "authentication_error").dump(), "application/json");
+                return;
+            }
+            res.status = models_status;
+            res.set_content(models_status == 200 ? model_list(flash_context).dump() : error("Service Unavailable", "server_error").dump(), "application/json");
+        });
         srv.Post("/chat/completions", [this](const httplib::Request& req, httplib::Response& res) {
+            int now = ++active;
+            for (int m = max_active; now > m && !max_active.compare_exchange_weak(m, now);) {}
+            if (delay_ms) std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+            struct Leave {
+                std::atomic<int>& n;
+                ~Leave() { --n; }
+            } leave{active};
             nlohmann::json body = nlohmann::json::parse(req.body, nullptr, false);
             std::lock_guard lock(mu);
             requests.push_back(body);

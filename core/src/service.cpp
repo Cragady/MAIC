@@ -1,5 +1,6 @@
 #include "maic/service.hpp"
 
+#include "maic/helper.hpp"
 #include "maic/llm.hpp"
 #include "maic/paths.hpp"
 
@@ -121,6 +122,9 @@ std::vector<char*> c_strings(std::vector<std::string>& strings) {
 
 // Runs a program with stdout and stderr captured; the exit code, 127 when it could not be run.
 int run_capture(std::vector<std::string> args, std::string& out) {
+    std::vector<std::string> env = keyless_environ();
+    std::vector<char*> argv = c_strings(args);
+    std::vector<char*> envp = c_strings(env);
     int fds[2];
     if (pipe2(fds, O_CLOEXEC) != 0) return 127;
     pid_t pid = fork();
@@ -134,8 +138,7 @@ int run_capture(std::vector<std::string> args, std::string& out) {
         dup2(null_fd, STDIN_FILENO);
         dup2(fds[1], STDOUT_FILENO);
         dup2(fds[1], STDERR_FILENO);
-        std::vector<char*> argv = c_strings(args);
-        execvp(argv[0], argv.data());
+        execvpe(argv[0], argv.data(), envp.data());
         _exit(127);
     }
     close(fds[1]);

@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <deque>
 #include <map>
+#include <mutex>
+#include <set>
 
 namespace maic::detail {
 
@@ -167,6 +169,27 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
     const json think_fields = provider.options.value(options.think ? "think_on" : "think_off", json::object());  // named: iterating a temporary dangles
     for (const auto& [k, v] : think_fields.items()) body[k] = v;
     if (provider.options.contains("max_tokens") && !body.contains("max_tokens")) body["max_tokens"] = provider.options["max_tokens"];
+    // What GET /models says about this model, where the provider reads it: the window, the output cap (a lower
+    // max_tokens stays) and the thinking levels it takes. Without it the options above stand.
+    ModelFacts facts;
+    if (provider.options.value("read_models", false)) {
+        ApiModelFacts all = api_model_facts(provider);
+        if (auto it = all.models.find(options.model); it != all.models.end()) facts = it->second;
+    }
+    if (facts.output > 0 && body.contains("max_tokens") && body["max_tokens"].is_number() && body["max_tokens"] > facts.output) body["max_tokens"] = facts.output;
+    if (!facts.efforts.empty() && body.contains("reasoning_effort") && body["reasoning_effort"].is_string() &&
+        std::find(facts.efforts.begin(), facts.efforts.end(), body["reasoning_effort"].get<std::string>()) == facts.efforts.end()) {
+        std::string levels;
+        for (const auto& l : facts.efforts) levels += (levels.empty() ? "" : ", ") + l;
+        static std::mutex told_mu;
+        static std::set<std::string> told;  // once per process for each provider, model and level
+        std::lock_guard lock(told_mu);
+        if (options.notice && told.insert(provider.name + "/" + options.model + " " + body["reasoning_effort"].get<std::string>()).second) {
+            options.notice(provider.name + ": " + options.model + " takes reasoning_effort " + levels + " (GET /models); \"" + body["reasoning_effort"].get<std::string>() +
+                           "\" was not sent, so its default" + (facts.default_effort.empty() ? std::string() : " (" + facts.default_effort + ")") + " applies");
+        }
+        body.erase("reasoning_effort");
+    }
     if (!tools.empty()) body["tools"] = tools;
     nlohmann::json extra = provider.options.value("extra_body", nlohmann::json::object());
     for (const auto& [k, v] : extra.items()) body[k] = v;
@@ -278,7 +301,7 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
         throw TransportError(provider.name + " sent an empty reply (no text, reasoning or tool call)");
     }
 
-    reply.usage.context = provider.options.value("context_window", 0);
+    reply.usage.context = facts.context > 0 ? static_cast<int>(facts.context) : provider.options.value("context_window", 0);
     if (replay || provider.metered()) {
         // Kept with the turn in the transcript: the reasoning to replay, and which model answered (a provider may route
         // a request to another model; the notice makes that visible as it happens).

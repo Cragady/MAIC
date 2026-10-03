@@ -1,6 +1,7 @@
 // `maic doctor`: what this machine has, what MAIC needs, and a recommended local setup.
 #include "doctor.hpp"
 
+#include "maic/helper.hpp"
 #include "maic/instructions.hpp"
 #include "maic/lazy_lock.hpp"
 #include "maic/nvim_keymaps.hpp"
@@ -28,13 +29,9 @@ namespace fs = std::filesystem;
 
 namespace {
 
-std::string run(const char* command) {
-    FILE* p = popen(command, "r");
-    if (!p) return "";
+std::string run(const std::string& command) {
     std::string out;
-    char buf[4096];
-    while (fgets(buf, sizeof(buf), p)) out += buf;
-    pclose(p);
+    run_helper(command, &out);
     while (!out.empty() && (out.back() == '\n' || out.back() == ' ')) out.pop_back();
     return out;
 }

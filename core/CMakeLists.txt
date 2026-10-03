@@ -11,6 +11,7 @@ add_library(maic_core
     src/engine.cpp
     src/full_output.cpp
     src/harness.cpp
+    src/helper.cpp
     src/import.cpp
     src/instructions.cpp
     src/jsonschema.cpp

@@ -6,6 +6,7 @@
 #include "setup.hpp"
 #include "maic/artifacts.hpp"
 #include "maic/harness.hpp"
+#include "maic/helper.hpp"
 #include "maic/full_output.hpp"
 #include "maic/import.hpp"
 #include "maic/lazy_lock.hpp"
@@ -391,6 +392,37 @@ std::string human_bytes(uintmax_t b);
 
 // `maic models`: the catalog (models/catalog.json plus ~/.config/maic/models.json), what is installed, and
 // installing, verifying and removing by id. docs/models.md
+// The catalog's API models under `maic models`: window and output from GET /models where it was read (the saved copy;
+// nothing is fetched here), else the catalog's, and the average cost per session.
+void print_api_models(const std::vector<maic::Provider>& providers) {
+    const auto& apis = maic::api_models();
+    if (apis.empty()) return;
+    std::cout << "\nAPI models (metered):\n";
+    for (const auto& a : apis) {
+        long context = a.context, output = a.output;
+        std::string from = "catalog, " + a.checked, efforts;
+        for (const auto& p : providers) {
+            if (p.name != a.provider || !p.options.value("read_models", false)) continue;
+            auto facts = maic::saved_model_facts(p);
+            auto it = facts.models.find(a.model);
+            if (it == facts.models.end()) continue;
+            if (it->second.context) context = it->second.context;
+            if (it->second.output) output = it->second.output;
+            for (const auto& e : it->second.efforts) efforts += (efforts.empty() ? "" : ", ") + e;
+            char when[32];
+            std::time_t t = facts.read_at;
+            std::strftime(when, sizeof(when), "%Y-%m-%d %H:%M UTC", std::gmtime(&t));
+            from = std::string("GET /models, ") + when;
+        }
+        std::printf("%-28s %-28s context %-8ld output %-7ld %s(%s)\n", a.id.c_str(), (a.provider + "/" + a.model).c_str(), context, output,
+                    efforts.empty() ? "" : ("efforts " + efforts + " ").c_str(), from.c_str());
+    }
+    for (const auto& c : maic::session_cost_averages()) {
+        std::cout << "cost: average ~" << maic::format_cost(c.average, c.currency) << " per session over " << c.sessions << " session" << (c.sessions == 1 ? "" : "s")
+                  << " (estimate from the catalog's prices)\n";
+    }
+}
+
 int cmd_models(const std::vector<std::string>& args, bool text_base) {
     const std::string sub = args.empty() ? "list" : args[0];
     if (sub == "check") {
@@ -434,11 +466,28 @@ int cmd_models(const std::vector<std::string>& args, bool text_base) {
                         maic::entry_current(e) ? e.root.c_str() : "", names.c_str());
         }
         if (text_base) return 0;
+        print_api_models(maic::load_settings().providers);
         std::cout << "models_dir: " << maic::models_root("llamacpp").parent_path().string() << " (llamacpp/, whisper/, fim/)\n"
-                  << "maic models info ID · install ID [--link] · verify ID · remove ID · check (docs/models.md)\n";
+                  << "maic models info ID · install ID [--link] · verify ID · remove ID · check · refresh (docs/models.md)\n";
         return 0;
     }
-    if (args.size() < 2) throw std::runtime_error("usage: maic models [list | info ID | install ID [--link] | verify ID | remove ID [--yes] | check]");
+    if (sub == "refresh") {
+        int rc = 0;
+        for (const auto& p : maic::load_settings().providers) {
+            if (!p.options.value("read_models", false)) continue;
+            auto facts = maic::api_model_facts(p, true);
+            if (facts.saved || facts.models.empty()) {
+                std::cout << p.name << ": GET /models failed (" << (facts.error.empty() ? std::string("no models in the answer") : facts.error) << "); "
+                          << (facts.saved ? "the copy read earlier stands" : "the provider's options and the catalog stand") << "\n";
+                rc = 1;
+            } else {
+                std::cout << p.name << ": read " << facts.models.size() << " model" << (facts.models.size() == 1 ? "" : "s") << " from GET /models\n";
+            }
+        }
+        print_api_models(maic::load_settings().providers);
+        return rc;
+    }
+    if (args.size() < 2) throw std::runtime_error("usage: maic models [list | info ID | install ID [--link] | verify ID | remove ID [--yes] | check | refresh]");
     const maic::CatalogEntry* e = maic::find_entry(all, args[1]);
     if (!e) throw std::runtime_error("no model '" + args[1] + "' in the catalog (maic models lists them)");
     bool link = false, yes = false;
@@ -688,7 +737,7 @@ int cmd_open(const std::vector<std::string>& args) {
     }
     if (!browser.empty() && browser != "default" && browser != "firefox" && browser != "chrome") throw std::runtime_error("--browser takes default, firefox or chrome");
     auto [cmd, what] = maic::open_command(name, settings, std::filesystem::current_path(), services, std::nullopt, browser, folder);
-    if (std::system(cmd.c_str()) != 0) throw std::runtime_error("could not open " + what);
+    if (maic::run_helper(cmd) != 0) throw std::runtime_error("could not open " + what);
     std::cout << "opened " << what << "\n";
     return 0;
 }
@@ -1602,7 +1651,7 @@ int main(int argc, char** argv) {
                 if (rows[i].lock.empty()) {
                     // Drop any cached sudo login first so unlocking the machine always needs the password.
                     std::cout << "machine lock: unlocking (sudo)\n";
-                    if (std::system("sudo -k && sudo /usr/local/sbin/maic-lock reset") != 0) rc = 1;
+                    if (maic::run_helper("sudo -k && sudo /usr/local/sbin/maic-lock reset") != 0) rc = 1;
                 } else {
                     std::filesystem::remove(rows[i].lock, ec);
                     std::cout << "removed " << rows[i].lock.string() << "\n";

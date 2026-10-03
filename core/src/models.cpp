@@ -5,11 +5,16 @@
 #include "maic/tripwire.hpp"
 #include "maic/vendor.hpp"
 
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <regex>
 #include <set>
 #include <stdexcept>
@@ -163,6 +168,135 @@ std::vector<ApiModel> parse_api_models(const json& j) {
         } catch (const json::exception& ex) {
             throw std::runtime_error("model catalog api_models entry '" + a.id + "': " + ex.what());
         }
+        out.push_back(a);
+    }
+    return out;
+}
+
+const std::vector<ApiModel>& api_models() {
+    static const std::vector<ApiModel> all = [] {
+        std::vector<ApiModel> out;
+        std::error_code ec;
+        for (const fs::path& p : {catalog_path(), user_catalog_path()}) {
+            if (!fs::exists(p, ec)) continue;
+            try {
+                for (auto& a : parse_api_models(read_json(p))) {
+                    auto it = std::find_if(out.begin(), out.end(), [&](const ApiModel& o) { return o.id == a.id; });
+                    if (it == out.end()) out.push_back(std::move(a));
+                    else *it = std::move(a);
+                }
+            } catch (const std::exception&) {
+                // A broken file costs nothing; `maic models check` names what is wrong with it.
+            }
+        }
+        return out;
+    }();
+    return all;
+}
+
+const ApiModel* find_api_model(const std::vector<ApiModel>& all, const std::string& provider, const std::string& model) {
+    for (const auto& a : all) {
+        if (a.provider == provider && a.model == model) return &a;
+    }
+    return nullptr;
+}
+
+const json& price_period(const json& pricing, std::time_t when) {
+    static const json none = json::object();
+    std::tm utc{};
+    gmtime_r(&when, &utc);
+    static const char* days[] = {"sun", "mon", "tue", "wed", "thu", "fri", "sat"};
+    int minute = utc.tm_hour * 60 + utc.tm_min;
+    const json* fallback = &none;
+    if (!pricing.contains("periods") || !pricing["periods"].is_array()) return none;
+    for (const auto& p : pricing["periods"]) {
+        if (!p.is_object()) continue;
+        if (!p.contains("days") && !p.contains("utc")) {
+            fallback = &p;
+            continue;
+        }
+        const json d = p.value("days", json::array()), hours = p.value("utc", json::array());
+        if (!d.empty() && std::find(d.begin(), d.end(), json(days[utc.tm_wday])) == d.end()) continue;
+        bool in_hours = hours.empty();
+        for (const auto& h : hours) {
+            int a = 0, b = 0, c = 0, e = 0;
+            if (h.is_string() && std::sscanf(h.get<std::string>().c_str(), "%d:%d-%d:%d", &a, &b, &c, &e) == 4) in_hours = in_hours || (minute >= a * 60 + b && minute < c * 60 + e);
+        }
+        if (in_hours) return p;
+    }
+    return *fallback;
+}
+
+double call_cost(const ApiModel& m, long input, long cached, long output, std::time_t when) {
+    const json& p = price_period(m.pricing, when);
+    double per = m.pricing.value("per", 1000000);
+    long hit = std::min(cached, input);
+    return (hit * p.value("input_cache_hit", 0.0) + (input - hit) * p.value("input_cache_miss", 0.0) + output * p.value("output", 0.0)) / per;
+}
+
+std::string format_cost(double cost, const std::string& currency) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), cost < 1 ? "%.4f" : "%.2f", cost);
+    return std::string(buf) + " " + currency;
+}
+
+namespace {
+
+fs::path costs_path() {
+    return state_dir() / "costs.json";
+}
+
+// The file, or an empty object when it is missing or unreadable (it is only an estimate).
+json read_costs() {
+    std::ifstream in(costs_path());
+    json j = json::parse(in, nullptr, false);
+    return j.is_object() && j.contains("sessions") && j["sessions"].is_object() ? j : json{{"sessions", json::object()}};
+}
+
+}  // namespace
+
+void add_session_cost(const std::string& session, double cost, const std::string& currency) {
+    if (session.empty() || cost <= 0) return;
+    fs::path path = costs_path();
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    // Processes share the file (the daemon, a TUI of its own, maic-server): one writes at a time.
+    int fd = open((path.string() + ".lock").c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) return;
+    flock(fd, LOCK_EX);
+    json all = read_costs();
+    json& s = all["sessions"][session];
+    if (!s.is_object() || s.value("currency", currency) != currency) s = {{"cost", 0.0}, {"currency", currency}};
+    s["cost"] = s.value("cost", 0.0) + cost;
+    s["at"] = static_cast<long>(std::time(nullptr));
+    while (all["sessions"].size() > 1000) {
+        auto oldest = all["sessions"].begin();
+        for (auto it = all["sessions"].begin(); it != all["sessions"].end(); ++it) {
+            if (it.value().value("at", 0L) < oldest.value().value("at", 0L)) oldest = it;
+        }
+        all["sessions"].erase(oldest);
+    }
+    fs::path tmp = path;
+    tmp += ".tmp";
+    std::ofstream(tmp, std::ios::trunc) << all.dump() << "\n";
+    fs::rename(tmp, path, ec);
+    flock(fd, LOCK_UN);
+    close(fd);
+}
+
+std::vector<CostAverage> session_cost_averages() {
+    std::map<std::string, CostAverage> by;
+    const json all = read_costs();  // named: iterating a temporary dangles
+    for (const auto& [id, s] : all["sessions"].items()) {
+        if (!s.is_object() || !s.value("cost", json()).is_number()) continue;
+        CostAverage& a = by[s.value("currency", "")];
+        a.average += s["cost"].get<double>();
+        ++a.sessions;
+    }
+    std::vector<CostAverage> out;
+    for (auto& [currency, a] : by) {
+        a.currency = currency;
+        a.average /= a.sessions;
         out.push_back(a);
     }
     return out;

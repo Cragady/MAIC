@@ -1,5 +1,7 @@
 #include "maic/tripwire.hpp"
 
+#include "maic/helper.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -78,12 +80,7 @@ void trip_tripwire(const std::string& reason) {
         std::ofstream(f, std::ios::trunc) << "reason: " << reason << "\n";
         return;
     }
-    FILE* p = popen("sudo -n /usr/local/sbin/maic-lock trip >/dev/null 2>&1", "w");
-    if (!p) {
-        throw std::runtime_error("could not run maic-lock");
-    }
-    std::fputs(reason.c_str(), p);
-    if (pclose(p) != 0) {
+    if (run_helper("sudo -n /usr/local/sbin/maic-lock trip >/dev/null 2>&1", nullptr, &reason) != 0) {
         throw std::runtime_error("maic-lock trip failed; is the tripwire installed? (sudo ./harness/install-tripwire.sh)");
     }
 }
