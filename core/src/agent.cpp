@@ -982,11 +982,14 @@ void Agent::submit(const std::string& text, Origin origin, AgentEvents& events, 
             usage_.total_input += reply.usage.input;
             usage_.total_output += reply.usage.output;
             ++usage_.calls;
-            double cost = add_cost(provider, options.model, reply.usage);
-            add_model_use(provider, options.model, reply.usage, cost);
-            usage_.last_model = provider.name + "/" + options.model;
             std::string served = reply.raw_kind == "openai" && reply.raw.is_object() ? reply.raw.value("model", "") : "";
             usage_.last_served = served == options.model ? "" : served;
+            // A turn is priced, and counted, as the model that answered it when the catalog knows that model (a Pro
+            // request DeepSeek served with Flash costs Flash's price); otherwise as the model asked for.
+            const std::string& priced_as = !usage_.last_served.empty() && find_api_model(api_models(), provider.name, served) ? served : options.model;
+            double cost = add_cost(provider, priced_as, reply.usage);
+            add_model_use(provider, priced_as, reply.usage, cost);
+            usage_.last_model = provider.name + "/" + options.model;
             if (log_) {
                 nlohmann::json u = {{"input", reply.usage.input}, {"output", reply.usage.output}, {"context", reply.usage.context}};
                 if (reply.usage.cached) u["cached"] = reply.usage.cached;

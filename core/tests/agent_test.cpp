@@ -1046,6 +1046,21 @@ int main() {
                    "the usage is also kept per model, as it was asked for");
             fs::remove(log.path());
         }
+        // DeepSeek serving a Pro request with Flash: the turn is priced, and counted, as Flash, the model that answered.
+        {
+            auto a = make("deepseek-pro");
+            ds.tool_call_for = [](const json&) { return json(); };
+            ds.served_as = "deepseek-flash";
+            Recorder r;
+            a->submit("one plain turn", Origin::Local, r, no_cancel);
+            ds.served_as.clear();
+            const ApiModel* flash = find_api_model(api_models(), "deepseek", "deepseek-flash");
+            Agent::UsageReport u = a->usage();
+            auto fu = u.by_model.find("deepseek/deepseek-flash");
+            expect(flash && fu != u.by_model.end() && u.by_model.count("deepseek/deepseek-v4-pro") == 0 && u.last_served == "deepseek-flash" &&
+                       std::abs(u.cost - call_cost(*flash, 120, 64, 30, std::time(nullptr))) < 1e-12,
+                   "a Pro request served by Flash is priced and counted as Flash: " + std::to_string(u.cost));
+        }
         // A subagent from deepseek-pro on deepseek-flash: the same account, so no question.
         {
             ds.requests.clear();
