@@ -283,15 +283,21 @@ int run_headless(const HeadlessOptions& options) {
     else if (options.resume) log = std::make_unique<SessionLog>(SessionLog::Fork{}, *options.resume, options.fork_at.value_or(count_records(*options.resume)), "headless", where);
     else log = std::make_unique<SessionLog>("headless", where);
     std::string transcript = log->path().string();
+    // A restart that fails is said and the run goes on against whatever the server is serving.
+    auto restart = [](const std::string& service) {
+        try {
+            if (std::string r = restart_llamacpp_if_changed(service); !r.empty()) fprintf(stderr, "※ %s\n", r.c_str());
+        } catch (const std::exception& e) {
+            fprintf(stderr, "maid: %s was not restarted for the new context size: %s\n", service.c_str(), e.what());
+        }
+    };
     if (options.ctx) {
         set_context(settings.providers, settings.context);
-        std::string r = restart_llamacpp_if_changed();
-        if (!r.empty()) fprintf(stderr, "※ %s\n", r.c_str());
+        restart("llamacpp");
     }
     if (options.ctx2) {
         set_context(settings.providers, settings.context_2, "llamacpp-2");
-        std::string r = restart_llamacpp_if_changed("llamacpp-2");
-        if (!r.empty()) fprintf(stderr, "※ %s\n", r.c_str());
+        restart("llamacpp-2");
     }
     if (*mode == Mode::Auto && settings.harness == "dumb" && !settings.dumb_auto_ok && !options.accept_dumb_auto) {
         fprintf(stderr, "dumb harness + auto mode: no model reads the conversation before the agent acts; only the rule list stands between it and your shell.\n");

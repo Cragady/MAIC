@@ -1,11 +1,23 @@
 #include "maid/paths.hpp"
 
 #include <cstdlib>
+#include <iostream>
+#include <mutex>
+#include <set>
 #include <stdexcept>
 
 namespace maid {
 
 namespace {
+
+std::filesystem::path installed_root() {
+    std::error_code ec;
+    std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (ec) return {};
+    return exe.parent_path().parent_path() / "share" / "maid";
+}
+
+}  // namespace
 
 std::filesystem::path home_dir() {
     const char* home = std::getenv("HOME");
@@ -15,21 +27,24 @@ std::filesystem::path home_dir() {
     return home;
 }
 
-}  // namespace
-
 // MAID_HOME, else (an installed copy) <prefix>/share/maid, else the source tree this binary was built from. An
 // installed release reads the files it shipped with, never a checkout that has moved on since.
 std::filesystem::path root_dir() {
     if (const char* env = std::getenv("MAID_HOME"); env && *env) {
         return env;
     }
+    std::filesystem::path share = installed_root();
     std::error_code ec;
-    std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec) {
-        std::filesystem::path share = exe.parent_path().parent_path() / "share" / "maid";
-        if (std::filesystem::is_directory(share / "services", ec)) return share;
-    }
+    if (!share.empty() && std::filesystem::is_directory(share / "services", ec)) return share;
     return MAID_ROOT;
+}
+
+std::string root_dir_looked() {
+    if (const char* env = std::getenv("MAID_HOME"); env && *env) {
+        return "MAID_HOME (" + std::string(env) + ")";
+    }
+    std::filesystem::path share = installed_root();
+    return (share.empty() ? "" : share.string() + " and ") + MAID_ROOT;
 }
 
 std::filesystem::path state_dir() {
@@ -79,6 +94,17 @@ std::string expand_vars(std::string_view text) {
         pos = close + 1;
     }
     return out;
+}
+
+void report_skipped(std::vector<std::string>* problems, std::string problem) {
+    if (problems) {
+        problems->push_back(std::move(problem));
+        return;
+    }
+    static std::mutex mu;
+    static std::set<std::string> told;
+    std::lock_guard lock(mu);
+    if (told.insert(problem).second) std::cerr << "maid: " << problem << "\n";
 }
 
 }  // namespace maid

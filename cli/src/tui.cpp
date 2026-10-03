@@ -559,7 +559,9 @@ void App::welcome() {
     try {
         const Provider& provider = startup_.provider;
         if (!provider.remote()) {
-            std::string hint = unreachable_hint(provider, load_services(root_dir() / "services"));
+            std::vector<std::string> problems;
+            std::string hint = unreachable_hint(provider, load_services(root_dir() / "services", &problems));
+            for (const auto& p : problems) view_.append(Kind::Error, p);
             if (hint.find("is not running") != std::string::npos) view_.append(Kind::Error, hint.substr(0, hint.find(':')) + ": :up " + hint.substr(0, hint.find(' ')));
         }
     } catch (const std::exception& e) {
@@ -1030,10 +1032,8 @@ std::vector<std::string> App::palette_entries() {
         return out;
     }
     CompletionContext ctx;
-    try {
-        for (const auto& s : load_services(root_dir() / "services")) ctx.services.push_back(s.name);
-    } catch (const std::exception&) {
-    }
+    std::vector<std::string> problems;  // said by the commands that use the services, not on every completion
+    for (const auto& s : load_services(root_dir() / "services", &problems)) ctx.services.push_back(s.name);
     for (const auto& p : settings_.providers) ctx.providers.push_back(p.name);
     ctx.models = installed_models();
     ctx.workspace = ws_;
@@ -2078,7 +2078,14 @@ void App::run_command(const std::string& line) {
     std::string cmd, arg;
     in >> cmd;
     std::getline(in >> std::ws, arg);
-    auto services = [&] { return load_services(root_dir() / "services"); };
+    bool told = false;
+    auto services = [&] {
+        std::vector<std::string> problems;
+        auto defs = load_services(root_dir() / "services", &problems);
+        for (const auto& p : problems) if (!told) post(Kind::Error, p);
+        told = true;
+        return defs;
+    };
     // The commands that act on the session are the engine's (maid.session.command), under the names the TUI has
     // always taken; the rest are the view's, the editor's and the machine's.
     static const std::set<std::string> engine_owned = {"mode", "harness", "model", "models", "think", "undo", "export", "rename", "title", "budget", "compact",
@@ -2745,14 +2752,14 @@ int run_tui(const TuiOptions& options) {
         if (!attach) trust_lines.push_back("the daemon runs, but " + why + " does not travel to it: this session runs in this process");
     }
     App app(screen, settings, options, attach, host, host_refused, [&options](const std::filesystem::path& ws) { return tui_settings(options, ws); });
-    if (options.ctx) {
-        // --ctx: the local server is restarted to match before the first message.
-        std::string r = restart_llamacpp_if_changed();
-        if (!r.empty()) app.startup_notice(r);
-    }
-    if (options.ctx2) {
-        std::string r = restart_llamacpp_if_changed("llamacpp-2");
-        if (!r.empty()) app.startup_notice(r);
+    // --ctx: the local server is restarted to match before the first message; a restart that fails is said.
+    for (const char* service : {options.ctx ? "llamacpp" : "", options.ctx2 ? "llamacpp-2" : ""}) {
+        if (!*service) continue;
+        try {
+            if (std::string r = restart_llamacpp_if_changed(service); !r.empty()) app.startup_notice(r);
+        } catch (const std::exception& e) {
+            app.startup_notice(std::string(service) + " was not restarted for the new context size: " + e.what());
+        }
     }
     app.welcome();
     for (const auto& n : trust_lines) app.startup_notice(n);

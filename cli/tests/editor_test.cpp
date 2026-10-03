@@ -898,6 +898,16 @@ int main() {
                        "a usage limit on the session's model says which :model continues, and switches nothing: " + failure_text(fable, limit));
                 ApiError slow(429, "anthropic returned HTTP 429: slow down", 0, "rate_limit_error");
                 expect(failure_text(fable, slow).find("usage limit") == std::string::npos, "a plain rate limit says nothing about it");
+                // A transport error's hint reads the services; where it can't be worked out it is dropped, never a
+                // throw out of the turn's catch (that was std::terminate for the TUI, the daemon and the server).
+                TransportError down("connection refused");
+                Agent local(empty, "llamacpp/Qwen3.5-4B-Q4_K_M");
+                setenv("MAID_HOME", (empty / "no-tree").c_str(), 1);
+                std::string no_services = failure_text(local, down);
+                unsetenv("MAID_HOME");
+                local.providers.clear();
+                expect(no_services.rfind("connection refused", 0) == 0 && failure_text(local, down) == "connection refused",
+                       "a transport error with no services directory, or a hint that throws, still comes back as the error: " + no_services);
                 std::filesystem::remove_all(empty);
             }
             Settings pin;

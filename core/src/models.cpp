@@ -90,7 +90,7 @@ fs::path catalog_path() {
 
 fs::path user_catalog_path() {
     if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return fs::path(xdg) / "maid" / "models.json";
-    return fs::path(std::getenv("HOME")) / ".config" / "maid" / "models.json";
+    return home_dir() / ".config" / "maid" / "models.json";
 }
 
 json merge_catalog(const json& shipped, const json& user) {
@@ -110,7 +110,7 @@ json merge_catalog(const json& shipped, const json& user) {
     return out;
 }
 
-std::vector<CatalogEntry> parse_catalog(const json& j) {
+std::vector<CatalogEntry> parse_catalog(const json& j, std::vector<std::string>* problems) {
     std::vector<CatalogEntry> out;
     for (const auto& m : j.value("models", json::array())) {
         if (!m.is_object()) continue;
@@ -139,14 +139,15 @@ std::vector<CatalogEntry> parse_catalog(const json& j) {
             e.presets = m.value("presets", std::vector<std::string>{});
             e.notes = m.value("notes", "");
         } catch (const json::exception& ex) {
-            throw std::runtime_error("model catalog entry '" + e.id + "': " + ex.what());
+            report_skipped(problems, "model catalog entry '" + e.id + "': " + ex.what() + " (this entry is skipped; the others still load)");
+            continue;
         }
         out.push_back(e);
     }
     return out;
 }
 
-std::vector<ApiModel> parse_api_models(const json& j) {
+std::vector<ApiModel> parse_api_models(const json& j, std::vector<std::string>* problems) {
     std::vector<ApiModel> out;
     for (const auto& m : j.value("api_models", json::array())) {
         if (!m.is_object()) continue;
@@ -166,7 +167,8 @@ std::vector<ApiModel> parse_api_models(const json& j) {
             a.pricing = m.value("pricing", json::object());
             a.presets = m.value("presets", std::vector<std::string>{});
         } catch (const json::exception& ex) {
-            throw std::runtime_error("model catalog api_models entry '" + a.id + "': " + ex.what());
+            report_skipped(problems, "model catalog api_models entry '" + a.id + "': " + ex.what() + " (this entry is skipped; the others are still priced)");
+            continue;
         }
         out.push_back(a);
     }
@@ -177,9 +179,10 @@ const std::vector<ApiModel>& api_models() {
     static const std::vector<ApiModel> all = [] {
         std::vector<ApiModel> out;
         std::error_code ec;
-        for (const fs::path& p : {catalog_path(), user_catalog_path()}) {
-            if (!fs::exists(p, ec)) continue;
+        for (auto path : {catalog_path, user_catalog_path}) {
             try {
+                fs::path p = path();
+                if (!fs::exists(p, ec)) continue;
                 for (auto& a : parse_api_models(read_json(p))) {
                     auto it = std::find_if(out.begin(), out.end(), [&](const ApiModel& o) { return o.id == a.id; });
                     if (it == out.end()) out.push_back(std::move(a));
@@ -306,8 +309,15 @@ std::vector<CatalogEntry> load_catalog() {
     fs::path shipped = catalog_path(), user = user_catalog_path();
     std::error_code ec;
     if (!fs::exists(shipped, ec)) throw std::runtime_error("no model catalog at " + shipped.string());
-    json merged = merge_catalog(read_json(shipped), fs::exists(user, ec) ? read_json(user) : json::object());
-    return parse_catalog(merged);
+    json mine = json::object();
+    if (fs::exists(user, ec)) {
+        try {
+            mine = read_json(user);
+        } catch (const std::exception& e) {
+            report_skipped(nullptr, std::string(e.what()) + " (your entries are skipped; the shipped catalog still loads)");
+        }
+    }
+    return parse_catalog(merge_catalog(read_json(shipped), mine));
 }
 
 const CatalogEntry* find_entry(const std::vector<CatalogEntry>& all, const std::string& id) {
@@ -327,12 +337,7 @@ std::vector<std::string> check_catalog(const json& shipped, const json& user) {
         }
     }
     std::vector<CatalogEntry> all;
-    try {
-        all = parse_catalog(merge_catalog(shipped, user));
-    } catch (const std::exception& ex) {
-        problems.push_back(ex.what());
-        return problems;
-    }
+    all = parse_catalog(merge_catalog(shipped, user), &problems);
     for (const auto& e : all) {
         auto bad = [&](const std::string& what) { problems.push_back((e.id.empty() ? std::string("(no id)") : e.id) + ": " + what); };
         if (e.id.empty() || e.id.find_first_of(" \t/") != std::string::npos) bad("the id must be a single word without slashes");
@@ -380,13 +385,9 @@ std::vector<std::string> check_catalog(const json& shipped, const json& user) {
         }
     }
     for (const auto& [where, j] : {std::pair<std::string, json>{"catalog", shipped}, {"models.json", user}}) {
-        std::vector<ApiModel> apis;
-        try {
-            apis = parse_api_models(j);
-        } catch (const std::exception& ex) {
-            problems.push_back(where + ": " + ex.what());
-            continue;
-        }
+        std::vector<std::string> skipped;
+        std::vector<ApiModel> apis = parse_api_models(j, &skipped);
+        for (const auto& p : skipped) problems.push_back(where + ": " + p);
         std::set<std::string> seen;
         for (const auto& a : apis) {
             auto bad = [&](const std::string& what) { problems.push_back(where + ": api_models " + (a.id.empty() ? std::string("(no id)") : a.id) + ": " + what); };

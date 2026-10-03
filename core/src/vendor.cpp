@@ -80,24 +80,33 @@ void run_install(const VendorEntry& e, const char* verb) {
 
 }  // namespace
 
-std::vector<VendorEntry> load_vendor_manifest() {
-    std::ifstream in(root_dir() / "vendor" / "manifest.json");
+std::vector<VendorEntry> load_vendor_manifest(std::vector<std::string>* problems) {
+    fs::path file = root_dir() / "vendor" / "manifest.json";
+    std::ifstream in(file);
     if (!in) return {};
-    nlohmann::json j = nlohmann::json::parse(in, nullptr, true, true);
+    nlohmann::json j = nlohmann::json::parse(in, nullptr, false, true);
     std::vector<VendorEntry> out;
+    if (!j.is_object()) {
+        report_skipped(problems, file.string() + " is not a JSON object; fix its syntax (no vendored entries are loaded)");
+        return out;
+    }
     for (const auto& [name, v] : j.items()) {
         if (name == "//" || !v.is_object()) continue;
-        VendorEntry e;
-        e.name = name;
-        e.path = v.value("path", "");
-        e.url = v.value("url", "");
-        e.ref = v.value("ref", "");
-        e.install = v.value("install", "");
-        e.description = v.value("description", "");
-        e.patches = v.value("patches", std::vector<std::string>{});
-        e.needs = v.value("needs", std::vector<std::string>{});
-        e.models = v.value("models", std::map<std::string, std::string>{});
-        out.push_back(e);
+        try {
+            VendorEntry e;
+            e.name = name;
+            e.path = v.value("path", "");
+            e.url = v.value("url", "");
+            e.ref = v.value("ref", "");
+            e.install = v.value("install", "");
+            e.description = v.value("description", "");
+            e.patches = v.value("patches", std::vector<std::string>{});
+            e.needs = v.value("needs", std::vector<std::string>{});
+            e.models = v.value("models", std::map<std::string, std::string>{});
+            out.push_back(e);
+        } catch (const std::exception& ex) {
+            report_skipped(problems, file.string() + ": " + name + ": " + ex.what() + " (this entry is skipped; the others still load)");
+        }
     }
     return out;
 }
@@ -258,19 +267,18 @@ fs::path vendor_model_link(const VendorEntry& e) {
     return vendor_dir() / e.name / "current-model.gguf";
 }
 
+// models_dir as main() exported it (MAID_MODELS_DIR), the same ${MAID_MODELS} the service files see; settings are
+// not read again here.
 fs::path llamacpp_models_root() {
-    Settings s = load_settings();
-    return (s.models_dir.empty() ? state_dir() / "models" : fs::path(s.models_dir)) / "llamacpp";
+    return fs::path(expand_vars("${MAID_MODELS}")) / "llamacpp";
 }
 
 fs::path whisper_models_root() {
-    Settings s = load_settings();
-    return (s.models_dir.empty() ? state_dir() / "models" : fs::path(s.models_dir)) / "whisper";
+    return fs::path(expand_vars("${MAID_MODELS}")) / "whisper";
 }
 
 fs::path fim_models_root() {
-    Settings s = load_settings();
-    return (s.models_dir.empty() ? state_dir() / "models" : fs::path(s.models_dir)) / "fim";
+    return fs::path(expand_vars("${MAID_MODELS}")) / "fim";
 }
 
 fs::path fim_model_link() {

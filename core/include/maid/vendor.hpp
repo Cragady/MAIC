@@ -23,7 +23,9 @@ struct VendorEntry {
     std::map<std::string, std::string> models;  // comfyui: model category -> subfolder under models_dir, for extra_model_paths.yaml
 };
 
-std::vector<VendorEntry> load_vendor_manifest();
+// An entry that doesn't load is skipped, and a manifest that doesn't parse loads nothing: the problem goes into
+// `problems`, or to stderr once per process when none is given. Neither this nor find_vendor throws.
+std::vector<VendorEntry> load_vendor_manifest(std::vector<std::string>* problems = nullptr);
 std::optional<VendorEntry> find_vendor(const std::string& name);
 
 // <state>/vendor

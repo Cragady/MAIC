@@ -269,11 +269,13 @@ Harness::Harness(fs::path workspace) : workspace_(fs::weakly_canonical(workspace
     for (const char* p : {"bin", ".local/bin", ".zshrc", ".zprofile", ".zshenv", ".bashrc", ".bash_profile", ".profile", ".config/autostart", ".config/systemd"}) {
         sensitive_paths_.push_back(home / p);
     }
-    fs::path maid = root_dir();
-    sensitive_paths_.push_back(maid / "harness");
-    sensitive_paths_.push_back(maid / "core" / "src" / "harness.cpp");
-    sensitive_paths_.push_back(maid / "core" / "src" / "tripwire.cpp");
-    sensitive_paths_.push_back(maid / "core" / "src" / "sandbox.cpp");
+    // An installed build's root is share/maid; the checkout it was built from keeps its protection too.
+    for (const fs::path& maid : std::set<fs::path>{root_dir(), MAID_ROOT}) {
+        sensitive_paths_.push_back(maid / "harness");
+        sensitive_paths_.push_back(maid / "core" / "src" / "harness.cpp");
+        sensitive_paths_.push_back(maid / "core" / "src" / "tripwire.cpp");
+        sensitive_paths_.push_back(maid / "core" / "src" / "sandbox.cpp");
+    }
 }
 
 fs::path resolve_path(const fs::path& workspace, const std::string& path) {

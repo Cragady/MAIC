@@ -250,6 +250,7 @@ struct Settings {
     std::string protocol_tier = "guarded";
     std::map<std::string, std::string> protocol_tiers;
     AuditSettings audit;  // audit.lua beside the global settings file, never a project's (docs/audit-trail.md)
+    std::string audit_error;  // why audit.lua could not be loaded (audit then holds the defaults); audit_gate refuses with it
     // `instructions = { project_markers = {...}, bound = ... }`: project settings and instruction files are read
     // from the workspace up to the project root (the nearest directory holding a marker), or up to $HOME with
     // bound "home" or outside any project (maid/trust.hpp, config_chain).

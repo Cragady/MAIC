@@ -1,5 +1,6 @@
 #include "maid/instructions.hpp"
 
+#include "maid/paths.hpp"
 #include "maid/trust.hpp"
 
 #include <algorithm>
@@ -125,7 +126,7 @@ std::vector<fs::path> base_roots(const std::vector<fs::path>& dirs) {
 
 fs::path user_instructions_dir() {
     if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return fs::path(xdg) / "maid";
-    return fs::path(std::getenv("HOME")) / ".config" / "maid";
+    return home_dir() / ".config" / "maid";
 }
 
 fs::path global_instructions_path() {

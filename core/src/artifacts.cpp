@@ -65,7 +65,8 @@ void require_safe(const fs::path& path) {
 // diction.lua beside settings.lua (or, while that does not exist, in the old ~/.config/diction/config.toml), then
 // diction-logs/ next to the document (here: the current directory).
 Artifact diction_logs() {
-    auto expand = [](std::string p) { return !p.empty() && p[0] == '~' ? std::string(std::getenv("HOME")) + p.substr(1) : p; };
+    const char* home = std::getenv("HOME");
+    auto expand = [&](std::string p) { return !p.empty() && p[0] == '~' && home ? std::string(home) + p.substr(1) : p; };
     if (const char* env = std::getenv("DICTION_LOG_DIR"); env && *env) {
         return {"diction", "logs", "diction's session logs (raw, scribe, session, taptest), from DICTION_LOG_DIR", expand(env)};
     }
@@ -82,8 +83,9 @@ Artifact diction_logs() {
         }
     } else {
         const char* xdg = std::getenv("XDG_CONFIG_HOME");
-        fs::path toml = (xdg && *xdg ? fs::path(xdg) : fs::path(std::getenv("HOME")) / ".config") / "diction" / "config.toml";
-        if (fs::exists(toml, ec)) config = toml;
+        fs::path base = xdg && *xdg ? fs::path(xdg) : home ? fs::path(home) / ".config" : fs::path();
+        fs::path toml = base.empty() ? fs::path() : base / "diction" / "config.toml";
+        if (!toml.empty() && fs::exists(toml, ec)) config = toml;
         std::ifstream in(toml);
         static const std::regex key(R"re(^\s*log_dir\s*=\s*["']([^"']+)["'])re");
         std::smatch m;

@@ -503,7 +503,15 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
         if (s.running) out.error(":" + typed + " has to wait until the agent is idle");
         return !s.running;
     };
-    auto services = [] { return load_services(root_dir() / "services"); };
+    // Service files that don't load are skipped and said once per command; the command goes on without them.
+    bool told = false;
+    auto services = [&] {
+        std::vector<std::string> problems;
+        auto defs = load_services(root_dir() / "services", &problems);
+        for (const auto& p : problems) if (!told) out.warn(p);
+        told = true;
+        return defs;
+    };
     try {
         if (cmd.empty()) {
             out.error("unknown command :" + typed + " (try :help)");
@@ -611,9 +619,15 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
                                                       : "HARNESS TRIPPED. Nothing will run until :unlock");
         } else if (cmd == "status") {
             auto [provider, name] = resolve_model(agent.providers, agent.model);
-            StatusReport report = status_report(services());
-            report.lazy_lock = lazy_lock_summary(lazy_lock_state(lazy_lock_path(s.settings.lazy_lock)));
-            std::string text = format_status(report);
+            // The services and nvim lines are consulted on the side: if they fail, the session lines still show.
+            std::string text;
+            try {
+                StatusReport report = status_report(services());
+                report.lazy_lock = lazy_lock_summary(lazy_lock_state(lazy_lock_path(s.settings.lazy_lock)));
+                text = format_status(report);
+            } catch (const std::exception& e) {
+                text = "services: not shown (" + std::string(e.what()) + ")\n";
+            }
             const Agent::UsageReport u = agent.usage();
             text += "session: " + s.id + (s.title.empty() ? "  (untitled)" : "  \"" + s.title + "\"") + "\n";
             text += "transcript: " + log_path(s) + "\n";

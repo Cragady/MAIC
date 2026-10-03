@@ -566,14 +566,21 @@ int main() {
         Settings inner = load_settings(sub);
         expect(inner.mode == "edit" && resolve_sessions_home(inner, sub).parent_path().filename() == "projects",
                "a subdirectory inherits the project's settings and home");
-        write_file(proj / ".maid" / "settings.json", "{ this is not json");
+        auto skipped_with = [](const Settings& st, const std::string& file) {
+            return std::any_of(st.warnings.begin(), st.warnings.end(), [&](const std::string& w) { return w.find(file) != std::string::npos && w.find("skipped") != std::string::npos; });
+        };
+        write_file(proj / ".maid" / "settings.json", "{ \"permission\": { \"deny\": [\"run_shell:rm *\"] }, this is not json");
         threw = false;
         try {
             load_settings(proj);
-        } catch (const std::exception&) {
-            threw = true;
+        } catch (const std::exception& e) {
+            threw = std::string(e.what()).find("refused rather than skipped") != std::string::npos;
         }
-        expect(threw, "a broken settings file throws instead of silently using defaults");
+        expect(threw, "a broken project layer that sets permission is still refused: skipping it would fail open");
+        write_file(proj / ".maid" / "settings.json", "{ \"mode\": \"plan\", this is not json");
+        Settings broken = load_settings(proj);
+        expect(broken.mode != "plan" && skipped_with(broken, (proj / ".maid" / "settings.json").string()),
+               "a broken project layer that touches only harmless fields is skipped with a warning naming it; the rest loads");
         // A settings.lua beside the json wins, and it is code.
         write_file(proj / ".maid" / "settings.lua", "return { mode = os.getenv('HOME') and 'plan' or 'manual', leader = ',', rules = {'rule A','rule B'}, style = { user = { fg = 'blue' } } }");
         Settings ls = load_settings(proj);
@@ -583,13 +590,7 @@ int main() {
         for (const auto& src : ls.sources) lua_seen = lua_seen || src.extension() == ".lua";
         expect(lua_seen, ":settings lists the lua file that was read");
         write_file(proj / ".maid" / "settings.lua", "return 42");
-        threw = false;
-        try {
-            load_settings(proj);
-        } catch (const std::exception&) {
-            threw = true;
-        }
-        expect(threw, "a settings.lua that does not return a table is an error");
+        expect(skipped_with(load_settings(proj), (proj / ".maid" / "settings.lua").string()), "a settings.lua that does not return a table is skipped with a warning");
         fs::remove(proj / ".maid" / "settings.lua");
         Lua lt(ws);
         auto j = lt.eval_table("return { a = 1, b = 'x', c = { 1, 2, 3 }, d = { k = true }, e = 1.5 }");
@@ -1022,6 +1023,7 @@ int main() {
             setenv("XDG_CONFIG_HOME", (ws / "no-config").c_str(), 1);
             fs::create_directories(ws / "no-config" / "maid");
             write_file(ws / "no-config" / "maid" / "settings.lua", "return { models_dir = '" + (ws / "mroot").string() + "' }");
+            setenv("MAID_MODELS_DIR", (ws / "mroot").c_str(), 1);  // as main() exports it from settings
             auto ll = find_vendor("llamacpp");
             fs::path into = ws / "mroot" / "llamacpp";
             bool threw_hash = false;
@@ -1063,6 +1065,7 @@ int main() {
             }
             expect(outside, "a GGUF outside the models root is refused with the layout explained");
             unsetenv("XDG_CONFIG_HOME");
+            unsetenv("MAID_MODELS_DIR");
             srv.stop();
             th.join();
             unsetenv("XDG_STATE_HOME");
@@ -1170,14 +1173,21 @@ int main() {
             }
             return false;
         };
-        expect(rejects("return { agents = { explore = { mode = 'auto' } } }", "wider than the built-in explore"), "a built-in agent cannot be given a wider mode");
-        expect(rejects("return { profiles = { scout = { mode = 'auto' } } }", "wider than the built-in explore"), "nor under its older name");
-        expect(rejects("return { agents = { explore = { tools = { 'read_file', 'write_file' } } } }", "has no write_file tool"), "nor a tool it lacks");
-        expect(rejects("return { agents = { explore = { budget_tokens = 100000 } } }", "above the built-in"), "nor a bigger budget");
-        expect(rejects("return { agents = { plan = { read_outside = true } } }", "does not read outside"), "nor reads outside the workspace");
-        expect(rejects("return { agents = { wired = { network = true } } }", "network"), "no agent gets the network");
-        expect(rejects("return { agents = { x = { mode = 'fast' } } }", "mode must be"), "a bad mode is an error");
-        expect(rejects("return { agents = { x = { role = 'boss' } } }", "role must be primary, subagent or all"), "and so is a bad role");
+        // An agent that asks for more than it may is refused alone: it is unavailable, with a warning; the rest loads.
+        auto unavailable = [&](const char* lua, const char* needle, const char* agent) {
+            write_file(ws / "proj" / ".maid" / "settings.lua", lua);
+            Settings u = load_settings(ws / "proj");
+            bool warned = std::any_of(u.warnings.begin(), u.warnings.end(), [&](const std::string& w) { return w.find(needle) != std::string::npos && w.find("unavailable") != std::string::npos; });
+            return warned && !find_agent_def(u.agents, agent) && find_agent_def(u.agents, "build");
+        };
+        expect(unavailable("return { agents = { explore = { mode = 'auto' } } }", "wider than the built-in explore", "explore"), "a built-in agent cannot be given a wider mode");
+        expect(unavailable("return { profiles = { scout = { mode = 'auto' } } }", "wider than the built-in explore", "explore"), "nor under its older name");
+        expect(unavailable("return { agents = { explore = { tools = { 'read_file', 'write_file' } } } }", "has no write_file tool", "explore"), "nor a tool it lacks");
+        expect(unavailable("return { agents = { explore = { budget_tokens = 100000 } } }", "above the built-in", "explore"), "nor a bigger budget");
+        expect(unavailable("return { agents = { plan = { read_outside = true } } }", "does not read outside", "plan"), "nor reads outside the workspace");
+        expect(unavailable("return { agents = { wired = { network = true } } }", "network", "wired"), "no agent gets the network");
+        expect(unavailable("return { agents = { x = { mode = 'fast' } } }", "mode must be", "x"), "a bad mode makes the agent unavailable");
+        expect(unavailable("return { agents = { x = { role = 'boss' } } }", "role must be primary, subagent or all", "x"), "and so does a bad role");
         expect(rejects("return { permission = { allow = { 'pytest *' } } }", "tool:pattern"), "a permission entry without its tool is an error");
         expect(rejects("return { permission = { deny = { 'run_shell:' } } }", "tool:pattern"), "and so is one without a pattern");
         fs::remove(ws / "proj" / ".maid" / "settings.lua");
@@ -1437,20 +1447,17 @@ int main() {
         expect(sub(sx, "fable-5.1").preset == "haiku-4.5" && sub(sx, "fable-5.1").reason == "fable-5.1's subagent setting" && lim(sx, "fable-5.1") == "sonnet-5", "subagent and on_limit settings win over the rule");
         expect(names(subagent_presets(sx.presets, P(sx, "opus-5.5"))) == "opus-5.5 sonnet-5 haiku-4.5 qwen-4b", "a cloud preset can be allowed to hand cheap scans to a local model");
 
-        bool threw = false;
-        auto load_throws = [&](const char* lua, const char* needle) {
+        auto warns = [&](const char* lua, const char* needle) {
             write_file(ws / "proj" / ".maid" / "settings.lua", lua);
-            try {
-                load_settings(ws / "proj");
-            } catch (const std::exception& e) {
-                return std::string(e.what()).find(needle) != std::string::npos;
-            }
-            return false;
+            Settings st = load_settings(ws / "proj");
+            return std::make_pair(st, std::any_of(st.warnings.begin(), st.warnings.end(), [&](const std::string& w) { return w.find(needle) != std::string::npos; }));
         };
-        threw = load_throws("return { models = { bad = { context = 1 } } }", "needs a model");
-        expect(threw, "a new preset without a model is an error");
-        expect(load_throws("return { models = { ['opus-5.5'] = { subagents = { 'opus-5.5', 'gpt-9' } } } }", "models.opus-5.5.subagents: no preset named gpt-9"), "an unknown name in subagents is an error");
-        expect(load_throws("return { models = { ['opus-5.5'] = { on_limit = 'nope' } } }", "on_limit: no preset named nope"), "and in on_limit");
+        auto [nomodel, said] = warns("return { models = { bad = { context = 1 }, good = { model = 'lab/x' } } }", "models.bad: needs a model");
+        expect(said && !find_preset(nomodel.presets, "bad") && find_preset(nomodel.presets, "good"), "a new preset without a model is skipped with a warning; the others load");
+        auto [unknown, named] = warns("return { models = { ['opus-5.5'] = { subagents = { 'opus-5.5', 'gpt-9' } } } }", "models.opus-5.5.subagents: no preset named gpt-9");
+        expect(named && P(unknown, "opus-5.5").subagents == std::vector<std::string>{"opus-5.5"}, "an unknown name in subagents is dropped with a warning");
+        auto [limit, limit_named] = warns("return { models = { ['opus-5.5'] = { on_limit = 'nope' } } }", "on_limit: no preset named nope");
+        expect(limit_named && P(limit, "opus-5.5").on_limit.empty(), "and in on_limit");
 
         // The reviewer: the pin, the preset's reviewer, small_model, the family's small model, the model itself.
         auto rev = [&](const Settings& st, const std::string& model, const std::string& pin = "", const std::string& small = "", const std::set<std::string>& failed = {}) {
@@ -1515,8 +1522,14 @@ int main() {
         ck = load_settings(ws / "ck");
         expect(ck.checkers.setup == "dual-4b" && ck.checkers.judges.size() == 2 && ck.checkers.judges[0].model == "qwen-4b" && ck.checkers.combine == "escalate" && !ck.checkers.ask_before_metered,
                "a table may start from a shipped setup, and ask_before_metered = false turns the ask off");
-        for (const char* bad : {"return { checkers = 'dual-13b' }", "return { checkers = { judges = { 'qwen-4b' }, combine = 'majority' } }", "return { checkers = { judges = { 'nonesuch' } } }",
-                                "return { checkers = { judges = { { model = 'qwen-4b', timeout = 0 } } } }", "return { checkers = { setup = 'dual-9b', ask_before_metered = 'no' } }"}) {
+        for (const char* bad : {"return { checkers = { judges = { 'nonesuch', 'qwen-4b' } } }", "return { checkers = { judges = { { model = 'qwen-4b', timeout = 0 }, 'qwen-4b' } } }"}) {
+            write_file(xdg / "maid" / "settings.lua", bad);
+            ck = load_settings(ws / "ck");
+            bool warned = std::any_of(ck.warnings.begin(), ck.warnings.end(), [](const std::string& w) { return w.find("this judge is skipped") != std::string::npos; });
+            expect(warned && ck.checkers.judges.size() == 1 && ck.checkers.judges[0].model == "qwen-4b" && ck.checkers.judges[0].timeout == 30, std::string("the bad judge alone is skipped: ") + bad);
+        }
+        for (const char* bad : {"return { checkers = 'dual-13b' }", "return { checkers = { judges = { 'qwen-4b' }, combine = 'majority' } }",
+                                "return { checkers = { setup = 'dual-9b', ask_before_metered = 'no' } }"}) {
             write_file(xdg / "maid" / "settings.lua", bad);
             bool threw = false;
             try {
@@ -1567,13 +1580,9 @@ int main() {
         Settings si = load_settings(ws / "proj");
         expect(si.tripwire == "isolated" && si.allow_isolated && si.browser == "firefox" && si.remote == "https://box:7373", "isolated, allow_isolated, browser and remote load from settings");
         write_file(ws / "proj" / ".maid" / "settings.lua", "return { browser = 'lynx' }");
-        bool bad_browser = false;
-        try {
-            load_settings(ws / "proj");
-        } catch (const std::exception&) {
-            bad_browser = true;
-        }
-        expect(bad_browser, "an unknown browser is an error");
+        Settings lynx = load_settings(ws / "proj");
+        bool bad_browser = lynx.browser == "default" && std::any_of(lynx.warnings.begin(), lynx.warnings.end(), [](const std::string& w) { return w.find("browser must be") != std::string::npos; });
+        expect(bad_browser, "an unknown browser skips that project layer with a warning");
         write_file(ws / "proj" / ".maid" / "settings.lua", "return { tripwire = 'session' }");
         expect(load_settings(ws / "proj").tripwire == "session", "the scope loads from settings");
         write_file(ws / "proj" / ".maid" / "settings.lua", "return { tripwire = 'sometimes' }");
@@ -1629,6 +1638,25 @@ int main() {
         expect(refuses(R"({"name":"b","command":["x"],"ready_pattern":"("})", "ready_pattern"), "a ready_pattern that does not compile is refused");
         expect(refuses(R"({"name":"b","command":["${MAID_NO_SUCH_VARIABLE}/bin/x"]})", "MAID_NO_SUCH_VARIABLE"),
                "a service naming an unset variable is skipped; the other services still load");
+        // Nothing there at all: no services, and a message naming where it looked, never a throw.
+        expect(root_dir_looked().find("/share/maid and " + root_dir().string()) != std::string::npos, "root_dir looks in share/maid, then the checkout: " + root_dir_looked());
+        setenv("MAID_HOME", (ws / "no-such-tree").c_str(), 1);
+        std::vector<std::string> missing;
+        expect(load_services(root_dir() / "services", &missing).empty() && missing.size() == 1 && missing[0].find("MAID_HOME (" + (ws / "no-such-tree").string() + ")") != std::string::npos,
+               "a missing services directory loads nothing and names where it looked: " + (missing.empty() ? std::string() : missing[0]));
+        // The vendor manifest: a bad entry is skipped, and one that doesn't parse loads nothing; neither throws.
+        fs::path tree = ws / "tree-vendor";
+        write_file(tree / "vendor" / "manifest.json", R"({"good":{"path":"vendor/good"},"bad":{"path":"vendor/bad","patches":"not a list"}})");
+        setenv("MAID_HOME", tree.c_str(), 1);
+        std::vector<std::string> vp;
+        auto entries = load_vendor_manifest(&vp);
+        expect(entries.size() == 1 && entries[0].name == "good" && vp.size() == 1 && vp[0].find(": bad: ") != std::string::npos, "a bad vendor entry is skipped with a warning naming it");
+        write_file(tree / "vendor" / "manifest.json", "{ not json");
+        vp.clear();
+        expect(load_vendor_manifest(&vp).empty() && vp.size() == 1 && vp[0].find("fix its syntax") != std::string::npos && !find_vendor("llamacpp") &&
+                   resolve_model_alias("llamacpp/current") == "llamacpp/current",
+               "a manifest that doesn't parse loads nothing and says so; find_vendor and llamacpp/current carry on");
+        unsetenv("MAID_HOME");
 
         // A fake docker on PATH: records its argv, answers inspect from a marker file, logs from a file.
         fs::path fake = ws / "fake-docker";
