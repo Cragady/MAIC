@@ -1507,8 +1507,13 @@ int main() {
         expect(ck.checkers.setup.empty() && ck.checkers.combine == "both" && ck.checkers.judges.size() == 2 && ck.checkers.judges[0].think == -1 && ck.checkers.judges[0].timeout == 30 &&
                    ck.checkers.judges[1].model == "claude-haiku-cli" && ck.checkers.judges[1].think == 1 && ck.checkers.judges[1].timeout == 45,
                "a written-out panel: judges as presets or tables with think and timeout, and the combine policy");
+        expect(ck.checkers.ask_before_metered, "a metered judge is asked about first by default");
+        write_file(xdg / "maic" / "settings.lua", "return { checkers = { setup = 'dual-4b', ask_before_metered = false } }");
+        ck = load_settings(ws / "ck");
+        expect(ck.checkers.setup == "dual-4b" && ck.checkers.judges.size() == 2 && ck.checkers.judges[0].model == "qwen-4b" && ck.checkers.combine == "escalate" && !ck.checkers.ask_before_metered,
+               "a table may start from a shipped setup, and ask_before_metered = false turns the ask off");
         for (const char* bad : {"return { checkers = 'dual-13b' }", "return { checkers = { judges = { 'qwen-4b' }, combine = 'majority' } }", "return { checkers = { judges = { 'nonesuch' } } }",
-                                "return { checkers = { judges = { { model = 'qwen-4b', timeout = 0 } } } }"}) {
+                                "return { checkers = { judges = { { model = 'qwen-4b', timeout = 0 } } } }", "return { checkers = { setup = 'dual-9b', ask_before_metered = 'no' } }"}) {
             write_file(xdg / "maic" / "settings.lua", bad);
             bool threw = false;
             try {

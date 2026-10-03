@@ -100,6 +100,9 @@ public:
         (void)options;
         return "";
     }
+    // Whether a question would reach someone now: false for a session no client has in focus (a background task
+    // nobody watches), where an ask that must not wait counts as a no.
+    virtual bool can_ask() { return true; }
     // The model replaced its plan.
     virtual void on_todo(const std::vector<TodoItem>& items) { (void)items; }
     // Right after on_tool_call: the tool by name and the path it names as the model gave it ("" for none).
@@ -151,7 +154,8 @@ bool touches_trust(const Action& action);
 bool changes_approved_import(const Action& action);
 
 // One checker's answer on the panel (docs/harness.md, Checkers). `outcome` is "verdict" when it answered ALLOW, ASK
-// or DENY; otherwise why it gave none ("garbage", "timeout", "error", "limit", "off"), and `verdict` is then Ask.
+// or DENY; otherwise why it gave none ("garbage", "timeout", "error", "limit", "off", or "declined": a metered judge
+// the user did not let it call), and `verdict` is then Ask.
 struct Judgement {
     std::string judge;  // the preset's name, else the model as written
     std::string model;
@@ -160,6 +164,7 @@ struct Judgement {
     Verdict verdict = Verdict::Ask;
     std::string reason;
     long ms = 0;
+    std::string asked;  // a metered judge's ask: "yes", "no", "no answer" or "nobody to ask"; "" when none was asked
 };
 // What the panel decided and who decided it: a checker's name, several joined by "+" when all of them did under
 // `both`, or "user" when the call goes to the user because the checkers disagree or none could answer.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The build gate: configure, build, test, in that order, stopping at the first failure.
 # Usage: scripts/check.sh [--quick] [--asan]
+# Every run first prints the leave-cases audit (scripts/leave_audit.py), which never changes the exit code.
 #   --quick   configure, build and ctest only (what the pre-push hook runs)
 #   --asan    the asan preset (build-asan/) instead of the default one
 # The build's own exit code gates everything: ctest alone passes on stale binaries when a test target fails to
@@ -22,6 +23,9 @@ if [ -z "${VCPKG_ROOT:-}" ]; then
     echo "check: VCPKG_ROOT is not set" >&2
     exit 2
 fi
+
+# A reminder, never a gate: which ways of leaving a session MAIC does not define yet (docs/testing.md).
+python3 scripts/leave_audit.py || true
 
 step() {
     echo "== $*"

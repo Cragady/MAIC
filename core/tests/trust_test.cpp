@@ -872,7 +872,8 @@ int main() {
         expect(contains(refused("{ away = { idle = 'park' } }"), "leave.away is not a case (switch, quit, no_daemon)"), "an unknown case is an error naming it");
         expect(contains(refused("{ quit = { busy = 'bg' } }"), "leave.quit.busy is not a case (idle, working, after)"), "so is an unknown case under quit");
         expect(contains(refused("{ switch = { after = 'later' } }"), "leave.switch.after must be \"bg\", \"park\" or \"stop\", not \"later\""), "an unknown verb is an error naming it");
-        expect(contains(refused("{ quit = { idle = 'ask' } }"), "leave.quit.idle must be \"bg\", \"park\" or \"stop\", not \"ask\""), "ask is a switch's only");
+        expect(refused("{ quit = { idle = 'ask', working = 'ask' } }").empty(), "ask is accepted for quit.idle and quit.working too");
+        expect(contains(refused("{ quit = { after = 'ask' } }"), "leave.quit.after must be \"bg\", \"park\" or \"stop\", not \"ask\""), "but not for after");
         expect(contains(refused("{ no_daemon = 'bg' }"), "leave.no_daemon must be \"park\" or \"stop\", not \"bg\""), "no_daemon cannot keep a session running");
         expect(contains(refused("'park'"), "leave must be a table of cases"), "leave itself is a table");
         write_file(cfg, "return { session_leave = 'ask' }\n");

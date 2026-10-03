@@ -55,6 +55,8 @@ struct Recorder : AgentEvents {
         questions.push_back({text, options});
         return answer;
     }
+    bool viewer = true;  // what can_ask() says
+    bool can_ask() override { return viewer; }
     std::vector<std::vector<TodoItem>> todos;
     void on_todo(const std::vector<TodoItem>& items) override { todos.push_back(items); }
     struct Output {
@@ -1966,7 +1968,8 @@ int main() {
             std::string file;
             json tool;  // the transcript's tool record
         };
-        auto run = [&](const std::string& combine, const std::string& q, const std::string& c, std::vector<Checker> judges = {}) {
+        auto run = [&](const std::string& combine, const std::string& q, const std::string& c, std::vector<Checker> judges = {},
+                       const std::function<void(Agent&, Recorder&)>& tweak = nullptr) {
             fq.reply = [q](const json&) { return q; };
             fc.reply = [c](const json&) { return c; };
             Run out;
@@ -1977,9 +1980,11 @@ int main() {
             Agent agent(ws, "main/session");
             agent.providers = {pm, pq, pc};
             agent.mode = Mode::Auto;
-            agent.checkers = {"", judges.empty() ? std::vector<Checker>{{"local/qwen", 0, 1}, {"metered/claude", 0, 5}} : judges, combine};
+            if (judges.empty()) judges = {{"local/qwen", 0, 1}, {"metered/claude", 0, 5}};
+            agent.checkers = {"", judges, combine};
             agent.set_log(&log);
             out.r.reply = {Approval::Yes, ""};
+            if (tweak) tweak(agent, out.r);
             agent.submit("please write the file", Origin::Local, out.r, no_cancel);
             std::ifstream in(log.path());
             for (std::string line; std::getline(in, line);) {
@@ -2041,6 +2046,33 @@ int main() {
         expect(fs::exists(ws / both.file) && both.r.asked.empty() && both.tool["review"].value("judged_by", "") == "local/qwen+metered/claude" && split.r.asked.size() == 1 &&
                    split.tool["review"].value("judged_by", "") == "user",
                "both: two ALLOWs run it, a disagreement asks");
+        // A metered judge is asked about before each call: yes calls it; no, or no answer (a headless run off a terminal),
+        // skips it; with nobody to ask (a background task nobody watches) it is skipped unasked; ask_before_metered =
+        // false calls it unasked. A skipped judge is one that could not answer: Qwen's ASK goes to the user.
+        pc.options["metered"] = true;
+        auto said = [](const Run& x) { return x.tool["review"]["judges"].size() == 2 ? x.tool["review"]["judges"][1] : json(); };
+        c0 = asked_of(fc);
+        auto yes = run("escalate", "ASK: unusual", "ALLOW: the user asked for it", {}, [](Agent&, Recorder& r) { r.answer = "yes"; });
+        expect(yes.r.questions.size() == 1 && yes.r.questions[0].first.find("metered/claude") != std::string::npos &&
+                   yes.r.questions[0].first.find("billed per token to your metered account") != std::string::npos && asked_of(fc) == c0 + 1 && fs::exists(ws / yes.file) &&
+                   yes.r.asked.empty() && said(yes).value("asked", "") == "yes" && yes.tool["review"].value("judged_by", "") == "metered/claude",
+               "asked and allowed: the metered judge is called, and the record keeps the ask: " + (yes.r.questions.empty() ? std::string("no question") : yes.r.questions[0].first));
+        auto no = run("escalate", "ASK: unusual", "ALLOW: never asked", {}, [](Agent&, Recorder& r) { r.answer = "no"; });
+        expect(no.r.questions.size() == 1 && asked_of(fc) == c0 + 1 && said(no).value("outcome", "") == "declined" && said(no).value("asked", "") == "no" && no.r.asked.size() == 1 &&
+                   no.r.asked[0].reason.find("checkers: local/qwen: unusual") == 0 && no.tool["review"].value("judged_by", "") == "local/qwen",
+               "asked and refused: the metered judge is not called, and Qwen's ASK goes to the user: " + said(no).dump());
+        auto headless = run("escalate", "DENY: not asked for", "ALLOW: never asked", {}, [](Agent&, Recorder& r) { r.answer = ""; });
+        expect(headless.r.questions.size() == 1 && asked_of(fc) == c0 + 1 && said(headless).value("asked", "") == "no answer" && !fs::exists(ws / headless.file) &&
+                   headless.r.asked.empty() && headless.tool["review"].value("judged_by", "") == "local/qwen",
+               "headless, no terminal to answer on: no answer is a no, and Qwen's denial stands");
+        auto nobody = run("escalate", "ASK: unusual", "ALLOW: never asked", {}, [](Agent&, Recorder& r) { r.viewer = false; });
+        expect(nobody.r.questions.empty() && asked_of(fc) == c0 + 1 && said(nobody).value("asked", "") == "nobody to ask" && said(nobody).value("outcome", "") == "declined" &&
+                   nobody.r.asked.size() == 1,
+               "nobody to ask (a background task nobody watches): skipped unasked, and the call goes to the approval");
+        auto off = run("escalate", "ASK: unusual", "ALLOW: fine", {}, [](Agent& a, Recorder&) { a.checkers.ask_before_metered = false; });
+        expect(off.r.questions.empty() && asked_of(fc) == c0 + 2 && !said(off).contains("asked") && fs::exists(ws / off.file) && off.tool["review"].value("judged_by", "") == "metered/claude",
+               "ask_before_metered = false: the metered judge is called without asking");
+        pc.options.erase("metered");
         // A judge named by its preset carries the preset's name and model, and its usage limit takes it off the panel.
         std::vector<ModelPreset> presets = default_presets();
         fc.fail_when = [](const json&) { return true; };
@@ -2315,7 +2347,7 @@ int main() {
                 return n;
             };
             // Opus prefers claude-haiku-cli for its subagents and lists it; `opus` is the model the preset names.
-            auto task_on = [&](const std::string& opus, const char* asked) {
+            auto task_on = [&](const std::string& opus, const char* asked, const std::string& answer = "") {
                 std::vector<ModelPreset> with_cli = presets;
                 for (auto& p : with_cli) {
                     if (p.name != "opus-5.5") continue;
@@ -2333,6 +2365,7 @@ int main() {
                 a.mode = Mode::Auto;
                 a.review_with_model = false;
                 Recorder r;
+                r.answer = answer;
                 a.submit("start it", Origin::Local, r, no_cancel);
                 fake.tool_call_for = nullptr;
                 return r;
@@ -2342,10 +2375,15 @@ int main() {
             expect(has_call(automatic, "↳ explore on opus-5.5 (claude-haiku-cli runs through Claude Code on your plan, which a subagent takes only when asked for or under a Claude model; the same model)") &&
                        agents_spawned() == before,
                    "under a model that is not Claude, the automatic pick passes a Claude Code preset over: the subagent stays on the same model");
-            Recorder asked = task_on("fake/opus", "claude-haiku-cli");
-            expect(has_call(asked, "↳ explore on claude-haiku-cli (asked for by the parent)") && agents_spawned() == before + 1 && !asked.results.empty() &&
-                       asked.results.back().find("call 1: map it") != std::string::npos,
-                   "a Claude Code preset asked for by name runs the subagent through Claude Code: " + (asked.results.empty() ? "" : asked.results.back()));
+            // Claude Code is metered (Micaiah, 2026-10-02): the parent asking for it by name is not her asking, so she is.
+            Recorder refused = task_on("fake/opus", "claude-haiku-cli", "no");
+            expect(refused.questions.size() == 1 && refused.questions[0].first.find("spends your plan's usage through claude-cli") != std::string::npos &&
+                       agents_spawned() == before,
+                   "a Claude Code preset asked for by the parent is asked about first, and a no keeps the subagent on the same model");
+            Recorder asked = task_on("fake/opus", "claude-haiku-cli", "yes");
+            expect(has_call(asked, "↳ explore on claude-haiku-cli (asked for by the parent; you approved claude-cli's metered billing)") && agents_spawned() == before + 1 &&
+                       !asked.results.empty() && asked.results.back().find("call 1: map it") != std::string::npos,
+                   "with her yes it runs the subagent through Claude Code: " + (asked.results.empty() ? "" : asked.results.back()));
             Recorder under_claude = task_on("fake/claude-opus", nullptr);
             expect(has_call(under_claude, "↳ explore on claude-haiku-cli (opus-5.5's subagent setting)") && agents_spawned() == before + 2,
                    "under a Claude model the automatic pick may take it");

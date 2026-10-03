@@ -70,8 +70,9 @@ struct Provider {
     std::string upstream_name() const { return upstream.empty() ? name : upstream; }
     // Anything not on this machine. Prompts, files the agent reads and tool output leave the machine.
     bool remote() const;
-    // Billed per token to the account the key belongs to: `options.metered`, by default true for a remote
-    // OpenAI-compatible provider with a key (deepseek, openrouter, one you add). The automatic model picks never
+    // Billed per token to the account the key belongs to, or spending a plan's usage: `options.metered`, by default
+    // true for a remote OpenAI-compatible provider with a key (deepseek, openrouter, one you add), and set on the
+    // shipped anthropic and claude-cli. The automatic model picks never
     // move onto a metered model of another provider, and chat() never retries a request that may have run.
     bool metered() const;
     // Throws with a clear message when it can't be found, and refuses to hand a key to a plain http URL that

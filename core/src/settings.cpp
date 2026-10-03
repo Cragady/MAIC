@@ -417,14 +417,15 @@ void read_leave(LeaveSettings& into, const json& t, const std::string& where) {
         for (const auto& [k, x] : v.items()) {
             std::string name = key + "." + k;
             if (k == "after") verb(name, x, {"bg", "park", "stop"}, c.after);
-            else if (k == "idle" || k == "working") verb(name, x, key == "switch" ? std::vector<std::string>{"bg", "park", "stop", "ask"} : std::vector<std::string>{"bg", "park", "stop"}, k == "idle" ? c.idle : c.working);
+            else if (k == "idle" || k == "working") verb(name, x, {"bg", "park", "stop", "ask"}, k == "idle" ? c.idle : c.working);
             else throw std::runtime_error(where + ": leave." + name + " is not a case (idle, working, after)");
         }
     }
 }
 
-// `checkers`: a shipped setup's name, or { judges = { "qwen-9b", { model = ..., think = false, timeout = 20 } },
-// combine = "escalate" }. "" or an empty table: no panel.
+// `checkers`: a shipped setup's name, or { setup = "dual-9b", judges = { "qwen-9b", { model = ..., think = false,
+// timeout = 20 } }, combine = "escalate", ask_before_metered = true }, the table's judges and combine over its
+// setup's. "" or an empty table: no panel.
 Checkers read_checkers(const json& v, const std::string& where) {
     if (v.is_string()) {
         std::string name = v.get<std::string>();
@@ -435,8 +436,17 @@ Checkers read_checkers(const json& v, const std::string& where) {
     Checkers c;
     if (v.is_array() && v.empty()) return c;
     if (!v.is_object()) throw std::runtime_error(where + ": checkers must be a setup's name or a table");
+    if (v.contains("setup")) {
+        if (!v["setup"].is_string()) throw std::runtime_error(where + ": checkers.setup must be a setup's name");
+        c = read_checkers(v["setup"], where);
+    }
+    if (v.contains("ask_before_metered")) {
+        if (!v["ask_before_metered"].is_boolean()) throw std::runtime_error(where + ": checkers.ask_before_metered must be true or false");
+        c.ask_before_metered = v["ask_before_metered"].get<bool>();
+    }
     c.combine = v.value("combine", c.combine);
     if (c.combine != "primary" && c.combine != "escalate" && c.combine != "both") throw std::runtime_error(where + ": checkers.combine must be \"primary\", \"escalate\" or \"both\", not \"" + c.combine + "\"");
+    if (v.contains("judges")) c.judges.clear();
     for (const auto& j : v.value("judges", json::array())) {
         Checker k;
         if (j.is_string()) {
@@ -1006,7 +1016,7 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"reviewer_budget_tokens", d.reviewer_budget_tokens},
         {"//reviewer_budget_tokens", "the reviewer's own token cap (it also counts toward budget_tokens); past it every action it would review is asked. 0: none"},
         {"checkers", ""},
-        {"//checkers", "global file only: the judges of the smart harness in place of the single reviewer. A shipped setup, \"dual-9b\" (Qwen3.5 9B, no thinking, then Claude Haiku 4.5 on your Claude plan only when Qwen does not allow or cannot answer) or \"dual-4b\" (the same with the 4B), or { judges = { \"qwen-9b\", { model = \"claude-haiku-cli\", timeout = 60 } }, combine = \"escalate\" }; combine: primary, escalate or both. Empty: the reviewer alone. docs/harness.md"},
+        {"//checkers", "global file only: the judges of the smart harness in place of the single reviewer. A shipped setup, \"dual-9b\" (Qwen3.5 9B, no thinking, then Claude Haiku 4.5 on your Claude plan only when Qwen does not allow or cannot answer) or \"dual-4b\" (the same with the 4B), or { judges = { \"qwen-9b\", { model = \"claude-haiku-cli\", timeout = 60 } }, combine = \"escalate\" }; combine: primary, escalate or both; a table may start from a setup (setup = \"dual-9b\"). Before a metered judge (Claude Code, a metered preset) is called you are asked each time; ask_before_metered = false calls it without asking. Empty: the reviewer alone. docs/harness.md"},
         {"dumb_auto_ok", d.dumb_auto_ok},
         {"protocol_tier", d.protocol_tier},
         {"//protocol_tier", "this file only: how closely the engine checks its protocol. open: no checks (an unchecked session shows OPEN); guarded: every check runs and logs what it finds (<state>/engine/protocol.log); airtight: refuses what fails (needs a build that passed conformance). protocol_tiers = { [\"~/scratch\"] = \"open\" } sets one per directory, as does maic trust DIR --protocol TIER; agents.NAME.protocol_tier one per agent; :tier tightens a session. docs/design/protocol-security.md"},

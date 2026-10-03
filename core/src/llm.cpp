@@ -158,8 +158,9 @@ std::vector<Provider> default_providers() {
         // The side server (services/llamacpp-2.json): the same router over the same GGUFs on port 8082, so a second
         // model can stay resident while the first does. No preset by default; `llamacpp-2/NAME` reaches it.
         {"llamacpp-2", "openai", "http://127.0.0.1:8082/v1", "", "", {{"thinking_controls", true}, {"context_window", 8192}}, "llamacpp"},
+        // Metered (Micaiah, 2026-10-02): billed per token to the key's account, so no rule moves onto it from another provider.
         {"anthropic", "anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "",
-         {{"max_tokens", 64000}, {"effort", "high"}, {"think_effort", "xhigh"}, {"fallbacks", "default"}}},
+         {{"max_tokens", 64000}, {"effort", "high"}, {"think_effort", "xhigh"}, {"fallbacks", "default"}, {"metered", true}}},
         // DeepSeek's API (api-docs.deepseek.com, checked 2026-10-02; docs/references/deepseek.md): thinking is on unless
         // the request turns it off; while it is on, temperature and the penalties do nothing and top_p is raised to
         // 0.95, without it top_p is fixed at 1.0, so none of those is sent where it would mislead. Its thinking turns'
@@ -177,7 +178,8 @@ std::vector<Provider> default_providers() {
           {"vision", {"deepseek-flash"}}}},
         {"openrouter", "openai", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "", nlohmann::json::object()},
         // Claude Code run headless on the user's own login and plan: text only, or the agent on MAIC's tools (docs/settings.md).
-        {"claude-cli", "cli", "", "", "", {{"command", "claude"}, {"args", nlohmann::json::array()}}},
+        // Metered as the API is (Micaiah, 2026-10-02): it spends the plan's usage.
+        {"claude-cli", "cli", "", "", "", {{"command", "claude"}, {"args", nlohmann::json::array()}, {"metered", true}}},
     };
 }
 

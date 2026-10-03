@@ -114,11 +114,13 @@ struct Checker {
 // `checkers` (docs/harness.md, Checkers): the judges that review in place of the single reviewer, in order, and how
 // their verdicts combine: "primary" (the first alone), "escalate" (the next is asked only while the call is not
 // settled: a DENY, an ASK, a timeout, an error or no clear verdict), "both" (every one must allow). No judges: the
-// reviewer of reviewer_pick alone.
+// reviewer of reviewer_pick alone. `ask_before_metered`: a metered judge on another account than the session's is
+// called only once the user says yes, for each call; where nobody can be asked it is skipped.
 struct Checkers {
     std::string setup;  // the shipped setup it came from ("" for one written out)
     std::vector<Checker> judges;
     std::string combine = "escalate";
+    bool ask_before_metered = true;
 };
 // A shipped setup by name: "dual-9b" or "dual-4b"; nullopt for any other name.
 std::optional<Checkers> checker_setup(const std::string& name);
@@ -144,8 +146,8 @@ void read_steering(SteeringSettings& into, const nlohmann::json& table, const st
 // `session`, the lists only losing entries.
 SteeringSettings agent_steering(const SteeringSettings& session, const nlohmann::json& agent, const std::string& name);
 
-// What becomes of a session you leave (docs/settings.md, `leave`): bg, park or stop for each case, and for a switch
-// "ask" (the client asks). `after` is what a session left working becomes once its work ends with no client in focus.
+// What becomes of a session you leave (docs/settings.md, `leave`): bg, park or stop for each case, and for idle and
+// working "ask" (the client asks). `after` is what a session left working becomes once its work ends with no client in focus.
 struct LeaveCase {
     std::string idle, working, after;
 };
