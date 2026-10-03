@@ -4,6 +4,14 @@ An index of decisions and findings, newest first, so none is lost. Each line say
 
 ## 2026-10-03
 
+* **Discipline after the MAID_VENDOR cascade** (Micaiah, 2026-10-03: "We absolutely cannot let an error like this cascade and clobber over critical functionality"). One bad service file stopped `maid up`, `:cd` and more. Standing rules:
+  1. **Blast radius.** Every aggregate loader (services, themes, tools, places, providers, settings layers, instructions, artifacts) degrades per item: a bad entry is skipped with a message naming the file and what to fix; the rest loads.
+  2. **No unrelated dependency on a core path.** A core command (start, chat, resume, `:cd`, `:status`, `maid up`) catches failures of anything it only consults on the side, and says what it skipped.
+  3. **Installed builds are hermetic.** An installed release reads only the files it shipped with, never the checkout.
+  4. **Fault-injection tests.** The suite plants a broken item of each kind (a bad service file, an unset variable, a corrupt theme, a bad project setting) and checks that the core commands still work.
+  5. **Renames and migrations** get a check that the previous installed release still works against the new checkout and the new one against old user files, before the release.
+  6. **Silence is a bug.** A command that does nothing says why (`:cd` during a turn did nothing and said nothing).
+
 * **Degraded beats halted.** Something adjacent going wrong (one bad service file, an unset variable, one failing provider) degrades that one piece, says so, and lets the rest run; it never stops a whole chain such as `maid up`. Service files: a file that doesn't load is skipped with a warning. [service.hpp](../core/include/maid/service.hpp)
 * **An installed maid reads the files it shipped with,** never a checkout that has moved on since its release. [paths.cpp](../core/src/paths.cpp)
 * **When tool calls get refused, look at the paths first.** Agents working here use full absolute paths, never truncated or partial ones (a plain read of a cut-off path was stopped by a safety check mid-fix). Nothing in this repo should hard-stop an agent's ordinary work.
