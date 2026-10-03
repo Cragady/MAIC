@@ -1566,6 +1566,16 @@ int main(int argc, char** argv) {
             rest.clear();
         }
         if (continue_last || resume) tui.resume = headless.resume = pick_session(continue_last, resume_id);
+        if (resume) {
+            // A shell whose directory was deleted is no reason to refuse: the session opens in its own workspace.
+            std::error_code ec;
+            if (std::filesystem::current_path(ec).empty()) {
+                std::string ws = maid::find_session(tui.resume->string())->workspace;
+                std::filesystem::current_path(ws, ec);
+                if (ec) throw std::runtime_error("this shell's directory no longer exists, and neither does the session's workspace " + ws + ": cd somewhere and resume it again");
+                tui.notices.push_back("this shell's directory no longer exists: the session resumes in its workspace, " + ws);
+            }
+        }
         if (append) tui.append = headless.append = *append;
         if (tui.fork_at) {
             if (!tui.resume) throw std::runtime_error("--fork-at needs -c or -r");
@@ -1590,7 +1600,10 @@ int main(int argc, char** argv) {
             tui.initial_prompt = headless.prompt.empty() ? "-" : headless.prompt;
             return maid::run_tui(tui);
         }
-        if (print) return maid::run_headless(headless);
+        if (print) {
+            for (const auto& n : tui.notices) std::cerr << "※ " << n << "\n";
+            return maid::run_headless(headless);
+        }
         if (rest.empty()) {
             // The agent's flags as given, for `maid --rpc` when nvim is the interface: all but --ui and the session
             // flags (the interface resumes the session over the protocol).

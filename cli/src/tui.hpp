@@ -36,6 +36,7 @@ struct TuiOptions {
     bool accept_dumb_auto = false;            // --accept-dumb-auto                  // sent as the first turn (maid -p "..." --interactive); "-" reads stdin
     std::optional<std::string> ui;            // --ui tui|nvim, over settings.ui
     std::vector<std::string> engine_args;     // the agent's flags as given, for `maid --rpc` under nvim
+    std::vector<std::string> notices;         // said when the session opens (a resume from a directory that no longer exists)
 };
 
 // The interactive agent: full-screen, vim-style input and navigation.

@@ -303,7 +303,7 @@ public:
             return false;
         }
         session_ = result(reply).value("id", "");
-        follow_first();
+        follow_first(options.resume.has_value());  // a resumed session shows its conversation, as one resumed in this process does
         nlohmann::json about = result(call("maid.session.describe", {{"session", session_}}));
         for (const auto& f : about.value("instructions", nlohmann::json::array())) startup_.instructions.push_back(f);
         for (const auto& t : about.value("tools", nlohmann::json::array())) startup_.tools.push_back(t);
@@ -341,9 +341,10 @@ public:
 private:
     // ---------- the engine connection ----------
     void hello() { call("maid.hello", {{"protocol", 1}, {"client", {{"name", "maid"}, {"version", MAID_VERSION}}}, {"capabilities", {"tool_output"}}}); }
-    // The session just opened: its snapshot, the index, then the events from here on.
-    void follow_first() {
-        nlohmann::json snap = result(call("maid.session.attach", {{"session", session_}}));
+    // The session just opened: its snapshot (its last exchanges with `history`), the index, then the events from here on.
+    void follow_first(bool history = false) {
+        nlohmann::json snap = result(call("maid.session.attach", history ? nlohmann::json{{"session", session_}, {"exchanges", 10}} : nlohmann::json{{"session", session_}}));
+        if (history) show_items(session_, snap);
         call("maid.index.subscribe");
         for (const auto& e : result(call("maid.index.get")).value("entries", nlohmann::json::array())) index_[e.value("id", "")] = e;
         take_events();
@@ -368,6 +369,7 @@ private:
     void after_turn();
     // Sessions (`:h sessions`): the view follows the one in this client's focus.
     void show_session(const std::string& id);
+    void show_items(const std::string& id, const nlohmann::json& snap);
     void session_verb(const std::string& cmd, const std::string& arg);
     enum class Go { New, Fork, To };
     void go(Go how, const std::string& target, std::string as, const std::string& dir, bool sure = false);
@@ -2365,23 +2367,7 @@ void App::show_session(const std::string& id) {
     live_call_.clear();
     view_.clear();
     const nlohmann::json& e = snap.value("entry", nlohmann::json::object());
-    if (snap.value("more_before", false)) view_.append(Kind::Notice, "(earlier turns: maid sessions read " + id + ")");
-    for (const auto& item : snap.value("items", nlohmann::json::array())) {
-        std::string type = item.value("type", "");
-        const nlohmann::json& m = item.value("maid", nlohmann::json::object());
-        if (type == "message") {
-            std::string t;
-            for (const auto& part : item.value("content", nlohmann::json::array())) t += part.value("text", "");
-            view_.append(item.value("role", "") == "user" ? Kind::User : Kind::Assistant, t);
-        } else if (type == "function_call_output" || type == "shell_call_output") {
-            std::string out = type == "function_call_output" ? item.value("output", "") : item["output"].empty() ? "" : item["output"][0].value("stdout", "");
-            if (m.value("collapsed", false)) out = m.value("head", "") + " … (" + std::to_string(m.value("size", size_t(0))) + " bytes)";
-            view_.append(Kind::Tool, m.value("summary", ""));
-            view_.append(m.value("ok", true) ? Kind::ToolOk : Kind::ToolErr, out);
-        } else {
-            view_.append(Kind::Notice, m.value("collapsed", false) ? m.value("head", "") + " …" : item.value("text", ""));
-        }
-    }
+    show_items(id, snap);
     if (snap["inflight"].is_object()) {
         for (const auto& open : snap["inflight"].value("items", nlohmann::json::array())) {
             std::string type = open["item"].value("type", ""), t = open.value("text", "");
@@ -2413,6 +2399,27 @@ void App::show_session(const std::string& id) {
     if (ws != ws_) follow_workspace(ws);
     view_.append(Kind::Notice, "session " + session_line(e));
     screen_.PostEvent(Event::Custom);
+}
+
+// A snapshot's exchanges (maid.session.attach) in the view, as they were said.
+void App::show_items(const std::string& id, const nlohmann::json& snap) {
+    if (snap.value("more_before", false)) view_.append(Kind::Notice, "(earlier turns: maid sessions read " + id + ")");
+    for (const auto& item : snap.value("items", nlohmann::json::array())) {
+        std::string type = item.value("type", "");
+        const nlohmann::json& m = item.value("maid", nlohmann::json::object());
+        if (type == "message") {
+            std::string t;
+            for (const auto& part : item.value("content", nlohmann::json::array())) t += part.value("text", "");
+            view_.append(item.value("role", "") == "user" ? Kind::User : Kind::Assistant, t);
+        } else if (type == "function_call_output" || type == "shell_call_output") {
+            std::string out = type == "function_call_output" ? item.value("output", "") : item["output"].empty() ? "" : item["output"][0].value("stdout", "");
+            if (m.value("collapsed", false)) out = m.value("head", "") + " … (" + std::to_string(m.value("size", size_t(0))) + " bytes)";
+            view_.append(Kind::Tool, m.value("summary", ""));
+            view_.append(m.value("ok", true) ? Kind::ToolOk : Kind::ToolErr, out);
+        } else {
+            view_.append(Kind::Notice, m.value("collapsed", false) ? m.value("head", "") + " …" : item.value("text", ""));
+        }
+    }
 }
 
 // One line about a session: what it is doing, its title (or id), its model and where it works.
@@ -2673,6 +2680,7 @@ std::string exec_nvim_ui(const TuiOptions& options) {
     std::error_code ec;
     nlohmann::json o = {{"plugin", (root_dir() / "maid.nvim").string()}, {"cmd", std::filesystem::read_symlink("/proc/self/exe", ec).string()}, {"args", options.engine_args}};
     if (options.resume) o["session"] = options.resume->stem().string();
+    for (const auto& n : options.notices) fprintf(stderr, "※ %s\n", n.c_str());
     setenv("MAID_UI", o.dump().c_str(), 1);
     execlp("nvim", "nvim", "-c",
            "lua local o = vim.json.decode(vim.env.MAID_UI); vim.env.MAID_UI = nil; vim.opt.rtp:prepend(o.plugin); vim.cmd('runtime plugin/maid.lua'); require('maid.ui').main(o)",
@@ -2694,7 +2702,8 @@ int run_tui(const TuiOptions& options) {
     // Trust is settled before any project file is read: asked on the terminal, before the screen is drawn.
     std::filesystem::path ws = std::filesystem::current_path();
     if (isatty(STDIN_FILENO) && isatty(STDOUT_FILENO)) ask_trust(ws, std::cin, std::cout);
-    std::vector<std::string> trust_lines = trust_notices(ws);
+    std::vector<std::string> trust_lines = options.notices;
+    for (const auto& n : trust_notices(ws)) trust_lines.push_back(n);
     for (const auto& n : settle_trust(ws)) trust_lines.push_back(n);
     Settings settings = tui_settings(options, ws);
     trust_lines.insert(trust_lines.end(), settings.warnings.begin(), settings.warnings.end());
