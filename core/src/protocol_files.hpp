@@ -2,7 +2,7 @@
 
 #include <vector>
 
-namespace maic::protocol {
+namespace maid::protocol {
 
 // One file of protocol/, as cmake/embed_protocol.cmake wrote it into the generated protocol_files.cpp: its path
 // under protocol/ and its text in chunks, to be joined.
@@ -12,4 +12,4 @@ struct EmbeddedFile {
 };
 const std::vector<EmbeddedFile>& embedded_files();
 
-}  // namespace maic::protocol
+}  // namespace maid::protocol

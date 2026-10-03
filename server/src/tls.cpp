@@ -19,7 +19,7 @@
 #include <memory>
 #include <stdexcept>
 
-namespace maic::server {
+namespace maid::server {
 
 namespace fs = std::filesystem;
 
@@ -80,7 +80,7 @@ TlsPair ensure_self_signed(const fs::path& cert, const fs::path& key, const std:
     X509_gmtime_adj(X509_getm_notAfter(x.get()), 10L * 365 * 24 * 3600);
     X509_set_pubkey(x.get(), pkey.get());
     X509_NAME* name = X509_get_subject_name(x.get());
-    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("maic-server"), -1, -1, 0);
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("maid-server"), -1, -1, 0);
     X509_set_issuer_name(x.get(), name);
 
     std::string san;
@@ -124,4 +124,4 @@ std::vector<std::string> interface_addresses() {
     return out;
 }
 
-}  // namespace maic::server
+}  // namespace maid::server

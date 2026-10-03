@@ -1,17 +1,17 @@
 #pragma once
 
-#include "maic/settings.hpp"
+#include "maid/settings.hpp"
 
 #include <string>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
-// maic audit-trail init | status [--json] | purge | offsite DEST [--older-than 90d] | schedule install|remove
-// (docs/audit-trail.md). Handed off before maic's own options are read, so --json stays its own.
+// maid audit-trail init | status [--json] | purge | offsite DEST [--older-than 90d] | schedule install|remove
+// (docs/audit-trail.md). Handed off before maid's own options are read, so --json stays its own.
 int cmd_audit_trail(const std::vector<std::string>& args);
 
-// The start-up check at every entry point (the TUI, maic -p, maic status): nothing unless the trail is on and an
+// The start-up check at every entry point (the TUI, maid -p, maid status): nothing unless the trail is on and an
 // audit is due with no scheduler, overdue past grace, or the live trail is past live_mb; then `enforce` decides
 // (judge-and-hold, scan-and-continue or notify). Writes to stderr only.
 void audit_gate(const Settings& settings);
@@ -24,4 +24,4 @@ std::string self_exe();
 // it could not start.
 int run(const std::vector<std::string>& argv, std::string* out);
 
-}  // namespace maic
+}  // namespace maid

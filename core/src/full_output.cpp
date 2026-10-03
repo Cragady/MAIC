@@ -1,7 +1,7 @@
-#include "maic/full_output.hpp"
+#include "maid/full_output.hpp"
 
-#include "maic/session.hpp"
-#include "maic/vendor.hpp"
+#include "maid/session.hpp"
+#include "maid/vendor.hpp"
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -14,7 +14,7 @@
 #include <sstream>
 #include <thread>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -199,4 +199,4 @@ void replay_full_output(const fs::path& out, const std::function<void(char strea
     }
 }
 
-}  // namespace maic
+}  // namespace maid

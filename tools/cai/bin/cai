@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""cai: the dispatcher of cai-tools, run from MAIC's copy (docs/cai.md). `cai <tool> ...`
+"""cai: the dispatcher of cai-tools, run from MAID's copy (docs/cai.md). `cai <tool> ...`
 
-The one entry point; `maic-cai` is a link to it, and `maic cai TOOL ...`, `maic trans-fairy ...`
-and `maic trans-fairy-write ...` exec it. It only calls the dispatcher: argv is passed untouched,
+The one entry point; `maid-cai` is a link to it, and `maid cai TOOL ...`, `maid trans-fairy ...`
+and `maid trans-fairy-write ...` exec it. It only calls the dispatcher: argv is passed untouched,
 stdio is inherited and the dispatcher's exit code is returned.
 
-The package is tools/cai/src beside this script in a checkout, <prefix>/share/maic/tools/cai/src
-when installed. MAIC's top-level directory (the checkout's root, or <prefix>/share/maic) goes on
-the end of sys.path, so `import diction.cli` finds MAIC's diction/.
+The package is tools/cai/src beside this script in a checkout, <prefix>/share/maid/tools/cai/src
+when installed. MAID's top-level directory (the checkout's root, or <prefix>/share/maid) goes on
+the end of sys.path, so `import diction.cli` finds MAID's diction/.
 """
 import os
 import sys
 
 here = os.path.dirname(os.path.realpath(__file__))
-for root in (os.path.dirname(os.path.dirname(os.path.dirname(here))), os.path.join(os.path.dirname(here), "share", "maic")):
+for root in (os.path.dirname(os.path.dirname(os.path.dirname(here))), os.path.join(os.path.dirname(here), "share", "maid")):
     if os.path.isdir(os.path.join(root, "tools", "cai", "src", "cai")):
         sys.path.insert(0, os.path.join(root, "tools", "cai", "src"))
         sys.path.append(root)

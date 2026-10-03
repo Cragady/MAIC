@@ -6,7 +6,7 @@
 #include <ostream>
 #include <string>
 
-namespace maic::relay {
+namespace maid::relay {
 
 struct RelayOptions {
     std::string listen = "127.0.0.1:7474";  // ADDR:PORT; port 0 picks a free one (tests)
@@ -51,4 +51,4 @@ private:
     std::string fingerprint_;
 };
 
-}  // namespace maic::relay
+}  // namespace maid::relay

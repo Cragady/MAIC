@@ -1,9 +1,9 @@
-#include "maic/lua_tools.hpp"
+#include "maid/lua_tools.hpp"
 
 #include "lua_json.hpp"
-#include "maic/nvim_host.hpp"
-#include "maic/sandbox.hpp"
-#include "maic/trust.hpp"
+#include "maid/nvim_host.hpp"
+#include "maid/sandbox.hpp"
+#include "maid/trust.hpp"
 
 extern "C" {
 #include <lauxlib.h>
@@ -17,7 +17,7 @@ extern "C" {
 #include <fstream>
 #include <iterator>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -27,7 +27,7 @@ constexpr size_t kMaxOutput = 64 * 1024;
 constexpr int kHookEvery = 1000;  // VM instructions between cancel and deadline checks
 constexpr int kDefaultShellTimeout = 120;
 constexpr int kMaxShellTimeout = 600;
-const char* const kCtxKey = "maic.tool";
+const char* const kCtxKey = "maid.tool";
 
 // What one call's C functions need; a light userdata in the registry, since every call has its own state.
 struct Ctx {
@@ -39,7 +39,7 @@ struct Ctx {
     std::string output;  // print()
     NvimHost* nvim;
     const OnOutput* on_output;
-    size_t shell_bytes = 0;  // maic.shell output so far this call: the next command's stream continues from here
+    size_t shell_bytes = 0;  // maid.shell output so far this call: the next command's stream continues from here
 };
 
 Ctx& ctx(lua_State* L) {
@@ -205,18 +205,18 @@ int l_json_decode(lua_State* L) {
     return 1;
 }
 
-// maic.nvim.diagnostics(path?) and maic.nvim.buffers(): reads, judged like read_file of the path (or of the
+// maid.nvim.diagnostics(path?) and maid.nvim.buffers(): reads, judged like read_file of the path (or of the
 // workspace for the whole list), answering only for files in the workspace.
 int nvim_answer(lua_State* L, const std::function<nlohmann::json(NvimHost&)>& call) {
     Ctx& c = ctx(L);
     std::string err;
     nlohmann::json result;
-    if (!c.nvim->connected()) err = "maic.nvim: the nvim host is gone";
+    if (!c.nvim->connected()) err = "maid.nvim: the nvim host is gone";
     else {
         try {
             result = call(*c.nvim);
         } catch (const std::exception& e) {
-            err = std::string("maic.nvim: ") + e.what();
+            err = std::string("maid.nvim: ") + e.what();
         }
     }
     if (!err.empty()) return fail(L, err);
@@ -250,7 +250,7 @@ int l_nvim_buffers(lua_State* L) {
     return nvim_answer(L, [&](NvimHost& h) { return in_workspace(*c.harness, host_buffers(h)); });
 }
 
-void open_maic(lua_State* L, const Harness& harness, NvimHost* nvim) {
+void open_maid(lua_State* L, const Harness& harness, NvimHost* nvim) {
     lua_pushcfunction(L, l_print);
     lua_setglobal(L, "print");
     lua_newtable(L);
@@ -269,7 +269,7 @@ void open_maic(lua_State* L, const Harness& harness, NvimHost* nvim) {
         lua_setfield(L, -2, "buffers");
         lua_setfield(L, -2, "nvim");
     }
-    lua_setglobal(L, "maic");
+    lua_setglobal(L, "maid");
 }
 
 bool valid_name(const std::string& name) {
@@ -314,13 +314,13 @@ LuaTool read_tool(const fs::path& file) {
 }  // namespace
 
 fs::path global_tools_dir() {
-    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return fs::path(xdg) / "maic" / "tools";
-    return fs::path(std::getenv("HOME")) / ".config" / "maic" / "tools";
+    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return fs::path(xdg) / "maid" / "tools";
+    return fs::path(std::getenv("HOME")) / ".config" / "maid" / "tools";
 }
 
 LuaToolSet load_lua_tools(const fs::path& workspace) {
     LuaToolSet set;
-    for (const fs::path& dir : {workspace / ".maic" / "tools", global_tools_dir()}) {
+    for (const fs::path& dir : {workspace / ".maid" / "tools", global_tools_dir()}) {
         std::error_code ec;
         if (!fs::is_directory(dir, ec)) continue;
         if (dir != global_tools_dir() && !trusted(workspace)) continue;  // an untrusted project's tools are never loaded
@@ -353,7 +353,7 @@ ToolResult run_lua_tool(const LuaTool& tool, const nlohmann::json& args, const H
     } close{L};
     lua_pushlightuserdata(L, &c);
     lua_setfield(L, LUA_REGISTRYINDEX, kCtxKey);
-    open_maic(L, harness, nvim);
+    open_maid(L, harness, nvim);
     lua_sethook(L, hook, LUA_MASKCOUNT, kHookEvery);
 
     // What was printed comes before the returned value; after an error it follows the message, so the message
@@ -388,4 +388,4 @@ ToolResult run_lua_tool(const LuaTool& tool, const nlohmann::json& args, const H
     return finish(true, text);
 }
 
-}  // namespace maic
+}  // namespace maid

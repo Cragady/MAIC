@@ -3,7 +3,7 @@
 // agent_test, the settings in trust_test, the commands in cli_smoke and the audit in tools/audit.
 #include "check.hpp"
 
-#include "maic/audit_trail.hpp"
+#include "maid/audit_trail.hpp"
 
 #include <unistd.h>
 
@@ -12,7 +12,7 @@
 #include <fstream>
 #include <iterator>
 
-using namespace maic;
+using namespace maid;
 namespace fs = std::filesystem;
 
 namespace {
@@ -31,7 +31,7 @@ std::string read_file(const fs::path& p) {
 }  // namespace
 
 int main() {
-    fs::path root = fs::temp_directory_path() / ("maic-audit-trail-test-" + std::to_string(getpid()));
+    fs::path root = fs::temp_directory_path() / ("maid-audit-trail-test-" + std::to_string(getpid()));
     fs::remove_all(root);
     fs::create_directories(root);
     setenv("XDG_STATE_HOME", (root / "state").c_str(), 1);
@@ -65,7 +65,7 @@ int main() {
         expect(d.due && !d.scheduled && d.enforce() && d.why.find("no scheduler ran it") != std::string::npos,
                "a day on and no scheduler installed: the data-driven check holds: " + d.why);
         fs::create_directories(systemd_user_dir());
-        std::ofstream(systemd_user_dir() / "maic-leak-audit.timer") << "[Timer]\n";
+        std::ofstream(systemd_user_dir() / "maid-leak-audit.timer") << "[Timer]\n";
         d = audit_due(s, at("2026-10-02T00:00:01Z"));
         expect(d.due && d.scheduled && !d.enforce(), "with the timer installed, due alone is the scheduler's to run");
         d = audit_due(s, at("2026-10-04T00:00:01Z"));
@@ -73,7 +73,7 @@ int main() {
         std::ofstream(audit_trail_dir() / "index.json") << R"({"last_audit": "2026-10-03T06:00:00Z", "next_audit_due": "2026-10-04T06:00:00Z"})";
         d = audit_due(s, at("2026-10-04T00:00:01Z"));
         expect(!d.due && !d.overdue && !d.enforce(), "a scheduler ran the audit: next_audit_due is ahead, nothing happens");
-        fs::remove(systemd_user_dir() / "maic-leak-audit.timer");
+        fs::remove(systemd_user_dir() / "maid-leak-audit.timer");
         d = audit_due(s, at("2026-10-04T06:00:01Z"));
         expect(d.due && d.enforce() && d.why.find("2026-10-04 06:00 UTC") != std::string::npos, "past next_audit_due with no scheduler: " + d.why);
         d = audit_due(s, at("2026-10-06T06:00:01Z"));
@@ -87,11 +87,11 @@ int main() {
 
     section("the systemd units");
     {
-        std::string service = render_unit(read_file(fs::path(MAIC_CONTRIB) / "systemd" / "maic-leak-audit.service"), "/opt/maic/bin/maic-leak-audit", "/opt/maic/bin/maic", "12h");
-        std::string timer = render_unit(read_file(fs::path(MAIC_CONTRIB) / "systemd" / "maic-leak-audit.timer"), "/opt/maic/bin/maic-leak-audit", "/opt/maic/bin/maic", "12h");
-        expect(service.find("\nExecStart=/opt/maic/bin/maic-leak-audit\n") != std::string::npos && service.find("\nEnvironment=MAIC_BIN=/opt/maic/bin/maic\n") != std::string::npos &&
+        std::string service = render_unit(read_file(fs::path(MAID_CONTRIB) / "systemd" / "maid-leak-audit.service"), "/opt/maid/bin/maid-leak-audit", "/opt/maid/bin/maid", "12h");
+        std::string timer = render_unit(read_file(fs::path(MAID_CONTRIB) / "systemd" / "maid-leak-audit.timer"), "/opt/maid/bin/maid-leak-audit", "/opt/maid/bin/maid", "12h");
+        expect(service.find("\nExecStart=/opt/maid/bin/maid-leak-audit\n") != std::string::npos && service.find("\nEnvironment=MAID_BIN=/opt/maid/bin/maid\n") != std::string::npos &&
                    service.find("Type=oneshot") != std::string::npos && service.find('@') == std::string::npos,
-               "the service runs maic-leak-audit, with MAIC_BIN for its maic");
+               "the service runs maid-leak-audit, with MAID_BIN for its maid");
         expect(timer.find("\nOnUnitActiveSec=12h\n") != std::string::npos && timer.find("WantedBy=timers.target") != std::string::npos && timer.find('@') == std::string::npos,
                "the timer repeats every `every`");
     }

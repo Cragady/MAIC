@@ -1,7 +1,7 @@
-#include "maic/theme.hpp"
+#include "maid/theme.hpp"
 
-#include "maic/lua.hpp"
-#include "maic/paths.hpp"
+#include "maid/lua.hpp"
+#include "maid/paths.hpp"
 #include "nvim_run.hpp"
 
 #include <sys/wait.h>
@@ -18,7 +18,7 @@
 #include <set>
 #include <stdexcept>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -130,7 +130,7 @@ Theme load_theme_file(const fs::path& path) {
     std::string source = read_text(path);
     json table;
     try {
-        // A theme is a data file of the user's (or MAIC's own): it runs at the tier of the user's files, global_lua.
+        // A theme is a data file of the user's (or MAID's own): it runs at the tier of the user's files, global_lua.
         LuaDataLimits limits = lua_data_limits();
         table = eval_lua_data(source, "@" + path.string(), path.parent_path(), limits.tier, limits.memory_mb);
     } catch (const std::exception& e) {
@@ -440,11 +440,11 @@ Theme theme_from_nvim(const json& groups, const std::string& name, const std::st
 
 namespace {
 
-// Runs inside nvim after the user's configuration: applies the colorscheme and writes what MAIC needs as JSON
-// to $MAIC_THEME_OUT, then quits. With no $MAIC_THEME_NAME it only lists the colorschemes. Groups come in as
-// MAIC_THEME_GROUPS (JSON) so the list lives in one place.
+// Runs inside nvim after the user's configuration: applies the colorscheme and writes what MAID needs as JSON
+// to $MAID_THEME_OUT, then quits. With no $MAID_THEME_NAME it only lists the colorschemes. Groups come in as
+// MAID_THEME_GROUPS (JSON) so the list lives in one place.
 const char* kImportLua = R"lua(
-local out, name = os.getenv('MAIC_THEME_OUT'), os.getenv('MAIC_THEME_NAME') or ''
+local out, name = os.getenv('MAID_THEME_OUT'), os.getenv('MAID_THEME_NAME') or ''
 local result = {}
 local ok, err = true, nil
 if name ~= '' then
@@ -458,7 +458,7 @@ else
   result.background = vim.o.background
   result.source = vim.api.nvim_get_runtime_file('colors/' .. name .. '.vim', false)[1] or vim.api.nvim_get_runtime_file('colors/' .. name .. '.lua', false)[1]
   result.groups = {}
-  for _, g in ipairs(vim.json.decode(os.getenv('MAIC_THEME_GROUPS'))) do
+  for _, g in ipairs(vim.json.decode(os.getenv('MAID_THEME_GROUPS'))) do
     local entry = {}
     for k, v in pairs(vim.api.nvim_get_hl(0, { name = g, link = false })) do
       if k == 'fg' or k == 'bg' or k == 'sp' then entry[k] = string.format('#%06x', v)
@@ -475,7 +475,7 @@ vim.cmd('qa!')
 
 // One headless nvim with the user's configuration (run_nvim_child); killed at the timeout. Returns what it wrote.
 json run_nvim(const std::string& nvim, const std::string& scheme, std::chrono::seconds timeout) {
-    std::string tmpl = (fs::temp_directory_path() / "maic-theme-XXXXXX").string();
+    std::string tmpl = (fs::temp_directory_path() / "maid-theme-XXXXXX").string();
     if (!mkdtemp(tmpl.data())) throw std::runtime_error("can't create a temporary directory for the nvim run");
     fs::path dir = tmpl;
     struct Cleanup {
@@ -488,15 +488,15 @@ json run_nvim(const std::string& nvim, const std::string& scheme, std::chrono::s
     std::ofstream(dir / "import.lua") << kImportLua;
     fs::path out = dir / "out.json";
 
-    std::vector<std::string> args = {nvim, "--headless", "-i", "NONE", "-n", "--cmd", "let g:maic_theme_import = 1", "-c", "lua dofile(os.getenv('MAIC_THEME_SCRIPT'))"};
-    NvimRun run = run_nvim_child(args, {"MAIC_THEME_"},
-                                 {"MAIC_THEME_SCRIPT=" + (dir / "import.lua").string(), "MAIC_THEME_OUT=" + out.string(), "MAIC_THEME_NAME=" + scheme,
-                                  "MAIC_THEME_GROUPS=" + json(nvim_theme_groups()).dump()},
+    std::vector<std::string> args = {nvim, "--headless", "-i", "NONE", "-n", "--cmd", "let g:maid_theme_import = 1", "-c", "lua dofile(os.getenv('MAID_THEME_SCRIPT'))"};
+    NvimRun run = run_nvim_child(args, {"MAID_THEME_"},
+                                 {"MAID_THEME_SCRIPT=" + (dir / "import.lua").string(), "MAID_THEME_OUT=" + out.string(), "MAID_THEME_NAME=" + scheme,
+                                  "MAID_THEME_GROUPS=" + json(nvim_theme_groups()).dump()},
                                  timeout);
     int status = run.status;
     if (run.timed_out) {
         throw std::runtime_error(nvim + " did not finish within " + std::to_string(timeout.count()) +
-                                 " s and was stopped (a plugin manager installing in headless mode? g:maic_theme_import is set for a config that wants to skip plugins)");
+                                 " s and was stopped (a plugin manager installing in headless mode? g:maid_theme_import is set for a config that wants to skip plugins)");
     }
     std::error_code ec;
     if (!fs::is_regular_file(out, ec)) {
@@ -538,11 +538,11 @@ Theme import_nvim_theme(const std::string& colorscheme, const std::string& as, c
     std::string source = r.value("source", json()).is_string() ? r["source"].get<std::string>() : "";
     std::string comment = "Imported from the nvim colorscheme " + colorscheme + (source.empty() ? "" : " (" + source + ")") + " on " + now_text() +
                           ".\nRe-importing it overwrites this file; copy it under another name before editing.\n"
-                          "Roles not listed keep MAIC's built-in default; the group each role comes from: docs/settings.md.";
+                          "Roles not listed keep MAID's built-in default; the group each role comes from: docs/settings.md.";
     fs::create_directories(user_themes_dir());
     t.path = user_themes_dir() / (name + ".lua");
     std::ofstream(t.path) << theme_lua(t, comment);
     return t;
 }
 
-}  // namespace maic
+}  // namespace maid

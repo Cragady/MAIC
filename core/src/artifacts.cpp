@@ -1,9 +1,9 @@
-#include "maic/artifacts.hpp"
+#include "maid/artifacts.hpp"
 
-#include "maic/lua.hpp"
-#include "maic/paths.hpp"
-#include "maic/session.hpp"
-#include "maic/settings.hpp"
+#include "maid/lua.hpp"
+#include "maid/paths.hpp"
+#include "maid/session.hpp"
+#include "maid/settings.hpp"
 
 #include <cstdlib>
 #include <fstream>
@@ -11,7 +11,7 @@
 #include <regex>
 #include <stdexcept>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -102,8 +102,8 @@ Artifact diction_logs() {
 
 std::vector<Artifact> list_artifacts(const std::vector<ServiceDef>& services) {
     std::vector<Artifact> out = {
-        {"maic", "sessions", "agent session transcripts (JSONL)", sessions_dir()},
-        {"maic", "service-logs", "stdout/stderr of services MAIC started", state_dir() / "logs"},
+        {"maid", "sessions", "agent session transcripts (JSONL)", sessions_dir()},
+        {"maid", "service-logs", "stdout/stderr of services MAID started", state_dir() / "logs"},
         diction_logs(),
     };
     for (const auto& s : services) {
@@ -160,4 +160,4 @@ ArtifactUsage clean(const Artifact& artifact, std::optional<std::chrono::hours> 
     return removed;
 }
 
-}  // namespace maic
+}  // namespace maid

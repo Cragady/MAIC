@@ -1,8 +1,8 @@
-// Tells app.js whether MAIC serves the page; over file:// it also loads the answers kept beside the page.
+// Tells app.js whether MAID serves the page; over file:// it also loads the answers kept beside the page.
 window.REVIEW_HTTP = /^https?:$/.test(location.protocol);
 if (!window.REVIEW_HTTP) document.write('<script src="./answers.js"><\/script>');
-// The browser's own storage, when this page may use it. MAIC's artifact sandbox gives the page an opaque origin,
-// where localStorage and IndexedDB are forbidden; then the draft lives in memory and a reload reads MAIC's copy.
+// The browser's own storage, when this page may use it. MAID's artifact sandbox gives the page an opaque origin,
+// where localStorage and IndexedDB are forbidden; then the draft lives in memory and a reload reads MAID's copy.
 window.REVIEW_STORE = (function () {
   try { var s = window.localStorage; s.getItem("probe"); window.REVIEW_STORE_KIND = "browser"; return s; } catch (e) {}
   var m = {}; window.REVIEW_STORE_KIND = "memory";

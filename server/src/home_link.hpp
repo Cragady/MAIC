@@ -4,13 +4,13 @@
 #include <memory>
 #include <string>
 
-namespace maic::server {
+namespace maid::server {
 
 struct HomeLinkOptions {
-    std::string relay;                      // https://host:port of the maic-relay
+    std::string relay;                      // https://host:port of the maid-relay
     std::filesystem::path relay_cert;       // PEM to pin the relay's certificate; empty = the system CA store
     std::filesystem::path pairs_file;       // <state>/server/pairs.json
-    std::filesystem::path status_file;      // <state>/server/relay.json, read by `maic server status`
+    std::filesystem::path status_file;      // <state>/server/relay.json, read by `maid server status`
     std::string loopback;                   // this server's own address for the requests that come out of the tunnel
 };
 
@@ -40,4 +40,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace maic::server
+}  // namespace maid::server

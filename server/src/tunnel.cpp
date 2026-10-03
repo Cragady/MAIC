@@ -14,7 +14,7 @@
 #include <fstream>
 #include <stdexcept>
 
-namespace maic::server {
+namespace maid::server {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -126,7 +126,7 @@ SessionKeys derive_session(const KeyPair& my_static, const KeyPair& my_ephemeral
     const Key32& home_eph = i_am_home ? my_ephemeral.pk : their_ephemeral;
     std::string info;
     for (const Key32* k : {&phone_static, &phone_eph, &home_static, &home_eph}) info.append(reinterpret_cast<const char*>(k->data()), k->size());
-    std::string okm = hkdf_sha256("maic-tunnel-v1", ikm, info, 64);
+    std::string okm = hkdf_sha256("maid-tunnel-v1", ikm, info, 64);
     SessionKeys keys;
     std::memcpy(keys.to_home.data(), okm.data(), 32);
     std::memcpy(keys.to_phone.data(), okm.data() + 32, 32);
@@ -136,14 +136,14 @@ SessionKeys derive_session(const KeyPair& my_static, const KeyPair& my_ephemeral
 }
 
 std::string hello_body(const Key32& static_pk, const Key32& ephemeral_pk) {
-    std::string out = "MAIC1";
+    std::string out = "MAID1";
     out.append(reinterpret_cast<const char*>(static_pk.data()), 32);
     out.append(reinterpret_cast<const char*>(ephemeral_pk.data()), 32);
     return out;
 }
 
 bool parse_hello(std::string_view body, Key32& static_pk, Key32& ephemeral_pk) {
-    if (body.size() != 69 || body.substr(0, 5) != "MAIC1") return false;
+    if (body.size() != 69 || body.substr(0, 5) != "MAID1") return false;
     std::memcpy(static_pk.data(), body.data() + 5, 32);
     std::memcpy(ephemeral_pk.data(), body.data() + 37, 32);
     return true;
@@ -307,13 +307,13 @@ void write_pairing_offer(const fs::path& file, const std::string& code, int seco
 
 std::optional<std::string> claim_pairing_offer(const fs::path& file, const std::string& code) {
     std::ifstream in(file);
-    if (!in) return "no pairing is offered; run `maic server pair` at the workstation";
+    if (!in) return "no pairing is offered; run `maid server pair` at the workstation";
     json j = json::parse(in, nullptr, false);
     in.close();
     std::error_code ec;
     if (!j.is_object() || j.value("expires", 0LL) < static_cast<long long>(std::time(nullptr))) {
         fs::remove(file, ec);
-        return "the pairing code has expired; run `maic server pair` again";
+        return "the pairing code has expired; run `maid server pair` again";
     }
     std::string hash = sha256_hex(code), stored = j.value("code_sha256", "");
     if (hash.size() == stored.size() && sodium_memcmp(hash.data(), stored.data(), hash.size()) == 0) {
@@ -323,11 +323,11 @@ std::optional<std::string> claim_pairing_offer(const fs::path& file, const std::
     int attempts = j.value("attempts", 0) + 1;
     if (attempts >= 3) {
         fs::remove(file, ec);
-        return "wrong code three times; the offer is void, run `maic server pair` again";
+        return "wrong code three times; the offer is void, run `maid server pair` again";
     }
     j["attempts"] = attempts;
     write_private(file, j.dump() + "\n");
     return "wrong code (" + std::to_string(3 - attempts) + " more " + (attempts == 2 ? "try" : "tries") + ")";
 }
 
-}  // namespace maic::server
+}  // namespace maid::server

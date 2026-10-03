@@ -3,13 +3,13 @@
 
 #include "artifacts.hpp"
 #include "auth.hpp"
-#include "maic/paths.hpp"
-#include "maic/session.hpp"
-#include "maic/trust.hpp"
+#include "maid/paths.hpp"
+#include "maid/session.hpp"
+#include "maid/trust.hpp"
 #include "server.hpp"
 #include "tls.hpp"
 
-#include "maic/http.hpp"
+#include "maid/http.hpp"
 
 #include <sys/stat.h>
 
@@ -19,7 +19,7 @@
 #include <fstream>
 #include <thread>
 
-using namespace maic;
+using namespace maid;
 using nlohmann::json;
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
@@ -186,7 +186,7 @@ std::string slurp(const fs::path& p) {
 }  // namespace
 
 int main() {
-    fs::path root = fs::temp_directory_path() / "maic-server-test";
+    fs::path root = fs::temp_directory_path() / "maid-server-test";
     fs::remove_all(root);
     fs::create_directories(root / "state");
     fs::create_directories(root / "ws");
@@ -287,14 +287,14 @@ int main() {
         expect(list["sessions"].size() == 1 && list["sessions"][0]["id"] == id, "the list has the one session");
 
         auto events = api.stream("POST", "/api/sessions/" + id + "/messages", {{"text", "hello there"}});
-        expect(!events.empty() && events.front()["type"] == "maic.input.added" && events.front()["item"]["content"][0]["text"] == "hello there" &&
+        expect(!events.empty() && events.front()["type"] == "maid.input.added" && events.front()["item"]["content"][0]["text"] == "hello there" &&
                    events.front()["by"]["origin"] == "remote",
                "the stream starts with the input, from a remote client");
         expect(text_of(events) == "echo: hello there", "text deltas stream in order, as response.output_text.delta");
         const json* done = find_event(events, "response.completed");
-        const json* usage = find_event(events, "maic.usage.updated");
-        expect(done && (*done)["response"]["maic"]["final"] == true && usage && (*usage)["calls"] == 1, "response.completed ends the turn, with usage");
-        expect(events.back()["type"] == "maic.session.state" && events.back()["activity"] == "idle", "the stream ends when the session is idle");
+        const json* usage = find_event(events, "maid.usage.updated");
+        expect(done && (*done)["response"]["maid"]["final"] == true && usage && (*usage)["calls"] == 1, "response.completed ends the turn, with usage");
+        expect(events.back()["type"] == "maid.session.state" && events.back()["activity"] == "idle", "the stream ends when the session is idle");
         long first = events.front()["sequence_number"], last = events.back()["sequence_number"];
         expect(last - first + 1 == static_cast<long>(events.size()), "every event has its sequence_number, one more each time");
         json s2 = api.get("/api/sessions/" + id);
@@ -311,7 +311,7 @@ int main() {
         api.post("/api/sessions/" + id + "/messages", {{"text", ""}}, &status);
         expect(status == 400, "an empty message is a 400");
         json origin_check = fake.last_request();
-        expect(origin_check["messages"][0]["content"].get<std::string>().find("inside MAIC") != std::string::npos, "the model gets the normal briefing");
+        expect(origin_check["messages"][0]["content"].get<std::string>().find("inside MAID") != std::string::npos, "the model gets the normal briefing");
     }
 
     section("approval round trip: a remote request is asked even in edit mode");
@@ -341,10 +341,10 @@ int main() {
         api.post("/api/sessions/" + sid + "/approvals/" + approval["id"].get<std::string>(), {{"choice", "yes"}}, &status);
         expect(status == 200, "yes is accepted");
         streaming.join();
-        const json* answered = find_event(events, "maic.approval.answered");
+        const json* answered = find_event(events, "maid.approval.answered");
         const json* result = tool_result(events);
-        expect(find_event(events, "maic.approval.requested") && answered && (*answered)["choice"] == "yes", "the stream shows the request and the answer");
-        expect(result && (*result)["item"]["maic"]["ok"] == true && slurp(root / "ws" / "note.txt") == "hello", "the approved write happened");
+        expect(find_event(events, "maid.approval.requested") && answered && (*answered)["choice"] == "yes", "the stream shows the request and the answer");
+        expect(result && (*result)["item"]["maid"]["ok"] == true && slurp(root / "ws" / "note.txt") == "hello", "the approved write happened");
         expect(api.get("/api/sessions/" + sid)["pending_approval"].is_null(), "nothing is pending afterwards");
         std::string transcript = slurp(find_session(sid)->path);
         expect(transcript.find("\"origin\":\"remote\"") != std::string::npos && transcript.find("\"approval\":\"yes\"") != std::string::npos,
@@ -366,7 +366,7 @@ int main() {
         api.post("/api/sessions/" + sid + "/approvals/" + approval["id"].get<std::string>(), {{"choice", "no"}, {"feedback", "use the docs folder"}});
         streaming.join();
         const json* result = tool_result(events);
-        expect(result && (*result)["item"]["maic"]["ok"] == false && (*result)["item"]["output"].get<std::string>().find("use the docs folder") != std::string::npos,
+        expect(result && (*result)["item"]["maid"]["ok"] == false && (*result)["item"]["output"].get<std::string>().find("use the docs folder") != std::string::npos,
                "the reason reaches the model as the tool result");
         bool fed_back = false;
         json last = fake.last_request();
@@ -400,19 +400,19 @@ int main() {
             if (e["type"] == "response.output_item.done" && e["item"]["type"] == "shell_call_output") result_at = i;
             if (e["type"] != "response.shell_call_output_content.delta") continue;
             last_delta = i;
-            shaped = shaped && e["item_id"].get<std::string>().rfind("~", 0) == 0 && e["output_index"].is_number() && e["delta"]["stdout"].is_string() && e["delta"]["stderr"] == "" && e["maic"]["offset"].is_number();
-            size_t offset = e["maic"]["offset"];
+            shaped = shaped && e["item_id"].get<std::string>().rfind("~", 0) == 0 && e["output_index"].is_number() && e["delta"]["stdout"].is_string() && e["delta"]["stderr"] == "" && e["maid"]["offset"].is_number();
+            size_t offset = e["maid"]["offset"];
             ordered = ordered && offset >= next;
-            if (e["maic"].contains("skipped")) {
-                skipped += e["maic"]["skipped"].get<size_t>();
-                next = offset + e["maic"]["skipped"].get<size_t>();
+            if (e["maid"].contains("skipped")) {
+                skipped += e["maid"]["skipped"].get<size_t>();
+                next = offset + e["maid"]["skipped"].get<size_t>();
                 shaped = shaped && e["delta"]["stdout"] == "";
             } else {
                 data += e["delta"]["stdout"].get<std::string>();
                 next = offset + e["delta"]["stdout"].get<std::string>().size();
             }
         }
-        expect(shaped && ordered, "each chunk is a response.shell_call_output_content.delta with item_id, output_index, delta {stdout, stderr} and maic.offset, in order");
+        expect(shaped && ordered, "each chunk is a response.shell_call_output_content.delta with item_id, output_index, delta {stdout, stderr} and maid.offset, in order");
         expect(data.rfind("tick1\ntick2\ntick3\n", 0) == 0, "the ticks arrive as the command prints them");
         expect(data.size() + skipped == 18 + 1048576, "sent and skipped bytes add up to the whole output: " + std::to_string(data.size()) + " + " + std::to_string(skipped));
         expect(skipped > 0 && data.size() <= 64 * 1024 * (1 + seconds) + 16 * 1024,
@@ -424,7 +424,7 @@ int main() {
         bool folded = true;
         for (const auto& e : entries) folded = folded && e["type"] != "response.shell_call_output_content.delta";
         expect(folded, "the folded transcript leaves the deltas out");
-        const json& kept = events[result_at]["item"]["maic"];
+        const json& kept = events[result_at]["item"]["maid"];
         expect(kept.contains("full_output") && kept["full_output"]["session"] == sid && kept["full_output"]["call"] == "call_1" &&
                    kept["full_output"]["bytes"] == 18 + 1048576 && kept["full_output"]["label"] == "full output, display only: the model saw the capped result",
                "the output item says the whole output was kept, labelled display only");
@@ -457,7 +457,7 @@ int main() {
         json r = api.post("/api/sessions/" + sid + "/interrupt", json::object(), &status);
         expect(status == 200 && r["interrupting"] == true, "interrupt reaches a running turn");
         streaming.join();
-        const json* done = find_event(events, "maic.response.cancelled");
+        const json* done = find_event(events, "maid.response.cancelled");
         expect(done && (*done)["response"]["status"] == "cancelled" && std::chrono::steady_clock::now() - t0 < 3s, "the turn stops quickly and says so");
         expect(api.get("/api/sessions/" + sid)["running"] == false, "the session is idle again");
         {
@@ -476,8 +476,8 @@ int main() {
         expect(approval.is_object(), "an approval is waiting");
         api.post("/api/sessions/" + sid + "/interrupt", json::object());
         streaming2.join();
-        const json* answered = find_event(events2, "maic.approval.answered");
-        expect(answered && (*answered)["choice"] == "no" && find_event(events2, "maic.response.cancelled"), "interrupt denies the pending approval and ends the turn");
+        const json* answered = find_event(events2, "maid.approval.answered");
+        expect(answered && (*answered)["choice"] == "no" && find_event(events2, "maid.response.cancelled"), "interrupt denies the pending approval and ends the turn");
     }
 
     section("mode and status");
@@ -495,7 +495,7 @@ int main() {
 
     section("tls");
     {
-        server::TlsPair pair = server::ensure_self_signed(root / "tls" / "cert.pem", root / "tls" / "key.pem", {"127.0.0.1", "maic-test"});
+        server::TlsPair pair = server::ensure_self_signed(root / "tls" / "cert.pem", root / "tls" / "key.pem", {"127.0.0.1", "maid-test"});
         expect(fs::exists(pair.cert) && fs::exists(pair.key) && pair.fingerprint.size() == 95, "a self-signed pair is generated: " + pair.fingerprint);
         struct stat st {};
         expect(stat(pair.key.c_str(), &st) == 0 && (st.st_mode & 0777) == 0600, "the private key is 0600");
@@ -526,7 +526,7 @@ int main() {
     {
         fs::path dir = root / "ws" / "remote-proj";
         fs::create_directories(dir);
-        std::ofstream(dir / "MAIC.md") << "rules\n";
+        std::ofstream(dir / "MAID.md") << "rules\n";
         int status = 0;
         json r = api.post("/api/trust", {{"path", dir.string()}, {"action", "trust"}}, &status);
         std::string unavailable = "step-up verification is not available until accounts land (docs/design/accounts.md)";
@@ -587,9 +587,9 @@ int main() {
         expect(threw && !fs::exists(root / "evil"), "an id outside the safe charset is refused");
         auto list = server::list_artifacts(arts);
         expect(list.size() == 2 && list[0].id == "demo" && list[0].trust == "sandboxed" && list[0].data == std::vector<std::string>{"seed"}, "list shows each artifact, sandboxed, with its data");
-        std::ofstream(arts / "other" / ".maic-artifact.json") << "{\"trust\": \"Trusted\"}";
+        std::ofstream(arts / "other" / ".maid-artifact.json") << "{\"trust\": \"Trusted\"}";
         expect(server::artifact_trust(arts / "other") == "sandboxed", "an unknown trust value counts as sandboxed");
-        std::ofstream(arts / "other" / ".maic-artifact.json") << "{\"trust\": \"trusted\"}";
+        std::ofstream(arts / "other" / ".maid-artifact.json") << "{\"trust\": \"trusted\"}";
         expect(server::artifact_trust(arts / "other") == "trusted", "the trusted flag is recorded (and loosens nothing)");
         expect(!server::artifact_allow_insecure(arts / "demo") && !list[0].allow_insecure, "ALLOW_INSECURE is off by default");
         server::set_artifact_allow_insecure(arts / "other", true);
@@ -597,12 +597,12 @@ int main() {
         server::set_artifact_allow_insecure(arts / "other", false);
         expect(!server::artifact_allow_insecure(arts / "other") && server::artifact_trust(arts / "other") == "trusted", "turning it off is read back");
         for (std::string junk : {"\"true\"", "1", "\"yes\"", "null", "[true]", "{}"}) {
-            std::ofstream(arts / "other" / ".maic-artifact.json") << "{\"trust\": \"trusted\", \"ALLOW_INSECURE\": " << junk << "}";
+            std::ofstream(arts / "other" / ".maid-artifact.json") << "{\"trust\": \"trusted\", \"ALLOW_INSECURE\": " << junk << "}";
             expect(!server::artifact_allow_insecure(arts / "other"), "a junk ALLOW_INSECURE value counts as off: " + junk);
         }
-        std::ofstream(arts / "other" / ".maic-artifact.json") << "not json";
+        std::ofstream(arts / "other" / ".maid-artifact.json") << "not json";
         expect(!server::artifact_allow_insecure(arts / "other"), "an unreadable record counts as off");
-        std::ofstream(arts / "other" / ".maic-artifact.json") << "{\"trust\": \"trusted\"}";
+        std::ofstream(arts / "other" / ".maid-artifact.json") << "{\"trust\": \"trusted\"}";
         // Planted after the copy: what add never makes, the server must still refuse.
         std::ofstream(root / "outside" / "secret.txt") << "secret\n";
         std::ofstream(arts / "demo" / ".hidden") << "hidden\n";
@@ -631,7 +631,7 @@ int main() {
         r = c.Get(page);
         std::string csp = r ? r->get_header_value("Content-Security-Policy") : "";
         expect(r && r->status == 200 && r->get_header_value("Content-Type") == "text/html; charset=utf-8" &&
-                   r->body.find("<HEAD><meta name=\"maic-artifact-token\" content=\"" + cap + "\"><title>") != std::string::npos,
+                   r->body.find("<HEAD><meta name=\"maid-artifact-token\" content=\"" + cap + "\"><title>") != std::string::npos,
                "the page is served under the capability, carrying it in a meta tag first in its head");
         expect(csp.rfind("sandbox allow-scripts allow-forms allow-modals allow-downloads;", 0) == 0 && csp.find("allow-same-origin") == std::string::npos &&
                    csp.find("default-src 'none'") != std::string::npos && csp.find("script-src " + origin + page + " " + origin + "/a/_vendor/;") != std::string::npos &&
@@ -677,7 +677,7 @@ int main() {
             server::set_artifact_allow_insecure(arts / "demo", false);
             r = c.Get(page);
             expect(r && r->get_header_value("Content-Security-Policy") == csp, "turned off, the policy is the strict one again");
-            std::ofstream(arts / "demo" / ".maic-artifact.json") << "{\"trust\": \"sandboxed\", \"ALLOW_INSECURE\": \"true\"}";
+            std::ofstream(arts / "demo" / ".maid-artifact.json") << "{\"trust\": \"sandboxed\", \"ALLOW_INSECURE\": \"true\"}";
             r = c.Get(page);
             expect(r && r->get_header_value("Content-Security-Policy") == csp, "a junk ALLOW_INSECURE value served as off: no 'unsafe-eval'");
         }
@@ -690,7 +690,7 @@ int main() {
         expect(types, "every file has its content type and the sandbox, a symlink inside the folder included");
         bool contained = true;
         for (std::string bad : {"../other/index.html", "%2e%2e/%2e%2e/outside/secret.txt", "sub/../app.js", ".hidden", "escape.js", "dot.js", "sub/", "sub", "data/../app.js",
-                                 ".maic-artifact.json", "a//b"}) {
+                                 ".maid-artifact.json", "a//b"}) {
             auto b = c.Get(page + bad);
             contained = contained && b && b->status == 404 && sandboxed(b) && b->body.find("secret\n") == std::string::npos;
         }
@@ -713,7 +713,7 @@ int main() {
         r = c.Get("/a/other~" + cap + "/app.js");
         r2 = c.Get("/a/other~" + cap + "/data/seed.json");
         expect(r && r->status == 401 && r2 && r2->status == 401 && sandboxed(r2) && !r2->has_header("Access-Control-Allow-Origin"), "nor its files or data");
-        r = c.Get(page + "data/seed.json", {{"X-Maic-Artifact-Token", "not-" + cap.substr(4)}});
+        r = c.Get(page + "data/seed.json", {{"X-Maid-Artifact-Token", "not-" + cap.substr(4)}});
         expect(r && r->status == 401, "a header token that is not the path's capability is refused");
         reopen();
         r = c.Get("/api/status", {{"Authorization", "Bearer " + cap}});
@@ -721,22 +721,22 @@ int main() {
         r = c.Get("/a/demo/", {{"Authorization", "Bearer " + cap}});
         expect(r && r->status == 401, "nor for an artifact's login");
         reopen();
-        r = c.Get("/api/status", {{"Authorization", "Bearer " + token}, {"X-Maic-Artifact-Token", cap}});
+        r = c.Get("/api/status", {{"Authorization", "Bearer " + token}, {"X-Maid-Artifact-Token", cap}});
         expect(r && r->status == 403, "the session API refuses a request carrying an artifact token, even with a bearer token");
         r = c.Get("/api/status", {{"Authorization", "Bearer " + token}, {"Origin", "null"}});
         r2 = c.Get("/", {{"Origin", "null"}});
         expect(r && r->status == 403 && r2 && r2->status == 403, "and any request with Origin null, a sandboxed page's");
 
         section("artifact data");
-        httplib::Headers h = {{"X-Maic-Artifact-Token", cap}};
+        httplib::Headers h = {{"X-Maid-Artifact-Token", cap}};
         auto with = [&](httplib::Headers more) {
             more.insert(h.begin(), h.end());
             return more;
         };
         std::string answers = page + "data/answers.json";
-        r = c.Options(answers, {{"Origin", "null"}, {"Access-Control-Request-Method", "PUT"}, {"Access-Control-Request-Headers", "x-maic-artifact-token,if-match"}});
+        r = c.Options(answers, {{"Origin", "null"}, {"Access-Control-Request-Method", "PUT"}, {"Access-Control-Request-Headers", "x-maid-artifact-token,if-match"}});
         expect(r && r->status == 204 && r->get_header_value("Access-Control-Allow-Origin") == "*" && r->get_header_value("Access-Control-Allow-Methods") == "GET, PUT" &&
-                   r->get_header_value("Access-Control-Allow-Headers").find("X-Maic-Artifact-Token") != std::string::npos,
+                   r->get_header_value("Access-Control-Allow-Headers").find("X-Maid-Artifact-Token") != std::string::npos,
                "the preflight is answered for the data route");
         // The sequence the comfymaid-review page runs (templates/comfymaid-review/local/app.js).
         r = c.Get(answers, h);
@@ -786,19 +786,19 @@ int main() {
         std::string set = r ? r->get_header_value("Set-Cookie") : "";
         std::string login = set.substr(set.find('=') + 1, 32);
         expect(r && r->status == 303 && r->get_header_value("Location").rfind("/a/demo~", 0) == 0 && sandboxed(r), "the one-time link goes straight to a capability");
-        expect(set.rfind("maic_artifacts=", 0) == 0 && set.find("; Path=/a/; HttpOnly; SameSite=Strict") != std::string::npos, "and sets the login cookie, HttpOnly, SameSite=Strict, for /a/ only");
+        expect(set.rfind("maid_artifacts=", 0) == 0 && set.find("; Path=/a/; HttpOnly; SameSite=Strict") != std::string::npos, "and sets the login cookie, HttpOnly, SameSite=Strict, for /a/ only");
         r = c.Get("/a/_login?code=" + code + "&to=demo");
         expect(r && r->status == 401 && sandboxed(r), "the link works once");
-        httplib::Headers cookie = {{"Cookie", "theme=dark; maic_artifacts=" + login}};
+        httplib::Headers cookie = {{"Cookie", "theme=dark; maid_artifacts=" + login}};
         r = c.Get("/a/demo/", cookie);
         expect(r && r->status == 303 && r->get_header_value("Location").rfind("/a/demo~", 0) == 0, "the cookie opens an artifact later");
-        r = c.Get("/a/demo/", {{"Cookie", "maic_artifacts=" + login}, {"Origin", "null"}});
-        r2 = c.Get("/a/demo/", {{"Cookie", "maic_artifacts=" + login}, {"Sec-Fetch-Site", "cross-site"}});
+        r = c.Get("/a/demo/", {{"Cookie", "maid_artifacts=" + login}, {"Origin", "null"}});
+        r2 = c.Get("/a/demo/", {{"Cookie", "maid_artifacts=" + login}, {"Sec-Fetch-Site", "cross-site"}});
         expect(r && r->status == 401 && r2 && r2->status == 401, "but not from a sandboxed page or another site");
         r = c.Get("/api/status", cookie);
         expect(r && r->status == 401, "and the session API never takes it");
         c.Get("/a/demo/", cookie);
-        r = c.Get("/a/demo/", {{"Cookie", "maic_artifacts=" + cap}});
+        r = c.Get("/a/demo/", {{"Cookie", "maid_artifacts=" + cap}});
         r2 = c.Get("/a/demo~" + login + "/");
         expect(r && r->status == 401 && r2 && r2->status == 303 && r2->get_header_value("Location") == "/a/demo/", "a capability is no login, and a login no capability");
         c.Get("/a/demo/", cookie);

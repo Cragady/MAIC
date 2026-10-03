@@ -1,5 +1,5 @@
 # LuaJIT from the pinned lua-pins submodule, built out of tree so the submodule stays pristine.
-# Provides the imported target `luajit` (static, with include dir) for maic_core.
+# Provides the imported target `luajit` (static, with include dir) for maid_core.
 #
 # The source is exactly the revision Neovim v0.12.2 builds against; see vendor/VENDORING.
 set(LUAJIT_SRC "${PROJECT_SOURCE_DIR}/vendor/lua-pins/luajit-2.1.1774638290/luajit")
@@ -12,7 +12,7 @@ endif()
 
 file(GLOB_RECURSE LUAJIT_SOURCES CONFIGURE_DEPENDS "${LUAJIT_SRC}/src/*.c" "${LUAJIT_SRC}/src/*.h" "${LUAJIT_SRC}/src/Makefile" "${LUAJIT_SRC}/dynasm/*")
 
-# Copy the tree, then run its own Makefile: static library only, position independent so it links into maic.
+# Copy the tree, then run its own Makefile: static library only, position independent so it links into maid.
 add_custom_command(
     OUTPUT "${LUAJIT_LIB}"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${LUAJIT_BUILD}"

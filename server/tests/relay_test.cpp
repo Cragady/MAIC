@@ -1,14 +1,14 @@
-// The relay, the tunnel crypto, the pairing exchange, and the whole path: a maic-server dialling a loopback
-// maic-relay, a fake phone that pairs over the LAN and then asks /api/status through the relay.
+// The relay, the tunnel crypto, the pairing exchange, and the whole path: a maid-server dialling a loopback
+// maid-relay, a fake phone that pairs over the LAN and then asks /api/status through the relay.
 #include "check.hpp"
 
 #include "auth.hpp"
-#include "maic/paths.hpp"
+#include "maid/paths.hpp"
 #include "relay.hpp"
 #include "server.hpp"
 #include "tunnel.hpp"
 
-#include "maic/http.hpp"
+#include "maid/http.hpp"
 
 #include <sys/stat.h>
 
@@ -21,7 +21,7 @@
 #include <sstream>
 #include <thread>
 
-using namespace maic;
+using namespace maid;
 using nlohmann::json;
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
@@ -219,7 +219,7 @@ struct RunningRelay {
 }  // namespace
 
 int main() {
-    fs::path root = fs::temp_directory_path() / "maic-relay-test";
+    fs::path root = fs::temp_directory_path() / "maid-relay-test";
     fs::remove_all(root);
     fs::create_directories(root / "state");
     fs::create_directories(root / "ws");
@@ -320,15 +320,15 @@ int main() {
         server::SessionKeys at_phone = server::derive_session(phone_static, phone_eph, home_static.pk, home_eph.pk, false);
         server::SessionKeys at_home = server::derive_session(home_static, home_eph, phone_static.pk, phone_eph.pk, true);
         expect(at_phone.to_home == at_home.to_home && at_phone.to_phone == at_home.to_phone, "both ends derive the same two keys");
-        expect(hex(std::string(reinterpret_cast<const char*>(at_phone.to_home.data()), 32)) == "4e9588819afb1555ae99e31bfb04279d0bff0bea31178470fc72ef93f0805c17" &&
-                   hex(std::string(reinterpret_cast<const char*>(at_phone.to_phone.data()), 32)) == "4bb80b6df72d6a086ed7769fee3105cae2e39298f563bb7c44b52211edca1eae",
+        expect(hex(std::string(reinterpret_cast<const char*>(at_phone.to_home.data()), 32)) == "e41686e59b8e259961fcc23c36258b02d8cae64c20ba4a4a1b51e4fef4b515cb" &&
+                   hex(std::string(reinterpret_cast<const char*>(at_phone.to_phone.data()), 32)) == "dc8fc06e7c9de424952ff10629baf6c47bf3cc48232390f2ccfce1bcb0edfd01",
                "and they are the vector the web client's test checks (X25519, RFC 7748 arithmetic; HKDF over the three shared secrets)");
         server::Sealer sealer(at_phone.to_home);
         std::string m0 = server::message(server::Kind::Request, 7, "{\"method\":\"GET\",\"path\":\"/api/status\",\"headers\":{}}\n");
         std::string body0 = sealer.seal(m0), body1 = sealer.seal(server::message(server::Kind::End, 7, ""));
-        expect(hex(body0) == "00000000000000000000000000000000000000000000000089af5f3f097bb2e3dfb40f1a891728bb9bcb3f41e849cff2727a9d7398324b3c1da03816178d50b37403149bd5173e66ba556b1dde27654226d4cd633e2d5d86f229e71358d2cefe",
+        expect(hex(body0) == "0000000000000000000000000000000000000000000000007f9bfdaeb7a8ed68c0417a6081d73dd2aaf4a73465436aef509690504bc4b7f9e98d2f2f9a9b98ebedb613f893dbb821bf1c6ede8c098d3d7e1b447747178a1616f4200b03d9cedf",
                "XChaCha20-Poly1305 frame 0 matches the vector (nonce = counter 0)");
-        expect(hex(body1) == "0000000000000001000000000000000000000000000000001239476723a0194ad68846b9cfc3fced83e59588f2", "frame 1 carries counter 1");
+        expect(hex(body1) == "000000000000000100000000000000000000000000000000331f10cd8e3884fd28071c028270b7a45ebf9ab53d", "frame 1 carries counter 1");
         server::Opener opener(at_home.to_home);
         std::string plain;
         expect(!opener.open(body1, plain), "a frame ahead of the counter is refused");
@@ -433,7 +433,7 @@ int main() {
         {
             std::ifstream in(state / "relay.json");
             json rj = json::parse(in, nullptr, false);
-            expect(rj.is_object() && rj["connected"] == true, "relay.json says so for `maic server status`");
+            expect(rj.is_object() && rj["connected"] == true, "relay.json says so for `maid server status`");
         }
 
         // The LAN exchange, as the web client's pairing screen does it.
@@ -510,7 +510,7 @@ int main() {
             store.remove("phone");
         }
         for (int i = 0; i < 100 && !(get(lan, "/api/status", token)["relay"]["connected"] == true); ++i) std::this_thread::sleep_for(50ms);
-        expect(!phone.connect(r.base, pairing_id, *home_pk), "after `maic server unpair` the phone is refused on its next connection");
+        expect(!phone.connect(r.base, pairing_id, *home_pk), "after `maid server unpair` the phone is refused on its next connection");
         for (int i = 0; i < 100 && !(get(lan, "/api/status", token)["relay"]["connected"] == true); ++i) std::this_thread::sleep_for(50ms);
         st = get(lan, "/api/status", token);
         expect(st["relay"]["connected"] == true, "and the home is back up for the next one");

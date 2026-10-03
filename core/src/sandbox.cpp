@@ -1,5 +1,5 @@
-#include "maic/sandbox.hpp"
-#include "maic/paths.hpp"
+#include "maid/sandbox.hpp"
+#include "maid/paths.hpp"
 
 #include <fcntl.h>
 #include <poll.h>
@@ -20,7 +20,7 @@
 #include <thread>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
@@ -46,22 +46,22 @@ constexpr size_t kQueuedBytes = 2 * 1024 * 1024;
 constexpr auto kDrainGrace = std::chrono::milliseconds(200);
 
 // The environment a sandboxed program gets, and nothing else: bwrap starts it with --clearenv and sets these
-// from MAIC's own environment when they are set, plus every LC_* variable. MAIC sets no variable of its own for
+// from MAID's own environment when they are set, plus every LC_* variable. MAID sets no variable of its own for
 // commands or script tools. Never here: a way out of the sandbox (DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR,
 // SSH_AUTH_SOCK, GPG_AGENT_INFO, NVIM, DISPLAY, WAYLAND_DISPLAY) or a credential (*_TOKEN, *_KEY, *_SECRET).
 // A variable a tool truly needs is added here with the reason (docs/harness.md, Sandboxed commands).
 constexpr const char* kPassedEnv[] = {
     "PATH", "HOME", "USER", "LOGNAME", "LANG", "TERM", "TZ", "SHELL",
-    // MAIC's own helpers on the default allow list (maic path, maic status, maic sessions) read the session's
+    // MAID's own helpers on the default allow list (maid path, maid status, maid sessions) read the session's
     // config and state, not the defaults
     "XDG_CONFIG_HOME", "XDG_STATE_HOME",
 };
 
-// Where the system's /run and /nix are: /, or for tests only MAIC_SANDBOX_ROOT under MAIC_TESTING=1, so fake
+// Where the system's /run and /nix are: /, or for tests only MAID_SANDBOX_ROOT under MAID_TESTING=1, so fake
 // NixOS trees in a temporary directory stand in for the real ones.
 fs::path system_root() {
-    const char* testing = std::getenv("MAIC_TESTING");
-    const char* root = std::getenv("MAIC_SANDBOX_ROOT");
+    const char* testing = std::getenv("MAID_TESTING");
+    const char* root = std::getenv("MAID_SANDBOX_ROOT");
     if (testing && std::string_view(testing) == "1" && root && *root) return fs::weakly_canonical(root);
     return "/";
 }
@@ -156,7 +156,7 @@ std::vector<std::string> bwrap_args(const fs::path& workspace, bool read_only, c
         "--tmpfs", "/tmp",
     };
     bind_workspace_hiding_sockets(args, workspace, read_only);
-    // Hide secrets behind empty directories. /var/lib/maic stays visible read-only so tools can see the lock.
+    // Hide secrets behind empty directories. /var/lib/maid stays visible read-only so tools can see the lock.
     fs::path home = std::getenv("HOME");
     for (const char* p : {".ssh", ".gnupg", ".aws", ".kube", ".docker", ".password-store", ".local/share/keyrings", ".ollama"}) {
         if (fs::is_directory(home / p) && !fs::equivalent(home / p, workspace)) {
@@ -310,7 +310,7 @@ private:
     std::thread thread_;  // last: it starts in the constructor and uses everything above
 };
 
-// A write to a child that has already gone raises SIGPIPE, which would end MAIC: block it on this thread for the
+// A write to a child that has already gone raises SIGPIPE, which would end MAID: block it on this thread for the
 // write and swallow the one it may have left pending.
 ssize_t write_quietly(int fd, const char* data, size_t n) {
     sigset_t pipe_only, before;
@@ -348,7 +348,7 @@ SandboxResult spawn(std::vector<std::string>& args, const std::string& input, bo
     }
     if (pid == 0) {
         setpgid(0, 0);
-        // An ignored SIGPIPE is inherited through exec, and a process with an httplib server (maic-server) ignores
+        // An ignored SIGPIPE is inherited through exec, and a process with an httplib server (maid-server) ignores
         // it: without this, `seq 1 1000000 | head` would print "write error: Broken pipe" instead of ending quietly.
         signal(SIGPIPE, SIG_DFL);
         if (feed_input) {
@@ -360,7 +360,7 @@ SandboxResult spawn(std::vector<std::string>& args, const std::string& input, bo
         dup2(out[1], STDOUT_FILENO);
         dup2(separate_stderr ? err[1] : out[1], STDERR_FILENO);
         execvp(argv[0], argv.data());
-        dprintf(STDERR_FILENO, "maic: can't run bwrap: %s\n", std::strerror(errno));
+        dprintf(STDERR_FILENO, "maid: can't run bwrap: %s\n", std::strerror(errno));
         _exit(127);
     }
     close(out[1]);
@@ -474,4 +474,4 @@ SandboxResult run_sandboxed_argv(const std::vector<std::string>& argv, const std
     return spawn(args, input, true, true, timeout, cancel, taps);
 }
 
-}  // namespace maic
+}  // namespace maid

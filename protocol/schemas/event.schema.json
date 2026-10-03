@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "maic.event: one session event",
-  "description": "The params of a maic.event notification: one event, exactly as the Responses WebSocket would send it, plus stream_id (the session id). The union over `type`, as OpenAI's ResponseStreamEvent is: OpenAI's events by $ref into ../openai/subset.json, then MAIC's own maic.* events. Exactly the types the engine emits (docs/design/engine-protocol.md, section 3); the order they come in is ordering.json.",
+  "title": "maid.event: one session event",
+  "description": "The params of a maid.event notification: one event, exactly as the Responses WebSocket would send it, plus stream_id (the session id). The union over `type`, as OpenAI's ResponseStreamEvent is: OpenAI's events by $ref into ../openai/subset.json, then MAID's own maid.* events. Exactly the types the engine emits (docs/design/engine-protocol.md, section 3); the order they come in is ordering.json.",
   "anyOf": [
     {
       "$ref": "#/$defs/response.created"
@@ -67,61 +67,61 @@
       "$ref": "#/$defs/response.shell_call_output_content.done"
     },
     {
-      "$ref": "#/$defs/maic.response.cancelled"
+      "$ref": "#/$defs/maid.response.cancelled"
     },
     {
-      "$ref": "#/$defs/maic.steer.applied"
+      "$ref": "#/$defs/maid.steer.applied"
     },
     {
-      "$ref": "#/$defs/maic.turn.paused"
+      "$ref": "#/$defs/maid.turn.paused"
     },
     {
-      "$ref": "#/$defs/maic.input.added"
+      "$ref": "#/$defs/maid.input.added"
     },
     {
-      "$ref": "#/$defs/maic.approval.requested"
+      "$ref": "#/$defs/maid.approval.requested"
     },
     {
-      "$ref": "#/$defs/maic.approval.answered"
+      "$ref": "#/$defs/maid.approval.answered"
     },
     {
-      "$ref": "#/$defs/maic.question.asked"
+      "$ref": "#/$defs/maid.question.asked"
     },
     {
-      "$ref": "#/$defs/maic.question.answered"
+      "$ref": "#/$defs/maid.question.answered"
     },
     {
-      "$ref": "#/$defs/maic.tool.output.delta"
+      "$ref": "#/$defs/maid.tool.output.delta"
     },
     {
-      "$ref": "#/$defs/maic.file.written"
+      "$ref": "#/$defs/maid.file.written"
     },
     {
-      "$ref": "#/$defs/maic.notice"
+      "$ref": "#/$defs/maid.notice"
     },
     {
-      "$ref": "#/$defs/maic.todo.updated"
+      "$ref": "#/$defs/maid.todo.updated"
     },
     {
-      "$ref": "#/$defs/maic.session.state"
+      "$ref": "#/$defs/maid.session.state"
     },
     {
-      "$ref": "#/$defs/maic.session.settings"
+      "$ref": "#/$defs/maid.session.settings"
     },
     {
-      "$ref": "#/$defs/maic.session.title"
+      "$ref": "#/$defs/maid.session.title"
     },
     {
-      "$ref": "#/$defs/maic.usage.updated"
+      "$ref": "#/$defs/maid.usage.updated"
     },
     {
-      "$ref": "#/$defs/maic.task.created"
+      "$ref": "#/$defs/maid.task.created"
     },
     {
-      "$ref": "#/$defs/maic.task.completed"
+      "$ref": "#/$defs/maid.task.completed"
     },
     {
-      "$ref": "#/$defs/maic.task.failed"
+      "$ref": "#/$defs/maid.task.failed"
     }
   ],
   "$defs": {
@@ -141,16 +141,16 @@
           "type": "string",
           "minLength": 1
         },
-        "maic": {
+        "maid": {
           "type": "object",
           "properties": {
             "filtered_from": {
-              "description": "The first sequence_number filtered out of this connection's stream (maic.hello's `exclude`) since the last event it was sent: the numbers from it up to this event's, or its merged_from's, are accounted for.",
+              "description": "The first sequence_number filtered out of this connection's stream (maid.hello's `exclude`) since the last event it was sent: the numbers from it up to this event's, or its merged_from's, are accounted for.",
               "type": "integer",
               "minimum": 0
             },
             "cause": {
-              "description": "The sequence_number of the event that caused this one, where OpenAI's own fields do not already say it: on response.created, the maic.input.added of the input the response answers.",
+              "description": "The sequence_number of the event that caused this one, where OpenAI's own fields do not already say it: on response.created, the maid.input.added of the input the response answers.",
               "type": "integer",
               "minimum": 0
             }
@@ -163,8 +163,8 @@
         "stream_id"
       ]
     },
-    "Maic": {
-      "description": "MAIC's fields on an OpenAI event.",
+    "Maid": {
+      "description": "MAID's fields on an OpenAI event.",
       "type": "object"
     },
     "response.created": {
@@ -178,18 +178,18 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             },
             "response": {
               "type": "object",
               "properties": {
-                "maic": {
-                  "$ref": "maic.schema.json#/$defs/ResponseMaic"
+                "maid": {
+                  "$ref": "maid.schema.json#/$defs/ResponseMaid"
                 }
               },
               "required": [
-                "maic"
+                "maid"
               ]
             }
           }
@@ -207,18 +207,18 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             },
             "response": {
               "type": "object",
               "properties": {
-                "maic": {
-                  "$ref": "maic.schema.json#/$defs/ResponseMaic"
+                "maid": {
+                  "$ref": "maid.schema.json#/$defs/ResponseMaid"
                 }
               },
               "required": [
-                "maic"
+                "maid"
               ]
             }
           }
@@ -236,18 +236,18 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             },
             "response": {
               "type": "object",
               "properties": {
-                "maic": {
-                  "$ref": "maic.schema.json#/$defs/ResponseMaic"
+                "maid": {
+                  "$ref": "maid.schema.json#/$defs/ResponseMaid"
                 }
               },
               "required": [
-                "maic"
+                "maid"
               ]
             }
           }
@@ -265,18 +265,18 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             },
             "response": {
               "type": "object",
               "properties": {
-                "maic": {
-                  "$ref": "maic.schema.json#/$defs/ResponseMaic"
+                "maid": {
+                  "$ref": "maid.schema.json#/$defs/ResponseMaid"
                 }
               },
               "required": [
-                "maic"
+                "maid"
               ]
             }
           }
@@ -295,18 +295,18 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             },
             "response": {
               "type": "object",
               "properties": {
-                "maic": {
-                  "$ref": "maic.schema.json#/$defs/ResponseMaic"
+                "maid": {
+                  "$ref": "maid.schema.json#/$defs/ResponseMaid"
                 }
               },
               "required": [
-                "maic"
+                "maid"
               ]
             }
           }
@@ -314,7 +314,7 @@
       ]
     },
     "error": {
-      "description": "OpenAI's error event: a halted turn's (`code: \"maic_halted\"`, the halt message), before its maic.response.cancelled.",
+      "description": "OpenAI's error event: a halted turn's (`code: \"maid_halted\"`, the halt message), before its maid.response.cancelled.",
       "allOf": [
         {
           "$ref": "#/$defs/Envelope"
@@ -325,15 +325,15 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             }
           }
         }
       ]
     },
     "response.steer.accepted": {
-      "description": "The engine owns a steer's input (response.steer, or maic.steer's steer, drop and further); the successor's response.created commits it.",
+      "description": "The engine owns a steer's input (response.steer, or maid.steer's steer, drop and further); the successor's response.created commits it.",
       "allOf": [
         {
           "$ref": "#/$defs/Envelope"
@@ -344,8 +344,8 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             }
           }
         }
@@ -363,8 +363,8 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             }
           }
         }
@@ -381,14 +381,14 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             },
             "item": {
               "type": "object",
               "properties": {
-                "maic": {
-                  "$ref": "maic.schema.json#/$defs/ItemMaic"
+                "maid": {
+                  "$ref": "maid.schema.json#/$defs/ItemMaid"
                 }
               }
             }
@@ -407,14 +407,14 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             },
             "item": {
               "type": "object",
               "properties": {
-                "maic": {
-                  "$ref": "maic.schema.json#/$defs/ItemMaic"
+                "maid": {
+                  "$ref": "maid.schema.json#/$defs/ItemMaid"
                 }
               }
             }
@@ -433,8 +433,8 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             }
           }
         }
@@ -451,8 +451,8 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             }
           }
         }
@@ -469,7 +469,7 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
+            "maid": {
               "type": "object",
               "properties": {
                 "merged_from": {
@@ -481,7 +481,7 @@
           }
         }
       ],
-      "description": "A slow connection may get several deltas of one item merged into one, carrying the last sequence_number and maic.merged_from, the first it covers."
+      "description": "A slow connection may get several deltas of one item merged into one, carrying the last sequence_number and maid.merged_from, the first it covers."
     },
     "response.output_text.done": {
       "allOf": [
@@ -494,8 +494,8 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             }
           }
         }
@@ -512,7 +512,7 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
+            "maid": {
               "type": "object",
               "properties": {
                 "merged_from": {
@@ -536,8 +536,8 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             }
           }
         }
@@ -554,8 +554,8 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             }
           }
         }
@@ -572,8 +572,8 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             }
           }
         }
@@ -590,8 +590,8 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             }
           }
         }
@@ -608,7 +608,7 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
+            "maid": {
               "type": "object",
               "properties": {
                 "offset": {
@@ -626,11 +626,11 @@
             }
           },
           "required": [
-            "maic"
+            "maid"
           ]
         }
       ],
-      "description": "run_shell's output while it runs. maic.offset is the byte offset in the whole output; maic.skipped, with an empty delta, counts bytes not sent to this connection."
+      "description": "run_shell's output while it runs. maid.offset is the byte offset in the whole output; maid.skipped, with an empty delta, counts bytes not sent to this connection."
     },
     "response.shell_call_output_content.done": {
       "allOf": [
@@ -643,15 +643,15 @@
         {
           "type": "object",
           "properties": {
-            "maic": {
-              "$ref": "#/$defs/Maic"
+            "maid": {
+              "$ref": "#/$defs/Maid"
             }
           }
         }
       ]
     },
-    "maic.response.cancelled": {
-      "description": "A response ended by cancelResponse, or by an interrupt (final: false, the turn paused) or a halt steer: OpenAI defines no stream event for a cancelled response, so MAIC adds one.",
+    "maid.response.cancelled": {
+      "description": "A response ended by cancelResponse, or by an interrupt (final: false, the turn paused) or a halt steer: OpenAI defines no stream event for a cancelled response, so MAID adds one.",
       "allOf": [
         {
           "$ref": "#/$defs/Envelope"
@@ -660,12 +660,12 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.response.cancelled"
+              "const": "maid.response.cancelled"
             },
             "response": {
               "allOf": [
                 {
-                  "$ref": "maic.schema.json#/$defs/MaicResponse"
+                  "$ref": "maid.schema.json#/$defs/MaidResponse"
                 },
                 {
                   "type": "object",
@@ -685,7 +685,7 @@
         }
       ]
     },
-    "maic.steer.applied": {
+    "maid.steer.applied": {
       "description": "One of the six steering actions (section 11), before every event it causes: what it trimmed, which approvals and questions it withdrew, the tool it cancelled or waits for.",
       "allOf": [
         {
@@ -695,7 +695,7 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.steer.applied"
+              "const": "maid.steer.applied"
             },
             "steer": {
               "description": "The steer's id.",
@@ -703,7 +703,7 @@
               "minLength": 1
             },
             "action": {
-              "$ref": "maic.schema.json#/$defs/SteerAction"
+              "$ref": "maid.schema.json#/$defs/SteerAction"
             },
             "trigger": {
               "enum": [
@@ -712,7 +712,7 @@
               ]
             },
             "by": {
-              "$ref": "maic.schema.json#/$defs/By"
+              "$ref": "maid.schema.json#/$defs/By"
             },
             "ban": {
               "description": "A ban's steer: which entry fired, never the matched text.",
@@ -801,7 +801,7 @@
         }
       ]
     },
-    "maic.turn.paused": {
+    "maid.turn.paused": {
       "description": "An interrupt paused the turn after its response was cancelled (final: false); a steer or a message resumes it, keep, halt or cancelResponse ends it.",
       "allOf": [
         {
@@ -811,7 +811,7 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.turn.paused"
+              "const": "maid.turn.paused"
             },
             "turn": {
               "type": "integer",
@@ -835,7 +835,7 @@
         }
       ]
     },
-    "maic.input.added": {
+    "maid.input.added": {
       "description": "What a person typed, naming the client it came from; queued when it was delivered into a running response.",
       "allOf": [
         {
@@ -845,7 +845,7 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.input.added"
+              "const": "maid.input.added"
             },
             "item": {
               "allOf": [
@@ -861,7 +861,7 @@
                     "role": {
                       "const": "user"
                     },
-                    "maic": {
+                    "maid": {
                       "type": "object",
                       "properties": {
                         "images": {
@@ -885,7 +885,7 @@
               "type": "boolean"
             },
             "by": {
-              "$ref": "maic.schema.json#/$defs/By"
+              "$ref": "maid.schema.json#/$defs/By"
             }
           },
           "required": [
@@ -897,7 +897,7 @@
         }
       ]
     },
-    "maic.approval.requested": {
+    "maid.approval.requested": {
       "description": "An action waits for a person. A foreground subagent's names it in `thread` (agent only); a background task's is raised on its own stream and on its parent's, `thread` naming the task's session there, and an answer on either settles both.",
       "allOf": [
         {
@@ -907,7 +907,7 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.approval.requested"
+              "const": "maid.approval.requested"
             },
             "id": {
               "type": "string",
@@ -921,7 +921,7 @@
               "type": "string"
             },
             "thread": {
-              "$ref": "maic.schema.json#/$defs/Thread"
+              "$ref": "maid.schema.json#/$defs/Thread"
             },
             "tool": {
               "type": "string"
@@ -933,7 +933,7 @@
               "type": "string"
             },
             "origin": {
-              "$ref": "maic.schema.json#/$defs/Origin"
+              "$ref": "maid.schema.json#/$defs/Origin"
             },
             "always_covers": {
               "type": "string"
@@ -962,7 +962,7 @@
         }
       ]
     },
-    "maic.approval.answered": {
+    "maid.approval.answered": {
       "description": "The first valid answer; every client closes its prompt.",
       "allOf": [
         {
@@ -972,7 +972,7 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.approval.answered"
+              "const": "maid.approval.answered"
             },
             "id": {
               "type": "string",
@@ -991,7 +991,7 @@
               ]
             },
             "by": {
-              "$ref": "maic.schema.json#/$defs/By"
+              "$ref": "maid.schema.json#/$defs/By"
             }
           },
           "required": [
@@ -1003,7 +1003,7 @@
         }
       ]
     },
-    "maic.question.asked": {
+    "maid.question.asked": {
       "description": "The question tool: the model asks the person.",
       "allOf": [
         {
@@ -1013,14 +1013,14 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.question.asked"
+              "const": "maid.question.asked"
             },
             "id": {
               "type": "string",
               "minLength": 1
             },
             "thread": {
-              "$ref": "maic.schema.json#/$defs/Thread"
+              "$ref": "maid.schema.json#/$defs/Thread"
             },
             "text": {
               "type": "string"
@@ -1041,7 +1041,7 @@
         }
       ]
     },
-    "maic.question.answered": {
+    "maid.question.answered": {
       "description": "The question was answered, or withdrawn.",
       "allOf": [
         {
@@ -1051,14 +1051,14 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.question.answered"
+              "const": "maid.question.answered"
             },
             "id": {
               "type": "string",
               "minLength": 1
             },
             "by": {
-              "$ref": "maic.schema.json#/$defs/By"
+              "$ref": "maid.schema.json#/$defs/By"
             },
             "withdrawn": {
               "type": "boolean"
@@ -1073,8 +1073,8 @@
         }
       ]
     },
-    "maic.tool.output.delta": {
-      "description": "A script tool's stderr, or a Lua tool's maic.shell output, while it runs: `data`, or `skipped` bytes not sent to this connection. A `!cmd` (maic.session.shell) streams the same way with its own item_id and no output_index: it is no response's item.",
+    "maid.tool.output.delta": {
+      "description": "A script tool's stderr, or a Lua tool's maid.shell output, while it runs: `data`, or `skipped` bytes not sent to this connection. A `!cmd` (maid.session.shell) streams the same way with its own item_id and no output_index: it is no response's item.",
       "allOf": [
         {
           "$ref": "#/$defs/Envelope"
@@ -1083,7 +1083,7 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.tool.output.delta"
+              "const": "maid.tool.output.delta"
             },
             "item_id": {
               "type": "string"
@@ -1117,7 +1117,7 @@
         }
       ]
     },
-    "maic.file.written": {
+    "maid.file.written": {
       "description": "A tool call changed this file.",
       "allOf": [
         {
@@ -1127,7 +1127,7 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.file.written"
+              "const": "maid.file.written"
             },
             "path": {
               "type": "string"
@@ -1144,8 +1144,8 @@
         }
       ]
     },
-    "maic.notice": {
-      "description": "A line for the person. A foreground task's calls and their results come as notices too, `kind` saying which; a background task has a stream of its own (maic.task.created).",
+    "maid.notice": {
+      "description": "A line for the person. A foreground task's calls and their results come as notices too, `kind` saying which; a background task has a stream of its own (maid.task.created).",
       "allOf": [
         {
           "$ref": "#/$defs/Envelope"
@@ -1154,7 +1154,7 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.notice"
+              "const": "maid.notice"
             },
             "text": {
               "type": "string"
@@ -1183,7 +1183,7 @@
               "type": "string"
             },
             "full_output": {
-              "$ref": "maic.schema.json#/$defs/FullOutput"
+              "$ref": "maid.schema.json#/$defs/FullOutput"
             }
           },
           "required": [
@@ -1194,7 +1194,7 @@
         }
       ]
     },
-    "maic.todo.updated": {
+    "maid.todo.updated": {
       "description": "The model replaced its plan.",
       "allOf": [
         {
@@ -1204,12 +1204,12 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.todo.updated"
+              "const": "maid.todo.updated"
             },
             "items": {
               "type": "array",
               "items": {
-                "$ref": "maic.schema.json#/$defs/TodoItem"
+                "$ref": "maid.schema.json#/$defs/TodoItem"
               }
             }
           },
@@ -1220,7 +1220,7 @@
         }
       ]
     },
-    "maic.session.state": {
+    "maid.session.state": {
       "description": "The session's lifecycle and activity. The first event of every load is one, and it carries the stream's header: the epoch, the protocol hash and, for a new epoch, what it replaced, forked from, or (a background task) the parent and call that started it.",
       "allOf": [
         {
@@ -1230,13 +1230,13 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.session.state"
+              "const": "maid.session.state"
             },
             "state": {
-              "$ref": "maic.schema.json#/$defs/SessionState"
+              "$ref": "maid.schema.json#/$defs/SessionState"
             },
             "activity": {
-              "$ref": "maic.schema.json#/$defs/Activity"
+              "$ref": "maid.schema.json#/$defs/Activity"
             },
             "waiting": {
               "anyOf": [
@@ -1244,20 +1244,20 @@
                   "type": "null"
                 },
                 {
-                  "$ref": "maic.schema.json#/$defs/Waiting"
+                  "$ref": "maid.schema.json#/$defs/Waiting"
                 }
               ]
             },
             "by": {
-              "$ref": "maic.schema.json#/$defs/By"
+              "$ref": "maid.schema.json#/$defs/By"
             },
             "epoch": {
-              "description": "The history incarnation this stream belongs to: kept across loads while the history is unchanged, new when it starts fresh, is reset, forked or rewritten. maic.session.subscribe takes it back.",
+              "description": "The history incarnation this stream belongs to: kept across loads while the history is unchanged, new when it starts fresh, is reset, forked or rewritten. maid.session.subscribe takes it back.",
               "type": "string",
               "minLength": 1
             },
             "protocol": {
-              "description": "The protocol this load speaks: the digest of protocol/ in RFC 8785 form (maic protocol hash), and that form's name.",
+              "description": "The protocol this load speaks: the digest of protocol/ in RFC 8785 form (maid protocol hash), and that form's name.",
               "type": "object",
               "properties": {
                 "hash": {
@@ -1312,7 +1312,7 @@
               ]
             },
             "parent": {
-              "description": "A background task's first epoch: the session whose task call started it, that session's epoch, the call, and the sequence_number of the maic.task.created on its stream.",
+              "description": "A background task's first epoch: the session whose task call started it, that session's epoch, the call, and the sequence_number of the maid.task.created on its stream.",
               "type": "object",
               "properties": {
                 "session": {
@@ -1346,7 +1346,7 @@
         }
       ]
     },
-    "maic.session.settings": {
+    "maid.session.settings": {
       "description": "Whichever settings changed, and who changed them.",
       "allOf": [
         {
@@ -1356,10 +1356,10 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.session.settings"
+              "const": "maid.session.settings"
             },
             "mode": {
-              "$ref": "maic.schema.json#/$defs/Mode"
+              "$ref": "maid.schema.json#/$defs/Mode"
             },
             "model": {
               "type": "string"
@@ -1380,14 +1380,14 @@
               "type": "string"
             },
             "tier": {
-              "$ref": "maic.schema.json#/$defs/Tier"
+              "$ref": "maid.schema.json#/$defs/Tier"
             },
             "workspace": {
               "description": "The workspace `:cd` moved the session to.",
               "type": "string"
             },
             "by": {
-              "$ref": "maic.schema.json#/$defs/By"
+              "$ref": "maid.schema.json#/$defs/By"
             }
           },
           "required": [
@@ -1397,7 +1397,7 @@
         }
       ]
     },
-    "maic.session.title": {
+    "maid.session.title": {
       "description": "The session's title: `auto` when small_model titled it after its first turn, `rename` when a person did (:rename, updateConversation).",
       "allOf": [
         {
@@ -1407,7 +1407,7 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.session.title"
+              "const": "maid.session.title"
             },
             "text": {
               "type": "string",
@@ -1420,7 +1420,7 @@
               ]
             },
             "by": {
-              "$ref": "maic.schema.json#/$defs/By"
+              "$ref": "maid.schema.json#/$defs/By"
             }
           },
           "required": [
@@ -1431,7 +1431,7 @@
         }
       ]
     },
-    "maic.usage.updated": {
+    "maid.usage.updated": {
       "description": "The last model call's usage in OpenAI's shape, the call count, the context window, the session's totals and its cost estimate.",
       "allOf": [
         {
@@ -1441,7 +1441,7 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.usage.updated"
+              "const": "maid.usage.updated"
             },
             "usage": {
               "$ref": "../openai/subset.json#/components/schemas/ResponseUsage"
@@ -1513,7 +1513,7 @@
         }
       ]
     },
-    "maic.task.created": {
+    "maid.task.created": {
       "description": "A background task started (the task tool with background = true): a session of its own, kind sub, whose first event names this session, its epoch and the task call. On the parent's stream; a client that wants the task's own events subscribes to `task`.",
       "allOf": [
         {
@@ -1523,7 +1523,7 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.task.created"
+              "const": "maid.task.created"
             },
             "task": {
               "description": "The task's session id: its handle, and its stream_id.",
@@ -1563,7 +1563,7 @@
         }
       ]
     },
-    "maic.task.completed": {
+    "maid.task.completed": {
       "description": "A background task's first turn ended with a report: its job is done. Its session stays loaded, in the background, until it is parked or stopped.",
       "allOf": [
         {
@@ -1573,7 +1573,7 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.task.completed"
+              "const": "maid.task.completed"
             },
             "task": {
               "type": "string",
@@ -1613,7 +1613,7 @@
         }
       ]
     },
-    "maic.task.failed": {
+    "maid.task.failed": {
       "description": "A background task's first turn ended without a report, `reason` saying why; what it said last is in the note.",
       "allOf": [
         {
@@ -1623,7 +1623,7 @@
           "type": "object",
           "properties": {
             "type": {
-              "const": "maic.task.failed"
+              "const": "maid.task.failed"
             },
             "task": {
               "type": "string",

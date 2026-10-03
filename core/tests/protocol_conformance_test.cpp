@@ -1,13 +1,13 @@
 // The engine in-process, driven through its dispatcher by test clients against a fake OpenAI-compatible server
 // (docs/design/engine-protocol.md section 15). Every message each client sends and gets is recorded and checked as
 // it happens: its schema, the order of ordering.json (protocol::Conformance), and the OpenAI-only view with every
-// maic.* event and maic object removed. The recordings are written to build/protocol-streams/ for `maic protocol
+// maid.* event and maid object removed. The recordings are written to build/protocol-streams/ for `maid protocol
 // check`, then mutated: a mutation that breaks a rule must be caught with that rule's id, one that breaks none must pass.
 #include "check.hpp"
 #include "fake_server.hpp"
 
-#include "maic/engine.hpp"
-#include "maic/protocol.hpp"
+#include "maid/engine.hpp"
+#include "maid/protocol.hpp"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -19,7 +19,7 @@
 #include <fstream>
 #include <random>
 
-using namespace maic;
+using namespace maid;
 using namespace std::chrono_literals;
 namespace fs = std::filesystem;
 
@@ -42,7 +42,7 @@ struct Recording {
         if (!first_openai) first_openai = openai.feed(r);
     }
 
-    // Checked as it ran, in both views, and kept for `maic protocol check`.
+    // Checked as it ran, in both views, and kept for `maid protocol check`.
     void finish() {
         if (!first) first = live.finish();
         if (!first_openai) first_openai = openai.finish();
@@ -50,8 +50,8 @@ struct Recording {
                            (first ? ": " + protocol::describe(*first) : ""));
         expect(!first_openai, name + ": the OpenAI-only view still fits OpenAI's shapes and the response machines" +
                                   (first_openai ? ": " + protocol::describe(*first_openai) : ""));
-        fs::create_directories(MAIC_PROTOCOL_STREAMS);
-        std::ofstream out(fs::path(MAIC_PROTOCOL_STREAMS) / (name + ".jsonl"));
+        fs::create_directories(MAID_PROTOCOL_STREAMS);
+        std::ofstream out(fs::path(MAID_PROTOCOL_STREAMS) / (name + ".jsonl"));
         for (const auto& r : records) out << r.dump() << "\n";
     }
 };
@@ -61,8 +61,8 @@ struct TestClient {
     Recording& rec;
     std::string id;
     int next = 1;
-    std::vector<json> events;  // maic.event params, in order
-    std::vector<json> other;   // maic.index and maic.engine
+    std::vector<json> events;  // maid.event params, in order
+    std::vector<json> other;   // maid.index and maid.engine
 
     TestClient(Engine& e, Recording& r, Origin origin, const std::string& name) : engine(e), rec(r), id(e.connect(origin, name, "in-process")) {}
 
@@ -85,11 +85,11 @@ struct TestClient {
         json reply = call(method, std::move(params));
         return reply.contains("error") ? reply["error"]["data"].value("code", json("")).is_string() ? reply["error"]["data"]["code"].get<std::string>() : "" : "(none)";
     }
-    void hello() { ok("maic.hello", {{"protocol", 1}, {"client", {{"name", "test"}, {"version", "0"}}}, {"capabilities", {"tool_output"}}}); }
+    void hello() { ok("maid.hello", {{"protocol", 1}, {"client", {{"name", "test"}, {"version", "0"}}}, {"capabilities", {"tool_output"}}}); }
     void pump(std::chrono::milliseconds wait) {
         for (auto& m : engine.take(id, wait)) {
             rec.add("out", id, m);
-            if (m.value("method", "") == "maic.event") events.push_back(m["params"]);
+            if (m.value("method", "") == "maid.event") events.push_back(m["params"]);
             else other.push_back(m);
         }
     }
@@ -109,7 +109,7 @@ struct TestClient {
         return until([&](const json& e) { return e["type"] == type; }, from);
     }
     long until_idle(size_t from) {
-        return until([](const json& e) { return e["type"] == "maic.session.state" && e["activity"] == "idle"; }, from);
+        return until([](const json& e) { return e["type"] == "maid.session.state" && e["activity"] == "idle"; }, from);
     }
     std::string text(size_t from = 0) const {
         std::string out;
@@ -136,7 +136,7 @@ std::string slurp(const fs::path& p) {
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
-// The first violation of `records`, as `maic protocol check` would report it ("" when they conform).
+// The first violation of `records`, as `maid protocol check` would report it ("" when they conform).
 std::string verdict(const std::vector<json>& records, bool openai_only = false) {
     protocol::Conformance c(openai_only);
     for (const auto& r : records) {
@@ -146,12 +146,12 @@ std::string verdict(const std::vector<json>& records, bool openai_only = false) 
     return "";
 }
 
-// Indexes of the records that are maic.event notifications of the given type.
+// Indexes of the records that are maid.event notifications of the given type.
 std::vector<size_t> events_of(const std::vector<json>& records, const std::string& type) {
     std::vector<size_t> out;
     for (size_t i = 0; i < records.size(); ++i) {
         const json& m = records[i]["msg"];
-        if (m.value("method", "") == "maic.event" && m["params"]["type"] == type) out.push_back(i);
+        if (m.value("method", "") == "maid.event" && m["params"]["type"] == type) out.push_back(i);
     }
     return out;
 }
@@ -163,23 +163,23 @@ std::vector<json> insert_event(std::vector<json> records, size_t at, json event)
     event["stream_id"] = records[at]["msg"]["params"]["stream_id"];
     for (size_t i = at; i < records.size(); ++i) {
         json& m = records[i]["msg"];
-        if (records[i]["conn"] == conn && m.value("method", "") == "maic.event") m["params"]["sequence_number"] = m["params"]["sequence_number"].get<long>() + 1;
+        if (records[i]["conn"] == conn && m.value("method", "") == "maid.event") m["params"]["sequence_number"] = m["params"]["sequence_number"].get<long>() + 1;
     }
-    records.insert(records.begin() + static_cast<long>(at), json{{"dir", "out"}, {"conn", conn}, {"msg", {{"jsonrpc", "2.0"}, {"method", "maic.event"}, {"params", event}}}});
+    records.insert(records.begin() + static_cast<long>(at), json{{"dir", "out"}, {"conn", conn}, {"msg", {{"jsonrpc", "2.0"}, {"method", "maid.event"}, {"params", event}}}});
     return records;
 }
 
 }  // namespace
 
 int main() {
-    fs::path root = fs::temp_directory_path() / ("maic-protocol-test-" + std::to_string(getpid()));
+    fs::path root = fs::temp_directory_path() / ("maid-protocol-test-" + std::to_string(getpid()));
     fs::remove_all(root);
     fs::create_directories(root / "ws");
     setenv("XDG_STATE_HOME", (root / "state").c_str(), 1);
     setenv("XDG_CONFIG_HOME", (root / "config").c_str(), 1);
-    setenv("MAIC_TRIPWIRE_FILE", (root / "tripwire").c_str(), 1);
+    setenv("MAID_TRIPWIRE_FILE", (root / "tripwire").c_str(), 1);
     setenv("XDG_RUNTIME_DIR", (root / "run").c_str(), 1);  // unrecorded transcripts and the holds on open ones
-    fs::remove_all(MAIC_PROTOCOL_STREAMS);
+    fs::remove_all(MAID_PROTOCOL_STREAMS);
     fs::path ws = fs::weakly_canonical(root / "ws");
 
     FakeServer fake;
@@ -225,34 +225,34 @@ int main() {
         // Requests that fail their own schema on purpose are recorded apart; that recording is not kept.
         Recording bad("bad-requests");
         TestClient a(*engine, basics, Origin::Local, "tui");
-        expect(a.error("createConversation", json::object()) == "maic_hello_required", "nothing but maic.hello before maic.hello");
-        json h = a.ok("maic.hello", {{"protocol", 3}, {"client", {{"name", "tui"}}}});
+        expect(a.error("createConversation", json::object()) == "maid_hello_required", "nothing but maid.hello before maid.hello");
+        json h = a.ok("maid.hello", {{"protocol", 3}, {"client", {{"name", "tui"}}}});
         TestClient x(*engine, bad, Origin::Local, "old");
-        expect(x.error("maic.hello", {{"protocol", 0}, {"client", {{"name", "old"}}}}) == "maic_unsupported_protocol", "a protocol below 1 is refused");
+        expect(x.error("maid.hello", {{"protocol", 0}, {"client", {{"name", "old"}}}}) == "maid_unsupported_protocol", "a protocol below 1 is refused");
         expect(bad.first && bad.first->rule == "schema.message", "and the checker flags the request as outside its schema");
         expect(h["protocol"] == 1 && h["origin"] == "local" && h["client"] == a.id && h["tier"] == "guarded" && h["limits"]["always"] == true &&
                    h["path"]["via"] == "in-process" && h["engine"]["instance"].get<std::string>().size() == 6,
                "the hello answers the version it speaks, the client's id and origin, the tier and the limits");
         json r = a.call("deleteConversation", {{"conversation_id", "x"}});
         expect(r["error"]["code"] == -32601, "a method the engine does not offer is -32601");
-        x.ok("maic.hello", {{"protocol", 1}, {"client", {{"name", "old"}}}});
-        r = x.call("maic.session.list", {{"limit", "many"}});
-        expect(r.contains("error") && slurp(o.protocol_log).find("maic.session.list params /limit") != std::string::npos,
+        x.ok("maid.hello", {{"protocol", 1}, {"client", {{"name", "old"}}}});
+        r = x.call("maid.session.list", {{"limit", "many"}});
+        expect(r.contains("error") && slurp(o.protocol_log).find("maid.session.list params /limit") != std::string::npos,
                "a request that fails its schema is logged to protocol.log (guarded)");
         a.pump(0ms);
         bool told = false;
-        for (const auto& m : a.other) told = told || (m["method"] == "maic.engine" && m["params"].value("notice", "").find("schema.message") != std::string::npos);
+        for (const auto& m : a.other) told = told || (m["method"] == "maid.engine" && m["params"].value("notice", "").find("schema.message") != std::string::npos);
         expect(told, "and a local client is told once");
-        json conv = a.ok("createConversation", {{"metadata", {{"title", "fennec ears"}}}, {"maic", {{"workspace", ws.string()}}}});
+        json conv = a.ok("createConversation", {{"metadata", {{"title", "fennec ears"}}}, {"maid", {{"workspace", ws.string()}}}});
         sid = conv["id"];
-        expect(conv["object"] == "conversation" && conv["metadata"]["title"] == "fennec ears" && conv["maic"]["entry"]["state"] == "live" &&
-                   conv["maic"]["entry"]["transcript"].is_string(),
-               "createConversation answers OpenAI's conversation object with the index entry in maic");
-        expect(a.error("createConversation", {{"maic", {{"workspace", (root / "nowhere").string()}}}}).empty(), "a workspace that is not a directory is invalid params");
-        json list = a.ok("maic.session.list", json::object());
+        expect(conv["object"] == "conversation" && conv["metadata"]["title"] == "fennec ears" && conv["maid"]["entry"]["state"] == "live" &&
+                   conv["maid"]["entry"]["transcript"].is_string(),
+               "createConversation answers OpenAI's conversation object with the index entry in maid");
+        expect(a.error("createConversation", {{"maid", {{"workspace", (root / "nowhere").string()}}}}).empty(), "a workspace that is not a directory is invalid params");
+        json list = a.ok("maid.session.list", json::object());
         bool listed = false;
         for (const auto& s : list["sessions"]) listed = listed || (s["id"] == sid && s["loaded"] == true);
-        expect(listed, "maic.session.list lists the transcript, loaded");
+        expect(listed, "maid.session.list lists the transcript, loaded");
         basics.finish();
     }
 
@@ -261,30 +261,30 @@ int main() {
     {
         TestClient a(*engine, plain, Origin::Local, "tui");
         a.hello();
-        json sub = a.ok("maic.session.subscribe", {{"session", sid}});
+        json sub = a.ok("maid.session.subscribe", {{"session", sid}});
         expect(sub["replay_from"] == 0 && sub["activity"] == "idle", "subscribing replays the load from sequence_number 0");
         size_t mark = a.events.size();
         json r = a.ok("response.create", {{"conversation", sid}, {"input", "hello there"}});
-        expect(r["object"] == "response" && r["status"] == "in_progress" && r["background"] == true && r["maic"]["turn"] == 1,
+        expect(r["object"] == "response" && r["status"] == "in_progress" && r["background"] == true && r["maid"]["turn"] == 1,
                "response.create answers the response, in progress, turn 1");
         long idle = a.until_idle(mark + 1);
         expect(idle > 0, "the turn ends with the session idle");
-        const json* input = a.find("maic.input.added", mark);
+        const json* input = a.find("maid.input.added", mark);
         expect(input && (*input)["item"]["content"][0]["text"] == "hello there" && (*input)["by"]["client"] == a.id && (*input)["queued"] == false,
                "the input is announced first, naming its client");
         expect(a.text(mark) == "echo: hello there", "the reply streams as response.output_text.delta");
         const json* done = a.find("response.completed", mark);
-        expect(done && (*done)["response"]["maic"]["final"] == true && (*done)["response"]["usage"]["total_tokens"].is_number() &&
+        expect(done && (*done)["response"]["maid"]["final"] == true && (*done)["response"]["usage"]["total_tokens"].is_number() &&
                    (*done)["response"]["output"][0]["content"][0]["text"] == "echo: hello there",
-               "response.completed carries the output, usage and maic.final");
-        expect(a.find("maic.usage.updated", mark) != nullptr, "and maic.usage.updated the per-call figures");
+               "response.completed carries the output, usage and maid.final");
+        expect(a.find("maid.usage.updated", mark) != nullptr, "and maid.usage.updated the per-call figures");
         long n = -1;
         bool contiguous = true;
         for (const auto& e : a.events) {
             contiguous = contiguous && e["sequence_number"] == n + 1 && e["stream_id"] == sid;
             n = e["sequence_number"];
         }
-        expect(contiguous && a.events[0]["type"] == "maic.session.state", "sequence_number counts from 0, one more per event, on the session's stream");
+        expect(contiguous && a.events[0]["type"] == "maid.session.state", "sequence_number counts from 0, one more per event, on the session's stream");
         plain.finish();
     }
     recordings.push_back(&plain);
@@ -294,12 +294,12 @@ int main() {
     {
         TestClient a(*engine, tool, Origin::Local, "tui");
         a.hello();
-        a.ok("maic.session.subscribe", {{"session", sid}});
+        a.ok("maid.session.subscribe", {{"session", sid}});
         a.pump(0ms);
         size_t mark = a.events.size();
         plan({shell("for i in 1 2 3; do echo tick$i; sleep 0.2; done")});
         a.ok("response.create", {{"conversation", sid}, {"input", "run the ticks"}});
-        long at = a.until_type("maic.approval.requested", mark);
+        long at = a.until_type("maid.approval.requested", mark);
         expect(at > 0, "manual mode asks before the command");
         json approval = at > 0 ? a.events[at] : json::object();
         const json* call = a.find("response.output_item.done", mark);
@@ -311,13 +311,13 @@ int main() {
             Recording side("attach");
             TestClient b(*engine, side, Origin::Local, "nvim");
             b.hello();
-            snap = b.ok("maic.session.attach", {{"session", sid}});
+            snap = b.ok("maid.session.attach", {{"session", sid}});
             engine->disconnect(b.id);
         }
         expect(snap["pending"].size() == 1 && snap["pending"][0]["id"] == approval["id"] && snap["entry"]["activity"] == "waiting" &&
                    snap["entry"]["waiting"]["id"] == approval["id"],
                "attach shows the pending approval and the session waiting for it");
-        a.ok("maic.approval.answer", {{"session", sid}, {"approval", approval["id"]}, {"choice", "yes"}});
+        a.ok("maid.approval.answer", {{"session", sid}, {"approval", approval["id"]}, {"choice", "yes"}});
         expect(a.until_idle(at) > 0, "the turn finishes");
         std::string out;
         bool offsets = true;
@@ -325,18 +325,18 @@ int main() {
         for (size_t i = at; i < a.events.size(); ++i) {
             const json& e = a.events[i];
             if (e["type"] != "response.shell_call_output_content.delta") continue;
-            offsets = offsets && e["maic"]["offset"] == next;
+            offsets = offsets && e["maid"]["offset"] == next;
             out += e["delta"]["stdout"].get<std::string>();
             next += e["delta"]["stdout"].get<std::string>().size();
         }
         expect(out == "tick1\ntick2\ntick3\n" && offsets, "the output streams as shell_call_output_content.delta while it runs, with byte offsets");
-        const json* answered = a.find("maic.approval.answered", at);
+        const json* answered = a.find("maid.approval.answered", at);
         const json* result = nullptr;
         for (size_t i = at; i < a.events.size(); ++i) {
             if (a.events[i]["type"] == "response.output_item.done" && a.events[i]["item"]["type"] == "shell_call_output") result = &a.events[i];
         }
         expect(answered && (*answered)["choice"] == "yes" && (*answered)["by"]["client"] == a.id, "the answer is announced with who gave it");
-        expect(result && (*result)["item"]["maic"]["ok"] == true && (*result)["item"]["output"][0]["outcome"]["exit_code"] == 0 &&
+        expect(result && (*result)["item"]["maid"]["ok"] == true && (*result)["item"]["output"][0]["outcome"]["exit_code"] == 0 &&
                    (*result)["item"]["output"][0]["stdout"].get<std::string>().rfind("exit code 0\ntick1", 0) == 0,
                "the output item closes with OpenAI's shell output and the exit code");
         tool.finish();
@@ -348,7 +348,7 @@ int main() {
     {
         TestClient a(*engine, cancel, Origin::Local, "tui");
         a.hello();
-        a.ok("maic.session.subscribe", {{"session", sid}});
+        a.ok("maid.session.subscribe", {{"session", sid}});
         a.pump(0ms);
         size_t mark = a.events.size();
         fake.hold_left = 1;
@@ -358,15 +358,15 @@ int main() {
         json r = a.ok("cancelResponse", {{"response_id", rid}});
         expect(at > 0 && r["status"] == "cancelled" && r["id"] == rid, "cancelResponse answers the response, cancelled");
         expect(a.until_idle(at) > 0, "the turn stops");
-        const json* end = a.find("maic.response.cancelled", mark);
+        const json* end = a.find("maid.response.cancelled", mark);
         const json* item = nullptr;
         for (size_t i = mark; i < a.events.size(); ++i) {
             if (a.events[i]["type"] == "response.output_item.done") item = &a.events[i];
         }
-        expect(end && (*end)["response"]["status"] == "cancelled" && (*end)["response"]["maic"]["final"] == true && (*end)["response"]["maic"]["ended_by"] == "cancel",
-               "maic.response.cancelled ends the response and the turn");
+        expect(end && (*end)["response"]["status"] == "cancelled" && (*end)["response"]["maid"]["final"] == true && (*end)["response"]["maid"]["ended_by"] == "cancel",
+               "maid.response.cancelled ends the response and the turn");
         expect(item && (*item)["item"]["status"] == "incomplete" && !a.find("response.completed", mark), "the partial reply closes incomplete, kept");
-        expect(a.error("cancelResponse", {{"response_id", rid}}) == "maic_not_found", "a response that is not running cannot be cancelled");
+        expect(a.error("cancelResponse", {{"response_id", rid}}) == "maid_not_found", "a response that is not running cannot be cancelled");
         cancel.finish();
     }
     recordings.push_back(&cancel);
@@ -376,7 +376,7 @@ int main() {
     {
         TestClient a(*engine, resume, Origin::Local, "phone-tab");
         a.hello();
-        json sub = a.ok("maic.session.subscribe", {{"session", sid}});
+        json sub = a.ok("maid.session.subscribe", {{"session", sid}});
         a.pump(0ms);
         size_t mark = a.events.size();
         fake.reply = [](const json&) { return std::string(400, 'z'); };
@@ -389,9 +389,9 @@ int main() {
         fake.hold_left = 0;
         TestClient b(*engine, resume, Origin::Local, "phone-tab");
         b.hello();
-        expect(b.error("maic.session.subscribe", {{"session", sid}, {"epoch", "zzzz"}, {"starting_after", held}}) == "maic_resync",
-               "another epoch answers maic_resync");
-        json again = b.ok("maic.session.subscribe", {{"session", sid}, {"epoch", sub["epoch"]}, {"starting_after", held}});
+        expect(b.error("maid.session.subscribe", {{"session", sid}, {"epoch", "zzzz"}, {"starting_after", held}}) == "maid_resync",
+               "another epoch answers maid_resync");
+        json again = b.ok("maid.session.subscribe", {{"session", sid}, {"epoch", sub["epoch"]}, {"starting_after", held}});
         expect(again["replay_from"] == held + 1, "the same epoch resumes after the last number held");
         // The held reply idles until the agent hangs up; cancel it and keep what came.
         b.pump(200ms);
@@ -412,13 +412,13 @@ int main() {
         TestClient a(e2, small, Origin::Local, "tui");
         a.hello();
         std::string s2 = a.ok("createConversation", json::object())["id"];
-        a.ok("maic.session.subscribe", {{"session", s2}});
+        a.ok("maid.session.subscribe", {{"session", s2}});
         a.ok("response.create", {{"conversation", s2}, {"input", "fill the ring past eight events"}});
         a.until_idle(1);
         TestClient b(e2, small, Origin::Local, "late");
         b.hello();
-        expect(b.error("maic.session.subscribe", {{"session", s2}, {"starting_after", 0}}) == "maic_resync", "a starting_after that left the ring answers maic_resync");
-        json whole = b.ok("maic.session.subscribe", {{"session", s2}});
+        expect(b.error("maid.session.subscribe", {{"session", s2}, {"starting_after", 0}}) == "maid_resync", "a starting_after that left the ring answers maid_resync");
+        json whole = b.ok("maid.session.subscribe", {{"session", s2}});
         b.pump(100ms);
         expect(whole["replay_from"].get<long>() > 0 && b.events.size() == 8, "without starting_after the replay is what the ring holds (8 events)");
         small.finish();
@@ -430,27 +430,27 @@ int main() {
         TestClient a(*engine, two, Origin::Local, "tui");
         TestClient b(*engine, two, Origin::Remote, "phone");
         a.hello();
-        json hb = b.ok("maic.hello", {{"protocol", 1}, {"client", {{"name", "phone"}}}, {"capabilities", {"tool_output"}}});
+        json hb = b.ok("maid.hello", {{"protocol", 1}, {"client", {{"name", "phone"}}}, {"capabilities", {"tool_output"}}});
         expect(hb["origin"] == "remote" && hb["limits"]["always"] == false, "a remote client is told it cannot answer always");
-        a.ok("maic.session.subscribe", {{"session", sid}});
-        b.ok("maic.session.subscribe", {{"session", sid}});
+        a.ok("maid.session.subscribe", {{"session", sid}});
+        b.ok("maid.session.subscribe", {{"session", sid}});
         a.pump(0ms);
         b.pump(0ms);
         size_t mark = a.events.size(), bmark = b.events.size();
         plan({{{"name", "write_file"}, {"arguments", {{"path", "note.txt"}, {"content", "fluffy tail"}}}}});
         a.ok("response.create", {{"conversation", sid}, {"input", "make a note"}});
-        long at = a.until_type("maic.approval.requested", mark);
-        long bat = b.until_type("maic.approval.requested", bmark);
+        long at = a.until_type("maid.approval.requested", mark);
+        long bat = b.until_type("maid.approval.requested", bmark);
         std::string id = at > 0 ? a.events[at]["id"].get<std::string>() : "";
         expect(at > 0 && bat >= 0 && b.events[bat]["id"] == id, "both clients see the approval");
-        expect(b.error("maic.approval.answer", {{"session", sid}, {"approval", id}, {"choice", "always"}}) == "maic_forbidden_remote",
+        expect(b.error("maid.approval.answer", {{"session", sid}, {"approval", id}, {"choice", "always"}}) == "maid_forbidden_remote",
                "a remote client cannot answer always");
-        a.ok("maic.approval.answer", {{"session", sid}, {"approval", id}, {"choice", "yes"}});
-        expect(b.error("maic.approval.answer", {{"session", sid}, {"approval", id}, {"choice", "no"}}) == "maic_already_answered",
-               "the second answer gets maic_already_answered");
+        a.ok("maid.approval.answer", {{"session", sid}, {"approval", id}, {"choice", "yes"}});
+        expect(b.error("maid.approval.answer", {{"session", sid}, {"approval", id}, {"choice", "no"}}) == "maid_already_answered",
+               "the second answer gets maid_already_answered");
         a.until_idle(at);
         b.until_idle(bat);
-        const json* answered = b.find("maic.approval.answered", bmark);
+        const json* answered = b.find("maid.approval.answered", bmark);
         expect(answered && (*answered)["choice"] == "yes" && (*answered)["by"]["client"] == a.id && (*answered)["by"]["origin"] == "local",
                "both see who answered, so the other prompt closes");
         expect(slurp(ws / "note.txt") == "fluffy tail", "the approved write happened");
@@ -458,7 +458,7 @@ int main() {
         for (const auto& e : a.events) sa.push_back(e["sequence_number"]);
         for (const auto& e : b.events) sb.push_back(e["sequence_number"]);
         expect(!sb.empty() && sa == sb, "every client sees the same events in the same order (" + std::to_string(sb.size()) + ")");
-        expect(b.error("response.create", {{"conversation", sid}, {"input", "x"}, {"instructions", "be loud"}}) == "maic_forbidden_remote",
+        expect(b.error("response.create", {{"conversation", sid}, {"input", "x"}, {"instructions", "be loud"}}) == "maid_forbidden_remote",
                "instructions are local only");
         two.finish();
     }
@@ -471,24 +471,24 @@ int main() {
         TestClient b(*engine, rise, Origin::Remote, "phone");
         a.hello();
         b.hello();
-        a.ok("maic.session.subscribe", {{"session", sid}});
-        a.ok("maic.session.set", {{"session", sid}, {"mode", "auto"}});
+        a.ok("maid.session.subscribe", {{"session", sid}});
+        a.ok("maid.session.set", {{"session", sid}, {"mode", "auto"}});
         a.pump(0ms);
         size_t mark = a.events.size();
         plan({shell("sleep 1"), shell("echo after")});
         a.ok("response.create", {{"conversation", sid}, {"input", "check the build"}});
         long call = a.until([](const json& e) { return e["type"] == "response.output_item.done" && e["item"]["type"] == "shell_call"; }, mark);
-        expect(call > 0 && !a.find("maic.approval.requested", mark), "auto mode runs the local turn's first command unasked");
-        json first = a.find("response.created", mark) ? *a.find("response.created", mark) : json{{"response", {{"id", ""}, {"maic", {{"turn", 0}}}}}};
+        expect(call > 0 && !a.find("maid.approval.requested", mark), "auto mode runs the local turn's first command unasked");
+        json first = a.find("response.created", mark) ? *a.find("response.created", mark) : json{{"response", {{"id", ""}, {"maid", {{"turn", 0}}}}}};
         std::string rid = first["response"]["id"];
         json q = b.ok("response.steer", {{"previous_response_id", rid}, {"input", "also run the tests"}});
         expect(q["steer"]["previous_response_id"] == rid, "response.steer on a busy session is accepted for the running response");
-        long at = a.until_type("maic.approval.requested", call);
+        long at = a.until_type("maid.approval.requested", call);
         expect(at > 0 && a.events[at]["origin"] == "remote" && a.events[at]["summary"].get<std::string>().find("echo after") != std::string::npos,
                "the command after the remote message is asked, as remote");
-        a.ok("maic.approval.answer", {{"session", sid}, {"approval", a.events[at]["id"]}, {"choice", "yes"}});
+        a.ok("maid.approval.answer", {{"session", sid}, {"approval", a.events[at]["id"]}, {"choice", "yes"}});
         a.until_idle(at);
-        const json* input = a.find("maic.input.added", call);
+        const json* input = a.find("maid.input.added", call);
         const json* accepted = a.find("response.steer.accepted", call);
         const json* steered = a.find("response.incomplete", mark);
         const json* next = a.find("response.created", call);
@@ -496,13 +496,13 @@ int main() {
         expect(input && (*input)["queued"] == true && (*input)["by"]["origin"] == "remote", "the remote input is announced, queued, by the phone");
         expect(accepted && (*accepted)["steer"]["id"] == q["steer"]["id"], "response.steer.accepted says the engine owns it");
         expect(steered && (*steered)["response"]["id"] == rid && (*steered)["response"]["incomplete_details"]["reason"] == "steered" &&
-                   (*steered)["response"]["maic"]["final"] == false && (*steered)["response"]["maic"]["origin"] == "local",
+                   (*steered)["response"]["maid"]["final"] == false && (*steered)["response"]["maid"]["origin"] == "local",
                "at the next boundary the response ends incomplete, steered, still local");
-        expect(next && (*next)["response"]["previous_response_id"] == rid && (*next)["response"]["maic"]["turn"] == first["response"]["maic"]["turn"] &&
-                   (*next)["response"]["maic"]["origin"] == "remote" && done && (*done)["response"]["id"] == (*next)["response"]["id"],
+        expect(next && (*next)["response"]["previous_response_id"] == rid && (*next)["response"]["maid"]["turn"] == first["response"]["maid"]["turn"] &&
+                   (*next)["response"]["maid"]["origin"] == "remote" && done && (*done)["response"]["id"] == (*next)["response"]["id"],
                "its successor carries the remote input, in the same turn, remote: the origin only rises");
-        a.ok("maic.session.set", {{"session", sid}, {"mode", "manual"}});
-        expect(b.error("maic.session.set", {{"session", sid}, {"mode", "auto"}}) == "maic_step_up_required", "a remote client loosens to auto only after a step-up");
+        a.ok("maid.session.set", {{"session", sid}, {"mode", "manual"}});
+        expect(b.error("maid.session.set", {{"session", sid}, {"mode", "auto"}}) == "maid_step_up_required", "a remote client loosens to auto only after a step-up");
         rise.finish();
     }
     recordings.push_back(&rise);
@@ -514,7 +514,7 @@ int main() {
         TestClient b(*engine, steering, Origin::Remote, "phone");
         a.hello();
         b.hello();
-        a.ok("maic.session.subscribe", {{"session", sid}});
+        a.ok("maid.session.subscribe", {{"session", sid}});
         a.pump(0ms);
         auto running = [&](size_t from) {
             long at = a.until_type("response.output_text.delta", from);
@@ -538,7 +538,7 @@ int main() {
         a.ok("response.create", {{"conversation", sid}, {"input", "the first in line"}});
         auto [at, rid] = running(mark);
         json queued = b.ok("response.create", {{"conversation", sid}, {"input", "the second in line"}});
-        expect(queued["status"] == "queued" && queued["maic"]["queued"] == true && queued["maic"]["turn"].get<int>() == a.find("response.created", mark)->at("response")["maic"]["turn"].get<int>() + 1,
+        expect(queued["status"] == "queued" && queued["maid"]["queued"] == true && queued["maid"]["turn"].get<int>() == a.find("response.created", mark)->at("response")["maid"]["turn"].get<int>() + 1,
                "response.create on a busy lane answers a queued response with the next turn's number");
         json dropped = b.ok("response.create", {{"conversation", sid}, {"input", "never mind this one"}});
         json gone = b.ok("cancelResponse", {{"response_id", dropped["id"]}});
@@ -558,16 +558,16 @@ int main() {
         fake.hold_left = 1;
         a.ok("response.create", {{"conversation", sid}, {"input", "talk about the cluster"}});
         std::tie(at, rid) = running(mark);
-        json st = a.ok("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "drop"}, {"note", "leave the cluster out"}, {"trim", "all"}});
+        json st = a.ok("maid.steer", {{"session", sid}, {"response_id", rid}, {"action", "drop"}, {"note", "leave the cluster out"}, {"trim", "all"}});
         a.until_idle(static_cast<size_t>(at));
-        const json* applied = a.find("maic.steer.applied", mark);
+        const json* applied = a.find("maid.steer.applied", mark);
         const json* done_text = a.find("response.output_text.done", mark);
         const json* steered = a.find("response.incomplete", mark);
         expect(applied && (*applied)["steer"] == st["steer"]["id"] && (*applied)["action"] == "drop" && (*applied)["trigger"] == "client" && (*applied)["trimmed"]["from"] == 0 &&
                    a.find("response.steer.accepted", mark),
-               "maic.steer drop is accepted and applied, saying what it trimmed");
-        expect(done_text && (*done_text)["text"] == "" && (*done_text)["maic"]["trimmed"]["from"] == 0, "the reply's done event carries the trimmed text and the range");
-        expect(steered && (*steered)["response"]["maic"]["ended_by"] == "drop" && (*steered)["response"]["incomplete_details"]["reason"] == "steered",
+               "maid.steer drop is accepted and applied, saying what it trimmed");
+        expect(done_text && (*done_text)["text"] == "" && (*done_text)["maid"]["trimmed"]["from"] == 0, "the reply's done event carries the trimmed text and the range");
+        expect(steered && (*steered)["response"]["maid"]["ended_by"] == "drop" && (*steered)["response"]["incomplete_details"]["reason"] == "steered",
                "the response ends incomplete, steered by the drop");
         std::string said = a.text(static_cast<size_t>(steered ? steered - &a.events[0] : 0));
         expect(said.find("echo: The user dropped the topic you had started") == 0 && said.find("leave the cluster out") != std::string::npos,
@@ -578,19 +578,19 @@ int main() {
         fake.hold_left = 1;
         a.ok("response.create", {{"conversation", sid}, {"input", "a slow one"}});
         std::tie(at, rid) = running(mark);
-        a.ok("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "interrupt"}});
-        long paused = a.until_type("maic.turn.paused", mark);
-        const json* cancelled = a.find("maic.response.cancelled", mark);
-        long waiting = a.until([](const json& e) { return e["type"] == "maic.session.state" && e["activity"] == "waiting" && e["waiting"]["kind"] == "steer"; }, mark);
-        expect(paused > 0 && cancelled && (*cancelled)["response"]["maic"]["final"] == false && (*cancelled)["response"]["maic"]["ended_by"] == "interrupt" &&
+        a.ok("maid.steer", {{"session", sid}, {"response_id", rid}, {"action", "interrupt"}});
+        long paused = a.until_type("maid.turn.paused", mark);
+        const json* cancelled = a.find("maid.response.cancelled", mark);
+        long waiting = a.until([](const json& e) { return e["type"] == "maid.session.state" && e["activity"] == "waiting" && e["waiting"]["kind"] == "steer"; }, mark);
+        expect(paused > 0 && cancelled && (*cancelled)["response"]["maid"]["final"] == false && (*cancelled)["response"]["maid"]["ended_by"] == "interrupt" &&
                    a.events[paused]["response_id"] == rid && waiting > 0,
                "interrupt cancels the response without ending the turn, and the session waits, paused");
-        expect(a.error("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "interrupt"}}) == "response_not_active", "a paused turn takes no second interrupt");
+        expect(a.error("maid.steer", {{"session", sid}, {"response_id", rid}, {"action", "interrupt"}}) == "response_not_active", "a paused turn takes no second interrupt");
         b.ok("response.steer", {{"previous_response_id", rid}, {"input", "carry on, gently"}});
         long resumed = a.until([&](const json& e) { return e["type"] == "response.created" && e["response"]["previous_response_id"] == rid; }, mark);
         a.until_idle(static_cast<size_t>(resumed > 0 ? resumed : 0));
         expect(resumed > 0 && a.text(static_cast<size_t>(resumed)) == "echo: carry on, gently" && last("response.completed", mark) &&
-                   (*last("response.completed", mark))["response"]["maic"]["final"] == true,
+                   (*last("response.completed", mark))["response"]["maid"]["final"] == true,
                "a message resumes it in a successor that ends the turn");
 
         // keep and halt.
@@ -598,10 +598,10 @@ int main() {
         fake.hold_left = 1;
         a.ok("response.create", {{"conversation", sid}, {"input", "keep what you have"}});
         std::tie(at, rid) = running(mark);
-        a.ok("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "keep"}});
+        a.ok("maid.steer", {{"session", sid}, {"response_id", rid}, {"action", "keep"}});
         a.until_idle(static_cast<size_t>(at));
         const json* kept = a.find("response.completed", mark);
-        expect(kept && (*kept)["response"]["maic"]["ended_by"] == "keep" && (*kept)["response"]["maic"]["final"] == true &&
+        expect(kept && (*kept)["response"]["maid"]["ended_by"] == "keep" && (*kept)["response"]["maid"]["final"] == true &&
                    (*kept)["response"]["output"][0]["content"][0]["text"] == "echo",
                "keep ends the turn with the partial reply as the answer");
         mark = a.events.size();
@@ -609,18 +609,18 @@ int main() {
         a.ok("response.create", {{"conversation", sid}, {"input", "throw this away"}});
         std::tie(at, rid) = running(mark);
         json waits = a.ok("response.steer", {{"previous_response_id", rid}, {"input", "and then this"}});
-        a.ok("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "halt"}});
+        a.ok("maid.steer", {{"session", sid}, {"response_id", rid}, {"action", "halt"}});
         a.until_idle(static_cast<size_t>(at));
         const json* error = a.find("error", mark);
         const json* failed = a.find("response.steer.failed", mark);
-        const json* halted = a.find("maic.response.cancelled", mark);
+        const json* halted = a.find("maid.response.cancelled", mark);
         const json* discarded = nullptr;
         for (size_t i = mark; i < a.events.size(); ++i) {
             if (a.events[i]["type"] == "response.output_item.done" && a.events[i]["item"]["type"] == "message") discarded = &a.events[i];
         }
-        expect(error && (*error)["code"] == "maic_halted" && halted && (*halted)["response"]["maic"]["ended_by"] == "halt" && (*halted)["response"]["maic"]["final"] == true,
-               "halt: OpenAI's error event with maic_halted, then the response cancelled, the turn over");
-        expect(discarded && (*discarded)["item"]["status"] == "incomplete" && (*discarded)["item"]["maic"]["status"] == "discarded", "the partial reply is closed, discarded");
+        expect(error && (*error)["code"] == "maid_halted" && halted && (*halted)["response"]["maid"]["ended_by"] == "halt" && (*halted)["response"]["maid"]["final"] == true,
+               "halt: OpenAI's error event with maid_halted, then the response cancelled, the turn over");
+        expect(discarded && (*discarded)["item"]["status"] == "incomplete" && (*discarded)["item"]["maid"]["status"] == "discarded", "the partial reply is closed, discarded");
         expect(failed && (*failed)["steer"]["id"] == waits["steer"]["id"] && (*failed)["error"]["code"] == "response_not_active" && (*failed)["steer"]["input"] == "and then this",
                "a steer accepted before the halt comes back in response.steer.failed, with its input");
         bool told = false, leaked = false;
@@ -641,16 +641,16 @@ int main() {
         mark = a.events.size();
         plan({shell("echo withdrawn")});
         a.ok("response.create", {{"conversation", sid}, {"input", "run something"}});
-        long ask = a.until_type("maic.approval.requested", mark);
+        long ask = a.until_type("maid.approval.requested", mark);
         rid = a.find("response.created", mark)->at("response")["id"];
-        json further = b.ok("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "further"}, {"note", "and why"}});
+        json further = b.ok("maid.steer", {{"session", sid}, {"response_id", rid}, {"action", "further"}, {"note", "and why"}});
         const json* waits_for = nullptr;
-        a.until_type("maic.steer.applied", mark);
-        waits_for = a.find("maic.steer.applied", mark);
-        expect(waits_for && (*waits_for)["waits_for"] == a.events[ask]["id"] && !a.find("maic.approval.answered", mark), "further leaves the approval alone and waits for it");
-        a.ok("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "steer"}, {"note", "do not run it"}});
+        a.until_type("maid.steer.applied", mark);
+        waits_for = a.find("maid.steer.applied", mark);
+        expect(waits_for && (*waits_for)["waits_for"] == a.events[ask]["id"] && !a.find("maid.approval.answered", mark), "further leaves the approval alone and waits for it");
+        a.ok("maid.steer", {{"session", sid}, {"response_id", rid}, {"action", "steer"}, {"note", "do not run it"}});
         a.until_idle(static_cast<size_t>(ask));
-        const json* answered = a.find("maic.approval.answered", mark);
+        const json* answered = a.find("maid.approval.answered", mark);
         const json* result = nullptr;
         for (size_t i = mark; i < a.events.size(); ++i) {
             if (a.events[i]["type"] == "response.output_item.done" && a.events[i]["item"]["type"] == "shell_call_output") result = &a.events[i];
@@ -666,7 +666,7 @@ int main() {
         fake.hold_left = 1;
         a.ok("response.create", {{"conversation", sid}, {"input", "one more"}});
         std::tie(at, rid) = running(mark);
-        expect(b.error("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "halt"}}) == "maic_steer_disabled", "an action steering.clients keeps from remote clients is maic_steer_disabled");
+        expect(b.error("maid.steer", {{"session", sid}, {"response_id", rid}, {"action", "halt"}}) == "maid_steer_disabled", "an action steering.clients keeps from remote clients is maid_steer_disabled");
         a.ok("cancelResponse", {{"response_id", rid}});
         a.until_idle(static_cast<size_t>(at));
         b.pump(100ms);
@@ -679,11 +679,11 @@ int main() {
     {
         TestClient a(*engine, slow, Origin::Local, "tui");
         a.hello();
-        a.ok("maic.session.subscribe", {{"session", sid}});
-        a.ok("maic.session.set", {{"session", sid}, {"mode", "auto"}});
+        a.ok("maid.session.subscribe", {{"session", sid}});
+        a.ok("maid.session.set", {{"session", sid}, {"mode", "auto"}});
         TestClient watcher(*engine, slow, Origin::Local, "watcher");
         watcher.hello();
-        watcher.ok("maic.session.subscribe", {{"session", sid}});
+        watcher.ok("maid.session.subscribe", {{"session", sid}});
         watcher.pump(0ms);
         a.pump(0ms);
         size_t mark = watcher.events.size(), amark = a.events.size();
@@ -691,9 +691,9 @@ int main() {
         a.ok("response.create", {{"conversation", sid}, {"input", "a lot of output"}});
         // `a` reads nothing until the turn is over; the watcher answers if the harness asks.
         for (size_t from = mark;;) {
-            long at = watcher.until([](const json& e) { return e["type"] == "maic.approval.requested" || (e["type"] == "maic.session.state" && e["activity"] == "idle"); }, from);
-            if (at < 0 || watcher.events[at]["type"] != "maic.approval.requested") break;
-            watcher.ok("maic.approval.answer", {{"session", sid}, {"approval", watcher.events[at]["id"]}, {"choice", "yes"}});
+            long at = watcher.until([](const json& e) { return e["type"] == "maid.approval.requested" || (e["type"] == "maid.session.state" && e["activity"] == "idle"); }, from);
+            if (at < 0 || watcher.events[at]["type"] != "maid.approval.requested") break;
+            watcher.ok("maid.approval.answer", {{"session", sid}, {"approval", watcher.events[at]["id"]}, {"choice", "yes"}});
             from = static_cast<size_t>(at) + 1;
         }
         a.pump(100ms);
@@ -702,40 +702,40 @@ int main() {
         for (size_t i = amark; i < a.events.size(); ++i) {
             const json& e = a.events[i];
             if (e["type"] != "response.shell_call_output_content.delta") continue;
-            ordered = ordered && e["maic"]["offset"].get<size_t>() >= offset;
-            offset = e["maic"]["offset"];
-            if (e["maic"].contains("skipped")) skipped += e["maic"]["skipped"].get<size_t>();
+            ordered = ordered && e["maid"]["offset"].get<size_t>() >= offset;
+            offset = e["maid"]["offset"];
+            if (e["maid"].contains("skipped")) skipped += e["maid"]["skipped"].get<size_t>();
             else sent += e["delta"]["stdout"].get<std::string>().size();
         }
         expect(skipped > 0 && sent >= (3u << 19) && sent <= (2u << 20) + (16u << 10) && ordered && engine->closed(a.id).empty(),
                "past 2 MiB queued the output arrives as skip counts (" + std::to_string(sent) + " sent, " + std::to_string(skipped) + " skipped), the connection stays open");
-        a.ok("maic.session.set", {{"session", sid}, {"mode", "manual"}});
+        a.ok("maid.session.set", {{"session", sid}, {"mode", "manual"}});
         slow.finish();
     }
     recordings.push_back(&slow);
 
-    section("a filtered connection: what it excludes is accounted for by maic.filtered_from");
+    section("a filtered connection: what it excludes is accounted for by maid.filtered_from");
     Recording filtered("filtered");
     {
         TestClient a(*engine, filtered, Origin::Local, "tui");
         a.hello();
         TestClient f(*engine, filtered, Origin::Local, "nvim");
-        expect(f.error("maic.hello", {{"protocol", 1}, {"client", {{"name", "nvim"}}}, {"exclude", {"response.completed"}}}) == "maic_not_filterable",
+        expect(f.error("maid.hello", {{"protocol", 1}, {"client", {{"name", "nvim"}}}, {"exclude", {"response.completed"}}}) == "maid_not_filterable",
                "a lifecycle event cannot be excluded");
-        json h = f.ok("maic.hello", {{"protocol", 1}, {"client", {{"name", "nvim"}}}, {"exclude", {"response.output_text.delta", "response.someday.delta"}}});
-        std::set<std::string> want = {"response.output_text.delta", "response.shell_call_output_content.delta", "maic.tool.output.delta"};
+        json h = f.ok("maid.hello", {{"protocol", 1}, {"client", {{"name", "nvim"}}}, {"exclude", {"response.output_text.delta", "response.someday.delta"}}});
+        std::set<std::string> want = {"response.output_text.delta", "response.shell_call_output_content.delta", "maid.tool.output.delta"};
         expect(h["exclude"].get<std::set<std::string>>() == want,
                "the hello answers what the connection is spared: the deltas it excluded and the tool output it has no capability for, not a type the engine does not know");
-        a.ok("maic.session.subscribe", {{"session", sid}});
-        f.ok("maic.session.subscribe", {{"session", sid}});
+        a.ok("maid.session.subscribe", {{"session", sid}});
+        f.ok("maid.session.subscribe", {{"session", sid}});
         a.pump(0ms);
         f.pump(0ms);
         size_t mark = a.events.size(), fmark = f.events.size();
-        a.ok("maic.session.set", {{"session", sid}, {"mode", "auto"}});
+        a.ok("maid.session.set", {{"session", sid}, {"mode", "auto"}});
         plan({shell("echo paw; echo tail")});
         a.ok("response.create", {{"conversation", sid}, {"input", "wag"}});
         expect(a.until_idle(mark) > 0 && f.until_idle(fmark) > 0, "both connections see the turn end");
-        a.ok("maic.session.set", {{"session", sid}, {"mode", "manual"}});
+        a.ok("maid.session.set", {{"session", sid}, {"mode", "manual"}});
         a.pump(100ms);
         f.pump(100ms);
         std::map<long, std::string> all;
@@ -747,20 +747,20 @@ int main() {
             const json& e = f.events[i];
             long n = e["sequence_number"];
             spared = spared && !want.count(e["type"].get<std::string>());
-            long from = e.contains("/maic/filtered_from"_json_pointer) ? e["maic"]["filtered_from"].get<long>() : n;
+            long from = e.contains("/maid/filtered_from"_json_pointer) ? e["maid"]["filtered_from"].get<long>() : n;
             marked += from != n;
             accounted = accounted && from == last + 1;
             for (long k = from; k < n; ++k) accounted = accounted && all.count(k) && want.count(all[k]);
             last = n;
         }
         expect(spared && accounted && marked >= 2,
-               "the filtered connection gets none of those types, and every run of them is named by the next event's maic.filtered_from (" + std::to_string(marked) + " runs)");
+               "the filtered connection gets none of those types, and every run of them is named by the next event's maid.filtered_from (" + std::to_string(marked) + " runs)");
         expect(f.text(fmark).empty() && a.text(mark) == "echo: wag", "the full connection still streams the text");
         // Handing off: a connection with no filter resumes from a number the filtered one holds.
         long held = f.events[fmark + (f.events.size() - fmark) / 2]["sequence_number"];
         TestClient g(*engine, filtered, Origin::Local, "phone");
         g.hello();
-        json sub = g.ok("maic.session.subscribe", {{"session", sid}, {"starting_after", held}});
+        json sub = g.ok("maid.session.subscribe", {{"session", sid}, {"starting_after", held}});
         g.pump(100ms);
         bool resumed = !g.events.empty() && g.events.front()["sequence_number"] == held + 1;
         for (size_t i = 0; i < g.events.size(); ++i) resumed = resumed && g.events[i] == a.events[mark + (static_cast<size_t>(held + 1) - a.events[mark]["sequence_number"].get<size_t>()) + i];
@@ -792,11 +792,11 @@ int main() {
             set_up = true;
         };
         std::string lid = local.open_local(a.id, std::move(ls));
-        json snap = a.ok("maic.session.attach", {{"session", lid}});
+        json snap = a.ok("maid.session.attach", {{"session", lid}});
         expect(set_up && snap["entry"]["id"] == lid && snap["entry"]["harness"] == "dumb" && snap["entry"]["think"] == false && snap["sequence_number"] == 0,
                "open_local sets the session up before anyone sees it; attach shows it from its first event");
         auto run = [&](const std::string& line) {
-            json r = a.ok("maic.session.command", {{"session", lid}, {"line", line}});
+            json r = a.ok("maid.session.command", {{"session", lid}, {"line", line}});
             a.pump(0ms);
             std::string text;
             for (const auto& l : r.value("lines", json::array())) text += l["text"].get<std::string>() + "\n";
@@ -807,16 +807,16 @@ int main() {
         a.ok("response.create", {{"conversation", lid}, {"input", "name the ears"}});
         long idle = a.until_idle(mark);
         long done = a.until_type("response.completed", mark);
-        long titled = a.until_type("maic.session.title", mark);
+        long titled = a.until_type("maid.session.title", mark);
         expect(idle > 0 && titled > done && titled < idle && a.events[titled]["text"] == "echo: name the ears" && a.events[titled]["source"] == "auto",
                "after the first turn small_model titles the session, between the response's end and idle");
         expect(slurp(fs::path(snap["entry"]["transcript"].get<std::string>())).find("\"type\":\"title\"") != std::string::npos, "and the transcript keeps the title");
 
         mark = a.events.size();
         auto [mode, mode_text] = run("mode plan");
-        const json* changed = a.find("maic.session.settings", mark);
+        const json* changed = a.find("maid.session.settings", mark);
         expect(mode["ok"] == true && mode["lines"].empty() && changed && (*changed)["mode"] == "plan" && (*changed)["by"]["client"] == a.id,
-               ":mode changes the mode for everyone, announced in maic.session.settings");
+               ":mode changes the mode for everyone, announced in maid.session.settings");
         auto [status, status_text] = run("status");
         expect(status_text.find("mode: plan  (idle)") != std::string::npos && status_text.find("session: ") != std::string::npos, ":status answers in lines");
         auto [ban, ban_text] = run("ban add fennec");
@@ -825,34 +825,34 @@ int main() {
         expect(unknown["ok"] == false && unknown["lines"][0]["level"] == "error", "an unknown command is an error line");
         mark = a.events.size();
         run("rename the tail");
-        const json* renamed = a.find("maic.session.title", mark);
-        expect(renamed && (*renamed)["text"] == "the tail" && (*renamed)["source"] == "rename" && (*renamed)["by"]["client"] == a.id, ":rename is a maic.session.title by its client");
+        const json* renamed = a.find("maid.session.title", mark);
+        expect(renamed && (*renamed)["text"] == "the tail" && (*renamed)["source"] == "rename" && (*renamed)["by"]["client"] == a.id, ":rename is a maid.session.title by its client");
         json conv = a.ok("updateConversation", {{"conversation_id", lid}, {"metadata", {{"title", "fluffy tail"}}}});
-        expect(conv["metadata"]["title"] == "fluffy tail" && conv["maic"]["entry"]["title"] == "fluffy tail", "updateConversation renames it too");
+        expect(conv["metadata"]["title"] == "fluffy tail" && conv["maid"]["entry"]["title"] == "fluffy tail", "updateConversation renames it too");
 
-        // Auto under the dumb harness asks first: a command asks its question in the result, maic.session.set refuses.
-        expect(a.error("maic.session.set", {{"session", lid}, {"mode", "auto"}}) == "maic_confirm_required", "maic.session.set auto under a dumb harness needs confirm");
+        // Auto under the dumb harness asks first: a command asks its question in the result, maid.session.set refuses.
+        expect(a.error("maid.session.set", {{"session", lid}, {"mode", "auto"}}) == "maid_confirm_required", "maid.session.set auto under a dumb harness needs confirm");
         auto [asked, asked_text] = run("mode auto");
         expect(asked.contains("ask") && asked["ask"]["keys"] == "yn" && asked["ask"]["title"] == " dumb harness + auto mode ", ":mode auto asks, with the keys it takes");
-        json no = a.ok("maic.session.command", {{"session", lid}, {"ask", asked["ask"]["id"]}, {"key", "n"}});
+        json no = a.ok("maid.session.command", {{"session", lid}, {"ask", asked["ask"]["id"]}, {"key", "n"}});
         expect(no["lines"][0]["text"] == "staying in plan", "answered n, the mode stays");
-        expect(a.ok("maic.session.command", {{"session", lid}, {"ask", asked["ask"]["id"]}, {"key", "y"}})["ok"] == false, "a question is answered once");
+        expect(a.ok("maid.session.command", {{"session", lid}, {"ask", asked["ask"]["id"]}, {"key", "y"}})["ok"] == false, "a question is answered once");
         auto [again, again_text] = run("mode auto");
         mark = a.events.size();
-        json yes = a.ok("maic.session.command", {{"session", lid}, {"ask", again["ask"]["id"]}, {"key", "y"}});
+        json yes = a.ok("maid.session.command", {{"session", lid}, {"ask", again["ask"]["id"]}, {"key", "y"}});
         a.pump(0ms);
-        expect(yes["ok"] == true && a.find("maic.session.settings", mark) && (*a.find("maic.session.settings", mark))["mode"] == "auto",
+        expect(yes["ok"] == true && a.find("maid.session.settings", mark) && (*a.find("maid.session.settings", mark))["mode"] == "auto",
                "answered y, auto is on and announced");
         run("mode manual");
 
-        // `!cmd`: output as maic.tool.output.delta with no output_index, then context for the model.
+        // `!cmd`: output as maid.tool.output.delta with no output_index, then context for the model.
         mark = a.events.size();
-        json sh = a.ok("maic.session.shell", {{"session", lid}, {"command", "printf 'paw\\n'; printf 'tail\\n'; exit 3"}});
+        json sh = a.ok("maid.session.shell", {{"session", lid}, {"command", "printf 'paw\\n'; printf 'tail\\n'; exit 3"}});
         a.pump(0ms);
         std::string printed;
         bool bare = true;
         for (size_t i = mark; i < a.events.size(); ++i) {
-            if (a.events[i]["type"] != "maic.tool.output.delta") continue;
+            if (a.events[i]["type"] != "maid.tool.output.delta") continue;
             printed += a.events[i]["data"].get<std::string>();
             bare = bare && !a.events[i].contains("output_index") && a.events[i]["item_id"] == sh["item_id"];
         }
@@ -871,21 +871,21 @@ int main() {
         mark = a.events.size();
         plan({{{"name", "write_file"}, {"arguments", {{"path", "whiskers.txt"}, {"content", "long and white"}}}}});
         a.ok("response.create", {{"conversation", lid}, {"input", "write the whiskers"}});
-        long ask = a.until_type("maic.approval.requested", mark);
-        json proposed = ask > 0 ? a.ok("maic.approval.proposed", {{"session", lid}, {"approval", a.events[ask]["id"]}}) : json::object();
-        expect(proposed.value("text", json()) == "long and white" && a.events[ask]["proposed_size"] == 14, "maic.approval.proposed answers what the write would leave");
-        if (ask > 0) a.ok("maic.approval.answer", {{"session", lid}, {"approval", a.events[ask]["id"]}, {"choice", "no"}});
+        long ask = a.until_type("maid.approval.requested", mark);
+        json proposed = ask > 0 ? a.ok("maid.approval.proposed", {{"session", lid}, {"approval", a.events[ask]["id"]}}) : json::object();
+        expect(proposed.value("text", json()) == "long and white" && a.events[ask]["proposed_size"] == 14, "maid.approval.proposed answers what the write would leave");
+        if (ask > 0) a.ok("maid.approval.answer", {{"session", lid}, {"approval", a.events[ask]["id"]}, {"choice", "no"}});
         a.until_idle(ask);
 
-        // maic.now: a message mid-turn that does not wait for the model call to end.
+        // maid.now: a message mid-turn that does not wait for the model call to end.
         mark = a.events.size();
         fake.hold_left = 1;
         a.ok("response.create", {{"conversation", lid}, {"input", "hold on"}});
         a.until_type("response.output_text.delta", mark);
-        json now = a.ok("response.create", {{"conversation", lid}, {"input", "and the paws"}, {"maic", {{"now", true}}}});
+        json now = a.ok("response.create", {{"conversation", lid}, {"input", "and the paws"}, {"maid", {{"now", true}}}});
         long end = a.until_idle(mark);
-        expect(now["maic"]["queued"] == true && end > 0 && a.text(mark).find("echo: and the paws") != std::string::npos,
-               "maic.now delivers into the running response at once: the held call is dropped and the next one has it");
+        expect(now["maid"]["queued"] == true && end > 0 && a.text(mark).find("echo: and the paws") != std::string::npos,
+               "maid.now delivers into the running response at once: the held call is dropped and the next one has it");
 
         // A ban entry's steer: the filter cuts before the match, then the engine applies the action as a person's. One
         // that keeps firing past `retries` halts the turn.
@@ -903,36 +903,36 @@ int main() {
                 agent.set_log(&log);
             };
             std::string bid = local.open_local(a.id, std::move(bs));
-            a.ok("maic.session.attach", {{"session", bid}});
+            a.ok("maid.session.attach", {{"session", bid}});
             a.pump(50ms);  // the session it left goes to the background: that state, idle, is not this turn's end
             mark = a.events.size();
             a.ok("response.create", {{"conversation", bid}, {"input", "say forbidden words"}});
             a.until_idle(mark);
-            const json* applied = a.find("maic.steer.applied", mark);
+            const json* applied = a.find("maid.steer.applied", mark);
             expect(applied && (*applied)["trigger"] == "ban" && (*applied)["ban"]["list"] == "patterns" && (*applied)["ban"]["index"] == 0 &&
                        (*applied)["by"]["client"] == "engine" && (*applied)["by"]["name"] == "bans" && (*applied)["action"] == "drop",
                    "a ban's steer is applied with trigger ban, naming its entry and never the matched text");
             expect(a.text(mark).find("forbidden") == std::string::npos, "the match never reaches a screen");
             if (!escalate) {
                 const json* done = a.find("response.completed", mark);
-                expect(a.find("response.incomplete", mark) && done && (*done)["response"]["maic"]["final"] == true &&
+                expect(a.find("response.incomplete", mark) && done && (*done)["response"]["maid"]["final"] == true &&
                            a.text(mark).find("echo: The user dropped the topic you had started") != std::string::npos && a.text(mark).find("Say it another way.") != std::string::npos,
                        "drop: the response ends steered and a successor gets drop's text and the entry's note");
             } else {
                 const json* error = a.find("error", mark);
-                expect(error && (*error)["code"] == "maic_halted" && a.count("maic.steer.applied") >= 2, "a ban that fires again past its retries halts the turn");
+                expect(error && (*error)["code"] == "maid_halted" && a.count("maid.steer.applied") >= 2, "a ban that fires again past its retries halts the turn");
             }
         }
 
         // The remote allow-list of section 7.
         TestClient b(local, host, Origin::Remote, "phone");
         b.hello();
-        expect(b.error("maic.session.command", {{"session", lid}, {"line", "allow rm *"}}) == "maic_forbidden_remote", "a remote client cannot :allow");
-        expect(b.error("maic.session.command", {{"session", lid}, {"line", "mode auto"}}) == "maic_forbidden_remote", "nor loosen to auto");
-        expect(b.error("maic.session.command", {{"session", lid}, {"line", "forbid remove 1"}}) == "maic_forbidden_remote", "nor remove a forbidden term");
-        expect(b.ok("maic.session.command", {{"session", lid}, {"line", "forbid fennec-free"}})["ok"] == true, "but may add one");
-        expect(b.error("maic.session.command", {{"session", lid}, {"ask", "k1"}, {"key", "t"}}) == "maic_forbidden_remote", "and never answers a command's question");
-        expect(b.error("maic.session.shell", {{"session", lid}, {"command", "id"}}) == "maic_forbidden_remote", "!cmd is local only");
+        expect(b.error("maid.session.command", {{"session", lid}, {"line", "allow rm *"}}) == "maid_forbidden_remote", "a remote client cannot :allow");
+        expect(b.error("maid.session.command", {{"session", lid}, {"line", "mode auto"}}) == "maid_forbidden_remote", "nor loosen to auto");
+        expect(b.error("maid.session.command", {{"session", lid}, {"line", "forbid remove 1"}}) == "maid_forbidden_remote", "nor remove a forbidden term");
+        expect(b.ok("maid.session.command", {{"session", lid}, {"line", "forbid fennec-free"}})["ok"] == true, "but may add one");
+        expect(b.error("maid.session.command", {{"session", lid}, {"ask", "k1"}, {"key", "t"}}) == "maid_forbidden_remote", "and never answers a command's question");
+        expect(b.error("maid.session.shell", {{"session", lid}, {"command", "id"}}) == "maid_forbidden_remote", "!cmd is local only");
         local.disconnect(b.id);
         host.finish();
     }
@@ -943,20 +943,20 @@ int main() {
         Recording idx("index");
         TestClient a(*engine, idx, Origin::Local, "tui");
         a.hello();
-        json entries = a.ok("maic.index.get")["entries"];
-        expect(entries.size() == 1 && entries[0]["id"] == sid && entries[0]["state"] == "live", "maic.index.get lists the loaded session");
-        a.ok("maic.index.subscribe");
-        a.ok("maic.session.set", {{"session", sid}, {"mode", "plan"}});
+        json entries = a.ok("maid.index.get")["entries"];
+        expect(entries.size() == 1 && entries[0]["id"] == sid && entries[0]["state"] == "live", "maid.index.get lists the loaded session");
+        a.ok("maid.index.subscribe");
+        a.ok("maid.session.set", {{"session", sid}, {"mode", "plan"}});
         a.pump(100ms);
         bool told = false;
-        for (const auto& m : a.other) told = told || (m["method"] == "maic.index" && m["params"]["entry"]["mode"] == "plan");
+        for (const auto& m : a.other) told = told || (m["method"] == "maid.index" && m["params"]["entry"]["mode"] == "plan");
         expect(told, "a subscribed client is told when an entry changes");
         struct stat st {};
         expect(stat(o.index_file.c_str(), &st) == 0 && (st.st_mode & 0777) == 0600 && slurp(o.index_file).find(sid) != std::string::npos,
                "the index is written to its file, 0600");
         TestClient remote(*engine, idx, Origin::Remote, "phone");
         remote.hello();
-        expect(!remote.ok("maic.index.get")["entries"][0].contains("transcript"), "a remote client's entries omit the transcript path");
+        expect(!remote.ok("maid.index.get")["entries"][0].contains("transcript"), "a remote client's entries omit the transcript path");
         idx.finish();
     }
 
@@ -968,9 +968,9 @@ int main() {
         TestClient b(*engine, driven, Origin::Remote, "phone");
         a.hello();
         b.hello();
-        a.ok("maic.session.subscribe", {{"session", sid}});
-        b.ok("maic.session.subscribe", {{"session", sid}});
-        a.ok("maic.session.set", {{"session", sid}, {"mode", "manual"}});  // every command asks: the approvals are part of the run
+        a.ok("maid.session.subscribe", {{"session", sid}});
+        b.ok("maid.session.subscribe", {{"session", sid}});
+        a.ok("maid.session.set", {{"session", sid}, {"mode", "manual"}});  // every command asks: the approvals are part of the run
         int turns = 0;
         for (int step = 0; step < 14; ++step) {
             a.pump(0ms);
@@ -982,43 +982,43 @@ int main() {
             if (kind == 5) plan({shell("echo steered " + std::to_string(step))});
             who.ok("response.create", {{"conversation", sid}, {"input", "step " + std::to_string(step)}});
             if (kind == 1) {
-                long at = a.until_type("maic.approval.requested", mark);
+                long at = a.until_type("maid.approval.requested", mark);
                 TestClient& answerer = rng() % 2 ? a : b;
-                if (at > 0) answerer.ok("maic.approval.answer", {{"session", sid}, {"approval", a.events[at]["id"]}, {"choice", rng() % 2 ? "yes" : "no"}});
+                if (at > 0) answerer.ok("maid.approval.answer", {{"session", sid}, {"approval", a.events[at]["id"]}, {"choice", rng() % 2 ? "yes" : "no"}});
             } else if (kind == 2) {
                 a.until_type("response.output_text.delta", mark);
                 const json* created = a.find("response.created", mark);
                 if (created) (rng() % 2 ? a : b).ok("cancelResponse", {{"response_id", (*created)["response"]["id"]}});
             } else if (kind == 3) {
                 // A message while the turn waits on an approval reaches the model at the next step.
-                long at = a.until_type("maic.approval.requested", mark);
+                long at = a.until_type("maid.approval.requested", mark);
                 const json* created = a.find("response.created", mark);
                 if (created) (rng() % 2 ? a : b).ok("response.steer", {{"previous_response_id", (*created)["response"]["id"]}, {"input", "and one more thing"}});
-                if (at > 0) a.ok("maic.approval.answer", {{"session", sid}, {"approval", a.events[at]["id"]}, {"choice", "yes"}});
+                if (at > 0) a.ok("maid.approval.answer", {{"session", sid}, {"approval", a.events[at]["id"]}, {"choice", "yes"}});
             } else if (kind == 4 || kind == 5) {
                 // A steer of a random action mid-reply (4) or at an approval (5); a paused turn is resumed or ended.
                 // Mid-reply the fake holds until it is hung up on: a further (which waits for the end of the call) or a
                 // refused steer would hold it ten seconds, so those go to the approvals.
                 static const char* actions[] = {"steer", "drop", "interrupt", "keep", "halt", "further"};
                 std::string action = actions[rng() % (kind == 4 ? 5 : 6)];
-                long at = kind == 4 ? a.until_type("response.output_text.delta", mark) : a.until_type("maic.approval.requested", mark);
+                long at = kind == 4 ? a.until_type("response.output_text.delta", mark) : a.until_type("maid.approval.requested", mark);
                 const json* created = a.find("response.created", mark);
                 if (at > 0 && created) {
                     std::string rid = (*created)["response"]["id"];
                     TestClient& who = kind == 4 || rng() % 2 ? a : b;
-                    json r = who.call("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", action}, {"note", "steer " + std::to_string(step)}});
-                    if (!r.contains("error") && action == "interrupt" && a.until_type("maic.turn.paused", mark) > 0) {
+                    json r = who.call("maid.steer", {{"session", sid}, {"response_id", rid}, {"action", action}, {"note", "steer " + std::to_string(step)}});
+                    if (!r.contains("error") && action == "interrupt" && a.until_type("maid.turn.paused", mark) > 0) {
                         int how = static_cast<int>(rng() % 3);
                         if (how == 0) a.ok("response.steer", {{"previous_response_id", rid}, {"input", "go on"}});
-                        else if (how == 1) a.ok("maic.steer", {{"session", sid}, {"response_id", rid}, {"action", "keep"}});
+                        else if (how == 1) a.ok("maid.steer", {{"session", sid}, {"response_id", rid}, {"action", "keep"}});
                         else a.ok("cancelResponse", {{"response_id", rid}});
                     }
                 }
                 // What is still waiting (a further's approval, an approval after a steer's successor) is answered.
                 for (size_t from = mark;;) {
-                    long ask = a.until([](const json& e) { return e["type"] == "maic.approval.requested" || (e["type"] == "maic.session.state" && e["activity"] == "idle"); }, from);
-                    if (ask < 0 || a.events[ask]["type"] != "maic.approval.requested") break;
-                    a.call("maic.approval.answer", {{"session", sid}, {"approval", a.events[ask]["id"]}, {"choice", "yes"}});
+                    long ask = a.until([](const json& e) { return e["type"] == "maid.approval.requested" || (e["type"] == "maid.session.state" && e["activity"] == "idle"); }, from);
+                    if (ask < 0 || a.events[ask]["type"] != "maid.approval.requested") break;
+                    a.call("maid.approval.answer", {{"session", sid}, {"approval", a.events[ask]["id"]}, {"choice", "yes"}});
                     from = static_cast<size_t>(ask) + 1;
                 }
             }
@@ -1052,7 +1052,7 @@ int main() {
         }, "machine");
         mutate("a type changed", [&](std::vector<json>& r) { r[deltas[0]]["msg"]["params"]["type"] = "response.output_text.done"; }, "schema.event");
         mutate("a required field removed", [&](std::vector<json>& r) { r[deltas[0]]["msg"]["params"].erase("logprobs"); }, "schema.event");
-        mutate("a field added beside OpenAI's, outside maic", [&](std::vector<json>& r) {
+        mutate("a field added beside OpenAI's, outside maid", [&](std::vector<json>& r) {
             size_t d = events_of(r, "response.output_item.done")[0];
             r[d]["msg"]["params"]["item"]["judged_by"] = "rules";
         }, "schema.extra");
@@ -1078,27 +1078,27 @@ int main() {
         }, "steer.in_turn");
         mutate("a pause while the response is open", [&](std::vector<json>& r) {
             std::string rid = r[events_of(r, "response.created")[0]]["msg"]["params"]["response"]["id"];
-            r = insert_event(r, deltas[1], {{"type", "maic.turn.paused"}, {"turn", 1}, {"steer", "st99"}, {"response_id", rid}});
+            r = insert_event(r, deltas[1], {{"type", "maid.turn.paused"}, {"turn", 1}, {"steer", "st99"}, {"response_id", rid}});
         }, "turn.paused");
         mutate("a delta's text changed", [&](std::vector<json>& r) { r[deltas[0]]["msg"]["params"]["delta"] = "fennec"; }, "");
-        mutate("a field added inside maic", [&](std::vector<json>& r) { r[deltas[0]]["msg"]["params"]["maic"] = {{"note", "fine"}}; }, "");
+        mutate("a field added inside maid", [&](std::vector<json>& r) { r[deltas[0]]["msg"]["params"]["maid"] = {{"note", "fine"}}; }, "");
         {
             // The filtered recording: a marker removed leaves a gap; an excluded type sent, or a marker on a connection that filters nothing, breaks seq.filtered.
             auto marked = [](const std::vector<json>& r, const std::string& conn) {
                 for (size_t i = 0; i < r.size(); ++i) {
-                    if (r[i]["conn"] == conn && r[i]["msg"].contains("/params/maic/filtered_from"_json_pointer)) return i;
+                    if (r[i]["conn"] == conn && r[i]["msg"].contains("/params/maid/filtered_from"_json_pointer)) return i;
                 }
                 return r.size();
             };
             std::string nvim, tui;
             for (const auto& rec : filtered.records) {
-                if (rec["dir"] != "in" || rec["msg"]["method"] != "maic.hello") continue;
+                if (rec["dir"] != "in" || rec["msg"]["method"] != "maid.hello") continue;
                 if (rec["msg"]["params"]["client"]["name"] == "nvim") nvim = rec["conn"];
                 else if (tui.empty()) tui = rec["conn"];  // the full connection said hello first
             }
             std::vector<json> r = filtered.records;
             size_t at = marked(r, nvim);
-            r[at]["msg"]["params"]["maic"].erase("filtered_from");
+            r[at]["msg"]["params"]["maid"].erase("filtered_from");
             std::string got = verdict(r);
             expect(got == "seq.next", "a filtered_from removed is a gap (" + got + ")");
             r = filtered.records;
@@ -1110,19 +1110,19 @@ int main() {
             expect(got == "seq.filtered", "an excluded type sent to the connection is caught (" + got + ")");
             r = filtered.records;
             for (size_t i = 0; i < r.size(); ++i) {
-                if (r[i]["conn"] == tui && r[i]["dir"] == "out" && r[i]["msg"].value("method", "") == "maic.event" && r[i]["msg"]["params"]["sequence_number"] == r[at]["msg"]["params"]["sequence_number"]) {
-                    r[i]["msg"]["params"]["maic"]["filtered_from"] = r[at]["msg"]["params"]["maic"]["filtered_from"];
+                if (r[i]["conn"] == tui && r[i]["dir"] == "out" && r[i]["msg"].value("method", "") == "maid.event" && r[i]["msg"]["params"]["sequence_number"] == r[at]["msg"]["params"]["sequence_number"]) {
+                    r[i]["msg"]["params"]["maid"]["filtered_from"] = r[at]["msg"]["params"]["maid"]["filtered_from"];
                 }
             }
             got = verdict(r);
             expect(got == "seq.filtered", "a filtered_from on a connection that excludes nothing is caught (" + got + ")");
         }
         std::vector<json> r = tool.records;
-        size_t req = events_of(r, "maic.approval.requested")[0];
+        size_t req = events_of(r, "maid.approval.requested")[0];
         r.erase(r.begin() + static_cast<long>(req));
         std::string got = verdict(r);
         expect(got == "seq.next", "the approval dropped from the tool call stream is caught (" + got + ")");
-        size_t ans = events_of(tool.records, "maic.approval.answered")[0];
+        size_t ans = events_of(tool.records, "maid.approval.answered")[0];
         size_t first_output = events_of(tool.records, "response.shell_call_output_content.delta")[0];
         r = tool.records;
         std::swap(r[ans]["msg"]["params"], r[first_output]["msg"]["params"]);
@@ -1130,12 +1130,12 @@ int main() {
         got = verdict(r);
         expect(got == "machine", "output before its approval was answered is caught (" + got + ")");
         r = steering.records;
-        size_t applied = events_of(r, "maic.steer.applied")[0];
+        size_t applied = events_of(r, "maid.steer.applied")[0];
         r.insert(r.begin() + static_cast<long>(applied) + 1, r[applied]);
         r[applied + 1]["msg"]["params"]["sequence_number"] = r[applied]["msg"]["params"]["sequence_number"].get<long>() + 1;
         for (size_t i = applied + 2; i < r.size(); ++i) {
             json& m = r[i]["msg"];
-            if (r[i]["conn"] == r[applied]["conn"] && m.value("method", "") == "maic.event") m["params"]["sequence_number"] = m["params"]["sequence_number"].get<long>() + 1;
+            if (r[i]["conn"] == r[applied]["conn"] && m.value("method", "") == "maid.event") m["params"]["sequence_number"] = m["params"]["sequence_number"].get<long>() + 1;
         }
         got = verdict(r);
         expect(got == "machine", "a steer applied twice is caught (" + got + ")");
@@ -1146,13 +1146,13 @@ int main() {
         std::vector<std::string> types;
         for (const auto& rec : tool.records) {
             const json& m = rec["msg"];
-            if (m.value("method", "") != "maic.event" || rec["conn"] != tool.records.front()["conn"]) continue;
+            if (m.value("method", "") != "maid.event" || rec["conn"] != tool.records.front()["conn"]) continue;
             if (auto v = protocol::openai_view(m["params"])) types.push_back((*v)["type"]);
         }
         auto has = [&](const std::string& t) { return std::find(types.begin(), types.end(), t) != types.end(); };
         expect(has("response.created") && has("response.output_item.added") && has("response.shell_call_output_content.delta") && has("response.completed") &&
-                   !has("maic.approval.requested"),
-               "with maic.* removed, it still sees the response created, its items, the command's output and the response completed");
+                   !has("maid.approval.requested"),
+               "with maid.* removed, it still sees the response created, its items, the command's output and the response completed");
     }
 
     section("auto at start: held at manual where the workspace is not trusted, unless asked for");
@@ -1165,19 +1165,19 @@ int main() {
         Recording autostart("auto-start");
         TestClient a(e, autostart, Origin::Local, "tui");
         a.hello();
-        json held = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}});
-        a.ok("maic.session.subscribe", {{"session", held["id"]}});
-        long notice = a.until([](const json& ev) { return ev["type"] == "maic.notice" && ev.value("text", "").find("auto mode waits") != std::string::npos; });
-        expect(held["maic"]["entry"]["mode"] == "manual" && notice >= 0, "auto from the settings starts in manual in an untrusted workspace, and says why");
-        json asked = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}, {"mode", "auto"}}}});
-        expect(asked["maic"]["entry"]["mode"] == "auto", "a local client asking for auto in the call starts in auto");
+        json held = a.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}});
+        a.ok("maid.session.subscribe", {{"session", held["id"]}});
+        long notice = a.until([](const json& ev) { return ev["type"] == "maid.notice" && ev.value("text", "").find("auto mode waits") != std::string::npos; });
+        expect(held["maid"]["entry"]["mode"] == "manual" && notice >= 0, "auto from the settings starts in manual in an untrusted workspace, and says why");
+        json asked = a.ok("createConversation", {{"maid", {{"workspace", ws.string()}, {"mode", "auto"}}}});
+        expect(asked["maid"]["entry"]["mode"] == "auto", "a local client asking for auto in the call starts in auto");
         TestClient r(e, autostart, Origin::Remote, "phone");
         r.hello();
-        json remote = r.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}});
-        expect(remote["maic"]["entry"]["mode"] == "manual", "a remote client's session starts in manual when it names no mode");
-        expect(r.error("createConversation", {{"maic", {{"workspace", ws.string()}, {"mode", "auto"}}}}) == "maic_step_up_required",
+        json remote = r.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}});
+        expect(remote["maid"]["entry"]["mode"] == "manual", "a remote client's session starts in manual when it names no mode");
+        expect(r.error("createConversation", {{"maid", {{"workspace", ws.string()}, {"mode", "auto"}}}}) == "maid_step_up_required",
                "a remote client creating a session in auto needs the same step-up as switching one to auto");
-        expect(r.ok("createConversation", {{"maic", {{"workspace", ws.string()}, {"mode", "edit"}}}})["maic"]["entry"]["mode"] == "edit",
+        expect(r.ok("createConversation", {{"maid", {{"workspace", ws.string()}, {"mode", "edit"}}}})["maid"]["entry"]["mode"] == "edit",
                "a remote client may create a session in edit");
         EngineOptions ob = oa;
         ob.mode_asked = true;
@@ -1188,7 +1188,7 @@ int main() {
         Recording asked_rec("auto-start-asked");
         TestClient b(eb, asked_rec, Origin::Local, "rpc");
         b.hello();
-        expect(b.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}})["maic"]["entry"]["mode"] == "auto", "the host's --mode auto starts in auto anywhere");
+        expect(b.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}})["maid"]["entry"]["mode"] == "auto", "the host's --mode auto starts in auto anywhere");
         asked_rec.finish();
     }
 
@@ -1211,20 +1211,20 @@ int main() {
         Recording rec("checkers");
         TestClient a(e, rec, Origin::Local, "tui");
         a.hello();
-        json conv = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}, {"mode", "edit"}}}});
-        a.ok("maic.session.subscribe", {{"session", conv["id"]}});
+        json conv = a.ok("createConversation", {{"maid", {{"workspace", ws.string()}, {"mode", "edit"}}}});
+        a.ok("maid.session.subscribe", {{"session", conv["id"]}});
         size_t mark = a.events.size();
         plan({json{{"name", "write_file"}, {"arguments", {{"path", "checked.txt"}, {"content", "x"}}}}});
         a.ok("response.create", {{"conversation", conv["id"]}, {"input", "write checked.txt"}});
-        long q = a.until_type("maic.question.asked", mark);
+        long q = a.until_type("maid.question.asked", mark);
         expect(q > 0 && a.events[q].value("text", "").find("metered/claude") != std::string::npos, "the metered judge is asked about first: " + (q > 0 ? a.events[q].dump() : std::string("no question")));
-        if (q > 0) a.ok("maic.question.reply", {{"session", conv["id"]}, {"question", a.events[q]["id"]}, {"text", "yes"}});
-        long at = a.until_type("maic.approval.requested", mark);
+        if (q > 0) a.ok("maid.question.reply", {{"session", conv["id"]}, {"question", a.events[q]["id"]}, {"text", "yes"}});
+        long at = a.until_type("maid.approval.requested", mark);
         json approval = at > 0 ? a.events[at] : json::object();
-        long noticed = a.until([](const json& ev) { return ev["type"] == "maic.notice" && ev.value("text", "").rfind("checked: yours to decide (local/qwen deny in ", 0) == 0; }, mark);
+        long noticed = a.until([](const json& ev) { return ev["type"] == "maid.notice" && ev.value("text", "").rfind("checked: yours to decide (local/qwen deny in ", 0) == 0; }, mark);
         expect(at > 0 && approval.value("reason", "").rfind("checkers: the checkers disagree", 0) == 0 && noticed >= 0,
                "edit mode: the write the rules allow is judged, the checkers disagree, and the user is asked with both verdicts in view");
-        if (at > 0) a.ok("maic.approval.answer", {{"session", conv["id"]}, {"approval", approval["id"]}, {"choice", "yes"}});
+        if (at > 0) a.ok("maid.approval.answer", {{"session", conv["id"]}, {"approval", approval["id"]}, {"choice", "yes"}});
         expect(a.until_idle(at) > 0 && fs::exists(ws / "checked.txt"), "the user's yes runs it");
         auto record_of = [&](const std::string& path) {
             json record;
@@ -1246,16 +1246,16 @@ int main() {
         fs::remove(ws / "checked.txt");
         // A session no client has in focus (a background task nobody watches): nobody to ask, so the metered judge is
         // skipped and Qwen's denial stands.
-        json back = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}, {"mode", "edit"}, {"focus", false}}}});
-        a.ok("maic.session.subscribe", {{"session", back["id"]}});
+        json back = a.ok("createConversation", {{"maid", {{"workspace", ws.string()}, {"mode", "edit"}, {"focus", false}}}});
+        a.ok("maid.session.subscribe", {{"session", back["id"]}});
         mark = a.events.size();
         size_t judged = fc.requests.size();
         plan({json{{"name", "write_file"}, {"arguments", {{"path", "unasked.txt"}, {"content", "x"}}}}});
         a.ok("response.create", {{"conversation", back["id"]}, {"input", "write unasked.txt"}});
         long started = a.until([&](const json& ev) { return ev["stream_id"] == back["id"] && ev["type"] == "response.created"; }, mark);
-        long idle = started < 0 ? -1 : a.until([&](const json& ev) { return ev["stream_id"] == back["id"] && ev["type"] == "maic.session.state" && ev["activity"] == "idle"; }, started);
+        long idle = started < 0 ? -1 : a.until([&](const json& ev) { return ev["stream_id"] == back["id"] && ev["type"] == "maid.session.state" && ev["activity"] == "idle"; }, started);
         bool asked = false;
-        for (size_t i = mark; i < a.events.size(); ++i) asked = asked || a.events[i]["type"] == "maic.question.asked" || a.events[i]["type"] == "maic.approval.requested";
+        for (size_t i = mark; i < a.events.size(); ++i) asked = asked || a.events[i]["type"] == "maid.question.asked" || a.events[i]["type"] == "maid.approval.requested";
         json unasked = record_of("unasked.txt");
         expect(idle > 0 && !asked && !fs::exists(ws / "unasked.txt") && fc.requests.size() == judged && !unasked.is_null() &&
                    unasked["review"]["judges"][1].value("outcome", "") == "declined" && unasked["review"]["judges"][1].value("asked", "") == "nobody to ask" &&
@@ -1283,40 +1283,40 @@ int main() {
             Recording tiers("tiers");
             TestClient a(e, tiers, Origin::Local, "tui");
             a.hello();
-            json plain = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}});
-            expect(plain["maic"]["entry"]["tier"] == "guarded", "a session where nothing is enrolled works at the default tier");
-            json open = a.ok("createConversation", {{"maic", {{"workspace", open_dir.string()}}}});
+            json plain = a.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}});
+            expect(plain["maid"]["entry"]["tier"] == "guarded", "a session where nothing is enrolled works at the default tier");
+            json open = a.ok("createConversation", {{"maid", {{"workspace", open_dir.string()}}}});
             oid = open.value("id", "");
-            expect(open["maic"]["entry"]["tier"] == "open", "a session in a directory protocol_tiers enrolls works at that tier");
-            expect(a.error("createConversation", {{"maic", {{"workspace", air_dir.string()}}}}) == "maic_tier_unavailable",
+            expect(open["maid"]["entry"]["tier"] == "open", "a session in a directory protocol_tiers enrolls works at that tier");
+            expect(a.error("createConversation", {{"maid", {{"workspace", air_dir.string()}}}}) == "maid_tier_unavailable",
                    "airtight is refused by a build without the conformance stamp");
-            a.ok("maic.session.subscribe", {{"session", oid}});
-            json up = a.ok("maic.session.command", {{"session", oid}, {"line", "tier guarded"}});
-            long changed = a.until([](const json& ev) { return ev["type"] == "maic.session.settings" && ev.value("tier", "") == "guarded"; });
-            expect(up.value("ok", false) && changed >= 0, ":tier guarded tightens it, announced in maic.session.settings");
+            a.ok("maid.session.subscribe", {{"session", oid}});
+            json up = a.ok("maid.session.command", {{"session", oid}, {"line", "tier guarded"}});
+            long changed = a.until([](const json& ev) { return ev["type"] == "maid.session.settings" && ev.value("tier", "") == "guarded"; });
+            expect(up.value("ok", false) && changed >= 0, ":tier guarded tightens it, announced in maid.session.settings");
             TestClient r(e, tiers, Origin::Remote, "phone");
             r.hello();
-            expect(!r.ok("maic.session.command", {{"session", oid}, {"line", "tier open"}}).value("ok", true), "a remote client cannot loosen it");
-            expect(a.ok("maic.session.command", {{"session", oid}, {"line", "tier open"}}).value("ok", false), "a local client loosens it back to the tier it opened at");
-            expect(!a.ok("maic.session.command", {{"session", plain["id"]}, {"line", "tier open"}}).value("ok", true), "but never below the tier a session opened at");
-            json status = a.ok("maic.session.command", {{"session", oid}, {"line", "status"}});
+            expect(!r.ok("maid.session.command", {{"session", oid}, {"line", "tier open"}}).value("ok", true), "a remote client cannot loosen it");
+            expect(a.ok("maid.session.command", {{"session", oid}, {"line", "tier open"}}).value("ok", false), "a local client loosens it back to the tier it opened at");
+            expect(!a.ok("maid.session.command", {{"session", plain["id"]}, {"line", "tier open"}}).value("ok", true), "but never below the tier a session opened at");
+            json status = a.ok("maid.session.command", {{"session", oid}, {"line", "status"}});
             expect(status.dump().find("protocol tier: open (directory " + open_dir.string() + " (protocol_tiers))") != std::string::npos, ":status says the tier and where it came from");
 
             // A client that goes (Engine::leave, as the daemon's connections end): the idle session in its focus is
             // stopped (leave.quit.idle), the session in another client's focus untouched.
             TestClient b(e, tiers, Origin::Local, "socket");
             b.hello();
-            std::string idle = b.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}}).value("id", "");
+            std::string idle = b.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}}).value("id", "");
             e.leave(b.id);
             e.disconnect(b.id);
-            json listed = a.ok("maic.index.get");
+            json listed = a.ok("maid.index.get");
             bool gone = true, kept = false;
             for (const auto& en : listed["entries"]) {
                 gone = gone && en["id"] != idle;
                 kept = kept || (en["id"] == oid && en["state"] == "live");
             }
             expect(gone && kept, "leaving stops the idle session a client had in focus, and only that one");
-            a.ok("maic.session.park", {{"session", oid}});
+            a.ok("maid.session.park", {{"session", oid}});
             tiers.finish();
         }
         // Resumed, a session keeps the tier its start record names, though the directory is no longer enrolled.
@@ -1326,12 +1326,12 @@ int main() {
         Recording again("tiers-resumed");
         TestClient a(e, again, Origin::Local, "tui");
         a.hello();
-        json resumed = a.ok("maic.session.resume", {{"session", oid}});
+        json resumed = a.ok("maid.session.resume", {{"session", oid}});
         expect(resumed.value("tier", "") == "open", "a resumed session keeps the tier it started at");
         again.finish();
     }
 
-    section("history: attach's exchanges, listConversationItems paging back lazily, collapsing, maic.item.expand, a fork");
+    section("history: attach's exchanges, listConversationItems paging back lazily, collapsing, maid.item.expand, a fork");
     Recording hist("history");
     {
         // A transcript written here: 60 exchanges of a question, a command and an answer, an attached file and a
@@ -1387,24 +1387,24 @@ int main() {
 
         TestClient a(*engine, hist, Origin::Local, "tui");
         a.hello();
-        std::string hid = a.ok("maic.session.resume", {{"session", parent.string()}})["id"];
-        json snap = a.ok("maic.session.attach", {{"session", hid}});
+        std::string hid = a.ok("maid.session.resume", {{"session", parent.string()}})["id"];
+        json snap = a.ok("maid.session.attach", {{"session", hid}});
         std::vector<std::string> last3(expected.begin() + static_cast<long>(starts[starts.size() - 3]), expected.end());
         expect(snap["more_before"] == true && ids(snap["items"]) == last3,
                "attach answers the last three exchanges from the transcript, each item `<file id>#<line>` (skeleton lines are not lines)");
         const json& first = snap["items"][0];
         expect(first["type"] == "message" && first["role"] == "user" && first["content"][0]["text"] == "question 57", "a user record is OpenAI's user message");
         const json& out57 = snap["items"][1];
-        expect(out57["type"] == "shell_call_output" && out57["maic"]["summary"] == "$ echo 57" && out57["maic"]["ok"] == true &&
-                   out57["output"][0]["stdout"] == results[out57["id"]] && !out57["maic"].contains("collapsed"),
+        expect(out57["type"] == "shell_call_output" && out57["maid"]["summary"] == "$ echo 57" && out57["maid"]["ok"] == true &&
+                   out57["output"][0]["stdout"] == results[out57["id"]] && !out57["maid"].contains("collapsed"),
                "a run_shell record is a shell_call_output with the harness's summary, whole under a local client's 64 KiB");
-        expect(snap["items"].back()["type"] == "maic.notice" && snap["items"].back()["kind"] == "compact", "a compaction shows as a maic.notice");
+        expect(snap["items"].back()["type"] == "maid.notice" && snap["items"].back()["kind"] == "compact", "a compaction shows as a maid.notice");
 
         std::vector<std::string> older;
         std::string after = snap["items"][0]["id"];
         int pages = 0;
         for (bool more = true; more && pages < 20; ++pages) {
-            json page = a.ok("listConversationItems", {{"conversation_id", hid}, {"after", after}, {"maic", {{"exchanges", 25}}}});
+            json page = a.ok("listConversationItems", {{"conversation_id", hid}, {"after", after}, {"maid", {{"exchanges", 25}}}});
             std::vector<std::string> got = ids(page["data"]);
             older.insert(older.begin(), got.rbegin(), got.rend());
             more = page["has_more"];
@@ -1413,11 +1413,11 @@ int main() {
         }
         older.insert(older.end(), last3.begin(), last3.end());
         expect(older == expected && pages == 3, "listConversationItems pages back newest first, 25 exchanges a page, to the first record and no further");
-        json page5 = a.ok("listConversationItems", {{"conversation_id", hid}, {"after", snap["items"][0]["id"]}, {"maic", {{"exchanges", 5}}}});
+        json page5 = a.ok("listConversationItems", {{"conversation_id", hid}, {"after", snap["items"][0]["id"]}, {"maid", {{"exchanges", 5}}}});
         std::vector<std::string> want5(expected.begin() + static_cast<long>(starts[starts.size() - 8]), expected.begin() + static_cast<long>(starts[starts.size() - 3]));
         std::vector<std::string> got5 = ids(page5["data"]);
         std::reverse(got5.begin(), got5.end());
-        expect(got5 == want5 && page5["has_more"] == true, "maic.exchanges takes whole exchanges");
+        expect(got5 == want5 && page5["has_more"] == true, "maid.exchanges takes whole exchanges");
         json asc = a.ok("listConversationItems", {{"conversation_id", hid}, {"order", "asc"}, {"limit", 7}});
         json asc2 = a.ok("listConversationItems", {{"conversation_id", hid}, {"order", "asc"}, {"limit", 7}, {"after", asc["last_id"]}});
         expect(ids(asc["data"]) == std::vector<std::string>(expected.begin(), expected.begin() + 7) &&
@@ -1427,41 +1427,41 @@ int main() {
         expect(ids(latest["data"]) == std::vector<std::string>{expected.back(), expected[expected.size() - 2]}, "with no `after`, desc starts at the newest");
 
         json ctx = a.ok("getConversationItem", {{"conversation_id", hid}, {"item_id", expected[0]}});
-        expect(ctx["type"] == "maic.notice" && ctx["kind"] == "context" && ctx["text"] == "" && ctx["maic"]["collapsed"] == true &&
-                   ctx["maic"]["size"] == attached.size() && ctx["maic"]["head"] == attached.substr(0, ctx["maic"]["head"].get<std::string>().size()) &&
-                   ctx["maic"]["head"].get<std::string>().size() <= 200,
+        expect(ctx["type"] == "maid.notice" && ctx["kind"] == "context" && ctx["text"] == "" && ctx["maid"]["collapsed"] == true &&
+                   ctx["maid"]["size"] == attached.size() && ctx["maid"]["head"] == attached.substr(0, ctx["maid"]["head"].get<std::string>().size()) &&
+                   ctx["maid"]["head"].get<std::string>().size() <= 200,
                "an attached file over collapse_over comes collapsed, with its size and a head of at most 200 bytes");
         std::string whole;
         size_t offset = 0;
         int parts = 0;
         bool contiguous = true, done = false;
         while (!done && parts < 10) {
-            json part = a.ok("maic.item.expand", {{"session", hid}, {"item_id", expected[0]}, {"offset", offset}, {"length", 40000}});
+            json part = a.ok("maid.item.expand", {{"session", hid}, {"item_id", expected[0]}, {"offset", offset}, {"length", 40000}});
             contiguous = contiguous && part["offset"] == offset && part["size"] == attached.size();
             whole += part["text"].get<std::string>();
             offset += part["text"].get<std::string>().size();
             done = part["done"];
             ++parts;
         }
-        expect(whole == attached && parts == 3 && contiguous, "maic.item.expand serves it in parts cut on characters, end to end");
-        expect(a.error("getConversationItem", {{"conversation_id", hid}, {"item_id", "nope#1"}}) == "maic_not_found" &&
-                   a.error("maic.item.expand", {{"session", hid}, {"item_id", "nope#1"}}) == "maic_not_found" &&
-                   a.error("listConversationItems", {{"conversation_id", hid}, {"after", "nope#1"}}) == "maic_not_found",
-               "an item that is not there is maic_not_found");
+        expect(whole == attached && parts == 3 && contiguous, "maid.item.expand serves it in parts cut on characters, end to end");
+        expect(a.error("getConversationItem", {{"conversation_id", hid}, {"item_id", "nope#1"}}) == "maid_not_found" &&
+                   a.error("maid.item.expand", {{"session", hid}, {"item_id", "nope#1"}}) == "maid_not_found" &&
+                   a.error("listConversationItems", {{"conversation_id", hid}, {"after", "nope#1"}}) == "maid_not_found",
+               "an item that is not there is maid_not_found");
 
         TestClient r(*engine, hist, Origin::Remote, "phone");
         r.hello();
-        json rsnap = r.ok("maic.session.attach", {{"session", hid}, {"exchanges", 1}});
+        json rsnap = r.ok("maid.session.attach", {{"session", hid}, {"exchanges", 1}});
         const json& rout = rsnap["items"][1];
-        expect(rout["type"] == "shell_call_output" && rout["output"].empty() && rout["maic"]["collapsed"] == true && rout["maic"]["size"] == results[rout["id"]].size() &&
-                   rout["maic"]["head"] == "exit code 0\noutput of 59\noutput of 59",
+        expect(rout["type"] == "shell_call_output" && rout["output"].empty() && rout["maid"]["collapsed"] == true && rout["maid"]["size"] == results[rout["id"]].size() &&
+                   rout["maid"]["head"] == "exit code 0\noutput of 59\noutput of 59",
                "a remote client's 2 KiB collapses a command's output to its first three lines");
-        TestClient n(*engine, hist, Origin::Local, "maic.nvim");
-        n.ok("maic.hello", {{"protocol", 1}, {"client", {{"name", "maic.nvim"}}}, {"capabilities", {"tool_output"}}, {"view", {{"collapse_over", 0}}}});
+        TestClient n(*engine, hist, Origin::Local, "maid.nvim");
+        n.ok("maid.hello", {{"protocol", 1}, {"client", {{"name", "maid.nvim"}}}, {"capabilities", {"tool_output"}}, {"view", {{"collapse_over", 0}}}});
         expect(n.ok("getConversationItem", {{"conversation_id", hid}, {"item_id", expected[0]}})["text"] == attached, "collapse_over 0 never collapses");
 
-        std::string cid = a.ok("maic.session.resume", {{"session", child.string()}})["id"];
-        json csnap = a.ok("maic.session.attach", {{"session", cid}, {"exchanges", 100}});
+        std::string cid = a.ok("maid.session.resume", {{"session", child.string()}})["id"];
+        json csnap = a.ok("maid.session.attach", {{"session", cid}, {"exchanges", 100}});
         std::vector<std::string> want(expected.begin(), expected.begin() + static_cast<long>(inherited));
         want.push_back(child.stem().string() + "#3");
         want.push_back(child.stem().string() + "#4");
@@ -1472,7 +1472,7 @@ int main() {
         size_t mark = a.events.size();
         a.ok("response.create", {{"conversation", hid}, {"input", "one more"}});
         expect(a.until_idle(mark) > 0, "a turn on the resumed session finishes");
-        json after_turn = a.ok("maic.session.attach", {{"session", hid}, {"exchanges", 1}});
+        json after_turn = a.ok("maid.session.attach", {{"session", hid}, {"exchanges", 1}});
         const json& items = after_turn["items"];
         auto line_of = [](const std::string& id) { return std::stol(id.substr(id.find('#') + 1)); };
         expect(items.size() == 2 && items[0]["content"][0]["text"] == "one more" && items[1]["content"][0]["text"] == "echo: one more" &&
@@ -1483,10 +1483,10 @@ int main() {
         plan({shell("echo first; sleep 1; echo second")});
         mark = a.events.size();
         a.ok("response.create", {{"conversation", hid}, {"input", "run it"}});
-        long ask = a.until_type("maic.approval.requested", mark);
-        a.ok("maic.approval.answer", {{"session", hid}, {"approval", ask > 0 ? a.events[ask]["id"] : json("")}, {"choice", "yes"}});
+        long ask = a.until_type("maid.approval.requested", mark);
+        a.ok("maid.approval.answer", {{"session", hid}, {"approval", ask > 0 ? a.events[ask]["id"] : json("")}, {"choice", "yes"}});
         a.until([](const json& e) { return e["type"] == "response.shell_call_output_content.delta" && e["delta"]["stdout"].get<std::string>().find("first") != std::string::npos; }, mark);
-        json live = n.ok("maic.session.attach", {{"session", hid}, {"exchanges", 1}});
+        json live = n.ok("maid.session.attach", {{"session", hid}, {"exchanges", 1}});
         bool running = false;
         for (const auto& i : live["inflight"].value("items", json::array())) {
             running = running || (i["item"]["type"] == "shell_call_output" && i["text"].get<std::string>().find("first") != std::string::npos &&
@@ -1504,24 +1504,24 @@ int main() {
     {
         TestClient a(*engine, multi, Origin::Local, "tui");
         a.hello();
-        a.ok("maic.index.subscribe");
+        a.ok("maid.index.subscribe");
         auto state_of = [&](const std::string& id) {
-            json entries = a.ok("maic.index.get")["entries"];
+            json entries = a.ok("maid.index.get")["entries"];
             for (const auto& e : entries) {
                 if (e["id"] == id) return e;
             }
             return json();
         };
         auto on = [](const std::string& id, const std::string& type) { return [id, type](const json& e) { return e["stream_id"] == id && e["type"] == type; }; };
-        json one = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}});
+        json one = a.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}});
         std::string s1 = one["id"];
-        expect(one["maic"]["entry"]["state"] == "live", "a session a client creates opens live, in its focus");
-        json two = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}});
+        expect(one["maid"]["entry"]["state"] == "live", "a session a client creates opens live, in its focus");
+        json two = a.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}});
         std::string s2 = two["id"];
-        expect(two["maic"]["entry"]["state"] == "live" && state_of(s1)["state"] == "background",
+        expect(two["maid"]["entry"]["state"] == "live" && state_of(s1)["state"] == "background",
                "creating another moves the client's focus, and without `leave` the first only goes to the background");
-        a.ok("maic.session.subscribe", {{"session", s1}});
-        a.ok("maic.session.subscribe", {{"session", s2}});
+        a.ok("maid.session.subscribe", {{"session", s1}});
+        a.ok("maid.session.subscribe", {{"session", s2}});
         a.pump(50ms);
 
         // The first session's reply is held mid-stream; the second's runs to its end meanwhile.
@@ -1540,24 +1540,24 @@ int main() {
         for (size_t i = mark; i < a.events.size(); ++i) first_open = first_open && !on(s1, "response.completed")(a.events[i]);
         expect(done2 >= 0 && first_open, "two sessions' turns run in parallel: the second completes while the first is still streaming");
         a.ok("cancelResponse", {{"response_id", r1["id"]}});
-        a.until([&](const json& e) { return e["stream_id"] == s1 && e["type"] == "maic.session.state" && e["activity"] == "idle"; }, mark);
+        a.until([&](const json& e) { return e["stream_id"] == s1 && e["type"] == "maid.session.state" && e["activity"] == "idle"; }, mark);
         expect(state_of(s1)["unseen"] == true && state_of(s2)["unseen"] == false, "a turn that ends while no client has the session in focus marks it unseen");
 
-        json f = a.ok("maic.session.focus", {{"session", s1}, {"leave", {{"as", "bg"}}}});
+        json f = a.ok("maid.session.focus", {{"session", s1}, {"leave", {{"as", "bg"}}}});
         expect(f["state"] == "live" && f["unseen"] == false && state_of(s2)["state"] == "background",
-               "maic.session.focus brings a session into focus, clears unseen, and the one left goes to the background");
+               "maid.session.focus brings a session into focus, clears unseen, and the one left goes to the background");
 
         mark = a.events.size();
-        json fk = a.ok("maic.session.fork", {{"session", s1}, {"leave", {{"as", "bg"}}}});
+        json fk = a.ok("maid.session.fork", {{"session", s1}, {"leave", {{"as", "bg"}}}});
         std::string s3 = fk["id"];
-        a.ok("maic.session.subscribe", {{"session", s3}});
-        long first = a.until(on(s3, "maic.session.state"), mark);
+        a.ok("maid.session.subscribe", {{"session", s3}});
+        long first = a.until(on(s3, "maid.session.state"), mark);
         expect(fk["state"] == "live" && fk["turns"].get<int>() == 1 && state_of(s1)["state"] == "background", "a fork opens in focus with its parent's turns");
         expect(first >= 0 && a.events[first].contains("forked_from") && a.events[first]["forked_from"]["session"] == s1,
                "its first event's epoch names the session it forked from");
 
-        a.ok("maic.session.focus", {{"session", s1}, {"leave", {{"as", "default"}}}});
-        expect(state_of(s3)["state"] == "parked" && a.error("getConversation", {{"conversation_id", s3}}) == "maic_not_found",
+        a.ok("maid.session.focus", {{"session", s1}, {"leave", {{"as", "default"}}}});
+        expect(state_of(s3)["state"] == "parked" && a.error("getConversation", {{"conversation_id", s3}}) == "maid_not_found",
                "the default leave parks an idle session: it leaves memory and stays in the index");
 
         {
@@ -1567,36 +1567,36 @@ int main() {
         fake.hold_left = 1;
         a.ok("response.create", {{"conversation", s2}, {"input", "busy for a while"}});
         fake.wait_streaming(base + 1);
-        expect(a.error("maic.session.park", {{"session", s2}}) == "maic_busy", "parking a session mid-turn is maic_busy without interrupt");
+        expect(a.error("maid.session.park", {{"session", s2}}) == "maid_busy", "parking a session mid-turn is maid_busy without interrupt");
         a.ok("response.create", {{"conversation", s2}, {"input", "queued behind"}});
-        json pk = a.ok("maic.session.park", {{"session", s2}, {"interrupt", true}});
+        json pk = a.ok("maid.session.park", {{"session", s2}, {"interrupt", true}});
         expect(pk["state"] == "parked" && pk["queued"] == 1 && !pk.contains("queued_inputs"),
                "with interrupt it parks, keeping the message that waited on the lane (its text stays in the engine)");
         mark = a.events.size();
-        json rs = a.ok("maic.session.resume", {{"session", s2}, {"leave", {{"as", "bg"}}}});
-        a.ok("maic.session.subscribe", {{"session", s2}});
+        json rs = a.ok("maid.session.resume", {{"session", s2}, {"leave", {{"as", "bg"}}}});
+        a.ok("maid.session.subscribe", {{"session", s2}});
         long ran = a.until([&](const json& e) {
             return e["stream_id"] == s2 && e["type"] == "response.output_text.done" && e.value("text", "").find("echo: queued behind") != std::string::npos;
         }, mark);
         expect(rs["state"] == "live" && ran >= 0, "resuming the parked session runs the message that waited");
-        a.until([&](const json& e) { return e["stream_id"] == s2 && e["type"] == "maic.session.state" && e["activity"] == "idle"; }, static_cast<size_t>(std::max(ran, 0L)));
+        a.until([&](const json& e) { return e["stream_id"] == s2 && e["type"] == "maid.session.state" && e["activity"] == "idle"; }, static_cast<size_t>(std::max(ran, 0L)));
 
         a.pump(50ms);
-        json stop = a.ok("maic.session.stop", {{"session", s2}});
+        json stop = a.ok("maid.session.stop", {{"session", s2}});
         a.pump(50ms);
         bool removed = false;
-        for (const auto& m : a.other) removed = removed || (m["method"] == "maic.index" && m["params"].value("removed", "") == s2);
-        expect(stop["state"] == "stopped" && state_of(s2).is_null() && removed, "maic.session.stop ends it, takes it off the index and says so");
-        json stopped_parked = a.ok("maic.session.stop", {{"session", s3}});
+        for (const auto& m : a.other) removed = removed || (m["method"] == "maid.index" && m["params"].value("removed", "") == s2);
+        expect(stop["state"] == "stopped" && state_of(s2).is_null() && removed, "maid.session.stop ends it, takes it off the index and says so");
+        json stopped_parked = a.ok("maid.session.stop", {{"session", s3}});
         expect(stopped_parked["state"] == "stopped" && state_of(s3).is_null(), "a parked session can be stopped too");
 
         TestClient b(*engine, multi, Origin::Local, "nvim");
         b.hello();
-        b.ok("maic.session.focus", {{"session", s1}});
+        b.ok("maid.session.focus", {{"session", s1}});
         engine->disconnect(a.id);
         TestClient c(*engine, multi, Origin::Local, "look");
         c.hello();
-        auto entry_of = [&](const std::string& id) { return c.ok("getConversation", {{"conversation_id", id}})["maic"]["entry"]; };
+        auto entry_of = [&](const std::string& id) { return c.ok("getConversation", {{"conversation_id", id}})["maid"]["entry"]; };
         expect(entry_of(s1)["state"] == "live", "a session stays live while another client has it in focus");
         engine->disconnect(b.id);
         expect(entry_of(s1)["state"] == "background", "a client that goes lets go of its focus: the session stays loaded, in the background");
@@ -1608,7 +1608,7 @@ int main() {
         bool parked = false, cut = false;
         for (auto& r : mutated) {
             json& ev = r["msg"]["params"];
-            if (r["msg"].value("method", "") != "maic.event" || ev["stream_id"] != s2 || ev["type"] != "maic.session.state") continue;
+            if (r["msg"].value("method", "") != "maid.event" || ev["stream_id"] != s2 || ev["type"] != "maid.session.state") continue;
             if (ev["state"] == "parked") parked = true;
             else if (parked && ev.contains("epoch")) {
                 ev.erase("epoch");
@@ -1677,7 +1677,7 @@ int main() {
             TestClient a(e, rec, Origin::Local, "tui");
             a.hello();
             auto state_of = [&](const std::string& id) {
-                json entries = a.ok("maic.index.get")["entries"];
+                json entries = a.ok("maid.index.get")["entries"];
                 for (const auto& en : entries) {
                     if (en["id"] == id) return en;
                 }
@@ -1694,7 +1694,7 @@ int main() {
             auto create = [&](const fs::path& w, json leave = nullptr) {
                 json m = {{"workspace", w.string()}};
                 if (!leave.is_null()) m["leave"] = leave;
-                return a.ok("createConversation", {{"maic", m}}).value("id", "");
+                return a.ok("createConversation", {{"maid", m}}).value("id", "");
             };
 
             // switch, working: to the background, and once its work is done, after (park).
@@ -1709,10 +1709,10 @@ int main() {
 
             // switch, idle, "ask": refused before anything changes, then the client's answer.
             std::string sa = create(ask_ws, {{"as", "default"}});
-            size_t listed = a.ok("maic.index.get")["entries"].size();
-            expect(a.error("createConversation", {{"maic", {{"workspace", ws.string()}, {"leave", {{"as", "default"}}}}}}) == "maic_leave_ask" &&
-                       a.ok("maic.index.get")["entries"].size() == listed && state_of(sa)["state"] == "live",
-                   "leave.switch.idle = ask: maic_leave_ask, and nothing changed");
+            size_t listed = a.ok("maid.index.get")["entries"].size();
+            expect(a.error("createConversation", {{"maid", {{"workspace", ws.string()}, {"leave", {{"as", "default"}}}}}}) == "maid_leave_ask" &&
+                       a.ok("maid.index.get")["entries"].size() == listed && state_of(sa)["state"] == "live",
+                   "leave.switch.idle = ask: maid_leave_ask, and nothing changed");
             std::string s3 = create(ws, {{"as", "park"}});
             expect(state_of(sa)["state"] == "parked", "the client's answer (park) is done");
 
@@ -1731,11 +1731,11 @@ int main() {
 
             // A background task's session follows leave.task.after once its job is done.
             std::string parent = create(ws, {{"as", "default"}});
-            a.ok("maic.session.subscribe", {{"session", parent}});
+            a.ok("maid.session.subscribe", {{"session", parent}});
             plan({{{"name", "task"}, {"arguments", {{"agent", "explore"}, {"prompt", "look around"}, {"background", true}}}}});
             size_t mark = a.events.size();
             a.ok("response.create", {{"conversation", parent}, {"input", "start a task"}});
-            long made = a.until([&](const json& ev) { return ev["stream_id"] == parent && ev["type"] == "maic.task.created"; }, mark);
+            long made = a.until([&](const json& ev) { return ev["stream_id"] == parent && ev["type"] == "maid.task.created"; }, mark);
             std::string task = made < 0 ? "" : a.events[made]["task"].get<std::string>();
             json t = becomes(task, "parked");
             expect(!task.empty() && t["state"] == "parked" && t["unseen"] == true, "a finished background task's session is parked (leave.task.after): " + t.dump());
@@ -1743,22 +1743,22 @@ int main() {
 
             // A task is its own session: started while its parent is in the background, it follows its own
             // leave.task.after (bg here), not its parent's leave nor leave.switch.after (stop here).
-            std::string bgp = a.ok("createConversation", {{"maic", {{"workspace", task_ws.string()}, {"focus", false}}}}).value("id", "");
-            a.ok("maic.session.subscribe", {{"session", bgp}});
+            std::string bgp = a.ok("createConversation", {{"maid", {{"workspace", task_ws.string()}, {"focus", false}}}}).value("id", "");
+            a.ok("maid.session.subscribe", {{"session", bgp}});
             plan({{{"name", "task"}, {"arguments", {{"agent", "explore"}, {"prompt", "look around"}, {"background", true}}}}});
             mark = a.events.size();
             a.ok("response.create", {{"conversation", bgp}, {"input", "start a task"}});
-            long ended = a.until([&](const json& ev) { return ev["stream_id"] == bgp && ev["type"] == "maic.task.completed"; }, mark);
+            long ended = a.until([&](const json& ev) { return ev["stream_id"] == bgp && ev["type"] == "maid.task.completed"; }, mark);
             std::string own = ended < 0 ? "" : a.events[ended]["task"].get<std::string>();
             a.until_idle(mark);
             a.pump(200ms);
             json ot = state_of(own);
             expect(!own.empty() && ot["state"] == "background" && ot["unseen"] == true, "a task started while its parent was in the background follows its own leave.task.after (bg): " + ot.dump());
             // Switched to and left working, it still has its own after: leave.task.after, not leave.switch.after.
-            a.ok("maic.session.focus", {{"session", own}});
+            a.ok("maid.session.focus", {{"session", own}});
             gate(false);
             a.ok("response.create", {{"conversation", own}, {"input", "gated: again"}});
-            a.ok("maic.session.focus", {{"session", bgp}, {"leave", {{"as", "default"}}}});
+            a.ok("maid.session.focus", {{"session", bgp}, {"leave", {{"as", "default"}}}});
             expect(state_of(own)["state"] == "background", "the task left working keeps on in the background (leave.switch.working)");
             gate(true);
             for (int i = 0; i < 300 && state_of(own).value("activity", "") != "idle"; ++i) a.pump(20ms);
@@ -1770,46 +1770,46 @@ int main() {
             // step-up, which needs accounts (roadmap item 6).
             TestClient r(e, rec, Origin::Remote, "phone");
             r.hello();
-            std::string r1 = r.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}}).value("id", "");
-            expect(r.error("createConversation", {{"maic", {{"workspace", ws.string()}, {"leave", {{"as", "bg"}}}}}}) == "maic_step_up_required" && state_of(r1)["state"] == "live",
-                   "a remote --bg that loosens leave.switch.idle (park) is refused with maic_step_up_required, and nothing changed");
-            std::string r2 = r.ok("createConversation", {{"maic", {{"workspace", ws.string()}, {"leave", {{"as", "stop"}}}}}}).value("id", "");
+            std::string r1 = r.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}}).value("id", "");
+            expect(r.error("createConversation", {{"maid", {{"workspace", ws.string()}, {"leave", {{"as", "bg"}}}}}}) == "maid_step_up_required" && state_of(r1)["state"] == "live",
+                   "a remote --bg that loosens leave.switch.idle (park) is refused with maid_step_up_required, and nothing changed");
+            std::string r2 = r.ok("createConversation", {{"maid", {{"workspace", ws.string()}, {"leave", {{"as", "stop"}}}}}}).value("id", "");
             expect(state_of(r1).is_null(), "a remote --stop that tightens it is done");
-            expect(r.error("maic.session.leave", {{"as", "park"}}) == "maic_step_up_required" && r.error("maic.session.leave", {{"as", "bg"}}) == "maic_step_up_required" &&
+            expect(r.error("maid.session.leave", {{"as", "park"}}) == "maid_step_up_required" && r.error("maid.session.leave", {{"as", "bg"}}) == "maid_step_up_required" &&
                        state_of(r2)["state"] == "live",
                    "a remote :q --park or --bg that loosens leave.quit.idle (stop) is refused, and nothing changed");
-            expect(r.ok("maic.session.leave", {{"as", "default"}})["left"]["state"] == "stopped", "the case itself is the remote client's to take");
+            expect(r.ok("maid.session.leave", {{"as", "default"}})["left"]["state"] == "stopped", "the case itself is the remote client's to take");
             e.disconnect(r.id);
 
-            // quit (maic.session.leave): idle stops, working stays in the background until after, and the verbs override.
+            // quit (maid.session.leave): idle stops, working stays in the background until after, and the verbs override.
             TestClient b(e, rec, Origin::Local, "quitter");
             b.hello();
-            std::string q1 = b.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}}).value("id", "");
-            json left = b.ok("maic.session.leave");
+            std::string q1 = b.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}}).value("id", "");
+            json left = b.ok("maid.session.leave");
             expect(left["left"]["state"] == "stopped" && state_of(q1).is_null(), "leave.quit.idle (stop): quitting stops the idle session");
-            std::string q2 = b.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}}).value("id", "");
+            std::string q2 = b.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}}).value("id", "");
             gate(false);
             b.ok("response.create", {{"conversation", q2}, {"input", "gated: two"}});
-            left = b.ok("maic.session.leave");
+            left = b.ok("maid.session.leave");
             expect(left["left"]["state"] == "background", "leave.quit.working (bg): a quit mid-turn leaves it working");
             gate(true);
             expect(becomes(q2, "parked")["state"] == "parked", "leave.quit.after (park): parked once its work is done");
-            std::string q3 = b.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}}).value("id", "");
-            expect(b.ok("maic.session.leave", {{"as", "park"}})["left"]["state"] == "parked" && state_of(q3)["state"] == "parked", "--park overrides leave.quit.idle");
-            std::string q4 = b.ok("createConversation", {{"maic", {{"workspace", stop_ws.string()}}}}).value("id", "");
+            std::string q3 = b.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}}).value("id", "");
+            expect(b.ok("maid.session.leave", {{"as", "park"}})["left"]["state"] == "parked" && state_of(q3)["state"] == "parked", "--park overrides leave.quit.idle");
+            std::string q4 = b.ok("createConversation", {{"maid", {{"workspace", stop_ws.string()}}}}).value("id", "");
             n = held();
             b.ok("response.create", {{"conversation", q4}, {"input", "held"}});
             fake.wait_streaming(n);
-            expect(b.ok("maic.session.leave")["left"]["state"] == "stopped" && state_of(q4).is_null(), "leave.quit.working = stop: interrupted and stopped");
+            expect(b.ok("maid.session.leave")["left"]["state"] == "stopped" && state_of(q4).is_null(), "leave.quit.working = stop: interrupted and stopped");
             // quit, idle, "ask": refused before anything changes, then the client's answer; a client that goes unasked gets the shipped case.
-            std::string q5 = b.ok("createConversation", {{"maic", {{"workspace", ask_ws.string()}}}}).value("id", "");
-            expect(b.error("maic.session.leave", json::object()) == "maic_leave_ask" && state_of(q5)["state"] == "live", "leave.quit.idle = ask: maic_leave_ask, and nothing changed");
-            expect(b.ok("maic.session.leave", {{"as", "park"}})["left"]["state"] == "parked" && state_of(q5)["state"] == "parked", "the client's answer (park) is done");
-            std::string q6 = b.ok("createConversation", {{"maic", {{"workspace", ask_ws.string()}}}}).value("id", "");
+            std::string q5 = b.ok("createConversation", {{"maid", {{"workspace", ask_ws.string()}}}}).value("id", "");
+            expect(b.error("maid.session.leave", json::object()) == "maid_leave_ask" && state_of(q5)["state"] == "live", "leave.quit.idle = ask: maid_leave_ask, and nothing changed");
+            expect(b.ok("maid.session.leave", {{"as", "park"}})["left"]["state"] == "parked" && state_of(q5)["state"] == "parked", "the client's answer (park) is done");
+            std::string q6 = b.ok("createConversation", {{"maid", {{"workspace", ask_ws.string()}}}}).value("id", "");
             e.leave(b.id);
             expect(state_of(q6).is_null(), "a client that goes without being asked: the shipped leave.quit.idle (stop)");
             // Past the recording, which would fail the request's schema itself.
-            json bad = e.call(b.id, {{"jsonrpc", "2.0"}, {"id", 9999}, {"method", "maic.session.leave"}, {"params", {{"as", "later"}}}});
+            json bad = e.call(b.id, {{"jsonrpc", "2.0"}, {"id", 9999}, {"method", "maid.session.leave"}, {"params", {{"as", "later"}}}});
             expect(bad.contains("error") && bad["error"]["code"] == -32602, "an unknown verb is refused");
             e.disconnect(b.id);
             e.disconnect(a.id);
@@ -1823,21 +1823,21 @@ int main() {
             TestClient c(e, rec, Origin::Local, "tui");
             c.hello();
             auto state_of = [&](const std::string& id) {
-                json entries = c.ok("maic.index.get")["entries"];
+                json entries = c.ok("maid.index.get")["entries"];
                 for (const auto& en : entries) {
                     if (en["id"] == id) return en;
                 }
                 return json();
             };
-            std::string w1 = c.ok("createConversation", {{"maic", {{"workspace", stop_ws.string()}}}}).value("id", "");
+            std::string w1 = c.ok("createConversation", {{"maid", {{"workspace", stop_ws.string()}}}}).value("id", "");
             int n = held();
             c.ok("response.create", {{"conversation", w1}, {"input", "held"}});
             fake.wait_streaming(n);
-            std::string w2 = c.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}}).value("id", "");
+            std::string w2 = c.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}}).value("id", "");
             n = held();
             c.ok("response.create", {{"conversation", w2}, {"input", "held"}});
             fake.wait_streaming(n);
-            json left = c.ok("maic.session.leave");
+            json left = c.ok("maid.session.leave");
             expect(left["left"]["state"] == "parked", "leave.no_daemon (park): a working session a quit would leave running is interrupted and parked");
             expect(state_of(w1).is_null(), "a working session in the background does what its own leave.no_daemon (stop) says");
             e.disconnect(c.id);
@@ -1854,22 +1854,22 @@ int main() {
             TestClient c2(e2, rec, Origin::Local, "nvim");
             c1.hello();
             c2.hello();
-            std::string held_id = c1.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}}).value("id", "");
-            c1.ok("maic.session.subscribe", {{"session", held_id}});
+            std::string held_id = c1.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}}).value("id", "");
+            c1.ok("maid.session.subscribe", {{"session", held_id}});
             c1.ok("response.create", {{"conversation", held_id}, {"input", "one"}});
             c1.until_type("response.completed");
-            json second = e2.call(c2.id, {{"jsonrpc", "2.0"}, {"id", 9998}, {"method", "maic.session.resume"}, {"params", {{"session", held_id}}}});
+            json second = e2.call(c2.id, {{"jsonrpc", "2.0"}, {"id", 9998}, {"method", "maid.session.resume"}, {"params", {{"session", held_id}}}});
             std::string why = second.contains("error") ? second["error"].value("message", "") : "";
-            expect(why.find("is open in another MAIC (pid " + std::to_string(getpid()) + "): one engine per transcript") != std::string::npos,
+            expect(why.find("is open in another MAID (pid " + std::to_string(getpid()) + "): one engine per transcript") != std::string::npos,
                    "a second engine is refused a session another has open, and told why: " + second.dump());
-            c1.ok("maic.session.park", {{"session", held_id}});
-            expect(c2.ok("maic.session.resume", {{"session", held_id}}).value("id", "") == held_id, "once the first lets go of it, the second opens it");
-            c2.ok("maic.session.park", {{"session", held_id}});
-            fs::path hold = root / "run" / "maic" / "held" / (held_id + ".lock");
+            c1.ok("maid.session.park", {{"session", held_id}});
+            expect(c2.ok("maid.session.resume", {{"session", held_id}}).value("id", "") == held_id, "once the first lets go of it, the second opens it");
+            c2.ok("maid.session.park", {{"session", held_id}});
+            fs::path hold = root / "run" / "maid" / "held" / (held_id + ".lock");
             std::ofstream(hold) << "999999";
             std::string pid;
-            expect(c1.ok("maic.session.resume", {{"session", held_id}}).value("id", "") == held_id && std::getline(std::ifstream(hold), pid) && pid == std::to_string(getpid()),
-                   "a hold no live process has (a crashed MAIC's) is taken over");
+            expect(c1.ok("maid.session.resume", {{"session", held_id}}).value("id", "") == held_id && std::getline(std::ifstream(hold), pid) && pid == std::to_string(getpid()),
+                   "a hold no live process has (a crashed MAID's) is taken over");
             e1.disconnect(c1.id);
             e2.disconnect(c2.id);
         }
@@ -1882,9 +1882,9 @@ int main() {
     {
         TestClient a(*engine, tasks, Origin::Local, "tui");
         a.hello();
-        a.ok("maic.index.subscribe");
+        a.ok("maid.index.subscribe");
         auto entry_of = [&](const std::string& id) {
-            json entries = a.ok("maic.index.get")["entries"];
+            json entries = a.ok("maid.index.get")["entries"];
             for (const auto& e : entries) {
                 if (e["id"] == id) return e;
             }
@@ -1949,15 +1949,15 @@ int main() {
         fake.hold_when = [&](const json& body) { return !is_parent(body) && last_user(body).rfind("hold", 0) == 0; };
         auto task = [](const std::string& prompt) { return json{{"name", "task"}, {"arguments", {{"agent", "explore"}, {"prompt", prompt}, {"background", true}}}}; };
         auto created = [&](size_t from) {
-            long i = a.until([](const json& e) { return e["type"] == "maic.task.created"; }, from);
+            long i = a.until([](const json& e) { return e["type"] == "maid.task.created"; }, from);
             return i < 0 ? std::string() : a.events[i]["task"].get<std::string>();
         };
 
-        std::string parent = a.ok("createConversation", {{"maic", {{"workspace", ws.string()}}}})["id"];
+        std::string parent = a.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}})["id"];
         auto turn_end = [&](size_t from) {
-            return a.until([&](const json& e) { return e["type"] == "response.completed" && e["response"]["conversation"]["id"] == parent && e["response"]["maic"]["final"] == true; }, from);
+            return a.until([&](const json& e) { return e["type"] == "response.completed" && e["response"]["conversation"]["id"] == parent && e["response"]["maid"]["final"] == true; }, from);
         };
-        a.ok("maic.session.subscribe", {{"session", parent}});
+        a.ok("maid.session.subscribe", {{"session", parent}});
         a.pump(50ms);
         size_t mark = a.events.size();
         {
@@ -1967,22 +1967,22 @@ int main() {
             gate_at = parent_calls + 3;  // the parent's third call waits until both tasks have ended
         }
         a.ok("response.create", {{"conversation", parent}, {"input", "start two tasks"}});
-        long c1 = a.until(on(parent, "maic.task.created"), mark);
-        long c2 = c1 < 0 ? -1 : a.until(on(parent, "maic.task.created"), c1 + 1);
-        expect(c1 >= 0 && c2 >= 0, "two background task calls each start a task: maic.task.created on the parent's stream");
+        long c1 = a.until(on(parent, "maid.task.created"), mark);
+        long c2 = c1 < 0 ? -1 : a.until(on(parent, "maid.task.created"), c1 + 1);
+        expect(c1 >= 0 && c2 >= 0, "two background task calls each start a task: maid.task.created on the parent's stream");
         std::string t1 = c1 < 0 ? "" : a.events[c1]["task"].get<std::string>(), t2 = c2 < 0 ? "" : a.events[c2]["task"].get<std::string>();
-        a.ok("maic.session.subscribe", {{"session", t1}});
-        a.ok("maic.session.subscribe", {{"session", t2}});
-        long d1 = a.until(on(parent, "maic.task.completed"), mark);
-        long d2 = d1 < 0 ? -1 : a.until(on(parent, "maic.task.completed"), d1 + 1);
+        a.ok("maid.session.subscribe", {{"session", t1}});
+        a.ok("maid.session.subscribe", {{"session", t2}});
+        long d1 = a.until(on(parent, "maid.task.completed"), mark);
+        long d2 = d1 < 0 ? -1 : a.until(on(parent, "maid.task.completed"), d1 + 1);
         open_gate();
-        long end = a.until([&](const json& e) { return on(parent, "response.completed")(e) && e["response"]["maic"]["final"] == true; }, mark);
+        long end = a.until([&](const json& e) { return on(parent, "response.completed")(e) && e["response"]["maid"]["final"] == true; }, mark);
         long listed = a.until([&](const json& e) { return on(parent, "response.output_item.added")(e) && e["item"].value("name", "") == "list_dir"; }, mark);
         bool final_before = false;
-        for (long i = static_cast<long>(mark); i <= d2; ++i) final_before = final_before || (on(parent, "response.completed")(a.events[i]) && a.events[i]["response"]["maic"]["final"] == true);
+        for (long i = static_cast<long>(mark); i <= d2; ++i) final_before = final_before || (on(parent, "response.completed")(a.events[i]) && a.events[i]["response"]["maid"]["final"] == true);
         expect(d1 > c1 && d2 > c2 && listed > d2 && end > listed && !final_before,
                "both tasks run and finish while the parent's turn goes on (its next model calls, the last held until both end): in parallel, not inside its task calls");
-        const json* first1 = a.find("maic.session.state");
+        const json* first1 = a.find("maid.session.state");
         for (size_t i = 0; i < a.events.size(); ++i) {
             if (a.events[i]["stream_id"] == t1) {
                 first1 = &a.events[i];
@@ -1991,34 +1991,34 @@ int main() {
         }
         expect(first1 && first1->value("sequence_number", -1L) == 0 && first1->contains("parent") && (*first1)["parent"]["session"] == parent &&
                    (*first1)["parent"]["sequence_number"] == a.events[c1]["sequence_number"] && (*first1)["parent"]["call_id"] == a.events[c1]["call_id"],
-               "a task's first event names its parent session, the parent's epoch, the task call and the maic.task.created it answers");
+               "a task's first event names its parent session, the parent's epoch, the task call and the maid.task.created it answers");
         json e1 = entry_of(t1);
         expect(e1["kind"] == "sub" && e1["parent"] == parent && e1["agent"] == "explore" && e1["state"] == "background" && e1["unseen"] == true,
                "a task is a session in the index: kind sub, its parent and agent, in the background, finished unseen: " + e1.dump());
-        expect(d1 >= 0 && a.events[d1].value("answer_size", 0) > 0 && a.events[d1].contains("ref"), "maic.task.completed says how big its answer is and where it is");
+        expect(d1 >= 0 && a.events[d1].value("answer_size", 0) > 0 && a.events[d1].contains("ref"), "maid.task.completed says how big its answer is and where it is");
         long steered = a.until([&](const json& e) { return on(parent, "response.incomplete")(e) && e["response"]["incomplete_details"]["reason"] == "steered"; }, d2 < 0 ? mark : d2);
         long successor = steered < 0 ? -1 : a.until(on(parent, "response.created"), steered);
-        expect(steered >= 0 && successor >= 0 && successor < end && a.events[successor]["maic"].value("cause", -1L) == a.events[d2]["sequence_number"].get<long>(),
-               "the answers reach the running turn at its next step, through the mailbox; the successor's maic.cause is the task's end");
+        expect(steered >= 0 && successor >= 0 && successor < end && a.events[successor]["maid"].value("cause", -1L) == a.events[d2]["sequence_number"].get<long>(),
+               "the answers reach the running turn at its next step, through the mailbox; the successor's maid.cause is the task's end");
         json items = a.ok("listConversationItems", {{"conversation_id", parent}, {"limit", 100}, {"order", "asc"}})["data"];
         int notes = 0, typed = 0;
         for (const auto& it : items) {
-            std::string text = it["type"] == "maic.notice" ? it.value("text", "") : it["type"] == "message" && it["role"] == "user" ? it["content"][0].value("text", "") : "";
+            std::string text = it["type"] == "maid.notice" ? it.value("text", "") : it["type"] == "message" && it["role"] == "user" ? it["content"][0].value("text", "") : "";
             if (text.find("[Background task ") == std::string::npos) continue;
-            (it["type"] == "maic.notice" && it["kind"] == "context" ? notes : typed)++;
+            (it["type"] == "maid.notice" && it["kind"] == "context" ? notes : typed)++;
             expect(text.find("data, not the user's instruction") != std::string::npos && text.find("echo: child") != std::string::npos,
                    "a task's note is labelled with its session and carries its answer");
         }
         expect(notes == 2 && typed == 0, "each answer is a context note in the parent's history, never a user turn");
 
         // Switching into a task: it is a session like any other.
-        json f = a.ok("maic.session.focus", {{"session", t1}, {"leave", {{"as", "bg"}}}});
+        json f = a.ok("maid.session.focus", {{"session", t1}, {"leave", {{"as", "bg"}}}});
         a.pump(50ms);  // the focus's state events, before the attach's answer joins the stream past them
-        json snap = a.ok("maic.session.attach", {{"session", t1}});
+        json snap = a.ok("maid.session.attach", {{"session", t1}});
         bool echoed = false;
         for (const auto& it : snap["items"]) echoed = echoed || (it["type"] == "message" && it["role"] == "assistant" && it["content"][0].value("text", "") == "echo: child one");
         expect(f["state"] == "live" && f["kind"] == "sub" && f["unseen"] == false && echoed, "switching into a task shows its own conversation");
-        a.ok("maic.session.focus", {{"session", parent}, {"leave", {{"as", "bg"}}}});
+        a.ok("maid.session.focus", {{"session", parent}, {"leave", {{"as", "bg"}}}});
 
         // Two held tasks are the limit (max_tasks = 2); a third is refused for the model.
         mark = a.events.size();
@@ -2027,7 +2027,7 @@ int main() {
             steps = {task("hold: first"), task("hold: second"), task("a third")};
         }
         a.ok("response.create", {{"conversation", parent}, {"input", "three more"}});
-        std::string h1 = created(mark), h2 = h1.empty() ? "" : created(a.until(on(parent, "maic.task.created"), mark) + 1);
+        std::string h1 = created(mark), h2 = h1.empty() ? "" : created(a.until(on(parent, "maid.task.created"), mark) + 1);
         turn_end(mark);
         bool refused = false;
         for (size_t i = mark; i < a.events.size(); ++i) {
@@ -2036,26 +2036,26 @@ int main() {
                 refused = refused || e["item"].value("output", "").find("max_tasks") != std::string::npos;
             }
         }
-        expect(!h1.empty() && !h2.empty() && refused && a.count("maic.task.created") == 4,
-               "past max_tasks a background task is refused, and the model is told why (" + h1 + ", " + h2 + ", " + std::to_string(a.count("maic.task.created")) + ")");
+        expect(!h1.empty() && !h2.empty() && refused && a.count("maid.task.created") == 4,
+               "past max_tasks a background task is refused, and the model is told why (" + h1 + ", " + h2 + ", " + std::to_string(a.count("maid.task.created")) + ")");
 
         // The agent's steering narrows its task's: explore takes interrupt, keep and halt, not drop.
-        a.ok("maic.session.subscribe", {{"session", h1}});
-        a.ok("maic.session.subscribe", {{"session", h2}});
+        a.ok("maid.session.subscribe", {{"session", h1}});
+        a.ok("maid.session.subscribe", {{"session", h2}});
         long r1 = a.until(on(h1, "response.created"));
         std::string rid = r1 < 0 ? "" : a.events[r1]["response"]["id"].get<std::string>();
-        expect(a.error("maic.steer", {{"session", h1}, {"response_id", rid}, {"action", "drop"}}) == "maic_steer_disabled",
+        expect(a.error("maid.steer", {{"session", h1}, {"response_id", rid}, {"action", "drop"}}) == "maid_steer_disabled",
                "agents.explore.steering narrows its task's session: drop is refused there");
-        a.ok("maic.steer", {{"session", h1}, {"response_id", rid}, {"action", "interrupt"}});
-        expect(a.until(on(h1, "maic.turn.paused"), mark) >= 0, "an action the agent keeps is applied to the task directly, by its own session id");
+        a.ok("maid.steer", {{"session", h1}, {"response_id", rid}, {"action", "interrupt"}});
+        expect(a.until(on(h1, "maid.turn.paused"), mark) >= 0, "an action the agent keeps is applied to the task directly, by its own session id");
         long r2 = a.until(on(h2, "response.created"));
-        a.ok("maic.steer", {{"session", h2}, {"response_id", r2 < 0 ? "" : a.events[r2]["response"]["id"].get<std::string>()}, {"action", "keep"}});
-        long kept = a.until([&](const json& e) { return on(parent, "maic.task.completed")(e) && e["task"] == h2; }, mark);
+        a.ok("maid.steer", {{"session", h2}, {"response_id", r2 < 0 ? "" : a.events[r2]["response"]["id"].get<std::string>()}, {"action", "keep"}});
+        long kept = a.until([&](const json& e) { return on(parent, "maid.task.completed")(e) && e["task"] == h2; }, mark);
         expect(kept >= 0, "a task whose reply is kept ends completed");
 
         // Stopping a task: its parent hears it failed.
-        json stop = a.ok("maic.session.stop", {{"session", h1}, {"interrupt", true}});
-        long failed = a.until([&](const json& e) { return on(parent, "maic.task.failed")(e) && e["task"] == h1; }, mark);
+        json stop = a.ok("maid.session.stop", {{"session", h1}, {"interrupt", true}});
+        long failed = a.until([&](const json& e) { return on(parent, "maid.task.failed")(e) && e["task"] == h1; }, mark);
         expect(stop["state"] == "stopped" && failed >= 0 && a.events[failed].value("reason", "") == "was stopped before it finished" && entry_of(h1).is_null(),
                "stopping a task ends its session, and the parent's stream says the task failed and why");
 
@@ -2078,7 +2078,7 @@ int main() {
         }
         items = a.ok("listConversationItems", {{"conversation_id", parent}, {"limit", 100}})["data"];
         int third_notes = 0;
-        for (const auto& it : items) third_notes += it["type"] == "maic.notice" && it.value("text", "").find("echo: gated: child three") != std::string::npos;
+        for (const auto& it : items) third_notes += it["type"] == "maid.notice" && it.value("text", "").find("echo: gated: child three") != std::string::npos;
         expect(waited.find("echo: gated: child three") != std::string::npos && third_notes == 0,
                "task_result with wait answers with the task's report, and no note repeats it: " + waited + " " + std::to_string(third_notes));
 
@@ -2089,15 +2089,15 @@ int main() {
             steps = {task("shell:printf paws")};
         }
         a.ok("response.create", {{"conversation", parent}, {"input", "a task that asks"}});
-        long asked = a.until(on(parent, "maic.approval.requested"), mark);
+        long asked = a.until(on(parent, "maid.approval.requested"), mark);
         std::string t4 = created(mark);
         json waiting = entry_of(parent)["waiting"];
         expect(asked >= 0 && a.events[asked]["thread"]["session"] == t4 && !a.events[asked].contains("call_id") && waiting.is_object() && waiting.value("session", "") == t4,
                "a task's approval shows on its parent's stream, naming the task, and the parent's entry says it waits: " + t4 + " " + waiting.dump() +
                    (asked >= 0 ? a.events[asked].dump() : ""));
-        if (asked >= 0) a.ok("maic.approval.answer", {{"session", parent}, {"approval", a.events[asked]["id"]}, {"choice", "yes"}});
-        long answered = a.until(on(parent, "maic.approval.answered"), mark);
-        long ran = a.until([&](const json& e) { return on(parent, "maic.task.completed")(e) && e["task"] == t4; }, mark);
+        if (asked >= 0) a.ok("maid.approval.answer", {{"session", parent}, {"approval", a.events[asked]["id"]}, {"choice", "yes"}});
+        long answered = a.until(on(parent, "maid.approval.answered"), mark);
+        long ran = a.until([&](const json& e) { return on(parent, "maid.task.completed")(e) && e["task"] == t4; }, mark);
         expect(answered >= 0 && ran >= 0 && entry_of(parent)["waiting"].is_null(), "answered on the parent, it runs in the task; both streams say it was answered");
         a.pump(100ms);
         {
@@ -2110,9 +2110,9 @@ int main() {
 
         // A task's end without its start is caught.
         std::vector<json> mutated = tasks.records;
-        auto made = events_of(mutated, "maic.task.created");
+        auto made = events_of(mutated, "maid.task.created");
         if (!made.empty()) mutated.erase(mutated.begin() + static_cast<long>(made.front()));
-        expect(!made.empty() && verdict(mutated) != "", "mutated: a maic.task.created removed breaks the stream");
+        expect(!made.empty() && verdict(mutated) != "", "mutated: a maid.task.created removed breaks the stream");
     }
     recordings.push_back(&tasks);
 
@@ -2123,7 +2123,7 @@ int main() {
         Recording live("before-restart");
         TestClient a(*engine, live, Origin::Local, "tui-last");
         a.hello();
-        json snap = a.ok("maic.session.attach", {{"session", sid}});
+        json snap = a.ok("maid.session.attach", {{"session", sid}});
         epoch_before = snap["epoch"];
         numbers_before = snap["sequence_number"];
         live.finish();
@@ -2137,25 +2137,25 @@ int main() {
         Recording after("restart");
         TestClient a(again, after, Origin::Local, "tui");
         a.hello();
-        json entries = a.ok("maic.index.get")["entries"];
+        json entries = a.ok("maid.index.get")["entries"];
         bool parked = !entries.empty(), listed = false;
         for (const auto& e : entries) {
             parked = parked && e["state"] == "parked";
             listed = listed || e["id"] == sid;
         }
         expect(listed && parked, "after a restart the session is listed parked, with the others that were loaded");
-        json entry = a.ok("maic.session.resume", {{"session", sid}});
-        expect(entry["state"] == "live" && entry["turns"].get<int>() >= 5, "maic.session.resume loads it again, its turns counted from the transcript");
+        json entry = a.ok("maid.session.resume", {{"session", sid}});
+        expect(entry["state"] == "live" && entry["turns"].get<int>() >= 5, "maid.session.resume loads it again, its turns counted from the transcript");
         // A client that held everything up to the last load's close (shutdown's `parked`, the number after the attach) resumes across the restart.
-        json sub = a.ok("maic.session.subscribe", {{"session", sid}, {"epoch", epoch_before}, {"starting_after", numbers_before + 1}});
-        a.until_type("maic.session.state");
-        const json* found = a.find("maic.session.state");
+        json sub = a.ok("maid.session.subscribe", {{"session", sid}, {"epoch", epoch_before}, {"starting_after", numbers_before + 1}});
+        a.until_type("maid.session.state");
+        const json* found = a.find("maid.session.state");
         json state = found ? *found : json::object();
         expect(sub["epoch"] == epoch_before, "the reloaded session keeps its epoch across the restart");
         expect(found && state["sequence_number"].get<long>() == numbers_before + 2, "its numbers go on from where the last load closed, not back to 0");
-        expect(found && state["epoch"] == epoch_before && state["protocol"]["hash"] == maic::protocol::protocol_hash() && state["protocol"]["canonical"] == "RFC 8785",
+        expect(found && state["epoch"] == epoch_before && state["protocol"]["hash"] == maid::protocol::protocol_hash() && state["protocol"]["canonical"] == "RFC 8785",
                "the load's first event carries the epoch and the build's protocol hash");
-        expect(!state["maic"].contains("previous_epoch") && !state.contains("previous_epoch"), "no new epoch: nothing was reset");
+        expect(!state["maid"].contains("previous_epoch") && !state.contains("previous_epoch"), "no new epoch: nothing was reset");
         after.finish();
     }
 

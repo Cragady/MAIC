@@ -1,17 +1,17 @@
 {
   "name": "whisper",
-  "description": "whisper.cpp server, local only, vendored: speech to text for diction, loading the ggml model `maic vendor use whisper FILE` links, with Silero VAD as a second gate against hallucinated stock phrases; diction sends 16 kHz mono WAV, so --convert stays off (maic vendor add whisper; docs/diction.md)",
+  "description": "whisper.cpp server, local only, vendored: speech to text for diction, loading the ggml model `maid vendor use whisper FILE` links, with Silero VAD as a second gate against hallucinated stock phrases; diction sends 16 kHz mono WAV, so --convert stays off (maid vendor add whisper; docs/diction.md)",
   "command": [
-    "${MAIC_VENDOR}/whisper/bin/whisper-server",
+    "${MAID_VENDOR}/whisper/bin/whisper-server",
     "--host",
     "127.0.0.1",
     "--port",
     "8083",
     "--model",
-    "${MAIC_MODELS}/whisper/current.bin",
+    "${MAID_MODELS}/whisper/current.bin",
     "--vad",
     "--vad-model",
-    "${MAIC_MODELS}/whisper/ggml-silero-v6.2.0.bin",
+    "${MAID_MODELS}/whisper/ggml-silero-v6.2.0.bin",
     "--vad-min-speech-duration-ms",
     "0",
     "--vad-min-silence-duration-ms",
@@ -21,8 +21,8 @@
   ],
   "port": 8083,
   "requires": [
-    "${MAIC_MODELS}/whisper/current.bin",
-    "${MAIC_MODELS}/whisper/ggml-silero-v6.2.0.bin"
+    "${MAID_MODELS}/whisper/current.bin",
+    "${MAID_MODELS}/whisper/ggml-silero-v6.2.0.bin"
   ],
   "ready_timeout": 120,
   "ready_pattern": "compute buffer \\(decode\\)",

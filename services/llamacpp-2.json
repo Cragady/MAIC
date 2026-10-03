@@ -2,24 +2,24 @@
   "name": "llamacpp-2",
   "description": "a second llama.cpp server in router mode on port 8082 over the same GGUFs, so a second model stays resident while the first does (the deep pass, the reviewer); context from context_2 (docs/llamacpp.md, Two servers)",
   "command": [
-    "${MAIC_VENDOR}/llamacpp/bin/llama-server",
+    "${MAID_VENDOR}/llamacpp/bin/llama-server",
     "--host",
     "127.0.0.1",
     "--port",
     "8082",
     "--models-dir",
-    "${MAIC_MODELS}/llamacpp",
+    "${MAID_MODELS}/llamacpp",
     "--models-max",
     "1",
     "--ctx-size",
-    "${MAIC_CONTEXT_2}",
+    "${MAID_CONTEXT_2}",
     "--jinja",
     "-ngl",
     "99"
   ],
   "port": 8082,
   "requires": [
-    "${MAIC_MODELS}/llamacpp"
+    "${MAID_MODELS}/llamacpp"
   ],
   "ready_timeout": 120,
   "ready_pattern": "listening on",

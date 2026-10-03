@@ -11,11 +11,11 @@ A theme is a named set of styles, one per role (the roles and what each paints: 
 | `gruvbox-light` | The same mapping with gruvbox's light palette (the faded accents), for a light terminal. |
 | `mono` | No colours: bold, dim, underline and inverse only, for a terminal without colour or for screenshots. |
 
-MAIC paints no background of its own, so a theme looks right on a terminal whose background matches its `background` field.
+MAID paints no background of its own, so a theme looks right on a terminal whose background matches its `background` field.
 
 ## Writing one
 
-A theme is a Lua file in `~/.config/maic/themes/NAME.lua` (`$XDG_CONFIG_HOME` respected) returning a table:
+A theme is a Lua file in `~/.config/maid/themes/NAME.lua` (`$XDG_CONFIG_HOME` respected) returning a table:
 
 ```lua
 return {
@@ -34,15 +34,15 @@ A style takes `fg`, `bg` (`#rrggbb`, a colour name, or 0-255), `bold`, `dim`, `i
 
 `:theme reload` re-reads the active theme's file, so a theme can be edited while looking at it. A theme that fails to load (a Lua error, an unknown role or key, a colour that is not one) is an error that names the file and line; the session keeps the theme it had. At start, a broken `theme` in settings is reported the same way and the default is used.
 
-Precedence: the built-in default, then the theme, then the `style` entries in settings, which merge over single roles (`style = { user = { fg = "#ff8800" } }` keeps the theme's bold). A settings file written by an older `maic settings init` lists every default under `style`; delete that block, or a theme cannot show through it.
+Precedence: the built-in default, then the theme, then the `style` entries in settings, which merge over single roles (`style = { user = { fg = "#ff8800" } }` keeps the theme's bold). A settings file written by an older `maid settings init` lists every default under `style`; delete that block, or a theme cannot show through it.
 
 ## Importing from neovim
 
-`:theme nvim:NAME` (or `maic themes import NAME [--as FILE_NAME]` outside a session) turns one of your neovim colorschemes into a theme:
+`:theme nvim:NAME` (or `maid themes import NAME [--as FILE_NAME]` outside a session) turns one of your neovim colorschemes into a theme:
 
-1. MAIC runs `nvim --headless -i NONE -n --cmd 'let g:maic_theme_import = 1'` with your own configuration and runtime path, so the colorschemes your plugin manager installed are found. A config can test `g:maic_theme_import` to skip heavy plugins. stdin is `/dev/null` and nvim runs in its own process group, killed with everything it started after 15 s, so a plugin manager that tries to install in headless mode cannot hang it.
+1. MAID runs `nvim --headless -i NONE -n --cmd 'let g:maid_theme_import = 1'` with your own configuration and runtime path, so the colorschemes your plugin manager installed are found. A config can test `g:maid_theme_import` to skip heavy plugins. stdin is `/dev/null` and nvim runs in its own process group, killed with everything it started after 15 s, so a plugin manager that tries to install in headless mode cannot hang it.
 2. In nvim: `colorscheme NAME`, then `'background'` and the resolved highlight groups (`nvim_get_hl` with `link = false`) are written as JSON to a temporary file.
-3. The groups are mapped onto the roles by the table in [settings.md](settings.md#from-neovim-colorschemes) and written to `~/.config/maic/themes/nvim-NAME.lua` (or `FILE_NAME.lua`), a plain theme file with a header saying where it came from and when. It loads without nvim from then on; re-importing overwrites it, so copy it under another name before editing.
+3. The groups are mapped onto the roles by the table in [settings.md](settings.md#from-neovim-colorschemes) and written to `~/.config/maid/themes/nvim-NAME.lua` (or `FILE_NAME.lua`), a plain theme file with a header saying where it came from and when. It loads without nvim from then on; re-importing overwrites it, so copy it under another name before editing.
 4. The session switches to it.
 
 Tab after `:theme nvim:` lists the colorschemes nvim has (`getcompletion('', 'color')`, asked once in the background). A name nvim does not know is an error saying so.

@@ -1,11 +1,11 @@
 // Checks the harness policy and the sandbox against real attempts. Never trips the real tripwire.
 #include "check.hpp"
 
-#include "maic/harness.hpp"
-#include "maic/agent_def.hpp"
-#include "maic/settings.hpp"
-#include "maic/sandbox.hpp"
-#include "maic/tools.hpp"
+#include "maid/harness.hpp"
+#include "maid/agent_def.hpp"
+#include "maid/settings.hpp"
+#include "maid/sandbox.hpp"
+#include "maid/tools.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -22,7 +22,7 @@
 #include <string>
 
 namespace fs = std::filesystem;
-using namespace maic;
+using namespace maid;
 
 namespace {
 
@@ -75,8 +75,8 @@ bool on_path(const std::string& program) {
 }  // namespace
 
 int main() {
-    setenv("MAIC_TRIPWIRE_FILE", ("/tmp/maic-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);  // never the machine's lock
-    fs::path ws = fs::temp_directory_path() / "maic-harness-test";
+    setenv("MAID_TRIPWIRE_FILE", ("/tmp/maid-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);  // never the machine's lock
+    fs::path ws = fs::temp_directory_path() / "maid-harness-test";
     fs::remove_all(ws);
     fs::create_directories(ws);
     Harness h(ws);
@@ -138,7 +138,7 @@ int main() {
     write(h, Mode::Auto, "../escape.txt", Verdict::Ask);
     write(h, Mode::Auto, "/tmp/other.txt", Verdict::Ask);
     write(h, Mode::Auto, "~/.zshrc", Verdict::Ask);
-    write(h, Mode::Auto, "~/bin/maic", Verdict::Ask);
+    write(h, Mode::Auto, "~/bin/maid", Verdict::Ask);
     write(h, Mode::Auto, "~/.ssh/authorized_keys", Verdict::Trip);
     write(h, Mode::Auto, "/etc/passwd", Verdict::Trip);
     write(h, Mode::Plan, "/etc/passwd", Verdict::Trip);
@@ -212,58 +212,58 @@ int main() {
     std::cout << "allow list\n";
     {
         Harness a(ws);
-        a.set_allow({"maic-storyboard*", "pytest *"});
+        a.set_allow({"maid-storyboard*", "pytest *"});
         auto d = a.check(Action{Action::Kind::Shell, {}, "pytest tests/ -q"}, Mode::Manual, Origin::Local);
         expect(d.verdict == Verdict::Allow && d.trusted, "an allowed pattern runs without asking, even in manual mode, and is trusted");
-        expect(a.check(Action{Action::Kind::Shell, {}, "maic-storyboard next"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow, "MAIC's helpers run in auto-read");
-        expect(a.check(Action{Action::Kind::Shell, {}, "maic-storyboard next"}, Mode::Plan, Origin::Local).verdict == Verdict::Deny, "plan mode still refuses one that could write");
-        expect(a.check(Action{Action::Kind::Shell, {}, "maic-storyboard status"}, Mode::Plan, Origin::Local).verdict == Verdict::Allow, "but its looking-only shapes are read-only");
-        // cai (docs/cai.md): the same classification under `cai`, `maic-cai` and `maic cai`.
-        for (const char* cmd : {"cai", "maic-cai", "maic cai", "cai read s.jsonl", "cai read s.jsonl --select tools --json", "maic-cai read s.jsonl",
-                                "maic cai read s.jsonl", "cai trans-fairy --man-help", "maic-cai trans-fairy -h", "maic cai trans-fairy --help",
-                                "maic trans-fairy --mahd", "cai trans-fairy state", "maic-cai trans-fairy state --audit", "maic cai trans-fairy state",
-                                "cai redact --help", "maic-cai trans-fairy-write --man-help", "maic trans-fairy-write --help", "cai fabricate -h",
-                                "cai time now", "maic-cai time window 2h", "maic cai time until 2026-10-01T00:00:00Z", "cai --help", "maic-cai -h"}) {
+        expect(a.check(Action{Action::Kind::Shell, {}, "maid-storyboard next"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow, "MAID's helpers run in auto-read");
+        expect(a.check(Action{Action::Kind::Shell, {}, "maid-storyboard next"}, Mode::Plan, Origin::Local).verdict == Verdict::Deny, "plan mode still refuses one that could write");
+        expect(a.check(Action{Action::Kind::Shell, {}, "maid-storyboard status"}, Mode::Plan, Origin::Local).verdict == Verdict::Allow, "but its looking-only shapes are read-only");
+        // cai (docs/cai.md): the same classification under `cai`, `maid-cai` and `maid cai`.
+        for (const char* cmd : {"cai", "maid-cai", "maid cai", "cai read s.jsonl", "cai read s.jsonl --select tools --json", "maid-cai read s.jsonl",
+                                "maid cai read s.jsonl", "cai trans-fairy --man-help", "maid-cai trans-fairy -h", "maid cai trans-fairy --help",
+                                "maid trans-fairy --mahd", "cai trans-fairy state", "maid-cai trans-fairy state --audit", "maid cai trans-fairy state",
+                                "cai redact --help", "maid-cai trans-fairy-write --man-help", "maid trans-fairy-write --help", "cai fabricate -h",
+                                "cai time now", "maid-cai time window 2h", "maid cai time until 2026-10-01T00:00:00Z", "cai --help", "maid-cai -h"}) {
             expect(a.check(Action{Action::Kind::Shell, {}, cmd}, Mode::Plan, Origin::Local).verdict == Verdict::Allow, std::string("cai, looking only, is read-only: ") + cmd);
         }
-        for (const char* cmd : {"cai trans-fairy-write t.jsonl --from s.jsonl --backup b", "maic-cai trans-fairy-write restore ID", "maic trans-fairy-write t --from s --backup b",
-                                "cai trans-fairy install", "maic cai trans-fairy state --ledger", "maic-cai trans-fairy state --split previous-agent",
-                                "cai fabricate t.jsonl --to o --user x --at 1", "cai commit -m x", "maic cai redact t.jsonl --backup b", "cai enroll --strong",
-                                "maic trans-fairy init", "cai hook pre-commit", "cai edit f --old a --new b",
-                                "cai read s.jsonl --out o.txt", "maic-cai read s.jsonl --ou o.txt", "maic cai read s.jsonl --out=o.txt",
-                                "cai read s.jsonl > o.txt", "maic-cai read s.jsonl; touch x", "cai read $(ls)", "cai time now && touch x"}) {
+        for (const char* cmd : {"cai trans-fairy-write t.jsonl --from s.jsonl --backup b", "maid-cai trans-fairy-write restore ID", "maid trans-fairy-write t --from s --backup b",
+                                "cai trans-fairy install", "maid cai trans-fairy state --ledger", "maid-cai trans-fairy state --split previous-agent",
+                                "cai fabricate t.jsonl --to o --user x --at 1", "cai commit -m x", "maid cai redact t.jsonl --backup b", "cai enroll --strong",
+                                "maid trans-fairy init", "cai hook pre-commit", "cai edit f --old a --new b",
+                                "cai read s.jsonl --out o.txt", "maid-cai read s.jsonl --ou o.txt", "maid cai read s.jsonl --out=o.txt",
+                                "cai read s.jsonl > o.txt", "maid-cai read s.jsonl; touch x", "cai read $(ls)", "cai time now && touch x"}) {
             expect(a.check(Action{Action::Kind::Shell, {}, cmd}, Mode::Plan, Origin::Local).verdict == Verdict::Deny, std::string("cai that could write is not: ") + cmd);
         }
         Harness defaults(ws);
         defaults.set_permission(Settings{}.permission);
-        for (const char* cmd : {"cai read s.jsonl", "maic-cai read s.jsonl --before-compaction", "cai trans-fairy --man-help", "maic-cai trans-fairy state",
-                                "cai trans-fairy state --audit", "maic-cai trans-fairy state --audit", "cai time now", "maic-cai time now", "cai --help",
-                                "maic-cai --help", "cai trans-fairy --help", "maic-cai trans-fairy --man-help"}) {
+        for (const char* cmd : {"cai read s.jsonl", "maid-cai read s.jsonl --before-compaction", "cai trans-fairy --man-help", "maid-cai trans-fairy state",
+                                "cai trans-fairy state --audit", "maid-cai trans-fairy state --audit", "cai time now", "maid-cai time now", "cai --help",
+                                "maid-cai --help", "cai trans-fairy --help", "maid-cai trans-fairy --man-help"}) {
             expect(defaults.check(Action{Action::Kind::Shell, {}, cmd}, Mode::Manual, Origin::Local).verdict == Verdict::Allow, std::string("cai's readers are on the default allow list under both spellings: ") + cmd);
         }
-        for (const char* cmd : {"cai trans-fairy-write t --from s --backup b", "maic-cai trans-fairy-write restore ID", "cai commit -m x", "cai hook pre-commit",
-                                "maic-cai enroll --strong", "cai trans-fairy state --ledger", "cai fabricate t --to o --user x --at 1",
-                                "cai read s.jsonl --out o.txt", "maic-cai read s.jsonl --out o.txt", "cai grant check", "maic-cai trans-fairy-write list-backups ID"}) {
+        for (const char* cmd : {"cai trans-fairy-write t --from s --backup b", "maid-cai trans-fairy-write restore ID", "cai commit -m x", "cai hook pre-commit",
+                                "maid-cai enroll --strong", "cai trans-fairy state --ledger", "cai fabricate t --to o --user x --at 1",
+                                "cai read s.jsonl --out o.txt", "maid-cai read s.jsonl --out o.txt", "cai grant check", "maid-cai trans-fairy-write list-backups ID"}) {
             expect(defaults.check(Action{Action::Kind::Shell, {}, cmd}, Mode::Manual, Origin::Local).verdict == Verdict::Ask, std::string("and nothing of cai's that writes, commits or hooks is: ") + cmd);
         }
-        expect(defaults.check(Action{Action::Kind::Shell, {}, "maic-danbooru-tags check --prompt \"1girl, grey hair\""}, Mode::Manual, Origin::Local).verdict == Verdict::Allow &&
-                   defaults.check(Action{Action::Kind::Shell, {}, "maic-danbooru-tags search hair"}, Mode::Plan, Origin::Local).verdict == Verdict::Allow &&
-                   defaults.check(Action{Action::Kind::Shell, {}, "maic-danbooru-tags --help"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow,
-               "maic-danbooru-tags is allowed by default in every mode, its offline shapes as read-only");
-        expect(defaults.check(Action{Action::Kind::Shell, {}, "maic-danbooru-tags fetch"}, Mode::Plan, Origin::Local).verdict == Verdict::Deny, "fetch is not read-only, so plan mode still refuses it");
+        expect(defaults.check(Action{Action::Kind::Shell, {}, "maid-danbooru-tags check --prompt \"1girl, grey hair\""}, Mode::Manual, Origin::Local).verdict == Verdict::Allow &&
+                   defaults.check(Action{Action::Kind::Shell, {}, "maid-danbooru-tags search hair"}, Mode::Plan, Origin::Local).verdict == Verdict::Allow &&
+                   defaults.check(Action{Action::Kind::Shell, {}, "maid-danbooru-tags --help"}, Mode::AutoRead, Origin::Local).verdict == Verdict::Allow,
+               "maid-danbooru-tags is allowed by default in every mode, its offline shapes as read-only");
+        expect(defaults.check(Action{Action::Kind::Shell, {}, "maid-danbooru-tags fetch"}, Mode::Plan, Origin::Local).verdict == Verdict::Deny, "fetch is not read-only, so plan mode still refuses it");
         expect(a.check(Action{Action::Kind::Shell, {}, "sudo pytest"}, Mode::Auto, Origin::Local).verdict == Verdict::Trip, "trip patterns win over the allow list");
         expect(!a.check(Action{Action::Kind::Shell, {}, "make"}, Mode::Auto, Origin::Local).trusted, "an ordinary auto-mode allow is not trusted (the reviewer still sees it)");
-        expect(a.harmless(Action{Action::Kind::Shell, {}, "maic-workflow-edit inspect wf.json --json"}) && a.harmless(Action{Action::Kind::Read, ws / "x"}) && !a.harmless(Action{Action::Kind::Write, ws / "x"}) && !a.harmless(Action{Action::Kind::Shell, {}, "make"}),
+        expect(a.harmless(Action{Action::Kind::Shell, {}, "maid-workflow-edit inspect wf.json --json"}) && a.harmless(Action{Action::Kind::Read, ws / "x"}) && !a.harmless(Action{Action::Kind::Write, ws / "x"}) && !a.harmless(Action{Action::Kind::Shell, {}, "make"}),
                "harmless: reads, read-only and helper commands; not writes or other commands");
     }
 
     std::cout << "list and helper rules match one simple command only\n";
     {
-        for (const char* cmd : {"maic path", "pytest tests/ -q", "cai read s.jsonl", "maic-danbooru-tags check --prompt \"1girl, grey hair\"", "git log --oneline -3"}) {
+        for (const char* cmd : {"maid path", "pytest tests/ -q", "cai read s.jsonl", "maid-danbooru-tags check --prompt \"1girl, grey hair\"", "git log --oneline -3"}) {
             expect(is_simple_command(cmd), std::string("simple: ") + cmd);
         }
-        for (const char* cmd : {"maic path && rm -rf .", "maic path; x", "maic path | sh", "maic path > f", "maic path $(x)", "maic path < f", "maic path & x",
-                                "maic path `x`", "maic path\nx", "maic path\rx", "diff <(maic path) f", "maic path >(sh)", "maic path || x", "maic path >> f"}) {
+        for (const char* cmd : {"maid path && rm -rf .", "maid path; x", "maid path | sh", "maid path > f", "maid path $(x)", "maid path < f", "maid path & x",
+                                "maid path `x`", "maid path\nx", "maid path\rx", "diff <(maid path) f", "maid path >(sh)", "maid path || x", "maid path >> f"}) {
             expect(!is_simple_command(cmd), std::string("not simple: ") + cmd);
         }
         // The five chained forms on each kind of rule; the plain form is still approved.
@@ -321,13 +321,13 @@ int main() {
         expect(check(forbidding, Mode::Auto, "true; git push").reason.find("forbidden term") != std::string::npos, "a forbidden term is found anywhere in the line");
         expect(check(unlisted, Mode::Auto, "true; sudo ls").verdict == Verdict::Trip, "a trip pattern too");
 
-        // The default entries for MAIC's helpers and cai, and the read-only shapes behind them (helper_read_only
+        // The default entries for MAID's helpers and cai, and the read-only shapes behind them (helper_read_only
         // and the cai classifier).
         Harness defaults(ws);
         defaults.set_permission(Settings{}.permission);
         Harness bare(ws);
-        for (const std::string plain : {"maic path", "maic-panel-check wf.json 1", "maic-storyboard status", "cai read s.jsonl", "maic-cai trans-fairy state", "maic cai read s.jsonl"}) {
-            if (plain.rfind("maic cai", 0) != 0) {
+        for (const std::string plain : {"maid path", "maid-panel-check wf.json 1", "maid-storyboard status", "cai read s.jsonl", "maid-cai trans-fairy state", "maid cai read s.jsonl"}) {
+            if (plain.rfind("maid cai", 0) != 0) {
                 Decision d = check(defaults, Mode::Manual, plain);
                 expect(d.verdict == Verdict::Allow && d.trusted, "a default entry approves the plain form: " + plain);
             }
@@ -342,18 +342,18 @@ int main() {
         }
     }
 
-    std::cout << "maic nvim setup: a user command, never a tool call\n";
+    std::cout << "maid nvim setup: a user command, never a tool call\n";
     {
         Harness listed(ws), plain(ws);
-        listed.set_allow({"maic *", "maic nvim setup*"});
-        for (const char* cmd : {"maic nvim setup llama-vim --yes", "maic nvim setup llama-vim --dry-run", "cd x && maic nvim setup llama-vim --remove --yes",
-                                "/usr/local/bin/maic nvim setup llama-vim --yes", "bash -c 'maic nvim setup llama-vim --yes'", "maic \"nvim\" setup llama-vim"}) {
+        listed.set_allow({"maid *", "maid nvim setup*"});
+        for (const char* cmd : {"maid nvim setup llama-vim --yes", "maid nvim setup llama-vim --dry-run", "cd x && maid nvim setup llama-vim --remove --yes",
+                                "/usr/local/bin/maid nvim setup llama-vim --yes", "bash -c 'maid nvim setup llama-vim --yes'", "maid \"nvim\" setup llama-vim"}) {
             for (Mode m : {Mode::Manual, Mode::AutoRead, Mode::Edit, Mode::Auto, Mode::Plan}) {
                 expect(listed.check(Action{Action::Kind::Shell, {}, cmd}, m, Origin::Local).verdict == Verdict::Deny, std::string("denied in every mode, over an allow list: ") + cmd);
             }
             expect(!is_read_only_command(cmd) && !plain.harmless(Action{Action::Kind::Shell, {}, cmd}), std::string("and classified as a write: ") + cmd);
         }
-        expect(plain.check(Action{Action::Kind::Shell, {}, "maic nvim keymaps"}, Mode::Auto, Origin::Local).verdict == Verdict::Allow, "maic nvim keymaps is not caught by it");
+        expect(plain.check(Action{Action::Kind::Shell, {}, "maid nvim keymaps"}, Mode::Auto, Origin::Local).verdict == Verdict::Allow, "maid nvim keymaps is not caught by it");
     }
 
     std::cout << "permission block: deny over ask over allow, after the fixed rules\n";
@@ -445,7 +445,7 @@ int main() {
         expect(w.check({Action::Kind::Write, ws / "README.md", "", {}, "edit_file"}, Mode::Edit, Origin::Local).verdict == Verdict::Allow, "an exact file pattern matches");
         d = w.check({Action::Kind::Write, ws / "src" / "a.cpp", "", {}, "write_file"}, Mode::Edit, Origin::Local);
         expect(d.verdict == Verdict::Deny && d.reason == "the docs agent writes only under docs/**, README.md", "a write elsewhere is denied with the globs: " + d.reason);
-        expect(w.check({Action::Kind::Write, fs::temp_directory_path() / "maic-agent-out.txt", "", {}, "write_file"}, Mode::Edit, Origin::Local).verdict == Verdict::Deny, "a write outside the workspace is denied, not asked");
+        expect(w.check({Action::Kind::Write, fs::temp_directory_path() / "maid-agent-out.txt", "", {}, "write_file"}, Mode::Edit, Origin::Local).verdict == Verdict::Deny, "a write outside the workspace is denied, not asked");
         expect(w.check({Action::Kind::Write, fs::path("/etc/hosts"), "", {}, "write_file"}, Mode::Edit, Origin::Local).verdict == Verdict::Trip, "a system path still trips");
         expect(w.check({Action::Kind::Shell, {}, "make docs", {}, "run_shell"}, Mode::Edit, Origin::Local).verdict == Verdict::Ask, "commands follow the mode as before");
         AgentDef all{"wide"};
@@ -475,13 +475,13 @@ int main() {
     auto r = run("echo sandboxed > inside.txt && cat inside.txt");
     expect(r.exit_code == 0 && fs::exists(ws / "inside.txt"), "can write inside the workspace");
 
-    fs::path outside = fs::path(home) / "maic-sandbox-escape-test";
+    fs::path outside = fs::path(home) / "maid-sandbox-escape-test";
     r = run("touch " + outside.string());
     expect(r.exit_code != 0 && !fs::exists(outside), "can't write to the home directory");
     fs::remove(outside);
 
-    r = run("touch /var/tmp/maic-escape-test");
-    expect(r.exit_code != 0 && !fs::exists("/var/tmp/maic-escape-test"), "can't write to /var/tmp");
+    r = run("touch /var/tmp/maid-escape-test");
+    expect(r.exit_code != 0 && !fs::exists("/var/tmp/maid-escape-test"), "can't write to /var/tmp");
 
     r = run("ls -A ~/.ssh | wc -l");
     expect(r.output.find('0') == 0, "~/.ssh looks empty inside the sandbox");
@@ -517,7 +517,7 @@ int main() {
     if (!on_path("bwrap") || !on_path("python3")) {
         std::cout << "  skipped: needs bwrap and python3 on PATH\n";
     } else {
-        fs::path rt = fs::path(home) / ".cache" / ("maic-sbx-" + std::to_string(getpid()));
+        fs::path rt = fs::path(home) / ".cache" / ("maid-sbx-" + std::to_string(getpid()));
         fs::path run_dir = rt / "run", agent_dir = rt / "agent", gpg_dir = rt / "gpg", sws = rt / "ws";
         fs::remove_all(rt);
         for (const auto& d : {run_dir, agent_dir, gpg_dir, sws}) fs::create_directories(d);
@@ -545,10 +545,10 @@ int main() {
             const char* old_state = std::getenv("XDG_STATE_HOME");
             std::string saved_state = old_state ? old_state : "";
             setenv("XDG_STATE_HOME", (rt / "state").c_str(), 1);
-            fs::create_directories(rt / "state" / "maic" / "run");
-            fds.push_back(listen_at(rt / "state" / "maic" / "run" / "engine.sock"));
+            fs::create_directories(rt / "state" / "maid" / "run");
+            fds.push_back(listen_at(rt / "state" / "maid" / "run" / "engine.sock"));
             unsetenv("XDG_RUNTIME_DIR");
-            expect(fds.back() != -1 && !reach(rt / "state" / "maic" / "run" / "engine.sock"), "without $XDG_RUNTIME_DIR, the daemon's socket in <state>/run is not reachable");
+            expect(fds.back() != -1 && !reach(rt / "state" / "maid" / "run" / "engine.sock"), "without $XDG_RUNTIME_DIR, the daemon's socket in <state>/run is not reachable");
             setenv("XDG_RUNTIME_DIR", run_dir.c_str(), 1);
             if (old_state) setenv("XDG_STATE_HOME", saved_state.c_str(), 1);
             else unsetenv("XDG_STATE_HOME");
@@ -561,22 +561,22 @@ int main() {
 
         setenv("DISPLAY", ":99", 1);
         setenv("WAYLAND_DISPLAY", "wayland-99", 1);
-        setenv("MAIC_TEST_TOKEN", "t", 1);
-        setenv("MAIC_TEST_API_KEY", "k", 1);
+        setenv("MAID_TEST_TOKEN", "t", 1);
+        setenv("MAID_TEST_API_KEY", "k", 1);
         setenv("DEEPSEEK_API_KEY", "sk-deepseek-never-in-a-command", 1);
-        setenv("MAIC_TEST_SECRET", "s", 1);
-        setenv("MAIC_TEST_OTHER", "o", 1);
+        setenv("MAID_TEST_SECRET", "s", 1);
+        setenv("MAID_TEST_OTHER", "o", 1);
         setenv("LANG", "C.UTF-8", 1);
         setenv("LC_TIME", "C", 1);
         setenv("TZ", "UTC", 1);
         setenv("TERM", "dumb", 1);
         setenv("SHELL", "/bin/bash", 1);
-        setenv("USER", std::getenv("USER") ? std::getenv("USER") : "maic-test", 1);
-        setenv("LOGNAME", std::getenv("LOGNAME") ? std::getenv("LOGNAME") : "maic-test", 1);
+        setenv("USER", std::getenv("USER") ? std::getenv("USER") : "maid-test", 1);
+        setenv("LOGNAME", std::getenv("LOGNAME") ? std::getenv("LOGNAME") : "maid-test", 1);
         r = run_sandboxed("env", sws, false, std::chrono::seconds(20), no);
         std::string env = "\n" + r.output;
         for (const char* v : {"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "SSH_AUTH_SOCK", "GPG_AGENT_INFO", "NVIM", "DISPLAY", "WAYLAND_DISPLAY",
-                              "MAIC_TEST_TOKEN", "MAIC_TEST_API_KEY", "MAIC_TEST_SECRET", "MAIC_TEST_OTHER", "MAIC_TRIPWIRE_FILE", "DEEPSEEK_API_KEY"}) {
+                              "MAID_TEST_TOKEN", "MAID_TEST_API_KEY", "MAID_TEST_SECRET", "MAID_TEST_OTHER", "MAID_TRIPWIRE_FILE", "DEEPSEEK_API_KEY"}) {
             expect(env.find(std::string("\n") + v + "=") == std::string::npos, std::string("env inside the sandbox has no ") + v);
         }
         for (const char* v : {"PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_TIME", "TZ", "TERM", "SHELL"}) {
@@ -584,7 +584,7 @@ int main() {
         }
         r = run_sandboxed_argv({"/usr/bin/env"}, "", sws, true, std::chrono::seconds(20), no);
         expect(env.find("sk-deepseek-never-in-a-command") == std::string::npos, "a provider's key (DEEPSEEK_API_KEY) is nowhere in a command's environment");
-        expect(r.exit_code == 0 && r.output.find("SSH_AUTH_SOCK=") == std::string::npos && r.output.find("MAIC_TEST_TOKEN=") == std::string::npos &&
+        expect(r.exit_code == 0 && r.output.find("SSH_AUTH_SOCK=") == std::string::npos && r.output.find("MAID_TEST_TOKEN=") == std::string::npos &&
                    r.output.find("PATH=") != std::string::npos,
                "a script tool (run_sandboxed_argv) gets the same environment");
 
@@ -594,7 +594,7 @@ int main() {
         expect(r.exit_code != 0 && !fs::exists(sws / "ro.txt"), "and still read-only when the mode says so");
 
         for (const char* v : {"XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "GPG_AGENT_INFO", "NVIM", "DISPLAY", "WAYLAND_DISPLAY",
-                              "MAIC_TEST_TOKEN", "MAIC_TEST_API_KEY", "MAIC_TEST_SECRET", "MAIC_TEST_OTHER", "DEEPSEEK_API_KEY"}) {
+                              "MAID_TEST_TOKEN", "MAID_TEST_API_KEY", "MAID_TEST_SECRET", "MAID_TEST_OTHER", "DEEPSEEK_API_KEY"}) {
             unsetenv(v);
         }
         for (int fd : fds) {
@@ -604,12 +604,12 @@ int main() {
     }
 
     // NixOS keeps programs under /run (the system, setuid wrappers, GPU drivers) and the Nix daemon's socket under
-    // /nix. Fake trees under ~/.cache stand in for both through MAIC_SANDBOX_ROOT, honoured only with MAIC_TESTING=1.
+    // /nix. Fake trees under ~/.cache stand in for both through MAID_SANDBOX_ROOT, honoured only with MAID_TESTING=1.
     std::cout << "sandbox: NixOS program trees and the Nix daemon socket\n";
     if (!on_path("bwrap") || !on_path("python3")) {
         std::cout << "  skipped: needs bwrap and python3 on PATH\n";
     } else {
-        fs::path fake = fs::path(home) / ".cache" / ("maic-nix-" + std::to_string(getpid()));
+        fs::path fake = fs::path(home) / ".cache" / ("maid-nix-" + std::to_string(getpid()));
         fs::path run = fake / "run", daemon = fake / "nix" / "var" / "nix" / "daemon-socket", sws = fake / "ws";
         fs::remove_all(fake);
         fs::create_directories(daemon);
@@ -629,10 +629,10 @@ int main() {
                                    std::chrono::seconds(20), no);
             return r.exit_code == 0;
         };
-        setenv("MAIC_SANDBOX_ROOT", fake.c_str(), 1);
-        unsetenv("MAIC_TESTING");
-        expect(reach(daemon / "socket"), "control: without MAIC_TESTING=1 the override is ignored and the fake daemon socket is reachable");
-        setenv("MAIC_TESTING", "1", 1);
+        setenv("MAID_SANDBOX_ROOT", fake.c_str(), 1);
+        unsetenv("MAID_TESTING");
+        expect(reach(daemon / "socket"), "control: without MAID_TESTING=1 the override is ignored and the fake daemon socket is reachable");
+        setenv("MAID_TESTING", "1", 1);
         r = run_sandboxed("cat " + (run / "current-system" / "sw" / "bin" / "hello").string() + " " + (run / "wrappers" / "bin" / "sudo").string() + " " +
                               (run / "opengl-driver" / "lib" / "libGL.so").string(),
                           sws, false, std::chrono::seconds(20), no);
@@ -645,8 +645,8 @@ int main() {
         expect(r.exit_code != 0, "anything else under /run stays masked");
         expect(!reach(run / "wrappers" / "s.sock"), "a socket inside a program tree is masked");
         expect(!reach(daemon / "socket"), "the Nix daemon socket is unreachable");
-        unsetenv("MAIC_SANDBOX_ROOT");
-        unsetenv("MAIC_TESTING");
+        unsetenv("MAID_SANDBOX_ROOT");
+        unsetenv("MAID_TESTING");
         for (int fd : fds) {
             if (fd >= 0) close(fd);
         }

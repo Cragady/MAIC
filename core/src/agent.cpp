@@ -1,13 +1,13 @@
-#include "maic/agent.hpp"
+#include "maid/agent.hpp"
 
-#include "maic/full_output.hpp"
-#include "maic/models.hpp"
+#include "maid/full_output.hpp"
+#include "maid/models.hpp"
 
-#include "maic/paths.hpp"
-#include "maic/settings.hpp"
-#include "maic/tools.hpp"
-#include "maic/tripwire.hpp"
-#include "maic/trust.hpp"
+#include "maid/paths.hpp"
+#include "maid/settings.hpp"
+#include "maid/tools.hpp"
+#include "maid/tripwire.hpp"
+#include "maid/trust.hpp"
 
 #include <unistd.h>
 
@@ -23,7 +23,7 @@
 #include <thread>
 #include <tuple>
 
-namespace maic {
+namespace maid {
 
 namespace {
 
@@ -262,7 +262,7 @@ std::string Agent::instructions_text() const {
     out += "\n# Standing instructions\n"
            "The user wrote the files below about themselves and about how they want you to work. Follow them. "
            "In them, \"I\", \"me\" and \"my\" mean the user, never you: they describe the person you are talking to. "
-           "You are MAIC's agent, a separate thing from the user. Their contents are included right here; do not "
+           "You are MAID's agent, a separate thing from the user. Their contents are included right here; do not "
            "read these files with a tool. They run from the most general (system-wide, then the user's own) to the "
            "most specific (the directory closest to the workspace); where two conflict, the later one takes precedence.\n";
     for (const auto& f : instructions_) {
@@ -337,10 +337,10 @@ std::string Agent::with_operator_note(const std::string& text) const {
 std::string Agent::system_prompt() const {
     std::string prompt;
     if (!operator_text().empty()) {
-        prompt += "# Operator instructions\nThese come from the operator running MAIC and take precedence over everything below.\n" + operator_text() + "\n\n";
+        prompt += "# Operator instructions\nThese come from the operator running MAID and take precedence over everything below.\n" + operator_text() + "\n\n";
     }
     prompt +=
-        "You are the agent inside MAIC, a terminal coding tool on the user's own machine. The user is a person talking "
+        "You are the agent inside MAID, a terminal coding tool on the user's own machine. The user is a person talking "
         "to you through a vim-style interface; you work through tools. You are not the user.\n"
         "\n"
         "# Where you are\n"
@@ -392,23 +392,23 @@ std::string Agent::system_prompt() const {
         user_tools_text() +
         "\n"
         "# Helpers on this machine\n"
-        "`maic-workflow-edit FILE ...` (through run_shell) edits the tunable fields of a ComfyUI workflow JSON without "
-        "touching its wiring: run `maic-workflow-edit inspect FILE --json` first to learn node ids, titles and field "
+        "`maid-workflow-edit FILE ...` (through run_shell) edits the tunable fields of a ComfyUI workflow JSON without "
+        "touching its wiring: run `maid-workflow-edit inspect FILE --json` first to learn node ids, titles and field "
         "names, then `set FILE NODE.FIELD VALUE`, `append`, `prepend`, `replace-all FILE OLD NEW`, or `apply FILE "
         "edits.json`; `--dry-run` shows the diff. The file must be inside the workspace to be written.\n"
-        "`maic-storyboard` merges a story JSON (characters, setting, panels) into a MAIC manga workflow. Run it with no "
-        "arguments to be told how to begin: ask the user for the story file and the destination, `maic-storyboard start "
-        "STORY TEMPLATE --out DEST`, then `maic-storyboard next` once per panel after running the command it prints. It "
+        "`maid-storyboard` merges a story JSON (characters, setting, panels) into a MAID manga workflow. Run it with no "
+        "arguments to be told how to begin: ask the user for the story file and the destination, `maid-storyboard start "
+        "STORY TEMPLATE --out DEST`, then `maid-storyboard next` once per panel after running the command it prints. It "
         "does the mechanical part itself and checks your work; you only write each panel's tags.\n"
-        "`maic-danbooru-tags check --prompt \"1girl, grey hair, ...\"` says which tags are real Danbooru tags, which are aliases "
-        "of a canonical tag, and which are unknown (with near matches); `maic-danbooru-tags search WORD` lists tags containing a "
-        "word; `maic-danbooru-tags groups show NAME` prints a whole tag group page (posture, hair, attire, image composition, ...) "
+        "`maid-danbooru-tags check --prompt \"1girl, grey hair, ...\"` says which tags are real Danbooru tags, which are aliases "
+        "of a canonical tag, and which are unknown (with near matches); `maid-danbooru-tags search WORD` lists tags containing a "
+        "word; `maid-danbooru-tags groups show NAME` prints a whole tag group page (posture, hair, attire, image composition, ...) "
         "and `groups search WORD` finds a word across them. Check a prompt before writing it. All of these answer from local "
         "files; never run `fetch` yourself.\n"
-        "`maic-panel-check WORKFLOW N` prints panel N's prompt, negative, sampler settings and captions on one screen and flags "
+        "`maid-panel-check WORKFLOW N` prints panel N's prompt, negative, sampler settings and captions on one screen and flags "
         "the usual mistakes offline (no or doubled count tag, solo with 2girls, a tag in both prompt and negative, too many tags, "
         "unknown Danbooru tags, a caption too long for its overlay); run it after writing a panel and fix what it flags.\n"
-        "For transcripts, a MAIC session or a Claude Code one: `cai read FILE.jsonl` prints what was said and writes nothing, "
+        "For transcripts, a MAID session or a Claude Code one: `cai read FILE.jsonl` prints what was said and writes nothing, "
         "and `cai trans-fairy` cuts, composes and grafts transcripts into new files, never over the source (`cai trans-fairy "
         "--man-help` is its reference).\n"
         "\n"
@@ -429,7 +429,7 @@ std::string Agent::system_prompt() const {
         "Be concise.\n";
     if (log_) {
         prompt += "This session is being saved to " + log_->path().string() +
-                  ". The user can list and clean MAIC's transcripts and logs with `maic artifacts`.\n";
+                  ". The user can list and clean MAID's transcripts and logs with `maid artifacts`.\n";
     }
     prompt += instructions_text();
     // Stated again at the end: a small model drops a short rule buried under the briefing, and keeps one
@@ -1120,7 +1120,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
     if (tripwire_state()) {
         return result("BLOCKED: the harness tripwire is tripped. Nothing can run until the user unlocks it.", false);
     }
-    if (call.arguments.contains("_maic_invalid_input")) {
+    if (call.arguments.contains("_maid_invalid_input")) {
         return result("INVALID_JSON: the tool input was not valid JSON, so nothing ran. Send the call again with valid arguments.", false);
     }
 
@@ -1202,7 +1202,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
     if (repeats_ >= repeat_trip) {
         try {
             trip_tripwire("repeated call: " + summary + " x" + std::to_string(repeats_));
-            events.on_notice("HARNESS TRIPPED: the same call was repeated " + std::to_string(repeats_) + " times. Run `maic unlock` to continue.");
+            events.on_notice("HARNESS TRIPPED: the same call was repeated " + std::to_string(repeats_) + " times. Run `maid unlock` to continue.");
         } catch (const std::exception& e) {
             events.on_notice(std::string("tripwire could not be set: ") + e.what());
         }
@@ -1277,7 +1277,7 @@ Message Agent::run_tool_call(const ToolCall& call, Origin origin, AgentEvents& e
         return result(text, true);
     }
     if (lua) {
-        // Every maic.* call inside the tool is one action, authorised exactly like a built-in and logged with it.
+        // Every maid.* call inside the tool is one action, authorised exactly like a built-in and logged with it.
         record["file"] = lua->file.string();
         record["actions"] = nlohmann::json::array();
         std::vector<std::filesystem::path> written;
@@ -1390,7 +1390,7 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
             record["reason"] = t.reason;
             try {
                 trip_tripwire(summary + " -- " + t.reason);
-                events.on_notice("HARNESS TRIPPED: " + t.reason + ". Run `maic unlock` to continue.");
+                events.on_notice("HARNESS TRIPPED: " + t.reason + ". Run `maid unlock` to continue.");
             } catch (const std::exception& e) {
                 events.on_notice(std::string("tripwire could not be set: ") + e.what());
             }
@@ -1399,7 +1399,7 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     }
     Decision d = harness_.check(action, mode, origin);
     if (action.kind != Action::Kind::Read && touches_harness(action) && d.verdict == Verdict::Allow) d = {Verdict::Ask, "changes the harness's own files"};
-    if (touches_trust(action) && d.verdict != Verdict::Trip) d = {Verdict::Deny, "trust is the user's alone: only they grant it, at the terminal (:trust, maic trust PATH)"};
+    if (touches_trust(action) && d.verdict != Verdict::Trip) d = {Verdict::Deny, "trust is the user's alone: only they grant it, at the terminal (:trust, maid trust PATH)"};
     // A file the user's own instructions import with their approval would change their standing instructions.
     if (d.verdict != Verdict::Trip && d.verdict != Verdict::Deny && changes_approved_import(action)) {
         if (!review_with_model) d = {Verdict::Deny, "it is a file your own instructions import (an approved import); the dumb harness never lets the agent change it"};
@@ -1462,7 +1462,7 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
     if (d.verdict == Verdict::Trip) {
         try {
             trip_tripwire(summary + " -- " + d.reason);
-            events.on_notice("HARNESS TRIPPED: " + d.reason + ". Run `maic unlock` to continue.");
+            events.on_notice("HARNESS TRIPPED: " + d.reason + ". Run `maid unlock` to continue.");
         } catch (const std::exception& e) {
             events.on_notice(std::string("tripwire could not be set: ") + e.what());
         }
@@ -1709,7 +1709,7 @@ const ScriptTool* Agent::find_script_tool(const std::string& name) const {
 }
 
 // Which directories are trusted, and at what tier, is the user's alone (docs/harness.md, Trust): no write to the
-// record, no `maic trust`, `maic untrust` or `maic ... --trust` from the agent, a tool, or a remote request.
+// record, no `maid trust`, `maid untrust` or `maid ... --trust` from the agent, a tool, or a remote request.
 bool touches_trust(const Action& action) {
     if (action.kind == Action::Kind::Write) {
         std::error_code ec;
@@ -1717,11 +1717,11 @@ bool touches_trust(const Action& action) {
         return p.parent_path() == std::filesystem::weakly_canonical(state_dir(), ec) && p.filename().string().rfind("trust", 0) == 0;
     }
     if (action.kind != Action::Kind::Shell) return false;
-    static const std::regex re(R"((^|[\s;&|(`])(\S*/)?maic\s+(un)?trust(\s|$)|(^|[\s;&|(`])(\S*/)?maic\s[^;&|\n]*--trust(\s|=|$)|maic/trust[.-])");
+    static const std::regex re(R"((^|[\s;&|(`])(\S*/)?maid\s+(un)?trust(\s|$)|(^|[\s;&|(`])(\S*/)?maid\s[^;&|\n]*--trust(\s|=|$)|maid/trust[.-])");
     return std::regex_search(action.command, re);
 }
 
-// A write to a target `maic trust imports` lists, or a command that is not read-only and names one.
+// A write to a target `maid trust imports` lists, or a command that is not read-only and names one.
 bool changes_approved_import(const Action& action) {
     if (action.kind == Action::Kind::Read) return false;
     if (action.kind == Action::Kind::Shell && is_read_only_command(action.command)) return false;
@@ -1743,12 +1743,12 @@ bool Agent::touches_harness(const Action& action) const {
     if (action.kind == Action::Kind::Write) {
         const auto& p = action.path;
         std::string name = p.filename().string();
-        return under(p, settings_path().parent_path()) || under(p, harness_.workspace() / ".maic") || under(p, "/var/lib/maic") ||
+        return under(p, settings_path().parent_path()) || under(p, harness_.workspace() / ".maid") || under(p, "/var/lib/maid") ||
                under(p, state_dir() / "server") || under(p, state_dir() / "run") || (name.size() > 8 && name.compare(name.size() - 8, 8, ".tripped") == 0);
     }
     if (action.kind == Action::Kind::Shell) {
         const std::string& c = action.command;
-        for (const char* needle : {"maic-lock", "maic unlock", "maic trip", "/var/lib/maic", ".maic/settings", "config/maic/", ".tripped", "maic/server/tokens", "maic server token"}) {
+        for (const char* needle : {"maid-lock", "maid unlock", "maid trip", "/var/lib/maid", ".maid/settings", "config/maid/", ".tripped", "maid/server/tokens", "maid server token"}) {
             if (c.find(needle) != std::string::npos) return true;
         }
     }
@@ -2066,13 +2066,13 @@ std::string Agent::nested_instructions(const std::filesystem::path& file) {
     std::set<std::filesystem::path> seen = attached_instructions_;
     for (const auto& f : instructions_) seen.insert(std::filesystem::weakly_canonical(f.path, ec));
     std::string out;
-    for (const auto& f : maic::nested_instructions(harness_.workspace(), file, instruction_options_, nested_allowed_, seen)) {
+    for (const auto& f : maid::nested_instructions(harness_.workspace(), file, instruction_options_, nested_allowed_, seen)) {
         attached_instructions_.insert(std::filesystem::weakly_canonical(f.path, ec));
         std::string from = f.imported_by.empty() ? "" : ", imported by " + f.imported_by.string();
-        out += "[MAIC system note: standing instructions from " + f.path.string() + from + ". They apply to the files under " +
+        out += "[MAID system note: standing instructions from " + f.path.string() + from + ". They apply to the files under " +
                (f.imported_by.empty() ? f.path : f.imported_by).parent_path().string() + " and take precedence over the earlier ones there; follow them]\n" + f.text + "\n";
     }
     return out;
 }
 
-}  // namespace maic
+}  // namespace maid

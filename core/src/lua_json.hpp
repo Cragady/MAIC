@@ -8,7 +8,7 @@ extern "C" {
 
 #include <nlohmann/json.hpp>
 
-namespace maic {
+namespace maid {
 
 // Sequences (1..n) become arrays, other tables objects; functions and userdata are dropped.
 nlohmann::json lua_to_json(lua_State* L, int idx);
@@ -16,4 +16,4 @@ nlohmann::json lua_to_json(lua_State* L, int idx);
 // Pushes `j` as a Lua value: objects and arrays become tables, null becomes nil.
 void json_to_lua(lua_State* L, const nlohmann::json& j);
 
-}  // namespace maic
+}  // namespace maid

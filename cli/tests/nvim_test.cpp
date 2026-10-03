@@ -1,16 +1,16 @@
-// maic.nvim from MAIC's side, against a real headless nvim (`--listen` on a socket of the test's own, the plugin
-// on its runtimepath): the ancestry check, maic_send and maic_command, :e and the diff in the host, the theme
-// following ColorScheme, User autocmds, the diagnostics tool judged as a read, maic.nvim in the Lua tools and in
-// the user's Lua; then the plugin's own Lua tests (maic.nvim/tests/maic_test.lua). Skipped (77) without nvim.
+// maid.nvim from MAID's side, against a real headless nvim (`--listen` on a socket of the test's own, the plugin
+// on its runtimepath): the ancestry check, maid_send and maid_command, :e and the diff in the host, the theme
+// following ColorScheme, User autocmds, the diagnostics tool judged as a read, maid.nvim in the Lua tools and in
+// the user's Lua; then the plugin's own Lua tests (maid.nvim/tests/maid_test.lua). Skipped (77) without nvim.
 #include "check.hpp"
 #include "nvim_host.hpp"
 
-#include "maic/agent.hpp"
-#include "maic/http.hpp"
-#include "maic/lua.hpp"
-#include "maic/lua_tools.hpp"
-#include "maic/nvim_setup.hpp"
-#include "maic/theme.hpp"
+#include "maid/agent.hpp"
+#include "maid/http.hpp"
+#include "maid/lua.hpp"
+#include "maid/lua_tools.hpp"
+#include "maid/nvim_setup.hpp"
+#include "maid/theme.hpp"
 
 #include <fcntl.h>
 #include <signal.h>
@@ -29,7 +29,7 @@
 #include <mutex>
 #include <thread>
 
-using namespace maic;
+using namespace maid;
 using nlohmann::json;
 namespace fs = std::filesystem;
 
@@ -228,24 +228,24 @@ bool offers(const json& body, const std::string& name) {
 
 int main() {
     if (!on_path("nvim")) {
-        std::cout << "nvim is not on PATH: the maic.nvim tests are skipped\n";
+        std::cout << "nvim is not on PATH: the maid.nvim tests are skipped\n";
         return 77;
     }
-    fs::path tmp = fs::temp_directory_path() / ("maic-nvim-test-" + std::to_string(getpid()));
+    fs::path tmp = fs::temp_directory_path() / ("maid-nvim-test-" + std::to_string(getpid()));
     fs::remove_all(tmp);
     fs::create_directories(tmp / "ws");
     fs::path ws = fs::canonical(tmp / "ws");
     setenv("XDG_STATE_HOME", (tmp / "state").c_str(), 1);
     setenv("XDG_CONFIG_HOME", (tmp / "config").c_str(), 1);
-    setenv("MAIC_TRIPWIRE_FILE", (tmp / "tripwire.none").c_str(), 1);
+    setenv("MAID_TRIPWIRE_FILE", (tmp / "tripwire.none").c_str(), 1);
     fs::create_directories(tmp / "run");
     fs::permissions(tmp / "run", fs::perms::owner_all);
     setenv("XDG_RUNTIME_DIR", (tmp / "run").c_str(), 1);
-    unsetenv("MAIC_TESTING");
-    unsetenv("MAIC_NVIM_TRUST_SOCKET");
+    unsetenv("MAID_TESTING");
+    unsetenv("MAID_NVIM_TRUST_SOCKET");
 
     fs::path sock = tmp / "nvim.sock";
-    pid_t nvim = spawn({"nvim", "--headless", "-u", "NONE", "-i", "NONE", "-n", "--listen", sock.string(), "--cmd", "set rtp+=" MAIC_PLUGIN_DIR});
+    pid_t nvim = spawn({"nvim", "--headless", "-u", "NONE", "-i", "NONE", "-n", "--listen", sock.string(), "--cmd", "set rtp+=" MAID_PLUGIN_DIR});
     if (!eventually([&] { return fs::exists(sock); }, 10000)) {
         std::cout << "nvim did not open its socket\n";
         kill(-nvim, SIGKILL);
@@ -256,11 +256,11 @@ int main() {
     {
         int fd = -1;
         std::string why = connect_host_socket(sock, fd);
-        expect(fd < 0 && why.find("not one of this MAIC's parent processes") != std::string::npos, "a headless nvim that is not an ancestor is refused: " + why);
-        setenv("MAIC_NVIM_TRUST_SOCKET", "1", 1);
+        expect(fd < 0 && why.find("not one of this MAID's parent processes") != std::string::npos, "a headless nvim that is not an ancestor is refused: " + why);
+        setenv("MAID_NVIM_TRUST_SOCKET", "1", 1);
         why = connect_host_socket(sock, fd);
-        expect(fd < 0 && !why.empty(), "MAIC_NVIM_TRUST_SOCKET alone is ignored (it needs MAIC_TESTING=1)");
-        unsetenv("MAIC_NVIM_TRUST_SOCKET");
+        expect(fd < 0 && !why.empty(), "MAID_NVIM_TRUST_SOCKET alone is ignored (it needs MAID_TESTING=1)");
+        unsetenv("MAID_NVIM_TRUST_SOCKET");
         std::ofstream(tmp / "plain") << "x";
         expect(connect_host_socket(tmp / "plain", fd) == "not a socket", "a file that is not a socket is refused");
         expect(!connect_host_socket("127.0.0.1:6666", fd).empty(), "a TCP address is refused");
@@ -281,13 +281,13 @@ int main() {
         expect(!HostNvim::from_env(refused) && refused.empty(), "no $NVIM: no host and nothing to report");
     }
 
-    setenv("MAIC_TESTING", "1", 1);
-    setenv("MAIC_NVIM_TRUST_SOCKET", "1", 1);
+    setenv("MAID_TESTING", "1", 1);
+    setenv("MAID_NVIM_TRUST_SOCKET", "1", 1);
     setenv("NVIM", sock.c_str(), 1);
     std::string why;
     std::shared_ptr<HostNvim> host = HostNvim::from_env(why);
-    expect(host && host->connected(), "with MAIC_TESTING=1 and MAIC_NVIM_TRUST_SOCKET=1 MAIC connects" + (why.empty() ? "" : ": " + why));
-    // A second client to look at the host with, renamed so it is not taken for MAIC.
+    expect(host && host->connected(), "with MAID_TESTING=1 and MAID_NVIM_TRUST_SOCKET=1 MAID connects" + (why.empty() ? "" : ": " + why));
+    // A second client to look at the host with, renamed so it is not taken for MAID.
     std::shared_ptr<HostNvim> other = HostNvim::connect(sock, why);
     if (!host || !other) {
         kill(-nvim, SIGKILL);
@@ -321,16 +321,16 @@ int main() {
         return cv.wait_for(lock, std::chrono::seconds(5), pred);
     };
 
-    section("maic_send and maic_command from the plugin");
+    section("maid_send and maid_command from the plugin");
     {
-        json how = other->exec_lua("return require('maic').send_text(...)", json::array({"hello from nvim"}));
-        expect(how == "rpc", "the plugin finds MAIC's channel by its client name");
-        expect(wait_for([&] { return !sent.empty(); }) && sent[0] == "hello from nvim", "maic_send arrives as text for the input");
-        other->exec_lua("require('maic').command(...)", json::array({":theme mono"}));
-        expect(wait_for([&] { return !commands.empty(); }) && commands[0] == ":theme mono", "maic_command arrives as a command line");
+        json how = other->exec_lua("return require('maid').send_text(...)", json::array({"hello from nvim"}));
+        expect(how == "rpc", "the plugin finds MAID's channel by its client name");
+        expect(wait_for([&] { return !sent.empty(); }) && sent[0] == "hello from nvim", "maid_send arrives as text for the input");
+        other->exec_lua("require('maid').command(...)", json::array({":theme mono"}));
+        expect(wait_for([&] { return !commands.empty(); }) && commands[0] == ":theme mono", "maid_command arrives as a command line");
     }
 
-    section(":MaicInterrupt cancels a running turn");
+    section(":MaidInterrupt cancels a running turn");
     {
         HeldModel model;
         Agent agent(ws, "fake/m");
@@ -342,13 +342,13 @@ int main() {
         std::thread turn([&] { agent.submit("a long one", Origin::Local, r, cancel); });
         expect(eventually([&] { return model.streaming.load(); }), "the fake turn is running");
         auto t0 = std::chrono::steady_clock::now();
-        other->exec_lua("vim.cmd('runtime plugin/maic.lua') vim.cmd('MaicInterrupt')", json::array());
+        other->exec_lua("vim.cmd('runtime plugin/maid.lua') vim.cmd('MaidInterrupt')", json::array());
         turn.join();
         bool noticed = false;
         for (const auto& n : r.notices) noticed = noticed || n.find("interrupted") != std::string::npos;
         expect(cancel.load() && noticed && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5),
-               "rpcnotify(chan, \"maic_interrupt\") from :MaicInterrupt cancels the turn at once");
-        expect(other->exec_lua("return require('maic').interrupt()", json::array()) == "rpc", "require('maic').interrupt() goes over MAIC's channel when it is connected");
+               "rpcnotify(chan, \"maid_interrupt\") from :MaidInterrupt cancels the turn at once");
+        expect(other->exec_lua("return require('maid').interrupt()", json::array()) == "rpc", "require('maid').interrupt() goes over MAID's channel when it is connected");
         h.interrupt = nullptr;
         host->set_handlers(h);
     }
@@ -376,7 +376,7 @@ int main() {
         Theme first = host_theme(*host);
         apply_theme(before, first);
         other->exec_lua("vim.cmd.colorscheme('habamax')", json::array());
-        expect(wait_for([&] { return colorschemes > 0; }), "the host's ColorScheme reaches MAIC as maic_colorscheme");
+        expect(wait_for([&] { return colorschemes > 0; }), "the host's ColorScheme reaches MAID as maid_colorscheme");
         Theme second = host_theme(*host);
         apply_theme(after, second);
         expect(second.name == "nvim:habamax", "the theme is named nvim:<colors_name>: " + second.name);
@@ -386,15 +386,15 @@ int main() {
 
     section("User autocmds fire in the host");
     {
-        other->exec_lua("vim.api.nvim_create_autocmd('User', { pattern = 'MaicToolCall', callback = function(ev) vim.g.maic_seen = ev.data.tool .. ' ' .. ev.data.path .. ' ' .. ev.data.session end })",
+        other->exec_lua("vim.api.nvim_create_autocmd('User', { pattern = 'MaidToolCall', callback = function(ev) vim.g.maid_seen = ev.data.tool .. ' ' .. ev.data.path .. ' ' .. ev.data.session end })",
                         json::array());
-        host_fire(*host, "MaicToolCall", {{"tool", "read_file"}, {"path", "/x"}, {"session", "s1"}});
-        expect(eventually([&] { return other->exec_lua("return vim.g.maic_seen", json::array()) == "read_file /x s1"; }), "MaicToolCall runs the user's autocmd with its data");
+        host_fire(*host, "MaidToolCall", {{"tool", "read_file"}, {"path", "/x"}, {"session", "s1"}});
+        expect(eventually([&] { return other->exec_lua("return vim.g.maid_seen", json::array()) == "read_file /x s1"; }), "MaidToolCall runs the user's autocmd with its data");
     }
 
     section("diagnostics: the tool, the Lua tools, the user's Lua");
     {
-        other->exec_lua("local path = ... vim.cmd.edit(vim.fn.fnameescape(path)) local ns = vim.api.nvim_create_namespace('maic_test') "
+        other->exec_lua("local path = ... vim.cmd.edit(vim.fn.fnameescape(path)) local ns = vim.api.nvim_create_namespace('maid_test') "
                         "vim.diagnostic.set(ns, vim.api.nvim_get_current_buf(), { { lnum = 1, col = 12, severity = vim.diagnostic.severity.ERROR, message = 'expected ;', source = 'clangd' } })",
                         json::array({file.string()}));
         json d = host_diagnostics(*host, file);
@@ -449,8 +449,8 @@ int main() {
 
         LuaTool tool{"diag", "test", json::object(), ws / "diag.lua",
                      "return { name = 'diag', description = 'x', run = function() "
-                     "local d = maic.nvim.diagnostics('src.c') local b = maic.nvim.buffers() "
-                     "return d[1].message .. '|' .. #b .. '|' .. tostring(maic.nvim.exec) end }"};
+                     "local d = maid.nvim.diagnostics('src.c') local b = maid.nvim.buffers() "
+                     "return d[1].message .. '|' .. #b .. '|' .. tostring(maid.nvim.exec) end }"};
         std::vector<Action> seen;
         Authorise gate = [&](const Action& a, const std::string&, const std::string&) {
             seen.push_back(a);
@@ -463,24 +463,24 @@ int main() {
         expect(seen.size() == 2 && seen[0].kind == Action::Kind::Read && seen[0].path == file && seen[0].tool == "diagnostics" && seen[1].kind == Action::Kind::Read && seen[1].path == ws,
                "each is authorised as a read (the file, then the workspace)");
         tr = run_lua_tool(tool, json::object(), harness, gate, no);
-        expect(!tr.ok, "without a host a Lua tool has no maic.nvim");
+        expect(!tr.ok, "without a host a Lua tool has no maid.nvim");
 
         set_lua_nvim_host(host);
         Lua lua(ws);
-        Lua::Result lr = lua.run("return maic.nvim.exec('return 1 + ...', 41), maic.nvim.diagnostics('src.c')[1].message, maic.nvim.current().path ~= nil, #maic.nvim.buffers()");
-        expect(lr.ok && lr.output == "42\nexpected ;\ntrue\n1\n", "the user's Lua has maic.nvim.exec, diagnostics, current and buffers: " + lr.output);
+        Lua::Result lr = lua.run("return maid.nvim.exec('return 1 + ...', 41), maid.nvim.diagnostics('src.c')[1].message, maid.nvim.current().path ~= nil, #maid.nvim.buffers()");
+        expect(lr.ok && lr.output == "42\nexpected ;\ntrue\n1\n", "the user's Lua has maid.nvim.exec, diagnostics, current and buffers: " + lr.output);
         set_lua_nvim_host(nullptr);
         Lua plain(ws);
-        expect(plain.run("return maic.nvim").output == "nil\n", "without a host there is no maic.nvim");
+        expect(plain.run("return maid.nvim").output == "nil\n", "without a host there is no maid.nvim");
     }
 
-    section("a real maic in an nvim terminal");
+    section("a real maid in an nvim terminal");
     {
-        // nvim was started before the test variables were set, so this maic has only the real check: nvim is its parent.
-        json pid = other->exec_lua("vim.cmd('tabnew') local job = vim.fn.jobstart({ ... }, { term = true }) vim.g.maic_job = job return vim.fn.jobpid(job)",
-                                   json::array({MAIC_BINARY, "--no-record", "--no-instructions"}));
+        // nvim was started before the test variables were set, so this maid has only the real check: nvim is its parent.
+        json pid = other->exec_lua("vim.cmd('tabnew') local job = vim.fn.jobstart({ ... }, { term = true }) vim.g.maid_job = job return vim.fn.jobpid(job)",
+                                   json::array({MAID_BINARY, "--no-record", "--no-instructions"}));
         auto client = [&] {
-            json chans = other->exec_lua("local out = {} for _, c in ipairs(vim.api.nvim_list_chans()) do if c.client and c.client.name == 'maic' then "
+            json chans = other->exec_lua("local out = {} for _, c in ipairs(vim.api.nvim_list_chans()) do if c.client and c.client.name == 'maid' then "
                                          "out[#out + 1] = c.client.attributes.pid end end return out",
                                          json::array());
             for (const auto& p : chans) {
@@ -488,41 +488,41 @@ int main() {
             }
             return false;
         };
-        expect(eventually(client, 15000), "maic started in a terminal of this nvim passes the ancestry check and connects as client \"maic\" with its pid");
-        other->exec_lua("vim.fn.jobstop(vim.g.maic_job)", json::array());
+        expect(eventually(client, 15000), "maid started in a terminal of this nvim passes the ancestry check and connects as client \"maid\" with its pid");
+        other->exec_lua("vim.fn.jobstop(vim.g.maid_job)", json::array());
         expect(eventually([&] { return !client(); }, 10000), "and disconnects when it exits");
 
-        // --bare and MAIC_BARE=1: the same maic, the same host, no connection. Ready is the smart harness's status on its screen.
+        // --bare and MAID_BARE=1: the same maid, the same host, no connection. Ready is the smart harness's status on its screen.
         auto bare = [&](const json& argv, const json& env) {
-            pid = other->exec_lua("local argv, env = ... vim.cmd('enew!') local job = vim.fn.jobstart(argv, { term = true, env = env }) vim.g.maic_job = job vim.g.maic_buf = vim.api.nvim_get_current_buf() "
+            pid = other->exec_lua("local argv, env = ... vim.cmd('enew!') local job = vim.fn.jobstart(argv, { term = true, env = env }) vim.g.maid_job = job vim.g.maid_buf = vim.api.nvim_get_current_buf() "
                                   "return vim.fn.jobpid(job)",
                                   json::array({argv, env}));
             bool ready = eventually([&] {
-                return other->exec_lua("return table.concat(vim.api.nvim_buf_get_lines(vim.g.maic_buf, 0, -1, false), '\\n'):find('harness armed', 1, true) ~= nil", json::array()) == true;
+                return other->exec_lua("return table.concat(vim.api.nvim_buf_get_lines(vim.g.maid_buf, 0, -1, false), '\\n'):find('harness armed', 1, true) ~= nil", json::array()) == true;
             }, 15000);
             bool connected = eventually(client, 1500);
-            other->exec_lua("vim.fn.jobstop(vim.g.maic_job) vim.cmd('enew!')", json::array());
+            other->exec_lua("vim.fn.jobstop(vim.g.maid_job) vim.cmd('enew!')", json::array());
             return ready && !connected;
         };
-        expect(bare(json::array({MAIC_BINARY, "--no-record", "--no-instructions", "--harness", "smart", "--bare"}), json::object()), "maic --bare inside the host does not connect");
-        expect(bare(json::array({MAIC_BINARY, "--no-record", "--no-instructions", "--harness", "smart"}), json{{"MAIC_BARE", "1"}}), "nor does maic with MAIC_BARE=1");
+        expect(bare(json::array({MAID_BINARY, "--no-record", "--no-instructions", "--harness", "smart", "--bare"}), json::object()), "maid --bare inside the host does not connect");
+        expect(bare(json::array({MAID_BINARY, "--no-record", "--no-instructions", "--harness", "smart"}), json{{"MAID_BARE", "1"}}), "nor does maid with MAID_BARE=1");
     }
 
-    section("Esc in MAIC's terminal");
+    section("Esc in MAID's terminal");
     {
-        // A user's global tnoremap <Esc> <C-\><C-n>: MAIC's terminal still gets Esc, nvim's own key leaves it, and
+        // A user's global tnoremap <Esc> <C-\><C-n>: MAID's terminal still gets Esc, nvim's own key leaves it, and
         // every other terminal keeps the user's mapping. Keys go in through nvim_input, the real input path.
         fs::path typed = tmp / "typed";
         auto mode = [&] { return other->exec_lua("return vim.api.nvim_get_mode().mode", json::array()); };
         other->exec_lua("local out = ... vim.keymap.set('t', '<Esc>', '<C-\\\\><C-n>') "
-                        "require('maic').setup({ keymaps = false, ui = 'terminal', open = 'split', cmd = { 'sh', '-c', 'stty raw -echo; exec cat > ' .. out } }) "
-                        "vim.cmd('tabnew') vim.cmd('Maic')",
+                        "require('maid').setup({ keymaps = false, ui = 'terminal', open = 'split', cmd = { 'sh', '-c', 'stty raw -echo; exec cat > ' .. out } }) "
+                        "vim.cmd('tabnew') vim.cmd('Maid')",
                         json::array({typed.string()}));
-        expect(eventually([&] { return fs::exists(typed) && mode() == "t"; }), "MAIC's terminal starts in terminal mode");
+        expect(eventually([&] { return fs::exists(typed) && mode() == "t"; }), "MAID's terminal starts in terminal mode");
         other->request("nvim_input", {msgpack::Value::str("ab<Esc>c")});
         bool reached = eventually([&] { return read_file(typed) == "ab\x1b" "c"; });
-        expect(reached, "Esc reaches MAIC as Esc: " + json(read_file(typed)).dump());
-        expect(mode() == "t", "and MAIC's terminal stays in terminal mode");
+        expect(reached, "Esc reaches MAID as Esc: " + json(read_file(typed)).dump());
+        expect(mode() == "t", "and MAID's terminal stays in terminal mode");
         other->request("nvim_input", {msgpack::Value::str("<C-\\><C-n>")});
         expect(eventually([&] { return mode() == "nt"; }), "<C-\\><C-n> (terminal_escape) leaves it");
         other->exec_lua("vim.cmd('tabnew') vim.g.plain_job = vim.fn.jobstart({ 'sh', '-c', 'sleep 30' }, { term = true }) vim.cmd('startinsert')", json::array());
@@ -560,33 +560,33 @@ int main() {
         waitpid(nvim, &status, 0);
     }
 
-    section("maic nvim keymaps");
+    section("maid nvim keymaps");
     {
-        // The real binary runs the same check as :checkhealth maic in a headless nvim; -u points it at a config.
+        // The real binary runs the same check as :checkhealth maid in a headless nvim; -u points it at a config.
         fs::path cfg = tmp / "init.lua", clean = tmp / "clean.lua";
-        std::string rtp = "vim.g.mapleader = ' '\nvim.opt.rtp:prepend('" MAIC_PLUGIN_DIR "')\n";
+        std::string rtp = "vim.g.mapleader = ' '\nvim.opt.rtp:prepend('" MAID_PLUGIN_DIR "')\n";
         std::ofstream(clean) << rtp;
         std::ofstream(cfg) << rtp << "vim.keymap.set('t', '<C-w>', '<C-\\\\><C-n><C-w>', { desc = 'window from a terminal' })\n"
                                      "vim.g.llama_config = { endpoint_fim = 'http://127.0.0.1:8084/infill' }\n";
         std::string out;
-        int rc = capture({MAIC_BINARY, "nvim", "keymaps", "-u", cfg.string()}, out);
-        expect(rc == 1 && out.find("MAIC never gets <C-w>") != std::string::npos && out.find("fix: terminal_passthrough = { [\"<C-w>\"] = true }") != std::string::npos,
+        int rc = capture({MAID_BINARY, "nvim", "keymaps", "-u", cfg.string()}, out);
+        expect(rc == 1 && out.find("MAID never gets <C-w>") != std::string::npos && out.find("fix: terminal_passthrough = { [\"<C-w>\"] = true }") != std::string::npos,
                "a terminal-mode <C-w> in the config is a collision, exit 1, with the fix: " + out);
         expect(out.find("<leader>llf (insert), keymap_fim_trigger") != std::string::npos && out.find("typing <Space> in insert mode waits") != std::string::npos,
                "llama.vim's default insert-mode trigger under a Space leader is reported");
-        rc = capture({MAIC_BINARY, "nvim", "keymaps", "-u", clean.string()}, out);
+        rc = capture({MAID_BINARY, "nvim", "keymaps", "-u", clean.string()}, out);
         expect(rc == 0 && out.find("no collisions") != std::string::npos, "a plain config: no collisions, exit 0: " + out);
-        rc = capture({MAIC_BINARY, "nvim", "keymaps", "--all", "-u", clean.string()}, out);
-        expect(rc == 0 && out.find("ok     <leader>mm (normal): MAIC: open or focus") != std::string::npos, "--all lists every key");
-        rc = capture({MAIC_BINARY, "nvim"}, out);
-        expect(rc == 2 && out.find("usage: maic nvim keymaps") != std::string::npos && out.find("maic nvim setup llama-vim") != std::string::npos, "maic nvim alone is a usage error, exit 2");
+        rc = capture({MAID_BINARY, "nvim", "keymaps", "--all", "-u", clean.string()}, out);
+        expect(rc == 0 && out.find("ok     <leader>mm (normal): MAID: open or focus") != std::string::npos, "--all lists every key");
+        rc = capture({MAID_BINARY, "nvim"}, out);
+        expect(rc == 2 && out.find("usage: maid nvim keymaps") != std::string::npos && out.find("maid nvim setup llama-vim") != std::string::npos, "maid nvim alone is a usage error, exit 2");
     }
 
-    section("maic nvim setup llama-vim");
+    section("maid nvim setup llama-vim");
     {
         // A real headless nvim with -u pointing at an init that defines a stand-in for lazy.nvim: the modules the
         // setup asks about, filled from a spec the way lazy.nvim fills them, its imports read from <config>/lua.
-        fs::path root = tmp / "setup", cfg = tmp / "config" / "nvim", plugins = cfg / "lua" / "plugins", ours = plugins / "maic-llama-vim.lua";
+        fs::path root = tmp / "setup", cfg = tmp / "config" / "nvim", plugins = cfg / "lua" / "plugins", ours = plugins / "maid-llama-vim.lua";
         fs::create_directories(plugins);
         fs::create_directories(root);
         std::ofstream(root / "fake_lazy.lua") << R"lua(return function(spec, setup)
@@ -629,7 +629,7 @@ end
         std::ofstream(plugins / "other.lua") << "return { 'folke/tokyonight.nvim' }\n";
         std::string env_data = "XDG_DATA_HOME=" + (root / "data").string();
         auto setup = [&](const std::string& init, std::vector<std::string> extra, std::string& out) {
-            std::vector<std::string> argv = {"env", "-u", "NVIM_APPNAME", env_data, MAIC_BINARY, "nvim", "setup", "llama-vim"};
+            std::vector<std::string> argv = {"env", "-u", "NVIM_APPNAME", env_data, MAID_BINARY, "nvim", "setup", "llama-vim"};
             if (!init.empty()) argv.insert(argv.end(), {"-u", (root / init).string()});
             argv.insert(argv.end(), extra.begin(), extra.end());
             argv.push_back("</dev/null");
@@ -638,15 +638,15 @@ end
         auto has = [](const std::string& s, const std::string& part) { return s.find(part) != std::string::npos; };
         std::string out;
 
-        std::string docs = read_file(fs::path(MAIC_PLUGIN_DIR).parent_path() / "docs" / "models.md");
-        expect(has(docs, "```lua\n" + llama_vim_spec() + "```"), "the spec MAIC writes is the one docs/models.md shows");
+        std::string docs = read_file(fs::path(MAID_PLUGIN_DIR).parent_path() / "docs" / "models.md");
+        expect(has(docs, "```lua\n" + llama_vim_spec() + "```"), "the spec MAID writes is the one docs/models.md shows");
 
         int rc = setup("none.lua", {"--yes"}, out);
         expect(rc == 0 && has(out, "lazy.nvim is not installed") && has(out, "require(\"lazy\") fails") && has(out, "Nothing was written") && has(out, "'ggml-org/llama.vim'"),
                "no lazy.nvim: a noop, exit 0, saying why, with the spec to paste: " + out);
         rc = setup("", {"--yes"}, out);
         expect(rc == 0 && has(out, "lazy.nvim is not installed: there is no ") && has(out, "Nothing was written"), "without -u and no lazy.nvim directory: the same, and nvim is not started: " + out);
-        rc = capture({"env", "PATH=/nonexistent", env_data, MAIC_BINARY, "nvim", "setup", "llama-vim", "--yes", "</dev/null"}, out);
+        rc = capture({"env", "PATH=/nonexistent", env_data, MAID_BINARY, "nvim", "setup", "llama-vim", "--yes", "</dev/null"}, out);
         expect(rc == 0 && has(out, "nvim is not on PATH") && has(out, "Nothing was written"), "no nvim on PATH: a noop, exit 0: " + out);
         rc = setup("nosetup.lua", {"--yes"}, out);
         expect(rc == 0 && has(out, "does not call require(\"lazy\").setup(...)") && has(out, "Nothing was written"), "lazy.nvim installed but never set up: a noop: " + out);
@@ -664,12 +664,12 @@ end
 
         rc = setup("import.lua", {"--yes"}, out);
         std::string written = read_file(ours);
-        expect(rc == 0 && has(out, "wrote " + ours.string()) && has(out, ":Lazy sync") && has(out, "maic lazy-lock record"), "--yes writes it and says what is next: " + out);
-        expect(written.rfind("-- Written by MAIC (maic nvim setup llama-vim) on ", 0) == 0 && has(written, "-- Undo with: maic nvim setup llama-vim --remove\n") &&
+        expect(rc == 0 && has(out, "wrote " + ours.string()) && has(out, ":Lazy sync") && has(out, "maid lazy-lock record"), "--yes writes it and says what is next: " + out);
+        expect(written.rfind("-- Written by MAID (maid nvim setup llama-vim) on ", 0) == 0 && has(written, "-- Undo with: maid nvim setup llama-vim --remove\n") &&
                    has(written, "docs/models.md#code-completion") && has(written, "\nreturn {\n    'ggml-org/llama.vim',\n") &&
                    has(written, "endpoint_fim = 'http://127.0.0.1:8084/infill'") && has(written, "model_fim = 'current'") && has(written, "keymap_fim_trigger = '<M-f>'") &&
                    has(written, "keymap_fim_accept_word = '<M-]>'") && has(written, "keymap_inst_accept = ''") && has(written, "keymap_inst_cancel = ''") && !has(written, "(below)"),
-               "the file: MAIC's header, then the spec from docs/models.md: " + written);
+               "the file: MAID's header, then the spec from docs/models.md: " + written);
         fs::path load = root / "load.lua";
         std::ofstream(load) << "local s = dofile(arg[1])\nassert(s[1] == 'ggml-org/llama.vim')\ns.init()\nassert(vim.g.llama_config.model_fim == 'current' and vim.g.llama_config.keymap_inst_cancel == '')\n";
         expect(run({"nvim", "--headless", "-u", "NONE", "-i", "NONE", "-n", "-l", load.string(), ours.string()}) == 0, "it loads as a spec whose init sets g:llama_config");
@@ -681,9 +681,9 @@ end
         edited.replace(edited.find("'<M-f>'"), 7, "'<M-g>'");
         std::ofstream(ours) << edited;
         rc = setup("import.lua", {"--yes"}, out);
-        expect(rc == 0 && has(out, "Update " + ours.string() + ", which MAIC wrote") && has(out, "- ") && has(out, "<M-g>") && has(out, "+ ") && has(out, "updated " + ours.string()) &&
+        expect(rc == 0 && has(out, "Update " + ours.string() + ", which MAID wrote") && has(out, "- ") && has(out, "<M-g>") && has(out, "+ ") && has(out, "updated " + ours.string()) &&
                    read_file(ours) == written,
-               "MAIC's own file changed by hand: updated in place, with a diff: " + out);
+               "MAID's own file changed by hand: updated in place, with a diff: " + out);
 
         std::ofstream(plugins / "mine.lua") << "return { 'ggml-org/llama.vim', opts = {} }\n";
         rc = setup("import.lua", {"--yes"}, out);
@@ -696,40 +696,40 @@ end
         rc = setup("", {"--remove"}, out);
         expect(rc == 2 && has(out, "--remove --yes") && fs::exists(ours), "--remove off a terminal without --yes: refused: " + out);
         rc = setup("", {"--remove", "--yes"}, out);
-        expect(rc == 0 && has(out, "removed " + ours.string()) && !fs::exists(ours) && fs::exists(plugins / "other.lua"), "--remove --yes deletes MAIC's file and nothing else: " + out);
+        expect(rc == 0 && has(out, "removed " + ours.string()) && !fs::exists(ours) && fs::exists(plugins / "other.lua"), "--remove --yes deletes MAID's file and nothing else: " + out);
         rc = setup("", {"--remove", "--yes"}, out);
-        expect(rc == 0 && has(out, "nothing of MAIC's to remove"), "--remove with nothing there: exit 0: " + out);
+        expect(rc == 0 && has(out, "nothing of MAID's to remove"), "--remove with nothing there: exit 0: " + out);
 
         std::ofstream(ours) << "return {}\n";
         rc = setup("import.lua", {"--yes"}, out);
-        expect(rc == 1 && has(out, "MAIC did not write it") && read_file(ours) == "return {}\n", "a file of that name MAIC did not write: refused, left alone: " + out);
+        expect(rc == 1 && has(out, "MAID did not write it") && read_file(ours) == "return {}\n", "a file of that name MAID did not write: refused, left alone: " + out);
         rc = setup("", {"--remove", "--yes"}, out);
         expect(rc == 1 && has(out, "will not remove it") && fs::exists(ours), "and --remove refuses it too: " + out);
         fs::remove(ours);
 
         // A mention that is not a spec: a comment in init.lua, and a note in a plugin file lazy.nvim loads.
-        std::ofstream(cfg / "init.lua") << "-- llama.vim: set up with maic nvim setup llama-vim\n";
+        std::ofstream(cfg / "init.lua") << "-- llama.vim: set up with maid nvim setup llama-vim\n";
         std::ofstream(plugins / "notes.lua") << "-- see llama.vim's README\nreturn { 'folke/which-key.nvim' }\n";
         rc = setup("import.lua", {"--yes"}, out);
         expect(rc == 0 && has(out, "init.lua mentions llama.vim; it is not loaded as a plugin, continuing") &&
                    has(out, "lua/plugins/notes.lua mentions llama.vim; it is not loaded as a plugin, continuing") && has(out, "wrote " + ours.string()) && fs::exists(ours),
                "a file that only mentions llama.vim is a warning, and the setup writes its file: " + out);
         rc = setup("import.lua", {"--yes"}, out);
-        expect(rc == 0 && has(out, "init.lua mentions llama.vim") && has(out, "already holds this spec"), "with MAIC's spec loaded, the mention still only warns: " + out);
+        expect(rc == 0 && has(out, "init.lua mentions llama.vim") && has(out, "already holds this spec"), "with MAID's spec loaded, the mention still only warns: " + out);
         fs::remove(cfg / "init.lua");
         fs::remove(plugins / "notes.lua");
         fs::remove(ours);
 
         std::ofstream(plugins / "mine.lua") << "return { { 'ggml-org/llama.vim' } }\n";
         rc = setup("import.lua", {"--yes"}, out);
-        expect(rc == 1 && has(out, (plugins / "mine.lua").string()) && !fs::exists(ours), "llama.vim in the spec and no file of MAIC's: refused, nothing written: " + out);
+        expect(rc == 1 && has(out, (plugins / "mine.lua").string()) && !fs::exists(ours), "llama.vim in the spec and no file of MAID's: refused, nothing written: " + out);
         fs::remove(plugins / "mine.lua");
     }
 
     section("the plugin's own Lua tests");
     {
-        int rc = run({"nvim", "--headless", "-u", "NONE", "-i", "NONE", "-n", "-l", MAIC_PLUGIN_DIR "/tests/maic_test.lua"});
-        expect(rc == 0, "maic.nvim/tests/maic_test.lua passes (exit " + std::to_string(rc) + ")");
+        int rc = run({"nvim", "--headless", "-u", "NONE", "-i", "NONE", "-n", "-l", MAID_PLUGIN_DIR "/tests/maid_test.lua"});
+        expect(rc == 0, "maid.nvim/tests/maid_test.lua passes (exit " + std::to_string(rc) + ")");
     }
 
     fs::remove_all(tmp);

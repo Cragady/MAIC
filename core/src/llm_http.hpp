@@ -2,7 +2,7 @@
 
 // Shared plumbing for the provider implementations. Not part of the public API.
 
-#include "maic/llm.hpp"
+#include "maid/llm.hpp"
 
 #include <atomic>
 #include <functional>
@@ -10,7 +10,7 @@
 #include <string_view>
 #include <vector>
 
-namespace maic::detail {
+namespace maid::detail {
 
 struct HttpResult {
     int status = 0;
@@ -61,8 +61,8 @@ Message chat_anthropic(const Provider&, const ChatOptions&, const std::vector<Me
 Message chat_openai(const Provider&, const ChatOptions&, const std::vector<Message>&, const nlohmann::json& tools,
                     const TextSink&, const std::atomic<bool>&);
 // A `cli` provider: runs the CLI headless and keeps it for the next request; text only without tool schemas, and
-// with them the agent loop on MAIC's tools over MCP (level 2).
+// with them the agent loop on MAID's tools over MCP (level 2).
 Message chat_cli(const Provider&, const ChatOptions&, const std::vector<Message>&, const nlohmann::json& tools,
                  const TextSink&, const std::atomic<bool>&);
 
-}  // namespace maic::detail
+}  // namespace maid::detail

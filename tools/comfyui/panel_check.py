@@ -5,7 +5,7 @@
     panel_check.py WORKFLOW.json all        every panel, one after the other
     options: --max-tags N (default 75), --caption-lines N (default 2), --tags FILE (the local Danbooru set)
 
-The workflow is MAIC's manga layout: a "Panel N prompt" CLIPTextEncode wired into a KSampler whose negative and
+The workflow is MAID's manga layout: a "Panel N prompt" CLIPTextEncode wired into a KSampler whose negative and
 latent_image inputs lead to the negative prompt and the image size, and TextOverlay nodes titled "Panel N narration"
 and "Panel N dialogue". The checks, each a FLAG line when it fires:
 
@@ -15,7 +15,7 @@ and "Panel N dialogue". The checks, each a FLAG line when it fires:
   * a tag that is in both the prompt and the negative (the negative cancels it)
   * more than --max-tags tags (CLIP weighs roughly 75 tokens; later tags count for less)
   * the YOUR TAGS HERE slot still in the prompt, or an empty prompt
-  * a tag the local Danbooru set does not know (when `maic-danbooru-tags fetch` has run, or --tags names a file);
+  * a tag the local Danbooru set does not know (when `maid-danbooru-tags fetch` has run, or --tags names a file);
     an alias is noted with Danbooru's own name. The baseline, the leading tags every panel prompt shares (the
     quality and style block the storyboard never changes), is left out of this check
   * a caption longer than its overlay can show: TextOverlay's font_size is a percent of the image height, a glyph is
@@ -182,7 +182,7 @@ def check_panel(tags, negative_tags, captions, size, known, max_tags, caption_li
     else:
         notes.append(f"{len(tags)} tags")
     if known is None:
-        notes.append("no local Danbooru set, tag names not checked (maic-danbooru-tags fetch, outside the agent)")
+        notes.append("no local Danbooru set, tag names not checked (maid-danbooru-tags fetch, outside the agent)")
     else:
         unknown, aliases = [], []
         for t in dict.fromkeys(tags):
@@ -275,7 +275,7 @@ def main():
     ap.add_argument("panel", help="a panel number, or all")
     ap.add_argument("--max-tags", type=int, default=75)
     ap.add_argument("--caption-lines", type=int, default=2)
-    ap.add_argument("--tags", help="the local Danbooru tags.json (default: where maic-danbooru-tags keeps it)")
+    ap.add_argument("--tags", help="the local Danbooru tags.json (default: where maid-danbooru-tags keeps it)")
     args = ap.parse_args()
     wf = load(args.workflow)
     if "nodes" not in wf:
@@ -283,7 +283,7 @@ def main():
     known = load_known(args.tags)
     numbers = panel_numbers(wf)
     if not numbers:
-        die("the workflow has no node titled 'Panel N prompt'; this tool expects MAIC's manga layout")
+        die("the workflow has no node titled 'Panel N prompt'; this tool expects MAID's manga layout")
     if args.panel == "all":
         wanted = numbers
     else:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge a story JSON (characters, setting, panels) into a MAIC manga workflow, one panel at a time.
+"""Merge a story JSON (characters, setting, panels) into a MAID manga workflow, one panel at a time.
 
 The workflow has, per panel N, a prompt node ("Panel N prompt"), a narration overlay ("Panel N narration")
 and a dialogue overlay ("Panel N dialogue"). The story has `panels[]` with a caption, a visual
@@ -15,15 +15,15 @@ FOR THE AGENT: THE WHOLE JOB IS TWO COMMANDS, REPEATED
          - the story file (the reference JSON with characters, setting and panels), and
          - the destination: the workflow file to write into. A template must not be edited in place: when the
            user names a template, ask where the finished copy should go, or use its name with -storyboard added.
-    2. Run:   maic-storyboard start STORY.json TEMPLATE_OR_WORKFLOW.json --out DESTINATION.json
+    2. Run:   maid-storyboard start STORY.json TEMPLATE_OR_WORKFLOW.json --out DESTINATION.json
        It copies the workflow to the destination, fills every caption and dialogue overlay by itself, and prints
        panel 1's work order: the story values, the characters present with their appearance, the baseline to keep,
-       and one maic-workflow-edit command with a YOUR TAGS HERE slot.
+       and one maid-workflow-edit command with a YOUR TAGS HERE slot.
     3. Write that panel's Danbooru-style tags into the slot and run the command exactly as printed.
-    4. Run:   maic-storyboard next
+    4. Run:   maid-storyboard next
        It checks the panel was written (if not, it shows the same panel again and says so), then prints the next
        panel. Repeat 3 and 4, one panel per turn, until it says every panel is done; it ends with the check.
-    `maic-storyboard status` shows where you are. Never edit the story file. Never change the baseline.
+    `maid-storyboard status` shows where you are. Never edit the story file. Never change the baseline.
 
 Commands:
     storyboard.py start STORY.json WORKFLOW.json --out DEST.json    copy, fill, and print panel 1's work order
@@ -32,13 +32,13 @@ Commands:
     storyboard.py critique N [--image PATH] [--model ID] [--server URL]
         Shows panel N's rendered image and its prompt to the vision model on the local llama-server, asks what
         is missing or wrong, checks the tags it proposes against the local Danbooru set, and prints the
-        maic-workflow-edit command that would apply them. Network to loopback only; for a person, or MAIC
+        maid-workflow-edit command that would apply them. Network to loopback only; for a person, or MAID
         itself outside the sandbox.
     storyboard.py fill STORY.json WORKFLOW.json [--out PATH] [--dry-run]
         Writes every caption and dialogue line into the overlays and prints the panel list. Run once.
     storyboard.py plan STORY.json WORKFLOW.json --panel N
         One panel's work order: the story values it has (shown in full), the target node, the baseline,
-        and the exact maic-workflow-edit command to run once the tags are written. Small enough for a
+        and the exact maid-workflow-edit command to run once the tags are written. Small enough for a
         small model's context; do one panel per turn.
     storyboard.py plan STORY.json WORKFLOW.json --all
         The same for every panel, for a person.
@@ -65,16 +65,16 @@ def state_path(workflow):
 
 
 def find_state():
-    """The state file in the current directory, or the one named by MAIC_STORYBOARD_STATE."""
-    env = os.environ.get("MAIC_STORYBOARD_STATE")
+    """The state file in the current directory, or the one named by MAID_STORYBOARD_STATE."""
+    env = os.environ.get("MAID_STORYBOARD_STATE")
     if env and os.path.isfile(env):
         return env
     here = [f for f in os.listdir(".") if f.endswith(STATE_NAME)]
     if len(here) == 1:
         return here[0]
     if len(here) > 1:
-        sys.exit("several storyboards are in progress here: " + ", ".join(here) + "; run from a folder with one, or set MAIC_STORYBOARD_STATE")
-    sys.exit("no storyboard in progress here: run `maic-storyboard start STORY WORKFLOW --out DEST` first (in the folder that holds the destination)")
+        sys.exit("several storyboards are in progress here: " + ", ".join(here) + "; run from a folder with one, or set MAID_STORYBOARD_STATE")
+    sys.exit("no storyboard in progress here: run `maid-storyboard start STORY WORKFLOW --out DEST` first (in the folder that holds the destination)")
 
 
 def load_state(path):
@@ -105,7 +105,7 @@ def panel_nodes(wf):
         if m:
             out.setdefault(int(m.group(1)), {})[m.group(2)] = n
     if not out:
-        sys.exit("the workflow has no nodes titled 'Panel N prompt' / 'Panel N narration' / 'Panel N dialogue'; this tool expects MAIC's manga layout")
+        sys.exit("the workflow has no nodes titled 'Panel N prompt' / 'Panel N narration' / 'Panel N dialogue'; this tool expects MAID's manga layout")
     return out
 
 
@@ -216,9 +216,9 @@ def cmd_start(args):
     st = {"story": os.path.abspath(args.story), "workflow": os.path.abspath(dest), "order": order, "index": 0, "initial": initial, "baseline": baseline}
     save_state(state_path(dest), st)
     print(f"storyboard started: {len(order)} panels, captions and dialogue filled ({changed} overlay values), written to {dest}")
-    print(f"state: {state_path(dest)}  (run `maic-storyboard next` from this folder after each panel)\n")
+    print(f"state: {state_path(dest)}  (run `maid-storyboard next` from this folder after each panel)\n")
     print(plan_one(story, wf, nodes, panels, baseline, order[0], dest))
-    print("When this panel's command has run, run:  maic-storyboard next")
+    print("When this panel's command has run, run:  maid-storyboard next")
 
 
 def cmd_next(args):
@@ -232,7 +232,7 @@ def cmd_next(args):
         n = order[i]
         cur = nodes[n]["prompt"]["widgets_values"][0] if "prompt" in nodes.get(n, {}) else ""
         if cur == st["initial"].get(str(n)) or not panel_done(nodes, baseline, n):
-            print(f"PANEL {n} IS NOT WRITTEN YET: its prompt is unchanged. Write the tags and run the command below, then run `maic-storyboard next` again.\n")
+            print(f"PANEL {n} IS NOT WRITTEN YET: its prompt is unchanged. Write the tags and run the command below, then run `maid-storyboard next` again.\n")
             print(plan_one(story, wf, nodes, panels, baseline, n, st["workflow"]))
             return
         st["index"] = i + 1
@@ -247,7 +247,7 @@ def cmd_next(args):
         print("Tell the user it is done and where the file is. Nothing else to run.")
         return
     print(plan_one(story, wf, nodes, panels, baseline, order[i], st["workflow"]))
-    print("When this panel's command has run, run:  maic-storyboard next")
+    print("When this panel's command has run, run:  maid-storyboard next")
 
 
 def find_render(workflow_path, n):
@@ -263,10 +263,10 @@ def find_render(workflow_path, n):
         return None
     outputs = None
     try:
-        outputs = subprocess.run(["maic", "path", "comfyui/outputs"], capture_output=True, text=True, timeout=20).stdout.strip()
+        outputs = subprocess.run(["maid", "path", "comfyui/outputs"], capture_output=True, text=True, timeout=20).stdout.strip()
     except Exception:
         pass
-    roots = [r for r in [os.environ.get("MAIC_COMFY_OUTPUT"), outputs] if r]
+    roots = [r for r in [os.environ.get("MAID_COMFY_OUTPUT"), outputs] if r]
     hits = []
     for root in roots:
         hits += glob.glob(os.path.join(root, prefix + "_*.png")) + glob.glob(os.path.join(root, os.path.basename(prefix) + "_*.png"))
@@ -320,7 +320,7 @@ def cmd_critique(args):
     try:
         reply = json.load(urllib.request.urlopen(req, timeout=300))["choices"][0]["message"]["content"]
     except Exception as e:
-        sys.exit(f"llama-server at {server} did not answer: {e} (maic up llamacpp; the model must carry a vision projector)")
+        sys.exit(f"llama-server at {server} did not answer: {e} (maid up llamacpp; the model must carry a vision projector)")
     start, end = reply.find("{"), reply.rfind("}")
     try:
         verdict = json.loads(reply[start:end + 1])
@@ -362,7 +362,7 @@ def cmd_critique(args):
         print("no prompt change proposed")
         return
     print("  proposed prompt change: " + (f"drop {', '.join(drop)}; " if drop else "") + (f"add {', '.join(kept_add)}" if kept_add else ""))
-    print(f"  apply:   maic-workflow-edit set {shell_quote(st['workflow'])} \"Panel {n} prompt\".text {shell_quote(', '.join(new))}")
+    print(f"  apply:   maid-workflow-edit set {shell_quote(st['workflow'])} \"Panel {n} prompt\".text {shell_quote(', '.join(new))}")
 
 
 def norm(tag):
@@ -446,13 +446,13 @@ def plan_one(story, wf, nodes, panels, baseline, n, workflow_path):
     lines.append("  YOUR JOB: write this panel's prompt as Danbooru-style tags, comma separated: the characters present (count, then")
     lines.append("  each one's appearance as tags), then the scene from visual_description, camera/framing, and the mood. Keep it")
     lines.append("  under about 60 tags. Do not repeat the baseline; the command below already starts with it. No quotes inside.")
-    lines.append("  vocabulary: the Danbooru tag groups (docs/references/danbooru-tag-groups.md in the MAIC repo): character count first, then")
+    lines.append("  vocabulary: the Danbooru tag groups (docs/references/danbooru-tag-groups.md in the MAID repo): character count first, then")
     lines.append("  hair, eyes, attire, posture and expression, holding, location, water/lighting, camera. Camera and framing words")
     lines.append("  (from_above, cowboy_shot, close-up, motion_lines, depth_of_field, backlighting): docs/references/danbooru-image-composition.md")
-    lines.append("  check before writing:  maic-danbooru-tags check --prompt \"<your tags>\"   (unknown tags: pick from its near matches)")
+    lines.append("  check before writing:  maid-danbooru-tags check --prompt \"<your tags>\"   (unknown tags: pick from its near matches)")
     lines.append(f"  baseline (keep exactly): {json.dumps(baseline, ensure_ascii=False)}")
-    lines.append(f"  command:  maic-workflow-edit set {shell_quote(workflow_path)} \"Panel {n} prompt\".text \"{baseline}, YOUR TAGS HERE\"")
-    lines.append(f"  then:     maic-workflow-edit inspect {shell_quote(workflow_path)} --json | grep -A3 '\"Panel {n} prompt\"'   (to confirm)")
+    lines.append(f"  command:  maid-workflow-edit set {shell_quote(workflow_path)} \"Panel {n} prompt\".text \"{baseline}, YOUR TAGS HERE\"")
+    lines.append(f"  then:     maid-workflow-edit inspect {shell_quote(workflow_path)} --json | grep -A3 '\"Panel {n} prompt\"'   (to confirm)")
     return "\n".join(lines) + "\n"
 
 
@@ -514,7 +514,7 @@ def main():
     p.add_argument("panel", type=int)
     p.add_argument("--image")
     p.add_argument("--model")
-    p.add_argument("--server", default=os.environ.get("MAIC_LLAMACPP_URL", "http://127.0.0.1:8081"))
+    p.add_argument("--server", default=os.environ.get("MAID_LLAMACPP_URL", "http://127.0.0.1:8081"))
     p.set_defaults(func=cmd_critique)
     p = sub.add_parser("fill", help="captions and dialogue into the overlays")
     p.add_argument("story")
@@ -533,13 +533,13 @@ def main():
     p.add_argument("workflow")
     p.set_defaults(func=cmd_check)
     if len(sys.argv) == 1:
-        print("maic-storyboard: merge a story JSON into a MAIC manga workflow, one panel per turn.\n")
+        print("maid-storyboard: merge a story JSON into a MAID manga workflow, one panel per turn.\n")
         print("To begin, you need two files. If you do not have them, ask the user:")
         print("  1. the story file (JSON with characters, setting and panels)")
         print("  2. the destination workflow to write into (never a template in place; ask where the copy should go)")
-        print("Then run:  maic-storyboard start STORY.json TEMPLATE.json --out DESTINATION.json")
-        print("and after that only:  maic-storyboard next   (once per panel, after running the command it prints)")
-        print("Full help: maic-storyboard --help")
+        print("Then run:  maid-storyboard start STORY.json TEMPLATE.json --out DESTINATION.json")
+        print("and after that only:  maid-storyboard next   (once per panel, after running the command it prints)")
+        print("Full help: maid-storyboard --help")
         return
     args = ap.parse_args()
     args.func(args)

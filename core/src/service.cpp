@@ -1,8 +1,8 @@
-#include "maic/service.hpp"
+#include "maid/service.hpp"
 
-#include "maic/helper.hpp"
-#include "maic/llm.hpp"
-#include "maic/paths.hpp"
+#include "maid/helper.hpp"
+#include "maid/llm.hpp"
+#include "maid/paths.hpp"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -27,7 +27,7 @@
 
 extern char** environ;
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
@@ -103,10 +103,10 @@ void write_pid_file(const ServiceDef& def, const ProcessId& id) {
 }
 
 std::string container_name(const ServiceDef& def) {
-    return "maic-" + def.name;
+    return "maid-" + def.name;
 }
 
-// The docker equivalent of the pid file: its presence says MAIC started the container.
+// The docker equivalent of the pid file: its presence says MAID started the container.
 fs::path container_path(const ServiceDef& def) {
     return state_dir() / "run" / (def.name + ".container");
 }
@@ -286,8 +286,8 @@ std::vector<ServiceDef> load_services(const fs::path& dir) {
                 def.image = j.value("image", "");
                 if (def.image.empty()) throw std::runtime_error("a docker service needs an image");
                 def.gpu = j.value("gpu", false);
-                // A container sees only MAIC's own trees: state, models, vendor. Anything else stays outside.
-                std::vector<fs::path> roots = {state_dir(), expand_vars("${MAIC_MODELS}"), expand_vars("${MAIC_VENDOR}")};
+                // A container sees only MAID's own trees: state, models, vendor. Anything else stays outside.
+                std::vector<fs::path> roots = {state_dir(), expand_vars("${MAID_MODELS}"), expand_vars("${MAID_VENDOR}")};
                 nlohmann::json volumes = j.value("volumes", nlohmann::json::object());
                 for (const auto& [host, inside] : volumes.items()) {
                     fs::path h = fs::path(expand_vars(host)).lexically_normal();
@@ -296,7 +296,7 @@ std::vector<ServiceDef> load_services(const fs::path& dir) {
                         auto rel = h.lexically_relative(root.lexically_normal());
                         if (!rel.empty() && *rel.begin() != "..") allowed = true;
                     }
-                    if (!allowed) throw std::runtime_error("volume " + h.string() + " is outside ${MAIC_STATE}, ${MAIC_MODELS} and ${MAIC_VENDOR}");
+                    if (!allowed) throw std::runtime_error("volume " + h.string() + " is outside ${MAID_STATE}, ${MAID_MODELS} and ${MAID_VENDOR}");
                     def.volumes[h.string()] = inside.get<std::string>();
                 }
             } else if (def.runtime != "host") {
@@ -395,7 +395,7 @@ bool start_service(const ServiceDef& def) {
         throw std::runtime_error(def.name + " is already running (" + status.who() + ")");
     }
     if (status.state == ServiceState::Foreign) {
-        throw std::runtime_error("port " + std::to_string(def.port) + " is already in use by a process MAIC did not start");
+        throw std::runtime_error("port " + std::to_string(def.port) + " is already in use by a process MAID did not start");
     }
     for (const auto& path : def.requires_paths) {
         if (!fs::exists(path)) {
@@ -411,7 +411,7 @@ bool start_service(const ServiceDef& def) {
     if (log_fd < 0) {
         throw std::runtime_error("could not open " + log.string() + ": " + std::strerror(errno));
     }
-    std::string header = "\n=== maic: starting " + def.name + " at " + timestamp() + " ===\n";
+    std::string header = "\n=== maid: starting " + def.name + " at " + timestamp() + " ===\n";
     (void)!write(log_fd, header.data(), header.size());
     std::streamoff since = static_cast<std::streamoff>(lseek(log_fd, 0, SEEK_CUR));  // the service's own output starts here
     fs::create_directories(state_dir() / "run");
@@ -461,11 +461,11 @@ bool start_service(const ServiceDef& def) {
         dup2(log_fd, STDOUT_FILENO);
         dup2(log_fd, STDERR_FILENO);
         if (!cwd.empty() && chdir(cwd.c_str()) != 0) {
-            dprintf(STDERR_FILENO, "maic: chdir %s: %s\n", cwd.c_str(), std::strerror(errno));
+            dprintf(STDERR_FILENO, "maid: chdir %s: %s\n", cwd.c_str(), std::strerror(errno));
             _exit(127);
         }
         execvpe(argv[0], argv.data(), envp.data());
-        dprintf(STDERR_FILENO, "maic: exec %s: %s\n", argv[0], std::strerror(errno));
+        dprintf(STDERR_FILENO, "maid: exec %s: %s\n", argv[0], std::strerror(errno));
         _exit(127);
     }
     close(log_fd);
@@ -499,7 +499,7 @@ void stop_service(const ServiceDef& def, std::chrono::seconds timeout) {
         if (!fs::exists(container_path(def), ec) || !container_running(def)) {
             fs::remove(container_path(def), ec);
             if (def.port && port_open(def.port)) {
-                throw std::runtime_error(def.name + " was not started by MAIC; refusing to stop it");
+                throw std::runtime_error(def.name + " was not started by MAID; refusing to stop it");
             }
             throw std::runtime_error(def.name + " is not running");
         }
@@ -513,7 +513,7 @@ void stop_service(const ServiceDef& def, std::chrono::seconds timeout) {
     if (!id || !is_alive(*id)) {
         fs::remove(pid_path(def));
         if (def.port && port_open(def.port)) {
-            throw std::runtime_error(def.name + " was not started by MAIC; refusing to stop it");
+            throw std::runtime_error(def.name + " was not started by MAID; refusing to stop it");
         }
         throw std::runtime_error(def.name + " is not running");
     }
@@ -536,4 +536,4 @@ void stop_service(const ServiceDef& def, std::chrono::seconds timeout) {
     fs::remove(pid_path(def));
 }
 
-}  // namespace maic
+}  // namespace maid

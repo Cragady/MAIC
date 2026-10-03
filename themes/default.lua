@@ -1,6 +1,6 @@
--- MAIC's built-in look, the one in effect when no theme is set. It is the same table as default_styles() in
+-- MAID's built-in look, the one in effect when no theme is set. It is the same table as default_styles() in
 -- core/src/settings.cpp (a test keeps them equal), so this file is the place to read every role and its default,
--- and a starting point for a theme of your own: copy it to ~/.config/maic/themes/NAME.lua, edit, :theme NAME.
+-- and a starting point for a theme of your own: copy it to ~/.config/maid/themes/NAME.lua, edit, :theme NAME.
 -- Colours are FTXUI names, "#rrggbb" or 0-255; italic renders as dim. docs/themes.md
 return {
   name = "default",

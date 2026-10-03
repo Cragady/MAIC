@@ -1,15 +1,15 @@
 // The model catalog: parsing and `check`, user overrides by id, installs from a local server with real hashes,
 // shares, removal rules, verify, the installed column on a tree shaped like Micaiah's drive, and the code
-// completion service's place in `maic gpu`.
+// completion service's place in `maid gpu`.
 #include "check.hpp"
 
-#include "maic/http.hpp"
-#include "maic/models.hpp"
-#include "maic/paths.hpp"
-#include "maic/service.hpp"
-#include "maic/settings.hpp"
-#include "maic/status.hpp"
-#include "maic/vendor.hpp"
+#include "maid/http.hpp"
+#include "maid/models.hpp"
+#include "maid/paths.hpp"
+#include "maid/service.hpp"
+#include "maid/settings.hpp"
+#include "maid/status.hpp"
+#include "maid/vendor.hpp"
 
 #include <unistd.h>
 
@@ -24,7 +24,7 @@
 #include <thread>
 
 namespace fs = std::filesystem;
-using namespace maic;
+using namespace maid;
 using nlohmann::json;
 
 namespace {
@@ -82,21 +82,21 @@ std::string joined(const std::vector<std::string>& v) {
 }  // namespace
 
 int main() {
-    setenv("MAIC_TRIPWIRE_FILE", ("/tmp/maic-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);
-    fs::path ws = fs::path(std::getenv("HOME")) / ".cache" / ("maic-models-test-" + std::to_string(getpid()));
+    setenv("MAID_TRIPWIRE_FILE", ("/tmp/maid-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);
+    fs::path ws = fs::path(std::getenv("HOME")) / ".cache" / ("maid-models-test-" + std::to_string(getpid()));
     fs::remove_all(ws);
     fs::path cfg = ws / "config", state = ws / "state", mdir = ws / "models";
-    fs::create_directories(cfg / "maic");
+    fs::create_directories(cfg / "maid");
     setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
     setenv("XDG_STATE_HOME", state.c_str(), 1);
-    write_file(cfg / "maic" / "settings.lua", "return { models_dir = '" + mdir.string() + "' }");
+    write_file(cfg / "maid" / "settings.lua", "return { models_dir = '" + mdir.string() + "' }");
 
     section("the shipped catalog");
     std::ifstream in(catalog_path());
     json shipped = json::parse(in, nullptr, false, true);
     expect(!shipped.is_discarded() && shipped["models"].is_array(), "models/catalog.json parses");
     auto problems = check_catalog(shipped, json::object());
-    expect(problems.empty(), "maic models check finds nothing wrong with it: " + joined(problems));
+    expect(problems.empty(), "maid models check finds nothing wrong with it: " + joined(problems));
     auto all = load_catalog();
     for (const char* id : {"qwen3.5-4b", "qwen3.5-9b", "qwen3.5-9b-text", "whisper-distil-large-v3", "whisper-large-v3-turbo-q5_0", "silero-vad-v6.2.0",
                            "qwen2.5-coder-7b", "qwen2.5-coder-3b", "qwen2.5-coder-1.5b"}) {
@@ -166,7 +166,7 @@ int main() {
         auto avg = session_cost_averages();
         expect(avg.size() == 1 && avg[0].sessions == 2 && std::abs(avg[0].average - 0.30) < 1e-12 && avg[0].currency == "USD",
                "each session's costs add up under its id, and the average runs across the sessions that cost anything");
-        std::ifstream costs(state / "maic" / "costs.json");
+        std::ifstream costs(state / "maid" / "costs.json");
         expect(costs.good(), "kept in the state directory");
     }
 
@@ -196,7 +196,7 @@ int main() {
         expect(four && four->context == 32768 && four->notes == "mine" && four->files.size() == 2 && !four->brief.empty(), "an override replaces only the fields it names");
         expect(find_entry(merged, "my-model") && merged.size() == all.size() + 1, "an unknown id is added");
         write_file(user_catalog_path(), user.dump(2));
-        expect(find_entry(load_catalog(), "my-model") && find_entry(load_catalog(), "qwen3.5-4b")->context == 32768, "load_catalog reads ~/.config/maic/models.json");
+        expect(find_entry(load_catalog(), "my-model") && find_entry(load_catalog(), "qwen3.5-4b")->context == 32768, "load_catalog reads ~/.config/maid/models.json");
         fs::remove(user_catalog_path());
     }
 
@@ -325,28 +325,28 @@ int main() {
     }
     expect(router && !downloads && local, "router mode over <models_dir>/fim on loopback, with no preset that downloads");
     expect(is_llama_server("llamacpp-fim") && is_fim_server("llamacpp-fim") && !is_fim_server("llamacpp-2"), "it is a llama server, so GPU turn-taking unloads it like the others");
-    expect(fim && missing_requirement(*fim).find("maic models install qwen2.5-coder-7b --link") != std::string::npos, "without a linked coder, maic up says how to get one");
+    expect(fim && missing_requirement(*fim).find("maid models install qwen2.5-coder-7b --link") != std::string::npos, "without a linked coder, maid up says how to get one");
     Provider p;
     p.name = "fim";
     p.base_url = "http://127.0.0.1:8084/v1";
     std::string hint = fim ? unreachable_hint(p, {*fim}) : "";
-    expect(hint.find("llamacpp-fim is not running: maic up llamacpp-fim (needs a completion model") == 0, "something pointed at 8084 gets the same hint: " + hint);
+    expect(hint.find("llamacpp-fim is not running: maid up llamacpp-fim (needs a completion model") == 0, "something pointed at 8084 gets the same hint: " + hint);
     if (fim) {
         GpuReport g = gpu_report({*fim});
-        expect(g.servers.size() == 1 && g.servers[0].name == "llamacpp-fim" && g.servers[0].context == 8192 && !g.servers[0].running, "maic gpu lists it, with its --ctx-size");
+        expect(g.servers.size() == 1 && g.servers[0].name == "llamacpp-fim" && g.servers[0].context == 8192 && !g.servers[0].running, "maid gpu lists it, with its --ctx-size");
     }
     sized(mdir / "fim" / "Qwen2.5-Coder-7B-Q4_K_M" / "Qwen2.5-Coder-7B.i1-Q4_K_M.gguf", find_entry(all, "qwen2.5-coder-7b")->files[0].size);
     GpuReport g;
     g.servers = {{"llamacpp-fim", true, {"Qwen2.5-Coder-7B-Q4_K_M"}, 8192}};
     std::string t = g.text();
-    expect(t.find("llamacpp-fim: Qwen2.5-Coder-7B-Q4_K_M loaded (maic gpu free llamacpp-fim unloads") != std::string::npos, "the report names what it holds: " + t);
+    expect(t.find("llamacpp-fim: Qwen2.5-Coder-7B-Q4_K_M loaded (maid gpu free llamacpp-fim unloads") != std::string::npos, "the report names what it holds: " + t);
     g.servers[0].linked = "Qwen2.5-Coder-7B-Q4_K_M";
     g.servers[0].models.clear();
     t = g.text();
-    expect(t.find("llamacpp-fim: Qwen2.5-Coder-7B-Q4_K_M unloaded (maic gpu load llamacpp-fim)") != std::string::npos, "an unloaded coder says how to load it: " + t);
+    expect(t.find("llamacpp-fim: Qwen2.5-Coder-7B-Q4_K_M unloaded (maid gpu load llamacpp-fim)") != std::string::npos, "an unloaded coder says how to load it: " + t);
     g.servers[0].linked.clear();
     t = g.text();
-    expect(t.find("llamacpp-fim: running, not linked (maic models install qwen2.5-coder-7b --link)") != std::string::npos, "and with no coder linked, how to link one: " + t);
+    expect(t.find("llamacpp-fim: running, not linked (maid models install qwen2.5-coder-7b --link)") != std::string::npos, "and with no coder linked, how to link one: " + t);
     g.servers[0].models = {"Qwen2.5-Coder-7B-Q4_K_M"};
     Settings s;
     std::string fit = gpu_budget(g, s, 8L << 30);
@@ -358,10 +358,10 @@ int main() {
     dead.name = "llamacpp-fim";
     fs::create_directories(service_log_path(dead).parent_path());
     write_file(service_log_path(dead), "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 4466.00 MiB on device 0: cudaMalloc failed: out of memory\n");
-    expect(explain_exit(dead, {dead}).find("maic models install qwen2.5-coder-3b --link") != std::string::npos, "an out of memory suggests a smaller coder");
+    expect(explain_exit(dead, {dead}).find("maid models install qwen2.5-coder-3b --link") != std::string::npos, "an out of memory suggests a smaller coder");
     fs::remove(service_log_path(dead));
 
-    section("the completion server loads only when MAIC asks");
+    section("the completion server loads only when MAID asks");
     expect(fim && contains(fim->command, "--no-models-autoload"), "services/llamacpp-fim.json runs with --no-models-autoload, so llama.vim's requests never load the coder");
     {
         // A router like the vendored llama-server with autoload off: an infill for a model that is not loaded is
@@ -412,35 +412,35 @@ int main() {
         whisper_def.name = "whisper";
         whisper_def.needs_gpu = true;
         whisper_def.port = fr_port;  // only its pid file matters here
-        fs::path run = state / "maic" / "run";
+        fs::path run = state / "maid" / "run";
         for (const char* name : {"llamacpp-fim", "comfyui"}) write_file(run / (std::string(name) + ".pid"), self_pid_line());
         fs::create_symlink("Qwen2.5-Coder-7B-Q4_K_M/Qwen2.5-Coder-7B.i1-Q4_K_M.gguf", fim_model_link());
         std::vector<ServiceDef> svc = {fim_def, comfy_def, whisper_def};
         auto infill = [&] { return httplib::Client("127.0.0.1", fr_port).Post("/infill", R"({"model":"current","input_prefix":"int ","input_suffix":""})", "application/json"); };
 
         std::string t = gpu_report(svc).text();
-        expect(t.find("llamacpp-fim: Qwen2.5-Coder-7B-Q4_K_M loaded (maic gpu free llamacpp-fim unloads it until maic gpu load llamacpp-fim)") != std::string::npos, "maic gpu shows the coder loaded: " + t);
+        expect(t.find("llamacpp-fim: Qwen2.5-Coder-7B-Q4_K_M loaded (maid gpu free llamacpp-fim unloads it until maid gpu load llamacpp-fim)") != std::string::npos, "maid gpu shows the coder loaded: " + t);
         std::string freed = free_gpu_for(comfy_def, svc);
         expect(unloads == 1 && !loaded && freed.find("from llamacpp-fim") != std::string::npos, "starting ComfyUI unloads the coder: " + freed);
         auto r = infill();
         expect(r && r->status == 400 && refused == 1 && loads == 0 && !loaded, "an infill request afterwards is refused and loads nothing");
         GpuReport g2 = gpu_report(svc);
         t = g2.text();
-        expect(t.find("llamacpp-fim: Qwen2.5-Coder-7B-Q4_K_M unloaded (maic gpu load llamacpp-fim)") != std::string::npos, "maic gpu shows it unloaded and how to load it: " + t);
+        expect(t.find("llamacpp-fim: Qwen2.5-Coder-7B-Q4_K_M unloaded (maid gpu load llamacpp-fim)") != std::string::npos, "maid gpu shows it unloaded and how to load it: " + t);
         expect(gpu_budget(g2, Settings{}, 8L << 30).find("completion") == std::string::npos, "an unloaded coder is not counted on the card");
         std::string back = restore_gpu_after(comfy_def, svc);
-        expect(loads == 1 && loaded && back == "llamacpp-fim: loaded Qwen2.5-Coder-7B-Q4_K_M again (comfyui had unloaded it)", "maic down comfyui loads it again, since it was loaded before: " + back);
+        expect(loads == 1 && loaded && back == "llamacpp-fim: loaded Qwen2.5-Coder-7B-Q4_K_M again (comfyui had unloaded it)", "maid down comfyui loads it again, since it was loaded before: " + back);
         r = infill();
         expect(r && r->status == 200, "and completions work again");
 
         gpu_free(svc, "llamacpp-fim");
-        expect(unloads == 2 && !loaded, "maic gpu free llamacpp-fim unloads it");
+        expect(unloads == 2 && !loaded, "maid gpu free llamacpp-fim unloads it");
         free_gpu_for(comfy_def, svc);
-        expect(restore_gpu_after(comfy_def, svc).empty() && loads == 1 && !loaded, "maic down comfyui leaves it unloaded when it was not loaded before ComfyUI started");
+        expect(restore_gpu_after(comfy_def, svc).empty() && loads == 1 && !loaded, "maid down comfyui leaves it unloaded when it was not loaded before ComfyUI started");
         std::string loaded_msg = gpu_load(svc, "llamacpp-fim");
-        expect(loads == 2 && loaded && loaded_msg == "llamacpp-fim: loaded Qwen2.5-Coder-7B-Q4_K_M\n", "maic gpu load llamacpp-fim loads it: " + loaded_msg);
+        expect(loads == 2 && loaded && loaded_msg == "llamacpp-fim: loaded Qwen2.5-Coder-7B-Q4_K_M\n", "maid gpu load llamacpp-fim loads it: " + loaded_msg);
         bool threw = false;
-        try { gpu_load(svc, "llamacpp"); } catch (const std::exception& e) { threw = std::string(e.what()).find("maic gpu load llamacpp-fim") == 0; }
+        try { gpu_load(svc, "llamacpp"); } catch (const std::exception& e) { threw = std::string(e.what()).find("maid gpu load llamacpp-fim") == 0; }
         expect(threw, "the chat servers load on demand, so gpu load names only llamacpp-fim");
 
         // Two services unloaded it: it comes back when the last of them stops.
@@ -451,16 +451,16 @@ int main() {
         expect(restore_gpu_after(whisper_def, svc).empty() && loads == 2, "stopping whisper while ComfyUI still runs leaves it unloaded");
         expect(restore_gpu_after(comfy_def, svc).find("again (comfyui had unloaded it)") != std::string::npos && loads == 3 && loaded, "stopping ComfyUI then loads it");
 
-        // A relink (maic models install --link, maic vendor use) unloads the old coder and loads the new one.
+        // A relink (maid models install --link, maid vendor use) unloads the old coder and loads the new one.
         sized(mdir / "fim" / "Qwen2.5-Coder-3B-Q8_0" / "Qwen2.5-Coder-3B-Q8_0.gguf", 4096);
         vendor_use(*find_vendor("llamacpp"), mdir / "fim" / "Qwen2.5-Coder-3B-Q8_0" / "Qwen2.5-Coder-3B-Q8_0.gguf");
         expect(fs::read_symlink(fim_model_link()) == fs::path("Qwen2.5-Coder-3B-Q8_0/Qwen2.5-Coder-3B-Q8_0.gguf") && fim_current_id() == "Qwen2.5-Coder-3B-Q8_0",
-               "maic vendor use llamacpp on a GGUF under the fim root relinks llamacpp-fim's current.gguf");
+               "maid vendor use llamacpp on a GGUF under the fim root relinks llamacpp-fim's current.gguf");
         std::string re = reload_fim(svc);
         expect(unloads == 4 && loads == 4 && loaded && re == "llamacpp-fim: loaded Qwen2.5-Coder-3B-Q8_0 (the new link; the previous coder was unloaded)\n", "relinking reloads it: " + re);
         gpu_free(svc, "llamacpp-fim");
         re = reload_fim(svc);
-        expect(loads == 4 && !loaded && re.find("holds no coder now; maic gpu load llamacpp-fim") != std::string::npos, "a relink while it is unloaded leaves it unloaded: " + re);
+        expect(loads == 4 && !loaded && re.find("holds no coder now; maid gpu load llamacpp-fim") != std::string::npos, "a relink while it is unloaded leaves it unloaded: " + re);
 
         fail_load = true;
         std::string why;

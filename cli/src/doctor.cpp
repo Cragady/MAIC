@@ -1,16 +1,16 @@
-// `maic doctor`: what this machine has, what MAIC needs, and a recommended local setup.
+// `maid doctor`: what this machine has, what MAID needs, and a recommended local setup.
 #include "doctor.hpp"
 
-#include "maic/helper.hpp"
-#include "maic/instructions.hpp"
-#include "maic/lazy_lock.hpp"
-#include "maic/nvim_keymaps.hpp"
-#include "maic/paths.hpp"
-#include "maic/service.hpp"
-#include "maic/settings.hpp"
-#include "maic/status.hpp"
-#include "maic/vendor.hpp"
-#include "maic/session.hpp"
+#include "maid/helper.hpp"
+#include "maid/instructions.hpp"
+#include "maid/lazy_lock.hpp"
+#include "maid/nvim_keymaps.hpp"
+#include "maid/paths.hpp"
+#include "maid/service.hpp"
+#include "maid/settings.hpp"
+#include "maid/status.hpp"
+#include "maid/vendor.hpp"
+#include "maid/session.hpp"
 
 #include <sys/statvfs.h>
 #include <unistd.h>
@@ -23,7 +23,7 @@
 #include <sstream>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -121,13 +121,13 @@ std::vector<Check> prerequisites() {
         bool ok = has_program(name);
         out.push_back({name + " (" + why + ")", ok, ok ? "" : optional ? "not found; optional" : "install " + name, optional});
     };
-    program("python3", "ComfyUI, the helpers beside maic");
-    program("git", "maic vendor add fetches submodules");
+    program("python3", "ComfyUI, the helpers beside maid");
+    program("git", "maid vendor add fetches submodules");
     program("uv", "ComfyUI's own Python; https://docs.astral.sh/uv/");
-    program("curl", "maic vendor model downloads");
+    program("curl", "maid vendor model downloads");
     bool bwrap = has_program("bwrap");
     out.push_back({"bubblewrap (the command sandbox)", bwrap, bwrap ? "" : "install bubblewrap; run_shell cannot work without it"});
-    bool trip = fs::exists("/usr/local/sbin/maic-lock");
+    bool trip = fs::exists("/usr/local/sbin/maid-lock");
     out.push_back({"tripwire installed", trip, trip ? "" : "sudo ./harness/install-tripwire.sh"});
     program("docker", "services with \"runtime\": \"docker\"", true);
     program("nvidia-smi", "the GPU and its driver", true);
@@ -146,7 +146,7 @@ Recommendation recommend(const Gpu& gpu, long ram_gb) {
 }
 
 int run_doctor() {
-    std::cout << "MAIC doctor\n\n";
+    std::cout << "MAID doctor\n\n";
 
     // ---- machine
     long ram_gb = meminfo_kb("MemTotal:") / 1024 / 1024;
@@ -162,7 +162,7 @@ int run_doctor() {
     Settings settings = load_settings();
     std::cout << ", " << static_cast<int>(free_gb(state_dir().parent_path().parent_path())) << " GB free where sessions live\n\n";
 
-    // ---- tools MAIC relies on
+    // ---- tools MAID relies on
     std::cout << "tools\n";
     auto line = [&](const std::string& what, bool ok, const std::string& detail) {
         std::cout << "  " << (ok ? "ok  " : "--  ") << what << (detail.empty() ? "" : ": " + detail) << "\n";
@@ -171,7 +171,7 @@ int run_doctor() {
     for (const auto& e : load_vendor_manifest()) {
         auto st = vendor_status(e);
         line("vendored " + e.name + " (" + e.ref + ")", st.installed, st.installed ? st.target : st.note);
-        if (e.name == "llamacpp" && st.installed) line("llama.cpp model", !st.model.empty(), st.model.empty() ? "maic vendor use llamacpp PATH" : st.model);
+        if (e.name == "llamacpp" && st.installed) line("llama.cpp model", !st.model.empty(), st.model.empty() ? "maid vendor use llamacpp PATH" : st.model);
     }
     // The venv's torch against the driver: a cu130 wheel on a driver below 580 fails at the first CUDA call.
     if (std::string torch = comfyui_torch_cuda(); !torch.empty()) {
@@ -188,7 +188,7 @@ int run_doctor() {
         if (!is_llama_server(s.name)) continue;
         bool up = service_status(s).state != ServiceState::Stopped;
         std::string what = s.name == "llamacpp" ? "" : is_fim_server(s.name) ? " (code completion for llama.vim, optional)" : " (the side server: a second resident model for the deep pass and the reviewer)";
-        line(s.name + " running", up, up ? "" : "maic up " + s.name + what);
+        line(s.name + " running", up, up ? "" : "maid up " + s.name + what);
     }
     bool clip = has_program("wl-copy") || has_program("xclip") || has_program("xsel");
     line("clipboard tool (wl-copy / xclip / xsel)", clip, clip ? "" : "yanks still reach the terminal through OSC 52");
@@ -216,24 +216,24 @@ int run_doctor() {
     auto lc = find_vendor("llamacpp");
     VendorStatus lcs = lc ? vendor_status(*lc) : VendorStatus{};
     std::cout << "  llama.cpp (default, llamacpp/current):  ";
-    if (!lcs.installed) std::cout << "not built  ->  maic vendor add llamacpp\n";
-    else if (lcs.model.empty()) std::cout << "no GGUF linked yet  ->  maic vendor use llamacpp PATH, or maic vendor model llamacpp URL SHA256 (docs/llamacpp.md)\n";
-    else std::cout << lcs.model << "  ->  maic up llamacpp\n";
+    if (!lcs.installed) std::cout << "not built  ->  maid vendor add llamacpp\n";
+    else if (lcs.model.empty()) std::cout << "no GGUF linked yet  ->  maid vendor use llamacpp PATH, or maid vendor model llamacpp URL SHA256 (docs/llamacpp.md)\n";
+    else std::cout << lcs.model << "  ->  maid up llamacpp\n";
     // Q4_K_M of these from unsloth/<name>-GGUF on Hugging Face; the file's stem is the model id.
     std::cout << "  quick model (" << quick << " at Q4_K_M):  " << (has_model(models, quick) ? "installed" : "not installed") << "\n";
     std::cout << "  deep model (" << deep << " at Q4_K_M):   " << (has_model(models, deep) ? "installed" : "not installed") << "\n";
-    std::cout << "  maic models: the catalog of agent, vision, speech and code completion models, what each is for and what fits\n"
+    std::cout << "  maid models: the catalog of agent, vision, speech and code completion models, what each is for and what fits\n"
                  "  the card; `install ID` fetches one with every file checked by SHA-256\n";
     if (settings.model != "llamacpp/current") std::cout << "  your settings choose \"" << settings.model << "\"; the default is llamacpp/current\n";
     // Two servers, two resident models: whether the pair fits the card, from the GGUF sizes and the contexts.
     if (std::string fit = gpu_budget(gpu_report(services), settings, gpu.vram_mb > 0 ? static_cast<long>(gpu.vram_mb) * 1024 * 1024 : -1); !fit.empty()) {
         std::cout << "  two servers: " << fit << "\n";
     }
-    if (!fs::exists(settings_path())) std::cout << "  no settings file yet: maic settings init (or maic setup for the whole first run)\n";
-    if (!fs::exists(global_instructions_path())) std::cout << "  no global MAIC.md yet: " << global_instructions_path().string() << " (name, pronouns, standing rules)\n";
+    if (!fs::exists(settings_path())) std::cout << "  no settings file yet: maid settings init (or maid setup for the whole first run)\n";
+    if (!fs::exists(global_instructions_path())) std::cout << "  no global MAID.md yet: " << global_instructions_path().string() << " (name, pronouns, standing rules)\n";
     if (avail_gb < 8) std::cout << "  only " << avail_gb << " GB of RAM is free right now; models load faster with more\n";
     std::cout << "  remote models (anthropic/..., deepseek/...) need an API key in the environment; see docs/settings.md\n";
     return 0;
 }
 
-}  // namespace maic
+}  // namespace maid

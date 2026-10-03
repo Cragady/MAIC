@@ -1,4 +1,8 @@
-# MAIC
+# MAID
+
+maid: an agent runner. *Mica's AI Decisions*, or *Micaiah's Agentic Interface Delta*.
+
+Why maid? Blame trans-fairy: once it arrived, it earned its name three times over, because it made MAIC transition to MAID.
 
 This repo is to help me get myself in order to finally start getting my own LLM stack running. This will likely be an effort to build my own CLI agent as well.
 
@@ -86,32 +90,32 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 **Set up and measured on this machine** (not AI transcripts — these were installed and tested):
 
 * [harness.md](docs/harness.md) — the safety harness: tripwire (built) and planned layers.
-* [limits.md](docs/limits.md): the known limits across MAIC in one list, each accepted, expected, open or addressed, with what would address it.
+* [limits.md](docs/limits.md): the known limits across MAID in one list, each accepted, expected, open or addressed, with what would address it.
 
 * [tools.md](docs/tools.md): the model's tools, and writing your own, in Lua or any language, behind the harness.
 * [settings.md](docs/settings.md) — the settings file: model providers (local and remote), styles, instruction files.
-* [instructions.md](docs/instructions.md): instruction files: where MAIC looks and in what order, the classes, local files, imports and on-demand loading, how trust covers them, and how this compares with Claude Code and opencode.
+* [instructions.md](docs/instructions.md): instruction files: where MAID looks and in what order, the classes, local files, imports and on-demand loading, how trust covers them, and how this compares with Claude Code and opencode.
 * [themes.md](docs/themes.md): themes (default, gruvbox dark and light, mono), writing one, importing a neovim colorscheme, colour depth.
-* [nvim.md](docs/nvim.md): maic.nvim, MAIC inside nvim: the plugin's commands, how MAIC finds and trusts its host, what the host gives (files, diffs, User autocmds, the live theme, `maic.nvim` in your Lua) and what the model never gets.
+* [nvim.md](docs/nvim.md): maid.nvim, MAID inside nvim: the plugin's commands, how MAID finds and trusts its host, what the host gives (files, diffs, User autocmds, the live theme, `maid.nvim` in your Lua) and what the model never gets.
 * [audit-trail.md](docs/audit-trail.md): the audit trail, off by default: one entry per tool call of every session, recorded or not, for the leak audit; who needs it, what it records and never records, its costs, the rolling states, the archive and the off-site commands it only recommends.
-* [sessions.md](docs/sessions.md): the session file format, every record type, homes, forks and `--fork-at`, `maic sessions import` (claude.ai exports, Claude Code transcripts), `redact`, `export`.
-* [cai.md](docs/cai.md): cai-tools, all of it, as `cai TOOL` and `maic cai TOOL`: trans-fairy, redact, read, fabricate and the rest, on MAIC sessions as on Claude Code transcripts; `trans-fairy-write`'s backups.
-* [llamacpp.md](docs/llamacpp.md): llama.cpp, the local server: every sampler (XTC, DRY, top-n-sigma), logit bias, grammars, the models directory and `maic vendor model`.
-* [vendor.md](docs/vendor.md): the services MAIC installs for itself (llama.cpp, whisper.cpp, ComfyUI) at pinned versions, and the artifact tree.
-* [models.md](docs/models.md): the model catalog, `maic models`: every model MAIC installs, pinned and hashed, what each is for, what fits an 8 GB card, and code completion in neovim with llama.vim and Qwen2.5-Coder.
-* [diction.md](docs/diction.md): `maic diction`, narrating out loud into a markdown document: whisper-server for the speech, a local scribe on llama-server, nothing leaving the machine.
-* [bans.md](docs/bans.md) — string, regex and token bans, XTC, and why MAIC bans after the fact rather than by constrained decoding.
-* [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAIC should and should not take.
+* [sessions.md](docs/sessions.md): the session file format, every record type, homes, forks and `--fork-at`, `maid sessions import` (claude.ai exports, Claude Code transcripts), `redact`, `export`.
+* [cai.md](docs/cai.md): cai-tools, all of it, as `cai TOOL` and `maid cai TOOL`: trans-fairy, redact, read, fabricate and the rest, on MAID sessions as on Claude Code transcripts; `trans-fairy-write`'s backups.
+* [llamacpp.md](docs/llamacpp.md): llama.cpp, the local server: every sampler (XTC, DRY, top-n-sigma), logit bias, grammars, the models directory and `maid vendor model`.
+* [vendor.md](docs/vendor.md): the services MAID installs for itself (llama.cpp, whisper.cpp, ComfyUI) at pinned versions, and the artifact tree.
+* [models.md](docs/models.md): the model catalog, `maid models`: every model MAID installs, pinned and hashed, what each is for, what fits an 8 GB card, and code completion in neovim with llama.vim and Qwen2.5-Coder.
+* [diction.md](docs/diction.md): `maid diction`, narrating out loud into a markdown document: whisper-server for the speech, a local scribe on llama-server, nothing leaving the machine.
+* [bans.md](docs/bans.md) — string, regex and token bans, XTC, and why MAID bans after the fact rather than by constrained decoding.
+* [opencode-comparison.md](docs/opencode-comparison.md) — what opencode does that MAID should and should not take.
 * [opencode-quick-wins.md](docs/opencode-quick-wins.md) — 23 small, ranked improvements to take from opencode, with file pointers.
-* [cleanroom.md](docs/cleanroom.md) — what may go into MAIC, where the design came from, third-party licenses.
-* [standards.md](docs/standards.md): every specification and standard MAIC follows or borrows from, with its version, where MAIC uses it, how closely, and the known deviations.
-* [remote.md](docs/remote.md): remote access: `maic-server`, the phone web client, tokens and TLS, the API, `maic-relay` and the end-to-end tunnel for the phone away from home, why the tripwire cannot be reset remotely.
-* [artifacts.md](docs/artifacts.md): pages maic-server serves itself at `/a/ID/`, sandboxed, with their data beside them: `maic artifact add|list|open`, the security model, the capability and the login link.
-* [agent-kit.md](docs/agent-kit.md): telling an agent session when an artifact page submits: `maic artifact watch`, `tools/agent-kit/artifact-watch.sh`, `maic channel` for Claude Code's channels, notify protocols the user approves, and the rule that a notification is a trigger only.
-* [roadmap.md](docs/roadmap.md): everything MAIC should still become: accounts and a native phone client, the harness layers, cai-tools, tools, editor, services.
+* [cleanroom.md](docs/cleanroom.md) — what may go into MAID, where the design came from, third-party licenses.
+* [standards.md](docs/standards.md): every specification and standard MAID follows or borrows from, with its version, where MAID uses it, how closely, and the known deviations.
+* [remote.md](docs/remote.md): remote access: `maid-server`, the phone web client, tokens and TLS, the API, `maid-relay` and the end-to-end tunnel for the phone away from home, why the tripwire cannot be reset remotely.
+* [artifacts.md](docs/artifacts.md): pages maid-server serves itself at `/a/ID/`, sandboxed, with their data beside them: `maid artifact add|list|open`, the security model, the capability and the login link.
+* [agent-kit.md](docs/agent-kit.md): telling an agent session when an artifact page submits: `maid artifact watch`, `tools/agent-kit/artifact-watch.sh`, `maid channel` for Claude Code's channels, notify protocols the user approves, and the rule that a notification is a trigger only.
+* [roadmap.md](docs/roadmap.md): everything MAID should still become: accounts and a native phone client, the harness layers, cai-tools, tools, editor, services.
 * [testing.md](docs/testing.md): how to run every suite, the build gate (`scripts/check.sh`, the pre-push hook), the flake rules, the pty harness for the TUI, the fuzzer, the asan preset.
-* [remote.md](docs/remote.md): remote access: `maic-server`, the phone web client, tokens and TLS, the API, the relay design, why the tripwire cannot be reset remotely.
-* [roadmap.md](docs/roadmap.md): everything MAIC should still become: the relay and a native phone client, the harness layers, cai-tools, tools, editor, services.
+* [remote.md](docs/remote.md): remote access: `maid-server`, the phone web client, tokens and TLS, the API, the relay design, why the tripwire cannot be reset remotely.
+* [roadmap.md](docs/roadmap.md): everything MAID should still become: the relay and a native phone client, the harness layers, cai-tools, tools, editor, services.
 * [comfyui-setup.md](docs/comfyui-setup.md) — ComfyUI in its own venv, models on the external drive.
 * [local-llm-benchmarks.md](docs/local-llm-benchmarks.md) — measured tok/s per model and runtime.
 
@@ -121,7 +125,7 @@ ceiling on hardware. Keeping Claude around at the $20 tier is fine; $200 is not.
 ## Get the repository
 
 ```sh
-# just what the build needs (the pinned LuaJIT source); ComfyUI and llama.cpp come later, through maic itself
+# just what the build needs (the pinned LuaJIT source); ComfyUI and llama.cpp come later, through maid itself
 git clone --recurse-submodules=vendor/lua-pins https://github.com/Cragady/MAIC
 # everything, including the ComfyUI (about 100 MB) and llama.cpp (about 180 MB) checkouts, fetched in parallel
 git clone --recurse-submodules -j4 https://github.com/Cragady/MAIC
@@ -130,62 +134,62 @@ git submodule update --init -j4              # all of them
 git submodule update --init vendor/lua-pins  # the required one only
 ```
 
-`maic` pulls and builds the non-required vendors itself: `maic vendor add comfyui` fetches the pinned ComfyUI submodule, applies MAIC's patches, sets up its Python with uv and links it in; `maic vendor add llamacpp` builds the pinned llama.cpp out of tree ([docs/llamacpp.md](docs/llamacpp.md)). `maic vendor adopt NAME PATH` uses an install you already have instead. See [docs/vendor.md](docs/vendor.md).
+`maid` pulls and builds the non-required vendors itself: `maid vendor add comfyui` fetches the pinned ComfyUI submodule, applies MAID's patches, sets up its Python with uv and links it in; `maid vendor add llamacpp` builds the pinned llama.cpp out of tree ([docs/llamacpp.md](docs/llamacpp.md)). `maid vendor adopt NAME PATH` uses an install you already have instead. See [docs/vendor.md](docs/vendor.md).
 
 ## Structure and Build
 
-MAIC is the control plane for the local AI stack and, eventually, a C++ agentic CLI. The core is C++; other languages are fine in the sub-projects that need them.
+MAID is the control plane for the local AI stack and, eventually, a C++ agentic CLI. The core is C++; other languages are fine in the sub-projects that need them.
 
 ```
-MAIC/
+MAID/
 ├── core/       C++ library: agent loop, model providers (llama.cpp, Anthropic, OpenAI-compatible), tools, harness
 │               policy, sandbox, sessions, settings, service manager, tripwire
-├── cli/        `maic`: the agent UI (vim keys, modes, sessions) and service/harness commands. See cli/README.md
-├── harness/    maic-lock (root-owned tripwire helper) + its installer
-├── services/   one JSON file per service MAIC runs (llamacpp, comfyui, whisper)
-├── diction/    diction, the dictation tool (Python, standard library plus webrtcvad); `maic diction`. See docs/diction.md
-├── vendor/     pinned submodules (llama.cpp, ComfyUI), MAIC's own ComfyUI nodes (comfyui-maic-*), install scripts, manifest.json. See docs/vendor.md
+├── cli/        `maid`: the agent UI (vim keys, modes, sessions) and service/harness commands. See cli/README.md
+├── harness/    maid-lock (root-owned tripwire helper) + its installer
+├── services/   one JSON file per service MAID runs (llamacpp, comfyui, whisper)
+├── diction/    diction, the dictation tool (Python, standard library plus webrtcvad); `maid diction`. See docs/diction.md
+├── vendor/     pinned submodules (llama.cpp, ComfyUI), MAID's own ComfyUI nodes (comfyui-maid-*), install scripts, manifest.json. See docs/vendor.md
 ├── tools/      examples of user-defined tools, Lua and script (docs/tools.md), and the ComfyUI helpers
-├── server/     maic-server: sessions over HTTP with server-sent events, the phone web client. See docs/remote.md
-├── relay/      maic-relay: the rendezvous the server dials out to so the phone reaches it from anywhere; sees only sizes
+├── server/     maid-server: sessions over HTTP with server-sent events, the phone web client. See docs/remote.md
+├── relay/      maid-relay: the rendezvous the server dials out to so the phone reaches it from anywhere; sees only sizes
 └── docs/
 ```
 
 Build (needs `VCPKG_ROOT` set, which your shell does; vcpkg fetches nlohmann-json, FTXUI and cpp-httplib into `build/`):
 
 ```sh
-cd ~/dev2/MAIC
+cd ~/dev2/MAID
 cmake --preset default
 cmake --build --preset default
 ctest --preset default                           # every suite; scripts/check.sh does all three and gates on each (docs/testing.md)
-ln -s ~/dev2/MAIC/build/cli/maic ~/bin/maic      # once
+ln -s ~/dev2/MAID/build/cli/maid ~/bin/maid      # once
 sudo ./harness/install-tripwire.sh               # once, see docs/harness.md
 ```
 
 Use:
 
 ```sh
-maic doctor                  # what this machine has and a recommended setup
-maic setup                   # or the first run as questions: settings, llama.cpp, ComfyUI, a model, the tripwire
-maic vendor add llamacpp     # first run: build llama.cpp (docs/llamacpp.md), ...
-maic vendor use llamacpp /path/to/model.gguf   # ... link a GGUF (or: maic vendor model llamacpp URL SHA256), ...
-maic up llamacpp             # ... start llama-server on 127.0.0.1:8081, and
-maic                         # the agent, in the current directory, on llamacpp/current (see cli/README.md)
-maic -c                      # continue the last session here; maic -r picks one
-maic -p "prompt"             # one turn, no UI
-maic status                  # harness state + every service
-maic up llamacpp comfyui     # or: maic up all
-maic down all
-maic logs llamacpp
-maic trip "reason"           # panic button, no password
-maic unlock                  # needs your sudo password
-maic server token new phone  # a bearer token for one device, shown once
-maic server start            # the API and web client on 127.0.0.1:7373; --listen 0.0.0.0:7373 for the LAN, with TLS
-maic server pair             # with server.relay set: pair the phone once on the LAN, then it reaches home through the relay
-maic diction                 # narrate into ./<dir>.md: needs maic up whisper and a llama server (docs/diction.md)
+maid doctor                  # what this machine has and a recommended setup
+maid setup                   # or the first run as questions: settings, llama.cpp, ComfyUI, a model, the tripwire
+maid vendor add llamacpp     # first run: build llama.cpp (docs/llamacpp.md), ...
+maid vendor use llamacpp /path/to/model.gguf   # ... link a GGUF (or: maid vendor model llamacpp URL SHA256), ...
+maid up llamacpp             # ... start llama-server on 127.0.0.1:8081, and
+maid                         # the agent, in the current directory, on llamacpp/current (see cli/README.md)
+maid -c                      # continue the last session here; maid -r picks one
+maid -p "prompt"             # one turn, no UI
+maid status                  # harness state + every service
+maid up llamacpp comfyui     # or: maid up all
+maid down all
+maid logs llamacpp
+maid trip "reason"           # panic button, no password
+maid unlock                  # needs your sudo password
+maid server token new phone  # a bearer token for one device, shown once
+maid server start            # the API and web client on 127.0.0.1:7373; --listen 0.0.0.0:7373 for the LAN, with TLS
+maid server pair             # with server.relay set: pair the phone once on the LAN, then it reaches home through the relay
+maid diction                 # narrate into ./<dir>.md: needs maid up whisper and a llama server (docs/diction.md)
 ```
 
-State lives in `~/.local/state/maic/`: `run/<service>.pid` (PID plus process start time, so a reused PID is never mistaken for the service), `logs/<service>.log`, `sessions/*.jsonl`, and `server/` (token hashes, the audit log, the self-signed certificate, the relay pairing keys). Settings and standing instructions live in `~/.config/maic/` ([docs/settings.md](docs/settings.md)).
+State lives in `~/.local/state/maid/`: `run/<service>.pid` (PID plus process start time, so a reused PID is never mistaken for the service), `logs/<service>.log`, `sessions/*.jsonl`, and `server/` (token hashes, the audit log, the self-signed certificate, the relay pairing keys). Settings and standing instructions live in `~/.config/maid/` ([docs/settings.md](docs/settings.md)).
 
 ## Immediate Steps
 
@@ -193,7 +197,7 @@ Two ways to start this week without buying anything.
 
 ### Option A — Local only, $0, runs on the 2070 today
 
-> This was the first plan: the Claude CLI pointed at Ollama. MAIC's own first-run path is llama.cpp (the `Use` block above and [docs/llamacpp.md](docs/llamacpp.md)); Ollama was removed from MAIC on 2026-10-01 because llama.cpp does all of it. The block below is kept as history.
+> This was the first plan: the Claude CLI pointed at Ollama. MAID's own first-run path is llama.cpp (the `Use` block above and [docs/llamacpp.md](docs/llamacpp.md)); Ollama was removed from MAID on 2026-10-01 because llama.cpp does all of it. The block below is kept as history.
 
 Good for inline completion, small refactors and offline work. An 8 GB card caps you around a 7B at
 Q4_K_M, so this will not carry whole-repo agentic runs — that's what Phase 2 is for.

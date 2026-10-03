@@ -1,11 +1,11 @@
-#include "maic/harness.hpp"
+#include "maid/harness.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <fnmatch.h>
 
-#include "maic/paths.hpp"
-#include "maic/agent_def.hpp"
+#include "maid/paths.hpp"
+#include "maid/agent_def.hpp"
 
 #include <cstdlib>
 #include <regex>
@@ -13,7 +13,7 @@
 #include <sstream>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -42,7 +42,7 @@ const std::vector<Pattern>& trip_patterns() {
             {rx(R"(\bcrontab\s+(?!-l\b)\S)"), "changing scheduled jobs"},
             {rx(R"(\bsystemctl\s+(--user\s+)?(enable|disable|mask|unmask|start|stop|restart|reload|daemon-reload|edit|link|set-default|isolate|poweroff|reboot|halt)\b)"), "changing system services"},
             {rx(R"(\b(reboot|poweroff|shutdown|halt|init\s+[06])\b)"), "shutting the machine down"},
-            {rx(R"(\.ssh\b|\.gnupg\b|sudoers|/var/lib/maic|maic-lock)"), "touching credentials or the harness"},
+            {rx(R"(\.ssh\b|\.gnupg\b|sudoers|/var/lib/maid|maid-lock)"), "touching credentials or the harness"},
         };
     }();
     return patterns;
@@ -262,18 +262,18 @@ Harness::Harness(fs::path workspace) : workspace_(fs::weakly_canonical(workspace
     for (const char* p : {".ssh", ".gnupg", ".aws", ".kube", ".docker", ".password-store", ".local/share/keyrings", ".ollama"}) {
         secret_paths_.push_back(home / p);
     }
-    secret_paths_.push_back("/var/lib/maic");
+    secret_paths_.push_back("/var/lib/maid");
     for (const char* p : {"/etc", "/boot", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/opt", "/var", "/root", "/sys", "/proc", "/dev"}) {
         system_paths_.push_back(p);
     }
     for (const char* p : {"bin", ".local/bin", ".zshrc", ".zprofile", ".zshenv", ".bashrc", ".bash_profile", ".profile", ".config/autostart", ".config/systemd"}) {
         sensitive_paths_.push_back(home / p);
     }
-    fs::path maic = root_dir();
-    sensitive_paths_.push_back(maic / "harness");
-    sensitive_paths_.push_back(maic / "core" / "src" / "harness.cpp");
-    sensitive_paths_.push_back(maic / "core" / "src" / "tripwire.cpp");
-    sensitive_paths_.push_back(maic / "core" / "src" / "sandbox.cpp");
+    fs::path maid = root_dir();
+    sensitive_paths_.push_back(maid / "harness");
+    sensitive_paths_.push_back(maid / "core" / "src" / "harness.cpp");
+    sensitive_paths_.push_back(maid / "core" / "src" / "tripwire.cpp");
+    sensitive_paths_.push_back(maid / "core" / "src" / "sandbox.cpp");
 }
 
 fs::path resolve_path(const fs::path& workspace, const std::string& path) {
@@ -406,7 +406,7 @@ Decision Harness::check_agent_def(const Action& action, Decision d) const {
 
 namespace {
 
-// cai (docs/cai.md) under any of its spellings: `cai`, `maic-cai`, `maic cai`, and `maic trans-fairy`. Read-only are
+// cai (docs/cai.md) under any of its spellings: `cai`, `maid-cai`, `maid cai`, and `maid trans-fairy`. Read-only are
 // the dispatcher's listing, every tool's help, `read` without `--out` (argparse takes any prefix of it), `time`, and
 // trans-fairy's plain `state` report and its `--audit`.
 bool cai_read_only(const std::vector<std::string>& w) {
@@ -421,7 +421,7 @@ bool cai_read_only(const std::vector<std::string>& w) {
     return false;
 }
 
-// MAIC's own helpers: their looking-only invocations count as read-only commands, each as one simple command.
+// MAID's own helpers: their looking-only invocations count as read-only commands, each as one simple command.
 bool helper_read_only(const std::string& command) {
     if (!is_simple_command(command)) return false;
     std::istringstream in(command);
@@ -429,16 +429,16 @@ bool helper_read_only(const std::string& command) {
     for (std::string x; in >> x;) words.push_back(x);
     std::string prog = words.empty() ? "" : words[0];
     std::string sub = words.size() > 1 ? words[1] : "";
-    if (prog == "maic-storyboard") return sub.empty() || sub == "status" || sub == "plan" || sub == "check" || sub == "--help" || sub == "-h";
-    if (prog == "maic-workflow-edit") return sub == "inspect" || sub == "--help" || sub == "-h";
-    if (prog == "maic-danbooru-tags") return sub == "check" || sub == "search" || sub == "show" || sub == "--help" || sub == "-h" || sub.empty();
-    if (prog == "maic-panel-check") return true;  // it only reads the workflow and the local tag file
-    bool cai = prog == "cai" || prog == "maic-cai" || (prog == "maic" && (sub == "cai" || sub == "trans-fairy" || sub == "trans-fairy-write"));
+    if (prog == "maid-storyboard") return sub.empty() || sub == "status" || sub == "plan" || sub == "check" || sub == "--help" || sub == "-h";
+    if (prog == "maid-workflow-edit") return sub == "inspect" || sub == "--help" || sub == "-h";
+    if (prog == "maid-danbooru-tags") return sub == "check" || sub == "search" || sub == "show" || sub == "--help" || sub == "-h" || sub.empty();
+    if (prog == "maid-panel-check") return true;  // it only reads the workflow and the local tag file
+    bool cai = prog == "cai" || prog == "maid-cai" || (prog == "maid" && (sub == "cai" || sub == "trans-fairy" || sub == "trans-fairy-write"));
     if (cai) {
-        size_t skip = prog == "maic" && sub == "cai" ? 2 : 1;
+        size_t skip = prog == "maid" && sub == "cai" ? 2 : 1;
         return cai_read_only(std::vector<std::string>(words.begin() + std::min(skip, words.size()), words.end()));
     }
-    if (prog == "maic") return sub == "path" || sub == "status" || sub == "artifacts" || sub == "sessions" || sub == "help" || sub == "vendor" || sub == "doctor" || sub == "tools";
+    if (prog == "maid") return sub == "path" || sub == "status" || sub == "artifacts" || sub == "sessions" || sub == "help" || sub == "vendor" || sub == "doctor" || sub == "tools";
     return false;
 }
 
@@ -513,10 +513,10 @@ Decision Harness::check_shell(const std::string& command, Mode mode) const {
             return {Verdict::Trip, p.why};
         }
     }
-    // `maic nvim setup` writes into the user's nvim config: the user's to run at a terminal, never a tool call, whatever
+    // `maid nvim setup` writes into the user's nvim config: the user's to run at a terminal, never a tool call, whatever
     // the mode or an allow list says.
-    static const std::regex user_only(R"(\bmaic['"]?\s+['"]?nvim['"]?\s+['"]?setup\b)");
-    if (std::regex_search(command, user_only)) return {Verdict::Deny, "maic nvim setup writes into your nvim config: run it yourself in a terminal"};
+    static const std::regex user_only(R"(\bmaid['"]?\s+['"]?nvim['"]?\s+['"]?setup\b)");
+    if (std::regex_search(command, user_only)) return {Verdict::Deny, "maid nvim setup writes into your nvim config: run it yourself in a terminal"};
     bool read_only = is_read_only_command(command) || helper_read_only(command);
     if (allowed_by_list(command)) {
         if (mode == Mode::Plan && !read_only) return {Verdict::Deny, "plan mode only runs read-only commands"};
@@ -542,7 +542,7 @@ Decision Harness::check_write(const fs::path& p, Mode mode) const {
         return {Verdict::Deny, "plan mode is read-only"};
     }
     if (under_any(p, sensitive_paths_)) {
-        return {Verdict::Ask, "sensitive path (startup files, ~/bin, or MAIC's harness)"};
+        return {Verdict::Ask, "sensitive path (startup files, ~/bin, or MAID's harness)"};
     }
     if (!in_workspace(p)) {
         return {Verdict::Ask, "outside the workspace"};
@@ -564,4 +564,4 @@ Decision Harness::check_read(const fs::path& p, Mode mode) const {
     return {Verdict::Ask, "reads outside the workspace"};
 }
 
-}  // namespace maic
+}  // namespace maid

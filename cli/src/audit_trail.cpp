@@ -1,11 +1,11 @@
 #include "audit_trail.hpp"
 
-#include "maic/audit_trail.hpp"
-#include "maic/llm.hpp"
-#include "maic/paths.hpp"
-#include "maic/service.hpp"
-#include "maic/tripwire.hpp"
-#include "maic/vendor.hpp"
+#include "maid/audit_trail.hpp"
+#include "maid/llm.hpp"
+#include "maid/paths.hpp"
+#include "maid/service.hpp"
+#include "maid/tripwire.hpp"
+#include "maid/vendor.hpp"
 
 #include <fcntl.h>
 #include <spawn.h>
@@ -24,7 +24,7 @@
 
 extern char** environ;
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -101,13 +101,13 @@ std::string size_text(uintmax_t bytes) {
     return buf;
 }
 
-// maic-leak-audit: installed beside this binary (a release), else on PATH, else the source tree's (a dev build).
+// maid-leak-audit: installed beside this binary (a release), else on PATH, else the source tree's (a dev build).
 std::string leak_audit_path() {
     std::error_code ec;
-    if (std::string exe = self_exe(); !exe.empty() && fs::is_regular_file(fs::path(exe).parent_path() / "maic-leak-audit", ec)) {
-        return (fs::path(exe).parent_path() / "maic-leak-audit").string();
+    if (std::string exe = self_exe(); !exe.empty() && fs::is_regular_file(fs::path(exe).parent_path() / "maid-leak-audit", ec)) {
+        return (fs::path(exe).parent_path() / "maid-leak-audit").string();
     }
-    if (std::string found = find_on_path("maic-leak-audit"); !found.empty()) return found;
+    if (std::string found = find_on_path("maid-leak-audit"); !found.empty()) return found;
     fs::path tree = root_dir() / "tools" / "audit" / "leak_audit.py";
     return fs::is_regular_file(tree, ec) ? tree.string() : "";
 }
@@ -202,7 +202,7 @@ int status(const Settings& settings, bool as_json) {
         return 0;
     }
     std::cout << "audit trail: " << (a.enabled ? "on" : "off") << " (" << audit_settings_path().string()
-              << (fs::exists(audit_settings_path()) ? "" : ", not written yet: maic audit-trail init") << "; off by default)\n"
+              << (fs::exists(audit_settings_path()) ? "" : ", not written yet: maid audit-trail init") << "; off by default)\n"
               << "  " << audit_trail_dir().string() << ": " << c.files << (c.files == 1 ? " file, " : " files, ") << size_text(c.bytes)
               << " (live_mb " << a.live_mb << ")\n"
               << "  entries by the last audit: " << by_state["live"] << " live, " << by_state["stale live"] << " stale live, " << by_state["archival"]
@@ -210,15 +210,15 @@ int status(const Settings& settings, bool as_json) {
               << "  last audit: " << (last.empty() ? "never" : last) << "; next due: " << (next.empty() ? "a day after the first entry" : next) << " (every "
               << a.every << ")\n"
               << "  schedule: "
-              << (due.scheduled ? "the systemd timer (maic audit-trail schedule remove takes it away)"
-                                : "none; the due check at each start stands in (maic audit-trail schedule install)")
+              << (due.scheduled ? "the systemd timer (maid audit-trail schedule remove takes it away)"
+                                : "none; the due check at each start stands in (maid audit-trail schedule install)")
               << "\n";
     if (a.enabled && due.enforce()) std::cout << "  the next start holds for an audit (" << a.enforce << "): " << due.why << "\n";
     if (a.archive == "off") {
         std::cout << "  archive: off (an entry that gets the retirement signal is deleted)\n";
     } else {
         std::cout << "  archive: " << a.archive << ", " << found.size() << (found.size() == 1 ? " chunk, " : " chunks, ") << size_text(chunk_bytes) << ", "
-                  << archived << " entries; maic audit-trail offsite DEST prints how to move old chunks on\n";
+                  << archived << " entries; maid audit-trail offsite DEST prints how to move old chunks on\n";
     }
     return 0;
 }
@@ -230,7 +230,7 @@ int purge() {
         return 0;
     }
     if (!isatty(STDIN_FILENO)) {
-        std::cerr << "maic: purging the audit trail asks at a terminal; run maic audit-trail purge in one. Nothing was deleted.\n";
+        std::cerr << "maid: purging the audit trail asks at a terminal; run maid audit-trail purge in one. Nothing was deleted.\n";
         return 2;
     }
     std::cout << "delete the live audit trail (" << c.files << (c.files == 1 ? " file, " : " files, ") << size_text(c.bytes)
@@ -255,9 +255,9 @@ int offsite(const AuditSettings& a, const std::vector<std::string>& args) {
     for (size_t i = 1; i < args.size(); ++i) {
         if (args[i] == "--older-than" && i + 1 < args.size()) older = args[++i];
         else if (dest.empty() && args[i].rfind("--", 0) != 0) dest = args[i];
-        else throw std::runtime_error("maic audit-trail offsite DEST [--older-than 90d]");
+        else throw std::runtime_error("maid audit-trail offsite DEST [--older-than 90d]");
     }
-    if (dest.empty()) throw std::runtime_error("maic audit-trail offsite DEST [--older-than 90d]");
+    if (dest.empty()) throw std::runtime_error("maid audit-trail offsite DEST [--older-than 90d]");
     if (a.archive == "off") throw std::runtime_error("archive is \"off\" in " + audit_settings_path().string() + ": there are no chunks to move (docs/audit-trail.md)");
     long age = parse_duration(older);
     std::time_t now = std::time(nullptr);
@@ -293,7 +293,7 @@ int offsite(const AuditSettings& a, const std::vector<std::string>& args) {
         return out;
     };
     std::string q = quote(dest), check = "(cd " + q + " && sha256sum -c " + joined(sums) + ")", remove = "rm " + joined(files);
-    std::cout << "\nMAIC runs none of this: these are commands for you to check and run. Each chunk has a .sha256 beside it, and\n"
+    std::cout << "\nMAID runs none of this: these are commands for you to check and run. Each chunk has a .sha256 beside it, and\n"
                  "manifest.json inside it lists the SHA-256 of every member; delete nothing until the copy checks.\n";
     bool any = false;
     if (!find_on_path("rsync").empty()) {
@@ -306,7 +306,7 @@ int offsite(const AuditSettings& a, const std::vector<std::string>& args) {
         std::string includes;
         for (const auto& n : names) includes += " --include " + quote(n) + " --include " + quote(n + ".sha256");
         any = true;
-        std::cout << "\nrclone (DEST as an rclone remote, e.g. b2:bucket/maic-audit; it compares checksums where both sides have them):\n"
+        std::cout << "\nrclone (DEST as an rclone remote, e.g. b2:bucket/maid-audit; it compares checksums where both sides have them):\n"
                   << "  rclone move --checksum" << includes << " " << quote(a.archive) << " " << q << "\n"
                   << "  then compare rclone hashsum sha256 " << q << " with the .sha256 files (rclone move deletes each source once it is across)\n";
     }
@@ -351,9 +351,9 @@ int offsite(const AuditSettings& a, const std::vector<std::string>& args) {
 }
 
 int schedule(const AuditSettings& a, const std::vector<std::string>& args) {
-    if (args.size() != 2 || (args[1] != "install" && args[1] != "remove")) throw std::runtime_error("maic audit-trail schedule install|remove");
+    if (args.size() != 2 || (args[1] != "install" && args[1] != "remove")) throw std::runtime_error("maid audit-trail schedule install|remove");
     fs::path dir = systemd_user_dir();
-    fs::path service = dir / "maic-leak-audit.service", timer = dir / "maic-leak-audit.timer";
+    fs::path service = dir / "maid-leak-audit.service", timer = dir / "maid-leak-audit.timer";
     std::string systemctl = find_on_path("systemctl");
     auto ctl = [&](std::vector<std::string> argv) {
         argv.insert(argv.begin(), {systemctl, "--user"});
@@ -368,7 +368,7 @@ int schedule(const AuditSettings& a, const std::vector<std::string>& args) {
             std::cout << "no audit schedule in " << dir.string() << "\n";
             return 0;
         }
-        if (!systemctl.empty()) ctl({"disable", "--now", "maic-leak-audit.timer"});
+        if (!systemctl.empty()) ctl({"disable", "--now", "maid-leak-audit.timer"});
         fs::remove(timer);
         fs::remove(service);
         if (!systemctl.empty()) ctl({"daemon-reload"});
@@ -376,15 +376,15 @@ int schedule(const AuditSettings& a, const std::vector<std::string>& args) {
         return 0;
     }
     std::string exec = leak_audit_path();
-    if (exec.empty()) throw std::runtime_error("maic-leak-audit is not installed beside maic or on PATH; nothing was written");
+    if (exec.empty()) throw std::runtime_error("maid-leak-audit is not installed beside maid or on PATH; nothing was written");
     fs::path templates = root_dir() / "contrib" / "systemd";
     auto read = [&](const char* name) {
         std::ifstream in(templates / name);
         if (!in) throw std::runtime_error("no " + (templates / name).string() + "; nothing was written");
         return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     };
-    std::string service_text = render_unit(read("maic-leak-audit.service"), exec, self_exe(), a.every);
-    std::string timer_text = render_unit(read("maic-leak-audit.timer"), exec, self_exe(), a.every);
+    std::string service_text = render_unit(read("maid-leak-audit.service"), exec, self_exe(), a.every);
+    std::string timer_text = render_unit(read("maid-leak-audit.timer"), exec, self_exe(), a.every);
     fs::create_directories(dir);
     std::ofstream(service) << service_text;
     std::ofstream(timer) << timer_text;
@@ -393,7 +393,7 @@ int schedule(const AuditSettings& a, const std::vector<std::string>& args) {
         std::cout << "no systemctl here: the units are written but not enabled; the due check at each start stands in\n";
         return 0;
     }
-    bool ok = ctl({"daemon-reload"}) && ctl({"enable", "--now", "maic-leak-audit.timer"});
+    bool ok = ctl({"daemon-reload"}) && ctl({"enable", "--now", "maid-leak-audit.timer"});
     if (!ok) std::cout << "the timer is not running; the due check at each start stands in until it is\n";
     if (!a.enabled) std::cout << "the trail is off (enabled = false): the timer audits session transcripts only until you turn it on\n";
     return ok ? 0 : 1;
@@ -429,7 +429,7 @@ void start_judge_service(const Settings& settings, const std::string& judge) {
 }  // namespace
 
 int cmd_audit_trail(const std::vector<std::string>& args) {
-    static const char* usage = "maic audit-trail init | status [--json] | purge | offsite DEST [--older-than 90d] | schedule install|remove";
+    static const char* usage = "maid audit-trail init | status [--json] | purge | offsite DEST [--older-than 90d] | schedule install|remove";
     std::string sub = args.empty() ? "status" : args[0];
     if (sub == "init") {
         if (args.size() != 1) throw std::runtime_error(usage);
@@ -452,15 +452,15 @@ void audit_gate(const Settings& settings) {
     if (!due.enforce()) return;
     auto say = [](const std::string& text) { std::cerr << "audit trail: " << text << "\n" << std::flush; };
     if (a.enforce == "notify") {
-        say(due.why + "; run maic-leak-audit (maic audit-trail schedule install runs it for you)");
+        say(due.why + "; run maid-leak-audit (maid audit-trail schedule install runs it for you)");
         return;
     }
     std::string exec = leak_audit_path();
     if (exec.empty()) {
-        say(due.why + "; maic-leak-audit is not installed, so nothing was audited");
+        say(due.why + "; maid-leak-audit is not installed, so nothing was audited");
         return;
     }
-    if (std::string exe = self_exe(); !exe.empty()) setenv("MAIC_BIN", exe.c_str(), 1);
+    if (std::string exe = self_exe(); !exe.empty()) setenv("MAID_BIN", exe.c_str(), 1);
     std::string line;
     if (a.enforce == "judge-and-hold") {
         say(due.why + "; auditing with the local judge (" + a.judge + ") before the session opens, everything else on hold...");
@@ -477,4 +477,4 @@ void audit_gate(const Settings& settings) {
     say(first_line(line));
 }
 
-}  // namespace maic
+}  // namespace maid

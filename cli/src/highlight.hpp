@@ -1,6 +1,6 @@
 #pragma once
 
-#include "maic/markdown.hpp"
+#include "maid/markdown.hpp"
 
 #include <sys/types.h>
 
@@ -14,7 +14,7 @@
 #include <thread>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 // The input highlighted by an embedded nvim (`highlight = "nvim"`): one `nvim --embed --headless` child for
 // the session, msgpack-rpc over its stdio, the input text set as a markdown buffer and treesitter's highlight
@@ -60,7 +60,7 @@ private:
 };
 
 // A treesitter capture name ("markup.heading.1", "keyword.function", "string") to the flags it paints with;
-// MdNone for the ones MAIC has no style for.
+// MdNone for the ones MAID has no style for.
 unsigned capture_flags(const std::string& name);
 
-}  // namespace maic
+}  // namespace maid

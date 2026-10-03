@@ -1,5 +1,5 @@
 {
-  "x-maic-subset": {
+  "x-maid-subset": {
     "source": "https://github.com/openai/openai-openapi",
     "commit": "de3a025c40f84b99d1401ee1c5fe69fbf8de789b",
     "file": "openapi.json",

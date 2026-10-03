@@ -9,17 +9,17 @@
 #include <string_view>
 #include <vector>
 
-// The end-to-end tunnel between a phone and the workstation, carried by maic-relay. The relay sees frames:
-// len(4, big endian) | body. The first body each way is the hello, "MAIC1" | static key(32) | ephemeral
+// The end-to-end tunnel between a phone and the workstation, carried by maid-relay. The relay sees frames:
+// len(4, big endian) | body. The first body each way is the hello, "MAID1" | static key(32) | ephemeral
 // key(32); every later body is nonce(24) | ciphertext (XChaCha20-Poly1305). The nonce is a big-endian frame
 // counter in its first 8 bytes and zero after, one counter per direction, and a receiver accepts only the
 // next counter, so a replayed or reordered frame is refused. A body of length zero is a keepalive.
 //
-// Keys: each side has a long-term X25519 key (the phone's is enrolled by `maic server pair`), each
+// Keys: each side has a long-term X25519 key (the phone's is enrolled by `maid server pair`), each
 // connection adds an ephemeral one, and the two directional session keys come from HKDF-SHA256 over the
 // three Diffie-Hellman results (ephemeral-ephemeral, phone ephemeral with home static, home ephemeral with
-// phone static), salted with "maic-tunnel-v1" and bound to all four public keys.
-namespace maic::server {
+// phone static), salted with "maid-tunnel-v1" and bound to all four public keys.
+namespace maid::server {
 
 using Key32 = std::array<unsigned char, 32>;
 
@@ -99,7 +99,7 @@ class PairStore {
 public:
     explicit PairStore(std::filesystem::path file);
 
-    // Re-reads the file when another process changed it (a pairing while the server runs, `maic server unpair`).
+    // Re-reads the file when another process changed it (a pairing while the server runs, `maid server unpair`).
     void refresh();
     // The pairing id and key pair, made and written on first use.
     const std::string& pairing_id();
@@ -121,11 +121,11 @@ private:
     std::vector<PhoneInfo> phones_;
 };
 
-// The one-time code `maic server pair` leaves for the running server in <state>/server/pairing.json: its
+// The one-time code `maid server pair` leaves for the running server in <state>/server/pairing.json: its
 // SHA-256, an expiry two minutes out, and how many wrong guesses it has taken. Three wrong guesses void it.
 std::string new_pairing_code();  // 8 digits
 void write_pairing_offer(const std::filesystem::path& file, const std::string& code, int seconds = 120);
 // Consumes the offer when the code matches; otherwise the reason it did not.
 std::optional<std::string> claim_pairing_offer(const std::filesystem::path& file, const std::string& code);
 
-}  // namespace maic::server
+}  // namespace maid::server

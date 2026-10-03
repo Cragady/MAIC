@@ -1,10 +1,10 @@
-// User-defined Lua tools: loading, the sandboxed state, and the harness in front of every maic.* call. The
+// User-defined Lua tools: loading, the sandboxed state, and the harness in front of every maid.* call. The
 // authorise step here follows the real policy but never touches the tripwire lock: a Trip is recorded as a
 // verdict, the way harness_test checks trip patterns.
 #include "check.hpp"
 
-#include "maic/lua_tools.hpp"
-#include "maic/trust.hpp"
+#include "maid/lua_tools.hpp"
+#include "maid/trust.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -13,7 +13,7 @@
 #include <fstream>
 #include <thread>
 
-using namespace maic;
+using namespace maid;
 using nlohmann::json;
 namespace fs = std::filesystem;
 
@@ -46,8 +46,8 @@ bool has_notice(const LuaToolSet& set, const std::string& what) {
 }  // namespace
 
 int main() {
-    setenv("MAIC_TRIPWIRE_FILE", ("/tmp/maic-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);  // never the machine's lock
-    fs::path ws = fs::temp_directory_path() / "maic-lua-tools-test";
+    setenv("MAID_TRIPWIRE_FILE", ("/tmp/maid-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);  // never the machine's lock
+    fs::path ws = fs::temp_directory_path() / "maid-lua-tools-test";
     fs::remove_all(ws);
     fs::create_directories(ws / "cfg");
     setenv("XDG_CONFIG_HOME", (ws / "cfg").c_str(), 1);
@@ -75,28 +75,28 @@ int main() {
     };
 
     section("loading");
-    write_file(ws / ".maic" / "tools" / "word_count.lua",
+    write_file(ws / ".maid" / "tools" / "word_count.lua",
                "return {\n"
                "  name = 'word_count',\n"
                "  description = 'counts the words in a file',\n"
                "  parameters = { type = 'object', properties = { path = { type = 'string', description = 'the file' } }, required = { 'path' } },\n"
                "  run = function(args)\n"
                "    local n = 0\n"
-               "    for _ in maic.read(args.path):gmatch('%S+') do n = n + 1 end\n"
+               "    for _ in maid.read(args.path):gmatch('%S+') do n = n + 1 end\n"
                "    return n .. ' words'\n"
                "  end,\n"
                "}\n");
-    write_file(ws / ".maic" / "tools" / "broken.lua", "return { name = 'broken', description = 'x', run = function(args) return 1 +  end }\n");
-    write_file(ws / ".maic" / "tools" / "builtin.lua", "return { name = 'read_file', description = 'x', run = function() end }\n");
-    write_file(ws / ".maic" / "tools" / "norun.lua", "return { name = 'norun', description = 'x' }\n");
-    write_file(ws / ".maic" / "tools" / "badname.lua", "return { name = 'Bad Name', description = 'x', run = function() end }\n");
-    write_file(ws / ".maic" / "tools" / "eager.lua", "return { name = 'eager', description = 'x', body = maic.read('x'), run = function() end }\n");
-    write_file(ws / ".maic" / "tools" / "zz_dup.lua", "return { name = 'word_count', description = 'again', run = function() end }\n");
-    write_file(ws / "cfg" / "maic" / "tools" / "global_tool.lua", "return { name = 'global_tool', description = 'from the config dir', required = {}, run = function() return 'g' end }\n");
-    write_file(ws / "cfg" / "maic" / "tools" / "notes.txt", "not a tool\n");
+    write_file(ws / ".maid" / "tools" / "broken.lua", "return { name = 'broken', description = 'x', run = function(args) return 1 +  end }\n");
+    write_file(ws / ".maid" / "tools" / "builtin.lua", "return { name = 'read_file', description = 'x', run = function() end }\n");
+    write_file(ws / ".maid" / "tools" / "norun.lua", "return { name = 'norun', description = 'x' }\n");
+    write_file(ws / ".maid" / "tools" / "badname.lua", "return { name = 'Bad Name', description = 'x', run = function() end }\n");
+    write_file(ws / ".maid" / "tools" / "eager.lua", "return { name = 'eager', description = 'x', body = maid.read('x'), run = function() end }\n");
+    write_file(ws / ".maid" / "tools" / "zz_dup.lua", "return { name = 'word_count', description = 'again', run = function() end }\n");
+    write_file(ws / "cfg" / "maid" / "tools" / "global_tool.lua", "return { name = 'global_tool', description = 'from the config dir', required = {}, run = function() return 'g' end }\n");
+    write_file(ws / "cfg" / "maid" / "tools" / "notes.txt", "not a tool\n");
     LuaToolSet set = load_lua_tools(ws);
     expect(set.tools.size() == 2 && find(set, "word_count") && find(set, "global_tool"), "the good workspace tool and the global tool load; " + std::to_string(set.tools.size()) + " loaded");
-    expect(find(set, "word_count") && find(set, "word_count")->file == ws / ".maic" / "tools" / "word_count.lua" && find(set, "word_count")->description == "counts the words in a file",
+    expect(find(set, "word_count") && find(set, "word_count")->file == ws / ".maid" / "tools" / "word_count.lua" && find(set, "word_count")->description == "counts the words in a file",
            "a tool remembers its file and description");
     expect(find(set, "word_count") && find(set, "word_count")->parameters["required"] == json::array({"path"}) && find(set, "word_count")->parameters["type"] == "object",
            "the parameters table becomes a JSON schema");
@@ -107,7 +107,7 @@ int main() {
     expect(has_notice(set, "builtin.lua") && has_notice(set, "built-in"), "a built-in name is refused");
     expect(has_notice(set, "norun.lua") && has_notice(set, "`run`"), "a missing run function is refused");
     expect(has_notice(set, "badname.lua") && has_notice(set, "lowercase"), "a name with spaces or capitals is refused");
-    expect(has_notice(set, "eager.lua") && has_notice(set, "maic"), "a file that acts at load time has no maic table and is skipped");
+    expect(has_notice(set, "eager.lua") && has_notice(set, "maid"), "a file that acts at load time has no maid table and is skipped");
     expect(has_notice(set, "zz_dup.lua") && has_notice(set, "already defined"), "a duplicate name is skipped");
     write_file(ws / "poem.txt", "one two three\nfour\n");
     auto wc = run(*find(set, "word_count"), {{"path", "poem.txt"}});
@@ -115,30 +115,30 @@ int main() {
 
     section("reads, writes and the harness");
     gated.clear();
-    auto r = run(tool("return maic.read('poem.txt')"));
+    auto r = run(tool("return maid.read('poem.txt')"));
     expect(r.ok && r.text == "one two three\nfour\n" && gated == std::vector<std::string>{"read_file poem.txt"} && verdicts.back() == Verdict::Allow,
-           "maic.read goes through the harness as a read_file and returns the contents");
-    fs::path outside = fs::temp_directory_path() / "maic-lua-tools-escape.txt";
+           "maid.read goes through the harness as a read_file and returns the contents");
+    fs::path outside = fs::temp_directory_path() / "maid-lua-tools-escape.txt";
     fs::remove(outside);
     gated.clear();
-    r = run(tool("maic.write('" + outside.string() + "', 'x') return 'wrote'"));
+    r = run(tool("maid.write('" + outside.string() + "', 'x') return 'wrote'"));
     expect(!r.ok && r.text == "DENIED by the user, who says: not there", "a write outside the workspace is asked, denied, and the Lua error is the denial text: " + r.text);
     expect(!fs::exists(outside) && verdicts.back() == Verdict::Ask, "nothing was written");
-    r = run(tool("local ok, err = pcall(maic.write, '" + outside.string() + "', 'x') return tostring(ok) .. ':' .. err"));
+    r = run(tool("local ok, err = pcall(maid.write, '" + outside.string() + "', 'x') return tostring(ok) .. ':' .. err"));
     expect(r.ok && r.text == "false:DENIED by the user, who says: not there", "pcall inside the tool sees the same text");
-    r = run(tool("maic.write('made/inside.txt', 'hello') return maic.read('made/inside.txt')"));
+    r = run(tool("maid.write('made/inside.txt', 'hello') return maid.read('made/inside.txt')"));
     expect(r.ok && r.text == "hello" && fs::exists(ws / "made" / "inside.txt"), "a write inside the workspace runs in auto mode and creates directories");
-    r = run(tool("return maic.read('" + std::string(std::getenv("HOME")) + "/.ssh/id_ed25519')"));
+    r = run(tool("return maid.read('" + std::string(std::getenv("HOME")) + "/.ssh/id_ed25519')"));
     expect(!r.ok && r.text.rfind("DENIED: credentials", 0) == 0, "secrets are denied by policy: " + r.text);
-    r = run(tool("return table.concat(maic.list('.'), ',')"));
-    expect(r.ok && r.text.find("poem.txt") != std::string::npos && r.text.find("made/") != std::string::npos, "maic.list returns a table of entries: " + r.text);
-    r = run(tool("return maic.search('four', '.')"));
-    expect(r.ok && r.text.find("poem.txt:2: four") != std::string::npos, "maic.search returns grep-style lines: " + r.text);
-    r = run(tool("return maic.json_encode({ a = 1, b = { 'x', 'y' } })"));
+    r = run(tool("return table.concat(maid.list('.'), ',')"));
+    expect(r.ok && r.text.find("poem.txt") != std::string::npos && r.text.find("made/") != std::string::npos, "maid.list returns a table of entries: " + r.text);
+    r = run(tool("return maid.search('four', '.')"));
+    expect(r.ok && r.text.find("poem.txt:2: four") != std::string::npos, "maid.search returns grep-style lines: " + r.text);
+    r = run(tool("return maid.json_encode({ a = 1, b = { 'x', 'y' } })"));
     expect(r.ok && r.text == R"({"a":1,"b":["x","y"]})", "json_encode: " + r.text);
-    r = run(tool("local t = maic.json_decode('{\"b\":[1,2],\"s\":\"q\"}') return t.b[2] .. t.s"));
+    r = run(tool("local t = maid.json_decode('{\"b\":[1,2],\"s\":\"q\"}') return t.b[2] .. t.s"));
     expect(r.ok && r.text == "2q", "json_decode: " + r.text);
-    r = run(tool("return maic.json_decode('{nope')"));
+    r = run(tool("return maid.json_decode('{nope')"));
     expect(!r.ok && r.text.find("not valid JSON") != std::string::npos, "bad JSON is an error");
     r = run(tool("return { n = 2, list = { 'a' } }"));
     expect(r.ok && json::parse(r.text) == json({{"n", 2}, {"list", {"a"}}}), "a table result is returned as JSON: " + r.text);
@@ -153,15 +153,15 @@ int main() {
 
     section("shell");
     gated.clear();
-    r = run(tool("return maic.shell('sudo ls')"));
+    r = run(tool("return maid.shell('sudo ls')"));
     expect(!r.ok && r.text.rfind("BLOCKED and the harness was tripped (privilege escalation)", 0) == 0 && verdicts.back() == Verdict::Trip,
            "a shell call with sudo is a trip verdict and the tool sees BLOCKED: " + r.text);
     expect(gated.size() == 1 && gated[0] == "$ sudo ls", "the action is the command itself");
-    r = run(tool("local out, code = maic.shell('echo hi; exit 3') return out .. code"));
+    r = run(tool("local out, code = maid.shell('echo hi; exit 3') return out .. code"));
     expect(r.ok && r.text == "hi\n3", "an allowed command runs in the sandbox and returns output and exit code: " + r.text);
-    r = run(tool("local out = maic.shell('pwd', { workdir = 'made' }) return out"));
+    r = run(tool("local out = maid.shell('pwd', { workdir = 'made' }) return out"));
     expect(r.ok && r.text.find("/made") != std::string::npos, "opts.workdir is honoured: " + r.text);
-    r = run(tool("return maic.shell('sleep 30', { timeout = 1 })"));
+    r = run(tool("return maid.shell('sleep 30', { timeout = 1 })"));
     expect(!r.ok && r.text.find("timeout") != std::string::npos, "opts.timeout is honoured: " + r.text);
 
     section("runaway tools");

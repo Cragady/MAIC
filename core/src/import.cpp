@@ -1,11 +1,11 @@
-// Other tools' transcripts as MAIC sessions. Two sources: a claude.ai export (one JSON document, a
+// Other tools' transcripts as MAID sessions. Two sources: a claude.ai export (one JSON document, a
 // conversation or a list of them, messages threaded by parent uuid) and a Claude Code transcript (JSONL,
 // one record per content block, tool results in later user records). Both become the same records the
 // agent writes itself, so the result resumes and lists like any session.
-#include "maic/import.hpp"
+#include "maid/import.hpp"
 
-#include "maic/llm.hpp"
-#include "maic/session.hpp"
+#include "maid/llm.hpp"
+#include "maid/session.hpp"
 
 #include <unistd.h>
 
@@ -16,7 +16,7 @@
 #include <map>
 #include <stdexcept>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -319,4 +319,4 @@ fs::path write_import(const ImportedSession& session, const fs::path& source, co
     return log.path();
 }
 
-}  // namespace maic
+}  // namespace maid

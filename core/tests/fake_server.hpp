@@ -1,8 +1,8 @@
 #pragma once
 // A fake OpenAI-compatible server for the agent and engine tests.
-#include "maic/llm.hpp"
+#include "maid/llm.hpp"
 
-#include "maic/http.hpp"
+#include "maid/http.hpp"
 #include <nlohmann/json.hpp>
 
 #include <chrono>
@@ -17,7 +17,7 @@
 namespace {
 
 using nlohmann::json;
-using maic::Provider;
+using maid::Provider;
 
 // An OpenAI-compatible /v1/chat/completions that answers every chat with an SSE stream of the last user
 // message's text, echoed four characters at a time. mid_system keeps later system messages as system turns, so

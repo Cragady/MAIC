@@ -6,29 +6,29 @@
 #include "editor.hpp"
 #include "highlight.hpp"
 #include "nvim_host.hpp"
-#include "maic/agent.hpp"
-#include "maic/engine.hpp"
-#include "maic/artifacts.hpp"
-#include "maic/clipboard.hpp"
-#include "maic/full_output.hpp"
-#include "maic/helper.hpp"
-#include "maic/image.hpp"
-#include "maic/lazy_lock.hpp"
-#include "maic/models.hpp"
-#include "maic/places.hpp"
-#include "maic/protocol.hpp"
-#include "maic/vendor.hpp"
-#include "maic/nvim_host.hpp"
-#include "maic/nvim_keymaps.hpp"
-#include "maic/nvim_setup.hpp"
-#include "maic/paths.hpp"
-#include "maic/service.hpp"
-#include "maic/settings.hpp"
-#include "maic/status.hpp"
-#include "maic/theme.hpp"
-#include "maic/tools.hpp"
-#include "maic/tripwire.hpp"
-#include "maic/trust.hpp"
+#include "maid/agent.hpp"
+#include "maid/engine.hpp"
+#include "maid/artifacts.hpp"
+#include "maid/clipboard.hpp"
+#include "maid/full_output.hpp"
+#include "maid/helper.hpp"
+#include "maid/image.hpp"
+#include "maid/lazy_lock.hpp"
+#include "maid/models.hpp"
+#include "maid/places.hpp"
+#include "maid/protocol.hpp"
+#include "maid/vendor.hpp"
+#include "maid/nvim_host.hpp"
+#include "maid/nvim_keymaps.hpp"
+#include "maid/nvim_setup.hpp"
+#include "maid/paths.hpp"
+#include "maid/service.hpp"
+#include "maid/settings.hpp"
+#include "maid/status.hpp"
+#include "maid/theme.hpp"
+#include "maid/tools.hpp"
+#include "maid/tripwire.hpp"
+#include "maid/trust.hpp"
 #include "style.hpp"
 #include "view.hpp"
 
@@ -61,7 +61,7 @@
 #include <sstream>
 #include <thread>
 
-namespace maic {
+namespace maid {
 
 namespace {
 
@@ -114,7 +114,7 @@ std::filesystem::path session_home_dir(const Settings& settings) {
     return resolve_sessions_home(settings, std::filesystem::current_path());
 }
 
-// An approval the engine is waiting on (maic.approval.requested).
+// An approval the engine is waiting on (maid.approval.requested).
 struct PendingApproval {
     std::string id;
     nlohmann::json event;
@@ -234,7 +234,7 @@ public:
             agent.set_nvim_host(host_);
         };
         engine_ = std::make_unique<Engine>(std::move(eo));
-        client_ = engine_->connect(Origin::Local, "maic", "in-process", [this] { wake_pump(); });
+        client_ = engine_->connect(Origin::Local, "maid", "in-process", [this] { wake_pump(); });
         hello();
 
         bool want_auto = false;
@@ -282,7 +282,7 @@ public:
 
     ~App() { shutdown(); }
 
-    // The session in the daemon: created in this directory or resumed, over the protocol as maic.nvim does it.
+    // The session in the daemon: created in this directory or resumed, over the protocol as maid.nvim does it.
     // False, with the reason shown, when the daemon is not there or refuses; the session then opens in this process.
     bool open_in_daemon(const TuiOptions& options) {
         daemon_ = DaemonClient::connect([this] { wake_pump(); });
@@ -290,11 +290,11 @@ public:
         hello();
         nlohmann::json reply;
         if (options.resume) {
-            reply = call("maic.session.resume", {{"session", options.resume->string()}});
+            reply = call("maid.session.resume", {{"session", options.resume->string()}});
         } else {
             nlohmann::json m = {{"workspace", std::filesystem::current_path().string()}};
             if (options.mode) m["mode"] = *options.mode;
-            reply = call("createConversation", {{"maic", m}});
+            reply = call("createConversation", {{"maid", m}});
         }
         if (reply.contains("error")) {
             view_.append(Kind::Error, "the daemon refused this session (" + reply["error"].value("message", "") + "); it runs in this process instead");
@@ -304,7 +304,7 @@ public:
         }
         session_ = result(reply).value("id", "");
         follow_first();
-        nlohmann::json about = result(call("maic.session.describe", {{"session", session_}}));
+        nlohmann::json about = result(call("maid.session.describe", {{"session", session_}}));
         for (const auto& f : about.value("instructions", nlohmann::json::array())) startup_.instructions.push_back(f);
         for (const auto& t : about.value("tools", nlohmann::json::array())) startup_.tools.push_back(t);
         for (const auto& n : about.value("tool_notices", nlohmann::json::array())) startup_.tool_notices.push_back(n);
@@ -317,7 +317,7 @@ public:
             // a model this directory's settings do not know: no service hint
         }
         view_.append(Kind::Notice, std::string(options.resume ? "resumed session " + session_ + " " : "") +
-                                       "in the daemon (maic daemon status): the session outlives this window, and :q leaves it there");
+                                       "in the daemon (maid daemon status): the session outlives this window, and :q leaves it there");
         if (options.model) command("model " + *options.model);
         // Auto under a dumb harness is confirmed first; the daemon opened it one step safer, as this process would.
         bool asked_auto = (options.mode ? *options.mode : settings_.mode) == "auto";
@@ -340,12 +340,12 @@ public:
 
 private:
     // ---------- the engine connection ----------
-    void hello() { call("maic.hello", {{"protocol", 1}, {"client", {{"name", "maic"}, {"version", MAIC_VERSION}}}, {"capabilities", {"tool_output"}}}); }
+    void hello() { call("maid.hello", {{"protocol", 1}, {"client", {{"name", "maid"}, {"version", MAID_VERSION}}}, {"capabilities", {"tool_output"}}}); }
     // The session just opened: its snapshot, the index, then the events from here on.
     void follow_first() {
-        nlohmann::json snap = result(call("maic.session.attach", {{"session", session_}}));
-        call("maic.index.subscribe");
-        for (const auto& e : result(call("maic.index.get")).value("entries", nlohmann::json::array())) index_[e.value("id", "")] = e;
+        nlohmann::json snap = result(call("maid.session.attach", {{"session", session_}}));
+        call("maid.index.subscribe");
+        for (const auto& e : result(call("maid.index.get")).value("entries", nlohmann::json::array())) index_[e.value("id", "")] = e;
         take_events();
         follow_entry(snap.value("entry", nlohmann::json::object()));
         usage_ = snap.value("usage", nlohmann::json::object());
@@ -355,7 +355,7 @@ private:
     nlohmann::json call(const std::string& method, nlohmann::json params = nlohmann::json::object(), bool from_ui = true);
     static nlohmann::json result(const nlohmann::json& reply) { return reply.value("result", nlohmann::json::object()); }
     void command(const std::string& line);              // a `:` command the engine owns, its answer shown
-    void show(const nlohmann::json& reply);              // a maic.session.command answer: lines, a question, text to send
+    void show(const nlohmann::json& reply);              // a maid.session.command answer: lines, a question, text to send
     void wake_pump();
     void pump();
     void take_events();  // what the engine has queued, into the inbox, in order
@@ -377,13 +377,13 @@ private:
     std::string session_line(const nlohmann::json& e) const;
     Element render_switcher();
     bool handle_switcher(const Event& e);
-    std::map<std::string, nlohmann::json> index_;  // the engine's sessions, from maic.index
+    std::map<std::string, nlohmann::json> index_;  // the engine's sessions, from maid.index
     std::optional<Switcher> switcher_;
     bool quit_warned_ = false;  // :q was told other sessions are working
     void open_recording();
     void record(const char* dir, const nlohmann::json& msg);
     std::function<Settings(const std::filesystem::path&)> settings_at_;
-    std::optional<Settings> cd_settings_;  // what :cd read in the new directory, until its maic.session.settings arrives
+    std::optional<Settings> cd_settings_;  // what :cd read in the new directory, until its maid.session.settings arrives
     std::unique_ptr<Engine> engine_;            // this process's own, when the daemon does not hold the sessions
     std::unique_ptr<DaemonClient> daemon_;      // the daemon's, when it does
     bool daemon_gone_said_ = false;
@@ -396,7 +396,7 @@ private:
     bool pump_wake_ = false, pump_stop_ = false;
     std::thread pump_;
     std::atomic<bool> drain_posted_{false};
-    std::unique_ptr<protocol::Recorder> recorder_;  // MAIC_PROTOCOL_RECORD: this connection's exchange
+    std::unique_ptr<protocol::Recorder> recorder_;  // MAID_PROTOCOL_RECORD: this connection's exchange
     Startup startup_;
 
     // The session as the engine reports it.
@@ -411,7 +411,7 @@ private:
     long turn_seq_ = -1;     // the stream's position before the turn this client started: an idle at or before it is an earlier turn's
     std::chrono::steady_clock::time_point response_t0_;
     bool last_cancelled_ = false;
-    std::map<std::string, nlohmann::json> approvals_seen_;  // for MaicApproval's verdict
+    std::map<std::string, nlohmann::json> approvals_seen_;  // for MaidApproval's verdict
 
     void post(Kind k, std::string text) {
         view_.append(k, std::move(text));
@@ -440,7 +440,7 @@ private:
     std::vector<std::string> models_cache_;
     std::chrono::steady_clock::time_point models_cached_at_{};
     void theme_command(const std::string& arg);  // :theme, :theme NAME, :theme reload, :theme nvim:NAME
-    // The host nvim (maic.nvim, docs/nvim.md): connected before the settings were read, or refused with a reason.
+    // The host nvim (maid.nvim, docs/nvim.md): connected before the settings were read, or refused with a reason.
     std::shared_ptr<HostNvim> host_;
     std::string host_refused_;
     std::atomic<bool> follow_theme_{false};  // the theme follows the host's colorscheme
@@ -449,10 +449,10 @@ private:
     void follow_host_theme(bool announce);  // on the host's handler thread: read its colorscheme, apply it here
     void fire(const std::string& event, nlohmann::json data);  // a User autocmd in the host, with the session id
     void nvim_command(const std::string& arg);  // :nvim, :nvim theme
-    void interrupt_from_host();                 // maic.nvim's :MaicInterrupt: the first Ctrl-C, or a notice when idle
-    void open_file(const std::filesystem::path& path);  // in the host, or in $EDITOR in MAIC's place
+    void interrupt_from_host();                 // maid.nvim's :MaidInterrupt: the first Ctrl-C, or a notice when idle
+    void open_file(const std::filesystem::path& path);  // in the host, or in $EDITOR in MAID's place
     void paste_input(const std::string& text);  // appended to the input, never sent
-    bool pasting_ = false;  // inside a bracketed paste (maic.nvim's fallback when MAIC is not connected)
+    bool pasting_ = false;  // inside a bracketed paste (maid.nvim's fallback when MAID is not connected)
     std::string paste_buf_;
     void use_theme(const Theme& theme);
     std::vector<std::string> nvim_colors();  // nvim's colorschemes for :theme nvim:<Tab>, asked once in the background
@@ -474,7 +474,7 @@ private:
     void answer(Approval a, std::string feedback = "");
     void answer_question(std::string text);
     void cancel_turn();
-    void steer(const std::string& action);  // maic.steer on the running response; the input, if any, is its note
+    void steer(const std::string& action);  // maid.steer on the running response; the input, if any, is its note
     void submit(std::string text, bool now);
     void start_turn(const std::string& text);
     std::string take_dropped_image(const std::string& text);
@@ -485,7 +485,7 @@ private:
     void set_focus(Focus f);
     void edit_externally();
     void quit(const std::string& as = "", bool sure = false);
-    std::string quit_as_;  // :q's --bg, --park or --stop, for maic.session.leave
+    std::string quit_as_;  // :q's --bg, --park or --stop, for maid.session.leave
     void shutdown();
 
     ScreenInteractive& screen_;
@@ -534,7 +534,7 @@ private:
 
 void App::welcome() {
     std::string remote = startup_.remote ? "  ·  REMOTE" : "  ·  local";
-    view_.append(Kind::Notice, "MAIC  ·  workspace " + ws_ + "  ·  model " + startup_.model + remote);
+    view_.append(Kind::Notice, "MAID  ·  workspace " + ws_ + "  ·  model " + startup_.model + remote);
     std::string files;
     for (const auto& f : startup_.instructions) files += (files.empty() ? "" : ", ") + f;
     if (!settings_.theme_error.empty()) view_.append(Kind::Error, settings_.theme_error + "; the default theme is in use (:theme reload after fixing it)");
@@ -583,7 +583,7 @@ nlohmann::json App::call(const std::string& method, nlohmann::json params, bool 
 }
 
 void App::command(const std::string& line) {
-    nlohmann::json reply = call("maic.session.command", {{"session", session_}, {"line", line}});
+    nlohmann::json reply = call("maid.session.command", {{"session", session_}, {"line", line}});
     drain();
     show(reply);
 }
@@ -643,7 +643,7 @@ void App::drain() {
     take_events();
     if (daemon_ && daemon_->gone() && !daemon_gone_said_) {
         daemon_gone_said_ = true;
-        post(Kind::Error, "the daemon has stopped: its sessions are parked. Quit, and maic -c (or maic -r) resumes this one");
+        post(Kind::Error, "the daemon has stopped: its sessions are parked. Quit, and maid -c (or maid -r) resumes this one");
     }
     std::vector<nlohmann::json> batch;
     {
@@ -656,16 +656,16 @@ void App::drain() {
 void App::apply(const nlohmann::json& m) {
     std::string method = m.value("method", "");
     const nlohmann::json& p = m.contains("params") ? m["params"] : nlohmann::json::object();
-    if (method == "maic.event") {
+    if (method == "maid.event") {
         if (p.value("stream_id", "") == session_) on_event(p);  // else a session this view left, its last events before the switch
-    } else if (method == "maic.index") {
+    } else if (method == "maid.index") {
         if (p.contains("removed")) index_.erase(p["removed"].get<std::string>());
         if (!p.contains("entry")) return;
         std::string id = p["entry"].value("id", "");
         index_[id] = p["entry"];
         if (id == session_) follow_entry(p["entry"]);
         screen_.PostEvent(Event::Custom);
-    } else if (method == "maic.engine" && p.contains("notice")) {
+    } else if (method == "maid.engine" && p.contains("notice")) {
         post(p.value("level", "warn") == "info" ? Kind::Notice : Kind::Error, p["notice"]);
     }
 }
@@ -726,15 +726,15 @@ void App::live(const std::string& key, int stream, const std::string& data, size
 void App::on_event(const nlohmann::json& e) {
     const std::string type = e.value("type", "");
     long seq = e.value("sequence_number", -1L);
-    if (type == "maic.session.state") {
+    if (type == "maid.session.state") {
         bool was = busy_;
         if (e.value("activity", "idle") != "idle") busy_ = true;
         else if (seq > turn_seq_) busy_ = false;
         if (was && !busy_) screen_.Post([this] { after_turn(); });
-    } else if (type == "maic.input.added") {
+    } else if (type == "maid.input.added") {
         std::string text;
         for (const auto& part : e["item"].value("content", nlohmann::json::array())) text += part.value("text", "");
-        size_t pics = e["item"].contains("maic") ? e["item"]["maic"].value("images", nlohmann::json::array()).size() : 0;
+        size_t pics = e["item"].contains("maid") ? e["item"]["maid"].value("images", nlohmann::json::array()).size() : 0;
         view_.append(Kind::User, text + (pics == 0 ? "" : "\n(with " + std::to_string(pics) + " image" + (pics == 1 ? "" : "s") + ")"));
     } else if (type == "response.created") {
         response_ = e["response"].value("id", "");
@@ -743,20 +743,20 @@ void App::on_event(const nlohmann::json& e) {
         if (!e["response"]["previous_response_id"].is_string()) {
             response_t0_ = std::chrono::steady_clock::now();
             tool_calls_ = 0;
-            fire("MaicTurnStart", {{"model", e["response"].value("model", model_)}});
+            fire("MaidTurnStart", {{"model", e["response"].value("model", model_)}});
         }
-    } else if (type == "maic.steer.applied") {
+    } else if (type == "maid.steer.applied") {
         std::string action = e.value("action", ""), note = e.value("note", "");
         std::string line = "↯ " + action + (e.value("trigger", "") == "ban" ? " (a ban's steer)" : "") + (note.empty() ? "" : ": " + note);
         if (e.contains("waits_for")) line += "  (at the next step)";
         if (!e["withdrawn"].empty()) line += "  (withdrew " + std::to_string(e["withdrawn"].size()) + " waiting)";
         view_.append(Kind::Notice, line);
-    } else if (type == "maic.turn.paused") {
+    } else if (type == "maid.turn.paused") {
         paused_ = pause_menu_ = true;
     } else if (type == "error") {
         view_.append(Kind::Notice, "halted: " + e.value("message", ""));
     } else if (type == "response.output_text.done") {
-        if (e.contains("maic") && e["maic"].contains("trimmed")) view_.replace_last(Kind::Assistant, e.value("text", ""));
+        if (e.contains("maid") && e["maid"].contains("trimmed")) view_.replace_last(Kind::Assistant, e.value("text", ""));
     } else if (type == "response.output_text.delta" || type == "response.reasoning_text.delta") {
         view_.append_to_last(type == "response.output_text.delta" ? Kind::Assistant : Kind::Thinking, e.value("delta", ""));
     } else if (type == "response.output_item.added") {
@@ -764,7 +764,7 @@ void App::on_event(const nlohmann::json& e) {
         std::string kind = item.value("type", "");
         if (kind != "function_call" && kind != "shell_call") return;
         ++tool_calls_;
-        std::string summary = item.contains("maic") ? item["maic"].value("summary", "") : "";
+        std::string summary = item.contains("maid") ? item["maid"].value("summary", "") : "";
         view_.append(Kind::Tool, summary);
         if (host_up()) {
             std::string tool = "run_shell", path;
@@ -780,15 +780,15 @@ void App::on_event(const nlohmann::json& e) {
                 if (!path.empty()) path = resolve_path(ws_, path).string();
             } catch (const std::exception&) {
             }
-            fire("MaicToolCall", {{"tool", tool}, {"path", path}, {"summary", summary}});
+            fire("MaidToolCall", {{"tool", tool}, {"path", path}, {"summary", summary}});
         }
     } else if (type == "response.shell_call_output_content.delta") {
         const nlohmann::json& d = e["delta"];
         std::string out = d.value("stdout", ""), err = d.value("stderr", "");
-        size_t offset = e.contains("maic") ? e["maic"].value("offset", size_t(0)) : 0;
+        size_t offset = e.contains("maid") ? e["maid"].value("offset", size_t(0)) : 0;
         if (!out.empty()) live(e.value("item_id", ""), 0, out, offset);
         else if (!err.empty()) live(e.value("item_id", ""), 1, err, offset);
-    } else if (type == "maic.tool.output.delta") {
+    } else if (type == "maid.tool.output.delta") {
         if (!e.contains("data")) return;  // a skip: the next chunk's offset shows the gap
         if (!e.contains("output_index")) {
             // A `!cmd` of this session's: it streams under the command's line.
@@ -800,22 +800,22 @@ void App::on_event(const nlohmann::json& e) {
     } else if (type == "response.output_item.done") {
         const nlohmann::json& item = e["item"];
         std::string kind = item.value("type", "");
-        if (kind == "message" && item.contains("maic") && item["maic"].value("status", "") == "discarded") {
+        if (kind == "message" && item.contains("maid") && item["maid"].value("status", "") == "discarded") {
             view_.append(Kind::Notice, "(the reply above was discarded: the model never sees it)");
             return;
         }
-        if ((kind != "function_call_output" && kind != "shell_call_output") || !item.contains("maic")) return;  // a call that never ran keeps its live lines
+        if ((kind != "function_call_output" && kind != "shell_call_output") || !item.contains("maid")) return;  // a call that never ran keeps its live lines
         std::string text = kind == "function_call_output" ? item.value("output", "")
                                                           : item["output"].empty() ? "" : item["output"][0].value("stdout", "");
         std::string full;
-        if (item["maic"].contains("full_output")) {
-            const auto& f = item["maic"]["full_output"];
+        if (item["maid"].contains("full_output")) {
+            const auto& f = item["maid"]["full_output"];
             // Opening the fold shows the whole output as it looked when it ended, at most its last MiB.
-            full = std::string("[") + kFullOutputLabel + ": maic sessions output " + f.value("session", "") + " " + f.value("call", "") + "]\n" +
+            full = std::string("[") + kFullOutputLabel + ": maid sessions output " + f.value("session", "") + " " + f.value("call", "") + "]\n" +
                    full_output_screen(full_output_path(transcript_, f.value("call", "")), 1 << 20);
         }
-        view_.finish_live(item["maic"].value("ok", false) ? Kind::ToolOk : Kind::ToolErr, text, std::move(full));
-    } else if (type == "maic.notice") {
+        view_.finish_live(item["maid"].value("ok", false) ? Kind::ToolOk : Kind::ToolErr, text, std::move(full));
+    } else if (type == "maid.notice") {
         std::string kind = e.value("kind", ""), text = e.value("text", "");
         if (kind == "tool_call") {
             // A subagent's call, or a line about one ("↳ explore on ...").
@@ -827,53 +827,53 @@ void App::on_event(const nlohmann::json& e) {
                     if (!path.empty()) path = resolve_path(ws_, path).string();
                 } catch (const std::exception&) {
                 }
-                fire("MaicToolCall", {{"tool", e["tool"]}, {"path", path}, {"summary", text.rfind("↳ ", 0) == 0 ? text.substr(std::strlen("↳ ")) : text}});
+                fire("MaidToolCall", {{"tool", e["tool"]}, {"path", path}, {"summary", text.rfind("↳ ", 0) == 0 ? text.substr(std::strlen("↳ ")) : text}});
             }
         } else if (kind == "tool_result") {
             std::string full;
             if (e.contains("full_output")) {
                 const auto& f = e["full_output"];
-                full = std::string("[") + kFullOutputLabel + ": maic sessions output " + f.value("session", "") + " " + f.value("call", "") + "]\n" +
+                full = std::string("[") + kFullOutputLabel + ": maid sessions output " + f.value("session", "") + " " + f.value("call", "") + "]\n" +
                        full_output_screen(full_output_path(transcript_, f.value("call", "")), 1 << 20);
             }
             view_.finish_live(e.value("ok", false) ? Kind::ToolOk : Kind::ToolErr, text, std::move(full));
         } else {
             view_.append(Kind::Notice, text);
         }
-    } else if (type == "maic.task.created") {
+    } else if (type == "maid.task.created") {
         view_.append(Kind::Notice, "⧉ the " + e.value("agent", "") + " agent works in the background: " + e.value("prompt_head", "") + "  (:switch shows it)");
-    } else if (type == "maic.task.completed" || type == "maic.task.failed") {
-        bool ok = type == "maic.task.completed";
+    } else if (type == "maid.task.completed" || type == "maid.task.failed") {
+        bool ok = type == "maid.task.completed";
         std::string steps = std::to_string(e.value("steps", 0)), tokens = std::to_string(e.value("tokens", 0L));
         view_.append(ok ? Kind::Notice : Kind::Error, "⧉ the " + e.value("agent", "") + " task " + (ok ? "finished" : e.value("reason", "failed")) + " (" + steps + " steps, " + tokens +
                                                           " tokens); its answer goes to the agent  (:switch " + e.value("task", "") + " reads it)");
-    } else if (type == "maic.approval.requested") {
+    } else if (type == "maid.approval.requested") {
         approval_ = PendingApproval{e.value("id", ""), e};
         nlohmann::json data = {{"tool", e.value("tool", "")}, {"path", e.value("path", "")}, {"summary", e.value("summary", "")}, {"reason", e.value("reason", "")}, {"verdict", "pending"}};
         approvals_seen_[e.value("id", "")] = data;
-        fire("MaicApproval", data);
-    } else if (type == "maic.approval.answered") {
+        fire("MaidApproval", data);
+    } else if (type == "maid.approval.answered") {
         std::string id = e.value("id", "");
         if (approval_ && approval_->id == id) approval_.reset();
         if (auto it = approvals_seen_.find(id); it != approvals_seen_.end()) {
             it->second["verdict"] = e.value("choice", "no");
-            fire("MaicApproval", it->second);
+            fire("MaidApproval", it->second);
             approvals_seen_.erase(it);
         }
-    } else if (type == "maic.question.asked") {
+    } else if (type == "maid.question.asked") {
         question_ = PendingQuestion{e.value("id", ""), e.value("text", ""), e.value("options", std::vector<std::string>{}), ""};
-    } else if (type == "maic.question.answered") {
+    } else if (type == "maid.question.answered") {
         if (question_ && question_->id == e.value("id", "")) question_.reset();
-    } else if (type == "maic.todo.updated") {
+    } else if (type == "maid.todo.updated") {
         todo_.clear();
         for (const auto& t : e.value("items", nlohmann::json::array())) todo_.push_back({t.value("text", ""), t.value("done", false)});
-    } else if (type == "maic.file.written") {
+    } else if (type == "maid.file.written") {
         if (!host_up()) return;
         host_checktime(*host_);
-        fire("MaicFileWritten", {{"tool", e.value("tool", "")}, {"path", e.value("path", "")}});
-    } else if (type == "maic.usage.updated") {
+        fire("MaidFileWritten", {{"tool", e.value("tool", "")}, {"path", e.value("path", "")}});
+    } else if (type == "maid.usage.updated") {
         usage_ = e;
-    } else if (type == "maic.session.settings") {
+    } else if (type == "maid.session.settings") {
         if (e.contains("mode")) mode_ = e["mode"];
         if (e.contains("model")) model_ = e["model"];
         if (e.contains("remote_model")) remote_ = e["remote_model"];
@@ -881,18 +881,18 @@ void App::on_event(const nlohmann::json& e) {
         if (e.contains("harness")) dumb_ = e["harness"] == "dumb";
         if (e.contains("tier")) tier_ = e["tier"];
         if (e.contains("workspace")) follow_workspace(e["workspace"].get<std::string>());
-    } else if (type == "maic.session.title") {
+    } else if (type == "maid.session.title") {
         std::string text = e.value("text", "");
         view_.append(Kind::Notice, e.value("source", "") == "auto" ? "titled: " + text + "  (:rename changes it)" : "titled: " + text);
-    } else if (type == "response.completed" || type == "response.failed" || type == "maic.response.cancelled" || type == "response.incomplete") {
+    } else if (type == "response.completed" || type == "response.failed" || type == "maid.response.cancelled" || type == "response.incomplete") {
         const nlohmann::json& r = e["response"];
-        if (!r["maic"].value("final", true)) {
-            if (type == "maic.response.cancelled") view_.append(Kind::Notice, "paused · Ctrl-Q resumes · s steer · d drop · f further · k keep · h halt · Esc types a message");
+        if (!r["maid"].value("final", true)) {
+            if (type == "maid.response.cancelled") view_.append(Kind::Notice, "paused · Ctrl-Q resumes · s steer · d drop · f further · k keep · h halt · Esc types a message");
             screen_.PostEvent(Event::Custom);
             return;  // the turn goes on
         }
         if (type == "response.failed") view_.append(Kind::Error, r.contains("error") && r["error"].is_object() ? r["error"].value("message", "") : "");
-        last_cancelled_ = type == "maic.response.cancelled";
+        last_cancelled_ = type == "maid.response.cancelled";
         // The footer: model, how long the response took, how many tools ran.
         double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - response_t0_).count();
         char dur[32];
@@ -903,7 +903,7 @@ void App::on_event(const nlohmann::json& e) {
         std::string model = r.value("model", model_);
         view_.append(Kind::Notice, "▣ " + model + " · " + dur + (tool_calls_ ? " · " + std::to_string(tool_calls_) + (tool_calls_ == 1 ? " tool call" : " tool calls") : "") +
                                        (last_cancelled_ ? " · interrupted" : ""));
-        fire("MaicTurnEnd", {{"model", model}, {"tool_calls", tool_calls_}, {"seconds", secs}, {"interrupted", last_cancelled_}});
+        fire("MaidTurnEnd", {{"model", model}, {"tool_calls", tool_calls_}, {"seconds", secs}, {"interrupted", last_cancelled_}});
     }
     screen_.PostEvent(Event::Custom);
 }
@@ -918,10 +918,10 @@ void App::after_turn() {
     }
 }
 
-// MAIC_PROTOCOL_RECORD=DIR keeps this connection's exchange as DIR/tui-<pid>.jsonl for `maic protocol check`, checked
+// MAID_PROTOCOL_RECORD=DIR keeps this connection's exchange as DIR/tui-<pid>.jsonl for `maid protocol check`, checked
 // as it goes: a violation is shown once. The test suite runs every case this way.
 void App::open_recording() {
-    const char* dir = std::getenv("MAIC_PROTOCOL_RECORD");
+    const char* dir = std::getenv("MAID_PROTOCOL_RECORD");
     if (dir && *dir) recorder_ = std::make_unique<protocol::Recorder>(std::filesystem::path(dir) / ("tui-" + std::to_string(getpid()) + ".jsonl"));
 }
 
@@ -947,13 +947,13 @@ void App::maybe_check_keymaps(const LazyLockState& lock) {
         if (r.error == "stopped" || r.error.rfind("can't run ", 0) == 0) return;
         save_keymap_record(r, hash);
         if (!r.error.empty()) {
-            post(Kind::Error, "nvim keymaps: the check after the lazy-lock.json change could not run: " + r.error + " (maic nvim keymaps)");
+            post(Kind::Error, "nvim keymaps: the check after the lazy-lock.json change could not run: " + r.error + " (maid nvim keymaps)");
             return;
         }
         auto fresh = new_collisions(before, r);
         if (fresh.empty()) return;
-        std::string text = before.exists ? "a plugin update added keymaps that collide: maic nvim keymaps"
-                                         : "nvim keymaps, checked for the first time: " + std::to_string(fresh.size()) + " collide: maic nvim keymaps";
+        std::string text = before.exists ? "a plugin update added keymaps that collide: maid nvim keymaps"
+                                         : "nvim keymaps, checked for the first time: " + std::to_string(fresh.size()) + " collide: maid nvim keymaps";
         for (const auto& c : fresh) text += "\n  " + c.text;
         post(Kind::Notice, text);
     });
@@ -1098,8 +1098,8 @@ void App::theme_command(const std::string& arg) {
         post(Kind::Notice, "no longer following nvim's colorscheme this session (:nvim theme follows it again)");
     }
     if (arg.rfind("nvim:", 0) == 0 && settings_.bare) {
-        post(Kind::Error, ":theme nvim:NAME runs nvim, and this MAIC is bare (--bare, MAIC_BARE=1 or bare = true): it uses nothing from nvim. "
-                          "Themes saved from nvim before are MAIC's own files and still load: :theme nvim-NAME");
+        post(Kind::Error, ":theme nvim:NAME runs nvim, and this MAID is bare (--bare, MAID_BARE=1 or bare = true): it uses nothing from nvim. "
+                          "Themes saved from nvim before are MAID's own files and still load: :theme nvim-NAME");
         return;
     }
     if (arg.rfind("nvim:", 0) == 0) {
@@ -1151,7 +1151,7 @@ void App::start_host() {
     };
     h.colorscheme = [this] { follow_host_theme(false); };
     h.error = [this](const std::string& why) { post(Kind::Error, "nvim: " + why); };
-    h.closed = [this] { post(Kind::Notice, "nvim: the host is gone; :e and the theme are MAIC's own again"); };
+    h.closed = [this] { post(Kind::Notice, "nvim: the host is gone; :e and the theme are MAID's own again"); };
     host_->set_handlers(std::move(h));
     follow_theme_ = settings_.follow_nvim_theme;
     try {
@@ -1160,7 +1160,7 @@ void App::start_host() {
         view_.append(Kind::Error, std::string("nvim: cannot watch its colorscheme: ") + e.what());
         follow_theme_ = false;
     }
-    view_.append(Kind::Notice, "nvim: connected to the nvim MAIC runs in (" + host_->socket() + "): :e FILE opens there, e and d at an approval show the file and the diff, :nvim says more");
+    view_.append(Kind::Notice, "nvim: connected to the nvim MAID runs in (" + host_->socket() + "): :e FILE opens there, e and d at an approval show the file and the diff, :nvim says more");
     if (follow_theme_) host_->post([this] { follow_host_theme(true); });
 }
 
@@ -1198,32 +1198,32 @@ void App::nvim_command(const std::string& arg) {
         return;
     }
     if (host_up()) {
-        post(Kind::Notice, "nvim: connected to " + host_->socket() + " as channel " + std::to_string(host_->channel()) + " (client \"maic\")\n"
+        post(Kind::Notice, "nvim: connected to " + host_->socket() + " as channel " + std::to_string(host_->channel()) + " (client \"maid\")\n"
                            "  :e FILE and e at an approval open files there, d at a write's approval diffs it in a new tab\n"
-                           "  :MaicInterrupt (<leader>mc) there stops a running turn as Ctrl-C does\n"
-                           "  User autocmds MaicTurnStart, MaicToolCall, MaicApproval, MaicFileWritten, MaicTurnEnd fire there\n"
-                           "  the model has the diagnostics tool; your Lua has maic.nvim\n"
+                           "  :MaidInterrupt (<leader>mc) there stops a running turn as Ctrl-C does\n"
+                           "  User autocmds MaidTurnStart, MaidToolCall, MaidApproval, MaidFileWritten, MaidTurnEnd fire there\n"
+                           "  the model has the diagnostics tool; your Lua has maid.nvim\n"
                            "  theme: " + std::string(follow_theme_ ? "follows its colorscheme (" + settings_.theme + ")" : "your own (" + settings_.theme + "); :nvim theme follows nvim's"));
     } else if (settings_.bare) {
-        post(Kind::Notice, "nvim: bare (--bare, MAIC_BARE=1 or bare = true): MAIC uses nothing from nvim. No host connection even inside nvim, the built-in "
+        post(Kind::Notice, "nvim: bare (--bare, MAID_BARE=1 or bare = true): MAID uses nothing from nvim. No host connection even inside nvim, the built-in "
                            "highlighter, no theme from nvim, no lazy-lock notice and no keymap check; your settings, themes, Lua and tools load as usual. :h bare");
     } else if (host_) {
         post(Kind::Notice, "nvim: the host this session connected to is gone");
     } else {
         const char* sock = std::getenv("NVIM");
-        post(Kind::Notice, std::string("nvim: no host. ") + (sock && *sock ? "$NVIM was refused: " + host_refused_ : "$NVIM is not set: MAIC is not running inside nvim") +
-                               "\nmaic.nvim (:Maic in nvim) runs MAIC in a terminal there; :h nvim");
+        post(Kind::Notice, std::string("nvim: no host. ") + (sock && *sock ? "$NVIM was refused: " + host_refused_ : "$NVIM is not set: MAID is not running inside nvim") +
+                               "\nmaid.nvim (:Maid in nvim) runs MAID in a terminal there; :h nvim");
     }
 }
 
-// maic_interrupt does what the first Ctrl-C does to a running turn, shell command or question, and nothing else: an
-// idle MAIC keeps its draft and says so instead of clearing it or arming the quit.
+// maid_interrupt does what the first Ctrl-C does to a running turn, shell command or question, and nothing else: an
+// idle MAID keeps its draft and says so instead of clearing it or arming the quit.
 void App::interrupt_from_host() {
     if (asking() || shell_busy_ || busy_) {
         handle(Event::Special("\x03"));
         return;
     }
-    post(Kind::Notice, "nvim: nothing to interrupt (MAIC is idle)");
+    post(Kind::Notice, "nvim: nothing to interrupt (MAID is idle)");
 }
 
 void App::open_file(const std::filesystem::path& path) {
@@ -1482,7 +1482,7 @@ bool App::handle_confirm(const Event& e) {
         return true;
     }
     confirm_.reset();
-    nlohmann::json reply = call("maic.session.command", {{"session", session_}, {"ask", id}, {"key", key}});
+    nlohmann::json reply = call("maid.session.command", {{"session", session_}, {"ask", id}, {"key", key}});
     drain();
     show(reply);
     return true;
@@ -1550,7 +1550,7 @@ bool App::handle(Event e) {
         return true;
     }
 
-    // A bracketed paste (maic.nvim's :MaicSend when MAIC is not connected to it) goes into the input whole,
+    // A bracketed paste (maid.nvim's :MaidSend when MAID is not connected to it) goes into the input whole,
     // whatever the mode, and is never sent.
     if (e.input() == "\x1b[200~") {
         pasting_ = true;
@@ -1609,14 +1609,14 @@ bool App::handle(Event e) {
     if (asking()) return handle_approval(e);
     if (switcher_) return handle_switcher(e);
     if (pause_menu_ && paused_) return handle_pause_menu(e);
-    // Ctrl-S pauses a running turn (the interrupt steer), Ctrl-Q resumes a paused one: MAIC keeps the terminal's
+    // Ctrl-S pauses a running turn (the interrupt steer), Ctrl-Q resumes a paused one: MAID keeps the terminal's
     // flow control off, so neither stops the output.
     if (raw == "\x13" && busy_ && !paused_ && !response_.empty()) return steer("interrupt"), true;
     if (raw == "\x11" && paused_) return steer("steer"), true;
 
     if (raw == "\x03") {  // Ctrl-C: interrupt, then clear input, then quit
         if (quit_when_idle_.exchange(false)) post(Kind::Notice, "staying after the reply (:wq cancelled)");
-        if (shell_busy_) call("maic.session.shell", {{"session", session_}, {"interrupt", true}});
+        if (shell_busy_) call("maid.session.shell", {{"session", session_}, {"interrupt", true}});
         else if (busy_) cancel_turn();
         else if (!editor_.empty()) editor_.clear();
         else if (quit_armed_) quit();
@@ -1739,9 +1739,9 @@ bool App::handle_approval(const Event& e) {
         std::filesystem::path path = approval_ ? approval_->event.value("path", "") : "";
         if (path.empty()) status_msg_ = "this approval is not about a file";
         else if (k == "e") open_file(path);
-        else if (!host_up()) status_msg_ = "d shows the diff in nvim: run MAIC inside nvim (maic.nvim)";
+        else if (!host_up()) status_msg_ = "d shows the diff in nvim: run MAID inside nvim (maid.nvim)";
         else {
-            nlohmann::json proposed = result(call("maic.approval.proposed", {{"session", session_}, {"approval", approval_->id}}));
+            nlohmann::json proposed = result(call("maid.approval.proposed", {{"session", session_}, {"approval", approval_->id}}));
             if (!proposed.value("text", nlohmann::json()).is_string()) status_msg_ = "no proposed content to diff for this call";
             else {
                 try {
@@ -1762,7 +1762,7 @@ void App::answer(Approval a, std::string feedback) {
     static const char* choices[] = {"yes", "no", "always", "trip"};
     std::string id = approval_->id;
     approval_.reset();
-    call("maic.approval.answer", {{"session", session_}, {"approval", id}, {"choice", choices[static_cast<int>(a)]}, {"feedback", std::move(feedback)}});
+    call("maid.approval.answer", {{"session", session_}, {"approval", id}, {"choice", choices[static_cast<int>(a)]}, {"feedback", std::move(feedback)}});
     drain();
 }
 
@@ -1786,7 +1786,7 @@ void App::answer_question(std::string text) {
     view_.append(Kind::User, text.empty() ? "(no answer)" : text);
     std::string id = question_->id;
     question_.reset();
-    call("maic.question.reply", {{"session", session_}, {"question", id}, {"text", std::move(text)}});
+    call("maid.question.reply", {{"session", session_}, {"question", id}, {"text", std::move(text)}});
     drain();
 }
 
@@ -1804,7 +1804,7 @@ void App::steer(const std::string& action) {
     while (!note.empty() && std::isspace(static_cast<unsigned char>(note.back()))) note.pop_back();
     bool with_note = !note.empty() && (action == "steer" || action == "drop" || action == "further");
     if (with_note) params["note"] = note;
-    nlohmann::json reply = call("maic.steer", params);
+    nlohmann::json reply = call("maid.steer", params);
     drain();
     if (reply.contains("error")) {
         post(Kind::Error, reply["error"].value("message", "the engine refused the steer"));
@@ -1844,7 +1844,7 @@ void App::submit(std::string text, bool now) {
     while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) text.pop_back();
     if (text.empty()) {
         if (now && queued_) {
-            call("response.create", {{"conversation", session_}, {"maic", {{"now", true}}}});
+            call("response.create", {{"conversation", session_}, {"maid", {{"now", true}}}});
             drain();
         }
         return;
@@ -1880,12 +1880,12 @@ void App::submit(std::string text, bool now) {
     }
     if (busy_) {
         nlohmann::json params = {{"conversation", session_}, {"input", text}};
-        if (now) params["maic"] = {{"now", true}};
+        if (now) params["maid"] = {{"now", true}};
         nlohmann::json reply = call("response.create", params);
-        if (!result(reply).contains("maic") || !result(reply)["maic"].value("queued", false)) {
+        if (!result(reply).contains("maid") || !result(reply)["maid"].value("queued", false)) {
             // The turn ended meanwhile: this one starts the next.
             busy_ = true;
-            turn_seq_ = result(reply).contains("maic") ? result(reply)["maic"].value("sequence_number", -1L) : -1;
+            turn_seq_ = result(reply).contains("maid") ? result(reply)["maid"].value("sequence_number", -1L) : -1;
             response_ = result(reply).value("id", "");
             drain();
             return;
@@ -1906,14 +1906,14 @@ void App::start_turn(const std::string& text_in) {
         return;
     }
     busy_ = true;
-    turn_seq_ = result(reply)["maic"].value("sequence_number", -1L);
+    turn_seq_ = result(reply)["maid"].value("sequence_number", -1L);
     response_ = result(reply).value("id", "");
     drain();
 }
 
 // :image FILE through the engine, quietly: whether the picture is attached to the next message.
 bool App::attach(const std::filesystem::path& file) {
-    nlohmann::json reply = call("maic.session.command", {{"session", session_}, {"line", "image " + file.string()}});
+    nlohmann::json reply = call("maid.session.command", {{"session", session_}, {"line", "image " + file.string()}});
     drain();
     return !reply.contains("error") && result(reply).value("ok", false);
 }
@@ -1921,7 +1921,7 @@ bool App::attach(const std::filesystem::path& file) {
 // A file dragged onto the terminal arrives as its path in the input, quoted or backslash-escaped the way
 // terminals write a drop. Only that shape is taken as an attachment: the whole message being one image
 // path, or a message that begins with a quoted/escaped/file:// one. A plain path inside a sentence stays
-// text, so a pasted path is something the agent can be asked to read rather than a picture MAIC sends.
+// text, so a pasted path is something the agent can be asked to read rather than a picture MAID sends.
 std::string App::take_dropped_image(const std::string& text) {
     // The explicit form first: ![alt](path) or [text](path) whose target is an image file, anywhere in the
     // message. Micaiah's suggestion: no guessing, and it works for a pasted path too.
@@ -1998,7 +1998,7 @@ std::string App::take_dropped_image(const std::string& text) {
     return "[image: " + p.filename().string() + "]" + (r.empty() ? "" : " " + r);
 }
 
-// `!cmd` in the user's own shell, through the engine (maic.session.shell): it streams under the command's line
+// `!cmd` in the user's own shell, through the engine (maid.session.shell): it streams under the command's line
 // and what it printed reaches the model as context.
 void App::run_shell(const std::string& command) {
     if (shell_busy_) {
@@ -2010,7 +2010,7 @@ void App::run_shell(const std::string& command) {
     if (shell_thread_.joinable()) shell_thread_.join();
     shell_busy_ = true;
     shell_thread_ = std::thread([this, command] {
-        nlohmann::json reply = call("maic.session.shell", {{"session", session_}, {"command", command}}, false);
+        nlohmann::json reply = call("maid.session.shell", {{"session", session_}, {"command", command}}, false);
         screen_.Post([this, reply] {
             drain();
             if (reply.contains("error")) post(Kind::Error, reply["error"].value("message", "the command did not run"));
@@ -2023,7 +2023,7 @@ void App::run_shell(const std::string& command) {
 
 // Opens the input in $VISUAL / $EDITOR (default nvim) as a markdown file and loads it back on exit.
 void App::edit_externally() {
-    char path[] = "/tmp/maic-input-XXXXXX.md";
+    char path[] = "/tmp/maid-input-XXXXXX.md";
     int fd = mkstemps(path, 3);
     if (fd < 0) {
         post(Kind::Error, "can't create a temporary file for the editor");
@@ -2052,7 +2052,7 @@ void App::edit_externally() {
 
 // :lua and :luafile run in the session's Lua state in the engine; what the chunk prints reaches the model too.
 void App::run_lua(const std::string& code, bool from_file) {
-    nlohmann::json reply = call("maic.session.command", {{"session", session_}, {"line", (from_file ? "luafile " : "lua ") + code}});
+    nlohmann::json reply = call("maid.session.command", {{"session", session_}, {"line", (from_file ? "luafile " : "lua ") + code}});
     drain();
     view_.append(Kind::Shell, (from_file ? "luafile " : "lua> ") + code);
     if (reply.contains("error")) {
@@ -2073,7 +2073,7 @@ void App::run_command(const std::string& line) {
     in >> cmd;
     std::getline(in >> std::ws, arg);
     auto services = [&] { return load_services(root_dir() / "services"); };
-    // The commands that act on the session are the engine's (maic.session.command), under the names the TUI has
+    // The commands that act on the session are the engine's (maid.session.command), under the names the TUI has
     // always taken; the rest are the view's, the editor's and the machine's.
     static const std::set<std::string> engine_owned = {"mode", "harness", "model", "models", "think", "undo", "export", "rename", "title", "budget", "compact",
                                                        "clear", "trip", "status", "todo", "tools", "init", "cd", "ban", "sampling", "sampler", "image", "img",
@@ -2124,7 +2124,7 @@ void App::run_command(const std::string& line) {
                 post(Kind::Notice, on ? "tool output shown in full (za folds one, zM all)" : "tool output folded to a preview (za unfolds one, zR all)");
             } else if (key == "highlight" || key == "hl") {
                 if (value != "nvim" && value != "builtin") post(Kind::Error, ":set highlight nvim|builtin");
-                else if (value == "nvim" && settings_.bare) post(Kind::Error, "highlight nvim runs nvim, and this MAIC is bare (--bare, MAIC_BARE=1 or bare = true); the built-in highlighter stays");
+                else if (value == "nvim" && settings_.bare) post(Kind::Error, "highlight nvim runs nvim, and this MAID is bare (--bare, MAID_BARE=1 or bare = true); the built-in highlighter stays");
                 else {
                     settings_.highlight = value;
                     nvim_hl_.reset();
@@ -2183,10 +2183,10 @@ void App::run_command(const std::string& line) {
         } else if (cmd == "unlock") {
             if (!tripwire_state()) post(Kind::Notice, "harness is not tripped");
             else if (session_tripped()) {
-                post(unlock_session() ? Kind::Notice : Kind::Error, unlock_session() ? "session lock removed; carry on" : "session lock removed, but the machine lock is set: `maic unlock` (sudo)");
+                post(unlock_session() ? Kind::Notice : Kind::Error, unlock_session() ? "session lock removed; carry on" : "session lock removed, but the machine lock is set: `maid unlock` (sudo)");
             } else {
                 screen_.WithRestoredIO([] {
-                    [[maybe_unused]] int rc = run_helper("echo 'Unlocking the MAIC harness.'; sudo -k && sudo /usr/local/sbin/maic-lock reset");
+                    [[maybe_unused]] int rc = run_helper("echo 'Unlocking the MAID harness.'; sudo -k && sudo /usr/local/sbin/maid-lock reset");
                 })();
                 post(Kind::Notice, tripwire_state() ? "still tripped" : "harness unlocked; carry on");
             }
@@ -2236,7 +2236,7 @@ void App::run_command(const std::string& line) {
         } else if (cmd == "settings") {
             std::string out = "settings files in effect (nearest last, wins):";
             for (const auto& p : settings_.sources) out += "\n  " + p.string();
-            if (settings_.sources.empty()) out += "\n  none (defaults). `maic settings init` writes the global settings.lua; `:init` scaffolds a project's.";
+            if (settings_.sources.empty()) out += "\n  none (defaults). `maid settings init` writes the global settings.lua; `:init` scaffolds a project's.";
             out += "\nsessions home: " + session_home_dir(settings_).lexically_relative(sessions_dir()).string() + "  (sessions_home = " + settings_.sessions_home + ")";
             post(Kind::Notice, out);
         } else if (cmd == "lazylock" || cmd == "lazy-lock" || cmd == "lazy_lock") {
@@ -2297,19 +2297,19 @@ void App::run_command(const std::string& line) {
                 post(Kind::Error, e.what());
             }
         } else if (cmd == "artifacts") {
-            std::string out = "where MAIC and its services keep things:";
+            std::string out = "where MAID and its services keep things:";
             for (const auto& a : list_artifacts(services())) {
                 auto u = measure(a);
                 out += "\n  " + a.owner + "/" + a.name + "  " + a.path.string() + "  " + human_bytes(u.bytes) + " in " + std::to_string(u.files) + " files";
             }
-            out += "\nclean with: maic artifacts clean OWNER/NAME [--older-than DAYS]";
+            out += "\nclean with: maid artifacts clean OWNER/NAME [--older-than DAYS]";
             post(Kind::Notice, out);
         } else if (cmd == "reg" || cmd == "register") {
             std::string out = register_.empty() ? "register is empty" : "register:\n" + register_;
             for (const auto& [name, r] : editor_.registers()) out += "\n\"" + std::string(1, name) + (r.linewise ? " (lines):\n" : ":\n") + r.text;
             post(Kind::Notice, out);
         } else if (engine_owned.count(cmd)) {
-            nlohmann::json reply = call("maic.session.command", {{"session", session_}, {"line", cmd + (arg.empty() ? "" : " " + arg)}});
+            nlohmann::json reply = call("maid.session.command", {{"session", session_}, {"line", cmd + (arg.empty() ? "" : " " + arg)}});
             drain();
             show(reply);
             bool ok = !reply.contains("error") && result(reply).value("ok", false);
@@ -2340,9 +2340,9 @@ void App::run_command(const std::string& line) {
 // The view follows the session this client's focus moved to: its last exchanges from attach, what it is writing,
 // its waiting approval or question and its settings, in its workspace; the session left sends no more here.
 void App::show_session(const std::string& id) {
-    if (session_ != id) call("maic.session.unsubscribe", {{"session", session_}});  // refused when the leave ended it: nothing to undo
+    if (session_ != id) call("maid.session.unsubscribe", {{"session", session_}});  // refused when the leave ended it: nothing to undo
     session_ = id;
-    nlohmann::json snap = result(call("maic.session.attach", {{"session", id}, {"exchanges", 10}}));
+    nlohmann::json snap = result(call("maid.session.attach", {{"session", id}, {"exchanges", 10}}));
     approval_.reset();
     question_.reset();
     todo_.clear();
@@ -2352,10 +2352,10 @@ void App::show_session(const std::string& id) {
     live_call_.clear();
     view_.clear();
     const nlohmann::json& e = snap.value("entry", nlohmann::json::object());
-    if (snap.value("more_before", false)) view_.append(Kind::Notice, "(earlier turns: maic sessions read " + id + ")");
+    if (snap.value("more_before", false)) view_.append(Kind::Notice, "(earlier turns: maid sessions read " + id + ")");
     for (const auto& item : snap.value("items", nlohmann::json::array())) {
         std::string type = item.value("type", "");
-        const nlohmann::json& m = item.value("maic", nlohmann::json::object());
+        const nlohmann::json& m = item.value("maid", nlohmann::json::object());
         if (type == "message") {
             std::string t;
             for (const auto& part : item.value("content", nlohmann::json::array())) t += part.value("text", "");
@@ -2375,7 +2375,7 @@ void App::show_session(const std::string& id) {
             if (type == "message") view_.append(Kind::Assistant, t);
             else if (type == "reasoning") view_.append(Kind::Thinking, t);
             else if (type == "function_call_output" || type == "shell_call_output") {
-                view_.append(Kind::Tool, open.contains("call") && open["call"].contains("maic") ? open["call"]["maic"].value("summary", "") : "");
+                view_.append(Kind::Tool, open.contains("call") && open["call"].contains("maid") ? open["call"]["maid"].value("summary", "") : "");
                 live_call_ = open["item"].value("id", "");
                 live_next_[0] = live_next_[1] = open.value("size", t.size());
                 view_.live_output(t);
@@ -2416,7 +2416,7 @@ std::string App::session_line(const nlohmann::json& e) const {
 }
 
 // An id, a unique id prefix or a title (any letter case) among the sessions the engine holds; else what was typed,
-// for maic.session.resume to find among the transcripts.
+// for maid.session.resume to find among the transcripts.
 std::string App::resolve_session(const std::string& given) const {
     if (index_.count(given)) return given;
     auto lower = [](std::string t) {
@@ -2454,7 +2454,7 @@ void App::session_verb(const std::string& cmd, const std::string& arg) {
 }
 
 // Moves this client's focus: to a new session, a fork of this one, or another session (`target`), loaded or parked. `as` says what happens to the one left: "" for
-// the leave.switch setting's choice, which may be to ask (the engine answers maic_leave_ask); parking or stopping one mid-turn interrupts it, so that is asked first.
+// the leave.switch setting's choice, which may be to ask (the engine answers maid_leave_ask); parking or stopping one mid-turn interrupts it, so that is asked first.
 void App::go(Go how, const std::string& target, std::string as, const std::string& dir, bool sure) {
     if (as.empty()) as = "default";
     if (!sure && busy_ && (as == "park" || as == "stop")) {
@@ -2466,16 +2466,16 @@ void App::go(Go how, const std::string& target, std::string as, const std::strin
     }
     nlohmann::json leave = {{"as", as}};
     nlohmann::json reply;
-    if (how == Go::New) reply = call("createConversation", {{"maic", {{"workspace", ws_}, {"leave", leave}}}});
-    else if (how == Go::Fork) reply = call("maic.session.fork", {{"session", session_}, {"leave", leave}});
-    else if (index_.count(target) && index_[target].value("state", "") != "parked") reply = call("maic.session.focus", {{"session", target}, {"leave", leave}});
-    else reply = call("maic.session.resume", {{"session", target}, {"leave", leave}});
+    if (how == Go::New) reply = call("createConversation", {{"maid", {{"workspace", ws_}, {"leave", leave}}}});
+    else if (how == Go::Fork) reply = call("maid.session.fork", {{"session", session_}, {"leave", leave}});
+    else if (index_.count(target) && index_[target].value("state", "") != "parked") reply = call("maid.session.focus", {{"session", target}, {"leave", leave}});
+    else reply = call("maid.session.resume", {{"session", target}, {"leave", leave}});
     if (reply.contains("error")) {
         drain();
         const nlohmann::json& data = reply["error"]["data"];
-        if (data.is_object() && data.value("code", "") == "maic_leave_ask") {
+        if (data.is_object() && data.value("code", "") == "maid_leave_ask") {
             confirm_ = PendingConfirm{"leave", " leave this session? ", {"[b] background: it keeps working", "[p] park: it stops for now and resumes where it was",
-                                                                       "[s] stop: it ends; its transcript stays (maic -r)", "Esc stays here"},
+                                                                       "[s] stop: it ends; its transcript stays (maid -r)", "Esc stays here"},
                                       "bps", [this, how, target, dir](const std::string& k) {
                                           if (k != "n") go(how, target, k == "b" ? "bg" : k == "p" ? "park" : "stop", dir);
                                       }};
@@ -2499,10 +2499,10 @@ void App::end_other(const std::string& id, const std::string& verb, bool sure) {
                                   }};
         return;
     }
-    nlohmann::json reply = call(verb == "park" ? "maic.session.park" : "maic.session.stop", {{"session", id}, {"interrupt", true}});
+    nlohmann::json reply = call(verb == "park" ? "maid.session.park" : "maid.session.stop", {{"session", id}, {"interrupt", true}});
     drain();
     if (reply.contains("error")) return show(reply);
-    post(Kind::Notice, (verb == "park" ? "parked " : "stopped ") + session_line(result(reply)) + (verb == "park" ? "  (:switch resumes it)" : "  (maic -r resumes it)"));
+    post(Kind::Notice, (verb == "park" ? "parked " : "stopped ") + session_line(result(reply)) + (verb == "park" ? "  (:switch resumes it)" : "  (maid -r resumes it)"));
 }
 
 void App::open_switcher(const std::string& title, const std::string& leave) {
@@ -2574,7 +2574,7 @@ void App::quit(const std::string& as, bool sure) {
     }
     if (as.empty() && (busy_ ? settings_.leave.quitting.working : settings_.leave.quitting.idle) == "ask") {
         confirm_ = PendingConfirm{"leave", " quit: this session? ", {"[b] background: it keeps working", "[p] park: it stops for now and resumes where it was",
-                                                                   "[s] stop: it ends; its transcript stays (maic -r)", "Esc stays here"},
+                                                                   "[s] stop: it ends; its transcript stays (maid -r)", "Esc stays here"},
                                   "bps", [this](const std::string& k) {
                                       if (k != "n") quit(k == "b" ? "bg" : k == "p" ? "park" : "stop");
                                   }};
@@ -2606,9 +2606,9 @@ void App::shutdown() {
     stopped_ = true;
     if (host_) host_->set_handlers({});
     nvim_hl_.reset();
-    // The session in focus becomes what :q's flag or leave.quit says (maic.session.leave): in the daemon a working
+    // The session in focus becomes what :q's flag or leave.quit says (maid.session.leave): in the daemon a working
     // one can keep on; this process's own engine interrupts what still runs, as leave.no_daemon says, and parks the rest.
-    call("maic.session.leave", quit_as_.empty() ? nlohmann::json::object() : nlohmann::json{{"as", quit_as_}});
+    call("maid.session.leave", quit_as_.empty() ? nlohmann::json::object() : nlohmann::json{{"as", quit_as_}});
     if (daemon_) daemon_->close();
     else engine_->shutdown();
     if (shell_thread_.joinable()) shell_thread_.join();
@@ -2653,27 +2653,27 @@ Settings tui_settings(const TuiOptions& options, const std::filesystem::path& wo
 
 namespace {
 
-// `maic --ui nvim`: nvim with this MAIC's maic.nvim as the whole interface and this binary's `maic --rpc`, with the
+// `maid --ui nvim`: nvim with this MAID's maid.nvim as the whole interface and this binary's `maid --rpc`, with the
 // same agent flags, as its job. The user's config loads first; the plugin goes on 'runtimepath' after it (lazy.nvim
 // resets the path at setup). Returns why only when nvim could not be started.
 std::string exec_nvim_ui(const TuiOptions& options) {
     std::error_code ec;
-    nlohmann::json o = {{"plugin", (root_dir() / "maic.nvim").string()}, {"cmd", std::filesystem::read_symlink("/proc/self/exe", ec).string()}, {"args", options.engine_args}};
+    nlohmann::json o = {{"plugin", (root_dir() / "maid.nvim").string()}, {"cmd", std::filesystem::read_symlink("/proc/self/exe", ec).string()}, {"args", options.engine_args}};
     if (options.resume) o["session"] = options.resume->stem().string();
-    setenv("MAIC_UI", o.dump().c_str(), 1);
+    setenv("MAID_UI", o.dump().c_str(), 1);
     execlp("nvim", "nvim", "-c",
-           "lua local o = vim.json.decode(vim.env.MAIC_UI); vim.env.MAIC_UI = nil; vim.opt.rtp:prepend(o.plugin); vim.cmd('runtime plugin/maic.lua'); require('maic.ui').main(o)",
+           "lua local o = vim.json.decode(vim.env.MAID_UI); vim.env.MAID_UI = nil; vim.opt.rtp:prepend(o.plugin); vim.cmd('runtime plugin/maid.lua'); require('maid.ui').main(o)",
            static_cast<char*>(nullptr));
-    unsetenv("MAIC_UI");
+    unsetenv("MAID_UI");
     return std::string("cannot run nvim: ") + std::strerror(errno);
 }
 
 }  // namespace
 
 int run_tui(const TuiOptions& options) {
-    // The host nvim first, so the settings files' Lua can use maic.nvim (docs/nvim.md); never when bare. `bare = true`
+    // The host nvim first, so the settings files' Lua can use maid.nvim (docs/nvim.md); never when bare. `bare = true`
     // in a settings file is known only once they are read, so then the host is dropped right after.
-    const char* bare_env = std::getenv("MAIC_BARE");
+    const char* bare_env = std::getenv("MAID_BARE");
     bool bare = options.bare || (bare_env && std::string(bare_env) == "1");
     std::string host_refused;
     std::shared_ptr<HostNvim> host = bare ? nullptr : HostNvim::from_env(host_refused);
@@ -2691,15 +2691,15 @@ int run_tui(const TuiOptions& options) {
         host_refused.clear();
     }
     if (settings.harness != "smart" && settings.harness != "dumb") {
-        std::cerr << "maic: --harness must be smart or dumb\n";
+        std::cerr << "maid: --harness must be smart or dumb\n";
         return 2;
     }
     if (settings.tripwire == "isolated" && !settings.allow_isolated) {
-        std::cerr << "maic: tripwire = \"isolated\" (opting out of the machine lock) is not allowed: set allow_isolated = true in settings to permit it\n";
+        std::cerr << "maid: tripwire = \"isolated\" (opting out of the machine lock) is not allowed: set allow_isolated = true in settings to permit it\n";
         return 2;
     }
     if (!parse_mode(settings.mode)) {
-        fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
+        fprintf(stderr, "maid: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
         return 2;
     }
     // --mode auto is asked for here and now; auto from the settings starts only where the workspace is trusted.
@@ -2710,18 +2710,18 @@ int run_tui(const TuiOptions& options) {
         }
     }
     // nvim as the interface (--ui nvim, ui = "nvim"), started here with trust settled; the engine holds a due audit.
-    // Never inside nvim (maic.nvim's :Maic is the interface there) and never bare; what it cannot take runs here.
+    // Never inside nvim (maid.nvim's :Maid is the interface there) and never bare; what it cannot take runs here.
     std::string ui = options.ui.value_or(settings.ui);
     if (ui == "nvim") {
-        std::string why = std::getenv("NVIM") ? "inside nvim, where :Maic opens it"
+        std::string why = std::getenv("NVIM") ? "inside nvim, where :Maid opens it"
                           : bare || settings.bare ? "with bare, which takes nothing from nvim"
                           : !options.context.empty() || !options.images.empty() || !options.initial_prompt.empty() || options.fork_at ? "with --context, --image, -i or --fork-at"
                                                                                                                                        : exec_nvim_ui(options);
         if (options.ui) {
-            std::cerr << "maic: --ui nvim: " << why << "\n";
+            std::cerr << "maid: --ui nvim: " << why << "\n";
             return 2;
         }
-        trust_lines.push_back("ui = \"nvim\": not " + why + "; MAIC's own interface instead");
+        trust_lines.push_back("ui = \"nvim\": not " + why + "; MAID's own interface instead");
     }
     // An audit that is due holds here, before the screen is drawn (docs/audit-trail.md).
     audit_gate(settings);
@@ -2752,7 +2752,7 @@ int run_tui(const TuiOptions& options) {
     for (const auto& n : trust_lines) app.startup_notice(n);
     // nvim as the interface, offered once when nvim is installed (docs/nvim.md).
     if (ui == "tui" && !options.ui && !bare && !settings.bare && !std::getenv("NVIM") && on_path("nvim") && !std::filesystem::exists(state_dir() / "ui-offered")) {
-        app.startup_notice("nvim is installed: maic --ui nvim runs MAIC with nvim as its interface, your config and mappings included; ui = \"nvim\" in settings makes it the default (maic help ui). Said once.");
+        app.startup_notice("nvim is installed: maid --ui nvim runs MAID with nvim as its interface, your config and mappings included; ui = \"nvim\" in settings makes it the default (maid help ui). Said once.");
         std::ofstream(state_dir() / "ui-offered");
     }
     app.attach_context();
@@ -2764,9 +2764,9 @@ int run_tui(const TuiOptions& options) {
     // The way back, printed after the screen is restored: a temporary transcript lives in the runtime
     // directory and is never listed, so this is the only place its path is easy to find.
     std::cout << "transcript" << (settings.record ? "" : " (temporary; gone at logout)") << ": " << app.transcript_path() << "\n"
-              << "resume it with: maic -r " << app.transcript_path() << "\n";
+              << "resume it with: maid -r " << app.transcript_path() << "\n";
     if (!app.exit_note().empty()) std::cout << app.exit_note() << "\n";
     return 0;
 }
 
-}  // namespace maic
+}  // namespace maid

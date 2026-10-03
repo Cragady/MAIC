@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
-<title>MAIC</title>
+<title>MAID</title>
 <style>
   :root {
     --bg: #14151a; --panel: #1d1f26; --line: #2c2f3a; --fg: #e6e6ea; --dim: #9a9db0;
@@ -76,7 +76,7 @@
   <section id="tokenScreen" class="screen">
     <div class="card">
       <h2>Token</h2>
-      <p class="hint">Made on the workstation with <code>maic server token new NAME</code>. It stays in this browser only.</p>
+      <p class="hint">Made on the workstation with <code>maid server token new NAME</code>. It stays in this browser only.</p>
       <div class="row"><input id="tokenInput" placeholder="paste the token" autocomplete="off" autocapitalize="off" spellcheck="false">
         <button class="primary" id="tokenSave">Save</button></div>
       <p class="hint" id="tokenError"></p>
@@ -92,11 +92,11 @@
     </div>
     <div id="sessionList"></div>
     <div class="card"><div class="row"><button class="danger" id="tripBtn">Trip the harness</button></div>
-      <p class="hint">Stops every action until <code>maic unlock</code> is run at the workstation. There is no remote unlock.</p></div>
+      <p class="hint">Stops every action until <code>maid unlock</code> is run at the workstation. There is no remote unlock.</p></div>
     <div class="card" id="pairCard">
       <h2>Pair with a relay</h2>
-      <p class="hint">For this phone away from home. On the workstation, <code>maic server pair</code> prints a code and a string; paste the string here while on the LAN. The keys are exchanged with this server directly, never through the relay.</p>
-      <div class="row"><input id="pairString" placeholder="maic://pair/https://relay:7474/ID/CODE" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <p class="hint">For this phone away from home. On the workstation, <code>maid server pair</code> prints a code and a string; paste the string here while on the LAN. The keys are exchanged with this server directly, never through the relay.</p>
+      <div class="row"><input id="pairString" placeholder="maid://pair/https://relay:7474/ID/CODE" autocomplete="off" autocapitalize="off" spellcheck="false">
         <input id="pairName" placeholder="this phone's name" value="phone" autocomplete="off"></div>
       <div class="row" style="margin-top:8px"><button class="primary" id="pairBtn">Pair</button></div>
       <p class="hint" id="pairResult"></p>
@@ -243,7 +243,7 @@ const Tunnel = (() => {
   const xSeal = (key, nonce24, plain, ad) => aeadSeal(hchacha20(key, nonce24.subarray(0, 16)), xNonce(nonce24), plain, ad);
   const xOpen = (key, nonce24, sealed, ad) => aeadOpen(hchacha20(key, nonce24.subarray(0, 16)), xNonce(nonce24), sealed, ad);
 
-  // Frames: len(4) | body, big endian. The hello body is "MAIC1" | static(32) | ephemeral(32); every later
+  // Frames: len(4) | body, big endian. The hello body is "MAID1" | static(32) | ephemeral(32); every later
   // body is nonce(24) | ciphertext, the nonce a frame counter in its first 8 bytes, zero after.
   function nonceFor(counter) {
     const n = new Uint8Array(24);
@@ -307,9 +307,9 @@ const Tunnel = (() => {
     if (plain.length < 5) return null;
     return { kind: plain[0], stream: new DataView(plain.buffer, plain.byteOffset).getUint32(1), payload: plain.subarray(5) };
   }
-  const hello = (staticPk, ephPk) => concat(concat(te.encode('MAIC1'), staticPk), ephPk);
+  const hello = (staticPk, ephPk) => concat(concat(te.encode('MAID1'), staticPk), ephPk);
   function parseHello(body) {
-    if (body.length !== 69 || new TextDecoder().decode(body.subarray(0, 5)) !== 'MAIC1') return null;
+    if (body.length !== 69 || new TextDecoder().decode(body.subarray(0, 5)) !== 'MAID1') return null;
     return { statik: body.slice(5, 37), eph: body.slice(37, 69) };
   }
   const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -336,14 +336,14 @@ const Tunnel = (() => {
     const ph = await dh(phoneEph.privateJwk, homeStaticPk);
     const hp = await dh(phoneStatic.privateJwk, homeEphPk);
     const info = concat(concat(phoneStatic.publicRaw, phoneEph.publicRaw), concat(homeStaticPk, homeEphPk));
-    const okm = await hkdf(te.encode('maic-tunnel-v1'), concat(concat(ee, ph), hp), info, 64);
+    const okm = await hkdf(te.encode('maid-tunnel-v1'), concat(concat(ee, ph), hp), info, 64);
     return { toHome: okm.slice(0, 32), toPhone: okm.slice(32, 64) };
   }
   return { chacha20, hchacha20, poly1305, aeadSeal, aeadOpen, xSeal, xOpen, Sealer, Opener, frame, splitFrames, concat, Kind, message, parseMessage, hello, parseHello, b64url, unb64url, generateKeyPair, dh, hkdf, deriveSession };
 })();
 // --- tunnel crypto end ---
 
-// The phone's connection through maic-relay: one long GET for frames coming down, one POST per frame going
+// The phone's connection through maid-relay: one long GET for frames coming down, one POST per frame going
 // up (browsers cannot stream a request body over HTTP/1.1), a handshake with the workstation, and fetch()
 // over it so the rest of this page does not know which way its requests travel.
 class RelayTunnel {
@@ -411,7 +411,7 @@ class RelayTunnel {
           else this.deliver(m);
         }
       }
-      throw new Error(this.opener ? 'the connection through the relay ended' : 'the workstation did not answer: it may be offline, or this phone is no longer paired (maic server pairs)');
+      throw new Error(this.opener ? 'the connection through the relay ended' : 'the workstation did not answer: it may be offline, or this phone is no longer paired (maid server pairs)');
     } catch (e) {
       this.teardown(e);
       settle.reject(e);
@@ -468,13 +468,13 @@ class RelayTunnel {
   if (location.hash.startsWith('#pair=')) {
     try {
       const bundle = JSON.parse(new TextDecoder().decode(Tunnel.unb64url(location.hash.slice(6))));
-      localStorage.setItem('maic.relay', JSON.stringify(bundle));
-      localStorage.setItem('maic.token', bundle.token);
+      localStorage.setItem('maid.relay', JSON.stringify(bundle));
+      localStorage.setItem('maid.token', bundle.token);
     } catch (e) {}
     history.replaceState(null, '', location.pathname);
   }
-  try { state.token = localStorage.getItem('maic.token') || ''; } catch (e) {}
-  try { state.relay = JSON.parse(localStorage.getItem('maic.relay') || 'null'); } catch (e) {}
+  try { state.token = localStorage.getItem('maid.token') || ''; } catch (e) {}
+  try { state.relay = JSON.parse(localStorage.getItem('maid.relay') || 'null'); } catch (e) {}
   if (state.relay) {
     state.tunnel = new RelayTunnel(state.relay);
     state.tunnel.onstate = (s, why) => { state.relayState = s + (why ? ': ' + why : ''); statusLine(); };
@@ -603,7 +603,7 @@ class RelayTunnel {
     b.onclick = async () => {
       const r = await json('/api/sessions/' + state.session.id + '/output/' + encodeURIComponent(k.call) + '?session=' + encodeURIComponent(k.session));
       const p = document.createElement('pre');
-      p.textContent = '[' + r.label + ']\n' + r.data + (r.done ? '' : '\n[' + (r.bytes - r.data.length) + ' more bytes: maic sessions output ' + k.session + ' ' + k.call + ']');
+      p.textContent = '[' + r.label + ']\n' + r.data + (r.done ? '' : '\n[' + (r.bytes - r.data.length) + ' more bytes: maid sessions output ' + k.session + ' ' + k.call + ']');
       b.replaceWith(p);
     };
     last.appendChild(b);
@@ -629,7 +629,7 @@ class RelayTunnel {
       (u.context ? ' (context ' + u.last_input + '/' + u.context + ')' : '') : '';
   }
 
-  // The engine's events (OpenAI's Responses names, MAIC's under maic.), and the history entries GET /api/sessions/ID gives.
+  // The engine's events (OpenAI's Responses names, MAID's under maid.), and the history entries GET /api/sessions/ID gives.
   function handle(e) {
     if (typeof e.sequence_number === 'number') state.seq = e.sequence_number;
     switch (e.type) {
@@ -638,37 +638,37 @@ class RelayTunnel {
       case 'tool_call': addTool(e.summary, '', true); break;
       case 'tool_result': toolResult(e.text, e.ok, null); break;
       case 'notice': addEntry('notice', e.text); break;
-      case 'maic.input.added':
+      case 'maid.input.added':
         addEntry('user', e.item.content.map((c) => c.text || '').join('\n') + (e.queued ? '  (delivered at the next step)' : ''));
         break;
       case 'response.output_text.delta': appendText(e.delta, false); break;
       case 'response.reasoning_text.delta': appendText(e.delta, true); break;
       case 'response.output_item.added':
-        if (e.item.type === 'function_call' || e.item.type === 'shell_call') addTool((e.item.maic && e.item.maic.summary) || e.item.name || 'run_shell', '', true);
+        if (e.item.type === 'function_call' || e.item.type === 'shell_call') addTool((e.item.maid && e.item.maid.summary) || e.item.name || 'run_shell', '', true);
         break;
       case 'response.output_item.done':
-        if (e.item.type === 'function_call_output') toolResult(e.item.output, !e.item.maic || e.item.maic.ok !== false, e.item.maic && e.item.maic.full_output);
+        if (e.item.type === 'function_call_output') toolResult(e.item.output, !e.item.maid || e.item.maid.ok !== false, e.item.maid && e.item.maid.full_output);
         else if (e.item.type === 'shell_call_output') {
-          toolResult(e.item.output.map((o) => o.stdout + o.stderr).join(''), !e.item.maic || e.item.maic.ok !== false, e.item.maic && e.item.maic.full_output);
+          toolResult(e.item.output.map((o) => o.stdout + o.stderr).join(''), !e.item.maid || e.item.maid.ok !== false, e.item.maid && e.item.maid.full_output);
         }
         break;
       case 'response.shell_call_output_content.delta':
-        liveOutput(e.maic.skipped ? '\n[' + e.maic.skipped + ' bytes not sent]\n' : e.delta.stdout + e.delta.stderr);
+        liveOutput(e.maid.skipped ? '\n[' + e.maid.skipped + ' bytes not sent]\n' : e.delta.stdout + e.delta.stderr);
         break;
-      case 'maic.tool.output.delta':
+      case 'maid.tool.output.delta':
         liveOutput(e.skipped ? '\n[' + e.skipped + ' bytes not sent]\n' : e.data);
         break;
-      case 'maic.notice': addEntry('notice', e.text); break;
+      case 'maid.notice': addEntry('notice', e.text); break;
       case 'error': addEntry('error', e.message); break;
       case 'response.failed': addEntry('error', e.response.error ? e.response.error.message : 'the response failed'); break;
-      case 'maic.response.cancelled': addEntry('notice', e.response.maic && e.response.maic.final === false ? 'paused' : 'interrupted'); break;
-      case 'maic.steer.applied': addEntry('notice', 'steered: ' + e.action + (e.note ? ': ' + e.note : '')); break;
+      case 'maid.response.cancelled': addEntry('notice', e.response.maid && e.response.maid.final === false ? 'paused' : 'interrupted'); break;
+      case 'maid.steer.applied': addEntry('notice', 'steered: ' + e.action + (e.note ? ': ' + e.note : '')); break;
       case 'error': addEntry('notice', 'halted: ' + e.message); break;
-      case 'maic.approval.requested': showApproval(e); break;
-      case 'maic.approval.answered': hideApproval(); addEntry('notice', 'approval: ' + e.choice + (e.by && e.by.name ? ' (' + e.by.name + ')' : '')); break;
-      case 'maic.session.settings': if (state.session && e.mode) state.session.mode = e.mode; statusLine(); break;
-      case 'maic.usage.updated': showUsage({ calls: e.calls, input: e.total ? e.total.input : 0, output: e.total ? e.total.output : 0, context: e.context, last_input: e.last_input }); break;
-      case 'maic.session.state':
+      case 'maid.approval.requested': showApproval(e); break;
+      case 'maid.approval.answered': hideApproval(); addEntry('notice', 'approval: ' + e.choice + (e.by && e.by.name ? ' (' + e.by.name + ')' : '')); break;
+      case 'maid.session.settings': if (state.session && e.mode) state.session.mode = e.mode; statusLine(); break;
+      case 'maid.usage.updated': showUsage({ calls: e.calls, input: e.total ? e.total.input : 0, output: e.total ? e.total.output : 0, context: e.context, last_input: e.last_input }); break;
+      case 'maid.session.state':
         state.running = e.activity !== 'idle';
         $('stop').hidden = !state.running;
         statusLine();
@@ -765,7 +765,7 @@ class RelayTunnel {
     if (!a) return;
     const body = { choice: choice === 'no-reason' ? 'no' : choice };
     if (choice === 'no-reason') body.feedback = $('feedback').value.trim();
-    if (choice === 'trip' && !confirm('Trip the harness? Every action stops until maic unlock at the workstation.')) return;
+    if (choice === 'trip' && !confirm('Trip the harness? Every action stops until maid unlock at the workstation.')) return;
     try {
       await json('/api/sessions/' + state.session.id + '/approvals/' + a.id, { method: 'POST', body });
       hideApproval();
@@ -774,7 +774,7 @@ class RelayTunnel {
 
   $('tokenSave').onclick = async () => {
     state.token = $('tokenInput').value.trim();
-    try { localStorage.setItem('maic.token', state.token); } catch (e) {}
+    try { localStorage.setItem('maid.token', state.token); } catch (e) {}
     try { await loadStatus(); await loadSessions(); } catch (e) {}
   };
   $('tokenInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('tokenSave').onclick(); });
@@ -796,9 +796,9 @@ class RelayTunnel {
   $('stop').onclick = () => state.session && json('/api/sessions/' + state.session.id + '/interrupt', { method: 'POST', body: {} }).catch(() => {});
   for (const b of document.querySelectorAll('#approval button')) b.onclick = () => answer(b.dataset.choice);
   $('pairBtn').onclick = async () => {
-    const m = /^maic:\/\/pair\/(.+)\/([A-Za-z0-9_-]+)\/(\d{8})$/.exec($('pairString').value.trim());
+    const m = /^maid:\/\/pair\/(.+)\/([A-Za-z0-9_-]+)\/(\d{8})$/.exec($('pairString').value.trim());
     $('pairResult').textContent = '';
-    if (!m) { $('pairResult').textContent = 'That is not a maic://pair/RELAY/ID/CODE string.'; return; }
+    if (!m) { $('pairResult').textContent = 'That is not a maid://pair/RELAY/ID/CODE string.'; return; }
     try {
       const kp = await Tunnel.generateKeyPair();
       const r = await json('/api/pair', { method: 'POST', body: { code: m[3], name: $('pairName').value.trim() || 'phone', public_key: Tunnel.b64url(kp.publicRaw) } });
@@ -812,14 +812,14 @@ class RelayTunnel {
     } catch (e) { $('pairResult').textContent = e.message; }
   };
   $('forgetRelay').onclick = () => {
-    if (!confirm('Forget this pairing on this phone? The workstation keeps it until maic server unpair.')) return;
-    try { localStorage.removeItem('maic.relay'); localStorage.removeItem('maic.token'); } catch (e) {}
+    if (!confirm('Forget this pairing on this phone? The workstation keeps it until maid server unpair.')) return;
+    try { localStorage.removeItem('maid.relay'); localStorage.removeItem('maid.token'); } catch (e) {}
     location.reload();
   };
   $('tripBtn').onclick = async () => {
     const reason = prompt('Trip the harness. Reason?', 'tripped from the phone');
     if (reason === null) return;
-    try { await json('/api/trip', { method: 'POST', body: { reason } }); await loadStatus(); alert('Tripped. Unlock at the workstation with maic unlock.'); }
+    try { await json('/api/trip', { method: 'POST', body: { reason } }); await loadStatus(); alert('Tripped. Unlock at the workstation with maid unlock.'); }
     catch (e) { alert(e.message); }
   };
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadStatus().catch(() => {}); if (state.running) attach(); } });

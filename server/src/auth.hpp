@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace maic::server {
+namespace maid::server {
 
 std::string sha256_hex(const std::string& data);
 
@@ -18,7 +18,7 @@ struct TokenInfo {
 };
 
 // Per-device bearer tokens. Only SHA-256 hashes are kept on disk (0600 in a 0700 directory); the token itself is
-// printed once by `maic server token new` and never stored.
+// printed once by `maid server token new` and never stored.
 class TokenStore {
 public:
     explicit TokenStore(std::filesystem::path file);
@@ -28,7 +28,7 @@ public:
     bool revoke(const std::string& name);
     std::vector<TokenInfo> list() const;
     bool empty() const { return entries_.empty(); }
-    // Re-reads the file when another process (`maic server token new` while the server runs) changed it.
+    // Re-reads the file when another process (`maid server token new` while the server runs) changed it.
     void refresh();
 
     // The token's name when its hash is on file. Every entry is compared in constant time, none is skipped.
@@ -67,4 +67,4 @@ private:
     std::chrono::seconds window_;
 };
 
-}  // namespace maic::server
+}  // namespace maid::server

@@ -1,14 +1,14 @@
 #include "view.hpp"
 
 #include "editor.hpp"
-#include "maic/clipboard.hpp"
+#include "maid/clipboard.hpp"
 #include "style.hpp"
 
 #include <algorithm>
 #include <ctime>
 #include <cctype>
 
-namespace maic {
+namespace maid {
 
 using namespace ftxui;
 
@@ -777,4 +777,4 @@ Element View::render(const Settings& settings, size_t width, int height) {
     return vbox(rows);
 }
 
-}  // namespace maic
+}  // namespace maid

@@ -1,11 +1,11 @@
 #include "editor.hpp"
 
-#include "maic/clipboard.hpp"
+#include "maid/clipboard.hpp"
 
 #include <algorithm>
 #include <cctype>
 
-namespace maic {
+namespace maid {
 
 using namespace ftxui;
 
@@ -1615,4 +1615,4 @@ bool Editor::handle_command(const Event& e, Result& result) {
     return true;
 }
 
-}  // namespace maic
+}  // namespace maid

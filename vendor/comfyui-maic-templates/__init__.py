@@ -1,9 +1,9 @@
-"""MAIC's template shelf for ComfyUI.
+"""MAID's template shelf for ComfyUI.
 
 Adds no nodes. Its only job is the `example_workflows/` folder, which ComfyUI serves in the template browser
-under "comfyui-maic-templates". That folder is a link to ~/.local/state/maic/templates/comfyui, so workflows
+under "comfyui-maic-templates". That folder is a link to ~/.local/state/maid/templates/comfyui, so workflows
 kept there are your originals: opening one in ComfyUI creates a new workflow, and saving lands in
-user/default/workflows (MAIC's workflows artifact), never back into the template.
+user/default/workflows (MAID's workflows artifact), never back into the template.
 """
 
 NODE_CLASS_MAPPINGS = {}

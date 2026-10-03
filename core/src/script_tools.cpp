@@ -1,8 +1,8 @@
-#include "maic/script_tools.hpp"
+#include "maid/script_tools.hpp"
 
-#include "maic/lua_tools.hpp"
-#include "maic/sandbox.hpp"
-#include "maic/trust.hpp"
+#include "maid/lua_tools.hpp"
+#include "maid/sandbox.hpp"
+#include "maid/trust.hpp"
 
 #include <unistd.h>
 
@@ -11,7 +11,7 @@
 #include <fstream>
 #include <sstream>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -174,7 +174,7 @@ const char* stub_name(const std::string& lang) {
 }
 
 std::string stub_text(const std::string& lang, const std::string& name) {
-    std::string head = name + ": a MAIC script tool. The arguments arrive as JSON on stdin; whatever is printed is the result.";
+    std::string head = name + ": a MAID script tool. The arguments arrive as JSON on stdin; whatever is printed is the result.";
     if (lang == "python") {
         return "#!/usr/bin/env python3\n\"\"\"" + head + "\"\"\"\nimport json\nimport sys\n\nargs = json.load(sys.stdin)\nprint(json.dumps(args, indent=2))\n";
     }
@@ -236,7 +236,7 @@ ScriptTool read_script_tool(const fs::path& manifest) {
 
 ScriptToolSet load_script_tools(const fs::path& workspace, const std::vector<std::string>& taken) {
     ScriptToolSet set;
-    for (const fs::path& dir : {workspace / ".maic" / "tools", global_tools_dir()}) {
+    for (const fs::path& dir : {workspace / ".maid" / "tools", global_tools_dir()}) {
         std::error_code ec;
         if (!fs::is_directory(dir, ec)) continue;
         if (dir != global_tools_dir() && !trusted(workspace)) continue;  // an untrusted project's tools are never loaded
@@ -336,4 +336,4 @@ std::vector<fs::path> scaffold_script_tool(const fs::path& dir, const std::strin
     return {dir / "tool.json", dir / stub};
 }
 
-}  // namespace maic
+}  // namespace maid

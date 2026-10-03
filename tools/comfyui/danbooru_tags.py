@@ -4,20 +4,20 @@
 Danbooru's data is not in its GitHub repository (that is the Rails application only); it lives in the site's
 database and is served by the JSON API. This tool fetches the most-used tags and the active aliases into a
 local file, on request only, politely (one request per second, a named User-Agent), and then answers
-offline. The agent inside MAIC uses `check` and `search`; `fetch` is for a person (the sandbox has no network).
+offline. The agent inside MAID uses `check` and `search`; `fetch` is for a person (the sandbox has no network).
 
-    maic-danbooru-tags fetch [--pages N] [--category general|character|copyright|artist|meta|all]
+    maid-danbooru-tags fetch [--pages N] [--category general|character|copyright|artist|meta|all]
         top tags by post count, N pages of 1000 (default 20 pages of general tags; scene tags sit well below the top 5000), plus active aliases,
-        into <state>/references/danbooru/tags.json (MAIC_DANBOORU_TAGS overrides the path)
-    maic-danbooru-tags check TAG [TAG ...]      each tag: ok / alias -> canonical / unknown (with near matches)
-    maic-danbooru-tags check --prompt "a, b, c" the same for a comma-separated prompt
-    maic-danbooru-tags search WORD [--limit N]  tags containing WORD, most used first
-    maic-danbooru-tags show                     what the local file holds and when it was fetched
-    maic-danbooru-tags groups fetch             the "Tag groups" wiki index and every group page it links, as
+        into <state>/references/danbooru/tags.json (MAID_DANBOORU_TAGS overrides the path)
+    maid-danbooru-tags check TAG [TAG ...]      each tag: ok / alias -> canonical / unknown (with near matches)
+    maid-danbooru-tags check --prompt "a, b, c" the same for a comma-separated prompt
+    maid-danbooru-tags search WORD [--limit N]  tags containing WORD, most used first
+    maid-danbooru-tags show                     what the local file holds and when it was fetched
+    maid-danbooru-tags groups fetch             the "Tag groups" wiki index and every group page it links, as
                                                 markdown under <state>/references/danbooru/groups/ (network)
-    maic-danbooru-tags groups list              the groups held locally
-    maic-danbooru-tags groups show NAME         one group page (a unique prefix of its name is enough)
-    maic-danbooru-tags groups search WORD       lines mentioning WORD across every local group page
+    maid-danbooru-tags groups list              the groups held locally
+    maid-danbooru-tags groups show NAME         one group page (a unique prefix of its name is enough)
+    maid-danbooru-tags groups search WORD       lines mentioning WORD across every local group page
 
 Tags are compared with spaces and underscores treated alike and case ignored. Exit code 1 from `check` when
 any tag is unknown, so a script can gate on it.
@@ -33,7 +33,7 @@ import urllib.request
 
 SITE = "https://danbooru.donmai.us"
 CATEGORIES = {"general": 0, "artist": 1, "copyright": 3, "character": 4, "meta": 5}
-UA = "maic-danbooru-tags/1 (local prompt checking; https://github.com/Cragady/MAIC)"
+UA = "maid-danbooru-tags/1 (local prompt checking; https://github.com/Cragady/MAIC)"
 
 
 def groups_dir():
@@ -103,7 +103,7 @@ def cmd_groups(args):
         return
     mpath = os.path.join(d, "groups.json")
     if not os.path.isfile(mpath):
-        sys.exit(f"no local group pages at {d}: run `maic-danbooru-tags groups fetch` first (needs the network; not from inside an agent)")
+        sys.exit(f"no local group pages at {d}: run `maid-danbooru-tags groups fetch` first (needs the network; not from inside an agent)")
     with open(mpath, encoding="utf-8") as f:
         manifest = json.load(f)
     if args.action == "list":
@@ -138,11 +138,11 @@ def cmd_groups(args):
 
 
 def store_path():
-    env = os.environ.get("MAIC_DANBOORU_TAGS")
+    env = os.environ.get("MAID_DANBOORU_TAGS")
     if env:
         return env
     state = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
-    return os.path.join(state, "maic", "references", "danbooru", "tags.json")
+    return os.path.join(state, "maid", "references", "danbooru", "tags.json")
 
 
 def norm(tag):
@@ -190,7 +190,7 @@ def cmd_fetch(args):
 def load():
     path = store_path()
     if not os.path.isfile(path):
-        sys.exit(f"no local tag file at {path}: run `maic-danbooru-tags fetch` first (needs the network; not from inside an agent)")
+        sys.exit(f"no local tag file at {path}: run `maid-danbooru-tags fetch` first (needs the network; not from inside an agent)")
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
@@ -243,7 +243,7 @@ def cmd_search(args):
 def cmd_show(args):
     path = store_path()
     if not os.path.isfile(path):
-        print(f"no local tag file yet ({path}); `maic-danbooru-tags fetch` makes one")
+        print(f"no local tag file yet ({path}); `maid-danbooru-tags fetch` makes one")
         return
     data = load()
     cats = {}

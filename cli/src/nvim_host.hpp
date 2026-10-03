@@ -1,6 +1,6 @@
 #pragma once
 
-#include "maic/nvim_host.hpp"
+#include "maid/nvim_host.hpp"
 #include "msgpack.hpp"
 
 #include <chrono>
@@ -15,26 +15,26 @@
 #include <thread>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
-// Why MAIC may not use the nvim socket at `path`, "" when it may; then `fd` is connected to it. The rule
+// Why MAID may not use the nvim socket at `path`, "" when it may; then `fd` is connected to it. The rule
 // (docs/nvim.md): a Unix socket owned by this user, whose listening process (SO_PEERCRED, after connecting) runs
-// as this user and is one of MAIC's ancestors (the /proc/<pid>/stat parent chain); a socket with nvim's default
-// name, nvim.<pid>.<n>, must name that same process. MAIC_NVIM_TRUST_SOCKET=1 skips the ancestry part, for
-// tests only, and is ignored unless MAIC_TESTING=1 is set as well.
+// as this user and is one of MAID's ancestors (the /proc/<pid>/stat parent chain); a socket with nvim's default
+// name, nvim.<pid>.<n>, must name that same process. MAID_NVIM_TRUST_SOCKET=1 skips the ancestry part, for
+// tests only, and is ignored unless MAID_TESTING=1 is set as well.
 std::string connect_host_socket(const std::string& path, int& fd);
 
-// The nvim MAIC runs inside, as a msgpack-rpc client of its $NVIM socket (`nvim_set_client_info` name "maic",
-// attribute pid). Requests wait with a timeout. The notifications maic.nvim sends (maic_send, maic_command,
-// maic_interrupt, maic_colorscheme) and nvim's error events are handled on a thread of the host's own, never the reader's, so a
+// The nvim MAID runs inside, as a msgpack-rpc client of its $NVIM socket (`nvim_set_client_info` name "maid",
+// attribute pid). Requests wait with a timeout. The notifications maid.nvim sends (maid_send, maid_command,
+// maid_interrupt, maid_colorscheme) and nvim's error events are handled on a thread of the host's own, never the reader's, so a
 // handler may make requests.
 class HostNvim : public NvimHost {
 public:
     struct Handlers {
-        std::function<void(const std::string&)> send;     // maic_send: text for the input
-        std::function<void(const std::string&)> command;  // maic_command: a command line, ":" optional
+        std::function<void(const std::string&)> send;     // maid_send: text for the input
+        std::function<void(const std::string&)> command;  // maid_command: a command line, ":" optional
         std::function<void()> colorscheme;                // the host's ColorScheme fired
-        std::function<void()> interrupt;                  // maic_interrupt: what the first Ctrl-C does
+        std::function<void()> interrupt;                  // maid_interrupt: what the first Ctrl-C does
         std::function<void(const std::string&)> error;    // nvim's error for a notification of ours
         std::function<void()> closed;                     // the connection is gone
     };
@@ -98,4 +98,4 @@ private:
 msgpack::Value to_msgpack(const nlohmann::json& j);
 nlohmann::json from_msgpack(const msgpack::Value& v);
 
-}  // namespace maic
+}  // namespace maid

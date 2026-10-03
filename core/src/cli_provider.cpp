@@ -1,13 +1,13 @@
 // The `cli` provider kind: an agent CLI run headless (docs/settings.md, Providers). Claude Code speaks stream-json
 // both ways; the protocol is the one diction's ClaudeScribe used (diction/scribe.py): one user line in, lines out
 // until a `result` line, whose `is_error` marks a failure. Without tool schemas it is a text-only model (level 1).
-// With them it runs the agent loop (level 2): its own tools stay off and MAIC's are served to it over MCP, from a
+// With them it runs the agent loop (level 2): its own tools stay off and MAID's are served to it over MCP, from a
 // unix socket in the runtime directory, and each call it makes comes back to the caller as the reply's tool calls,
-// so MAIC's harness judges and runs every one exactly as for its own model.
+// so MAID's harness judges and runs every one exactly as for its own model.
 #include "llm_http.hpp"
 
-#include "maic/paths.hpp"
-#include "maic/session.hpp"
+#include "maid/paths.hpp"
+#include "maid/session.hpp"
 
 #include <fcntl.h>
 #include <poll.h>
@@ -38,14 +38,14 @@
 
 extern char** environ;
 
-namespace maic::detail {
+namespace maid::detail {
 
 namespace {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
 
-// A write to a child that has already gone raises SIGPIPE, which would end MAIC: block it on this thread for the
+// A write to a child that has already gone raises SIGPIPE, which would end MAID: block it on this thread for the
 // write and swallow the one it may have left pending.
 ssize_t write_quietly(int fd, const char* data, size_t n) {
     sigset_t pipe_only, before;
@@ -81,8 +81,8 @@ bool write_all(int fd, const std::string& data) {
     return true;
 }
 
-// MAIC's tools served to one CLI over MCP: newline-delimited JSON-RPC on a unix socket the CLI reaches through
-// `maic mcp-bridge`. A thread answers the handshake and tools/list itself; each tools/call waits in `calls` until
+// MAID's tools served to one CLI over MCP: newline-delimited JSON-RPC on a unix socket the CLI reaches through
+// `maid mcp-bridge`. A thread answers the handshake and tools/list itself; each tools/call waits in `calls` until
 // the agent loop has judged and run it, and take() hands it to the reply.
 struct McpServer {
     struct Call {
@@ -116,7 +116,7 @@ struct McpServer {
         if (listen_fd < 0 || bind(listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || chmod(path.c_str(), 0600) != 0 || listen(listen_fd, 1) != 0) {
             std::string why = std::strerror(errno);
             if (listen_fd >= 0) close(listen_fd);
-            throw std::runtime_error("can't serve MAIC's tools on " + path.string() + ": " + why);
+            throw std::runtime_error("can't serve MAID's tools on " + path.string() + ": " + why);
         }
         thread = std::thread([this] { serve(); });
     }
@@ -156,7 +156,7 @@ struct McpServer {
             bool known = std::find(kMcpVersions.begin(), kMcpVersions.end(), asked) != kMcpVersions.end();
             answer(j["id"], {{"protocolVersion", known ? asked : kMcpVersions.front()},
                              {"capabilities", {{"tools", {{"listChanged", false}}}}},
-                             {"serverInfo", {{"name", "maic"}, {"version", "1"}}}});
+                             {"serverInfo", {{"name", "maid"}, {"version", "1"}}}});
         } else if (method == "ping") {
             answer(j["id"], json::object());
         } else if (method == "tools/list") {
@@ -215,7 +215,7 @@ struct McpServer {
                 return c;
             }
             if (cancel.load()) throw Cancelled();
-            if (gone()) throw std::runtime_error(who + ": the process ended while MAIC ran its tool calls");
+            if (gone()) throw std::runtime_error(who + ": the process ended while MAID ran its tool calls");
             if (std::chrono::steady_clock::now() >= deadline) throw std::runtime_error(who + ": it never asked for the " + name + " call it announced");
             cv.wait_for(lock, std::chrono::milliseconds(100));
         }
@@ -275,7 +275,7 @@ struct CliProcess {
     }
 };
 
-// Every process MAIC started, reaped when MAIC exits.
+// Every process MAID started, reaped when MAID exits.
 struct Registry {
     std::mutex mu;
     std::map<std::string, std::shared_ptr<CliProcess>> procs;
@@ -309,9 +309,9 @@ std::string who(const Provider& provider, const std::string& model) {
 
 void spawn(CliProcess& p, const Provider& provider, const std::string& model, const std::string& system, const McpServer* mcp = nullptr) {
     std::string command = provider.options.value("command", "claude");
-    // Headless and stream-json both ways, with every built-in tool off, so MAIC's harness stays the one judge of
-    // what runs. Its MCP servers are only MAIC's (strict, so the user's own are not loaded): none for text only,
-    // or MAIC's tools for an agent, pre-approved so the CLI neither asks about nor classifies them. The dontAsk
+    // Headless and stream-json both ways, with every built-in tool off, so MAID's harness stays the one judge of
+    // what runs. Its MCP servers are only MAID's (strict, so the user's own are not loaded): none for text only,
+    // or MAID's tools for an agent, pre-approved so the CLI neither asks about nor classifies them. The dontAsk
     // permission mode refuses anything else. Nothing is kept on disk. No settings files either (the user's
     // CLAUDE.md, plugins and hooks among them) unless `setting_sources` names some.
     std::string sources = provider.options.value("setting_sources", "");
@@ -325,13 +325,13 @@ void spawn(CliProcess& p, const Provider& provider, const std::string& model, co
     }
     json servers = json::object();
     if (mcp) {
-        servers["maic"] = {{"type", "stdio"}, {"command", fs::read_symlink("/proc/self/exe").string()}, {"args", {"mcp-bridge", mcp->path.string()}}};
+        servers["maid"] = {{"type", "stdio"}, {"command", fs::read_symlink("/proc/self/exe").string()}, {"args", {"mcp-bridge", mcp->path.string()}}};
     }
     std::vector<std::string> args = {command, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                                      "--include-partial-messages", "--tools", "", "--strict-mcp-config", "--mcp-config", dump({{"mcpServers", servers}}),
                                      "--permission-mode", "dontAsk", "--setting-sources", sources, "--no-session-persistence",
                                      "--system-prompt", system, "--model", model};
-    if (mcp) args.insert(args.end(), {"--allowedTools", "mcp__maic"});
+    if (mcp) args.insert(args.end(), {"--allowedTools", "mcp__maid"});
     for (const auto& a : provider.options.value("args", json::array())) {
         std::string s = a.get<std::string>();
         for (const char* ours : {"--tools", "--mcp-config", "--strict-mcp-config", "--permission-", "--allowedTools", "--allowed-tools", "--dangerously-", "--allow-dangerously-", "--setting-sources"}) {
@@ -349,7 +349,7 @@ void spawn(CliProcess& p, const Provider& provider, const std::string& model, co
         std::string_view name(*e, std::strcspn(*e, "="));
         if (!is_key_env(name) && name != "ANTHROPIC_AUTH_TOKEN" && name != "MCP_TOOL_TIMEOUT") envp.push_back(*e);
     }
-    // A call waits on MAIC's harness, a person's approval among it: the CLI must not give up on it first.
+    // A call waits on MAID's harness, a person's approval among it: the CLI must not give up on it first.
     std::string tool_timeout = "MCP_TOOL_TIMEOUT=" + std::to_string(provider.options.value("tool_timeout", 86400) * 1000LL);
     if (mcp) envp.push_back(tool_timeout.data());
     envp.push_back(nullptr);
@@ -371,7 +371,7 @@ void spawn(CliProcess& p, const Provider& provider, const std::string& model, co
     posix_spawn_file_actions_adddup2(&fa, out[1], 1);
     posix_spawn_file_actions_adddup2(&fa, log_fd, 2);
     posix_spawn_file_actions_addchdir_np(&fa, cwd.c_str());
-    // Its own process group: Ctrl-C in MAIC's terminal must not end it mid-reply.
+    // Its own process group: Ctrl-C in MAID's terminal must not end it mid-reply.
     posix_spawnattr_t attr;
     posix_spawnattr_init(&attr);
     sigset_t none;
@@ -394,7 +394,7 @@ void spawn(CliProcess& p, const Provider& provider, const std::string& model, co
     char stamp[32];
     std::time_t now = std::time(nullptr);
     std::strftime(stamp, sizeof(stamp), "%F %T", std::localtime(&now));
-    std::string line = std::string("[") + stamp + "] maic: started " + command + " --model " + model + (mcp ? " as an agent" : "") + " (pid " + std::to_string(pid) + ")\n";
+    std::string line = std::string("[") + stamp + "] maid: started " + command + " --model " + model + (mcp ? " as an agent" : "") + " (pid " + std::to_string(pid) + ")\n";
     (void)!write(log_fd, line.data(), line.size());
     close(log_fd);
     p.pid = pid;
@@ -519,7 +519,7 @@ json mcp_tools(const json& tools) {
     return out;
 }
 
-constexpr std::string_view kToolPrefix = "mcp__maic__";
+constexpr std::string_view kToolPrefix = "mcp__maid__";
 
 size_t fingerprint(const Message& m) {
     return std::hash<std::string>{}(dump(message_to_json(m)));
@@ -561,7 +561,7 @@ std::shared_ptr<CliProcess> agent_process(const Provider& provider, const std::s
     return mine;
 }
 
-// Level 2: the CLI runs the loop on MAIC's tools. Each reply ends at the CLI's next batch of calls, which the
+// Level 2: the CLI runs the loop on MAID's tools. Each reply ends at the CLI's next batch of calls, which the
 // caller judges and runs; the next request brings their results, answered over MCP, and the CLI continues.
 Message chat_cli_agent(const Provider& provider, const ChatOptions& options, const std::vector<Message>& messages, const json& tools,
                        const TextSink& on_text, const std::atomic<bool>& cancel) {
@@ -584,7 +584,7 @@ Message chat_cli_agent(const Provider& provider, const ChatOptions& options, con
     std::vector<Message> tail(messages.begin() + static_cast<long>(first + (continues ? p.seen.size() : 0)), messages.end());
     // The calls it waits on are answered from the results that follow them, in order. Anything after the results
     // (a note from the harness, a message the user sent mid-turn) rides on the last one, so it arrives at the
-    // CLI's next step, as it would for MAIC's own model.
+    // CLI's next step, as it would for MAID's own model.
     std::vector<Message> results;
     if (continues && !p.pending.empty()) {
         bool answered = tail.size() >= p.pending.size();
@@ -694,7 +694,7 @@ Message chat_cli_agent(const Provider& provider, const ChatOptions& options, con
         for (auto& c : calls) {
             if (c.name.rfind(kToolPrefix, 0) != 0) {
                 p.stop(std::chrono::milliseconds(0));
-                throw std::runtime_error(tag + ": it called " + c.name + ", which is not one of MAIC's tools");
+                throw std::runtime_error(tag + ": it called " + c.name + ", which is not one of MAID's tools");
             }
             c.name.erase(0, kToolPrefix.size());
         }
@@ -779,9 +779,9 @@ Message chat_cli(const Provider& provider, const ChatOptions& options, const std
     return reply;
 }
 
-}  // namespace maic::detail
+}  // namespace maid::detail
 
-namespace maic {
+namespace maid {
 
 const std::vector<std::string> kMcpVersions = {"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"};
 
@@ -793,7 +793,7 @@ int run_mcp_bridge(const std::string& socket_path) {
     int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (s < 0 || connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         std::string why = std::strerror(errno);
-        std::string msg = "maic mcp-bridge: can't reach " + socket_path + ": " + why + "\n";
+        std::string msg = "maid mcp-bridge: can't reach " + socket_path + ": " + why + "\n";
         (void)!write(2, msg.data(), msg.size());
         return 1;
     }
@@ -807,10 +807,10 @@ int run_mcp_bridge(const std::string& socket_path) {
         for (int i = 0; i < 2; ++i) {
             if (!fds[i].revents) continue;
             ssize_t n = read(fds[i].fd, buf, sizeof(buf));
-            if (n <= 0) return 0;  // either side closed: the CLI or MAIC is done with it
+            if (n <= 0) return 0;  // either side closed: the CLI or MAID is done with it
             if (!detail::write_all(i == 0 ? s : 1, std::string(buf, static_cast<size_t>(n)))) return 0;
         }
     }
 }
 
-}  // namespace maic
+}  // namespace maid

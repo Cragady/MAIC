@@ -2,9 +2,9 @@
 // apart, the model's result unchanged, and a slow consumer that never slows the command.
 #include "check.hpp"
 
-#include "maic/full_output.hpp"
-#include "maic/sandbox.hpp"
-#include "maic/vendor.hpp"
+#include "maid/full_output.hpp"
+#include "maid/sandbox.hpp"
+#include "maid/vendor.hpp"
 
 #include <signal.h>
 #include <sys/stat.h>
@@ -21,7 +21,7 @@
 #include <tuple>
 #include <vector>
 
-using namespace maic;
+using namespace maid;
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
 
@@ -95,7 +95,7 @@ std::string numbers(size_t from, size_t to) {
 }  // namespace
 
 int main() {
-    fs::path ws = fs::temp_directory_path() / ("maic-tool-output-test-" + std::to_string(getpid()));
+    fs::path ws = fs::temp_directory_path() / ("maid-tool-output-test-" + std::to_string(getpid()));
     fs::remove_all(ws);
     fs::create_directories(ws);
     std::atomic<bool> no{false};
@@ -203,7 +203,7 @@ int main() {
         expect(ordered && content && delivered <= 2 * 1024 * 1024 + 512 * 1024, "what it got is in order, offsets leaving the gaps, and no more than the backlog allows");
     }
 
-    section("a program gets the default SIGPIPE whatever MAIC ignores");
+    section("a program gets the default SIGPIPE whatever MAID ignores");
     {
         signal(SIGPIPE, SIG_IGN);  // as a process with an httplib server does
         auto r = run_sandboxed("seq 1 1000000 | head -c 6", ws, false, secs, no);
@@ -283,7 +283,7 @@ int main() {
         expect(tail >= 256 * 1024 && head + dropped + tail == full.size() && (*j)["bytes"] == kept.size(), "every byte is either kept or counted as dropped");
         bool noted = false;
         for (const auto& c : read_output_index(out)) noted = noted || (c.stream == 'm' && c.offset == head && c.length == note.size());
-        expect(noted, "the note is MAIC's own chunk (m) in the index");
+        expect(noted, "the note is MAID's own chunk (m) in the index");
     }
 
     section("the screen and the replay, from the index");

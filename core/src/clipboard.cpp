@@ -1,6 +1,6 @@
-#include "maic/clipboard.hpp"
+#include "maid/clipboard.hpp"
 
-#include "maic/helper.hpp"
+#include "maid/helper.hpp"
 
 #include <unistd.h>
 
@@ -9,7 +9,7 @@
 #include <filesystem>
 #include <string>
 
-namespace maic {
+namespace maid {
 
 namespace {
 
@@ -54,7 +54,7 @@ bool pipe_to(const char* command, const std::string& text) {
 }  // namespace
 
 std::string copy_to_clipboard(const std::string& text) {
-    if (std::getenv("MAIC_NO_CLIPBOARD")) return "clipboard disabled";  // tests, and anyone who wants it off
+    if (std::getenv("MAID_NO_CLIPBOARD")) return "clipboard disabled";  // tests, and anyone who wants it off
     std::string used;
     if (std::getenv("WAYLAND_DISPLAY") && has_program("wl-copy") && pipe_to("wl-copy 2>/dev/null", text)) {
         used = "wl-copy";
@@ -70,7 +70,7 @@ std::string copy_to_clipboard(const std::string& text) {
 }
 
 std::string paste_from_clipboard() {
-    if (std::getenv("MAIC_NO_CLIPBOARD")) return "";
+    if (std::getenv("MAID_NO_CLIPBOARD")) return "";
     const char* commands[] = {"wl-paste -n 2>/dev/null", "xclip -selection clipboard -o 2>/dev/null", "xsel -ob 2>/dev/null"};
     const char* needs[] = {"wl-paste", "xclip", "xsel"};
     for (int i = 0; i < 3; ++i) {
@@ -81,4 +81,4 @@ std::string paste_from_clipboard() {
     return "";
 }
 
-}  // namespace maic
+}  // namespace maid

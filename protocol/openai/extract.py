@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes subset.json: the schemas of the pinned openapi.json that MAIC references, with everything they $ref.
+"""Writes subset.json: the schemas of the pinned openapi.json that MAID references, with everything they $ref.
 
     python3 protocol/openai/extract.py           rewrite subset.json
     python3 protocol/openai/extract.py --check   exit 1 when openapi.json is not the pinned file or subset.json
@@ -21,7 +21,7 @@ REPO = "https://github.com/openai/openai-openapi"
 COMMIT = "de3a025c40f84b99d1401ee1c5fe69fbf8de789b"
 SHA256 = "942fd516753229e5c3cc4df9a3ab71055ac3c8dec937dd0ebdbd632620f35045"
 
-# What MAIC reads, sends or will send. Adding a root is how a schema joins the subset.
+# What MAID reads, sends or will send. Adding a root is how a schema joins the subset.
 ROOTS = [
     "ResponseStreamEvent",                  # every Responses stream event, the engine protocol's event union
     "Response",                             # the response object those events carry
@@ -31,7 +31,7 @@ ROOTS = [
     "ErrorResponse",                        # {"error": Error}, the error body of every operation
     "CreateChatCompletionStreamResponse",   # one chat-completions chunk, what core/src/openai.cpp parses
     "ConversationResource",                 # the conversation object: createConversation, getConversation
-    "ConversationItem",                     # a conversation's items: maic.session.attach, listConversationItems
+    "ConversationItem",                     # a conversation's items: maid.session.attach, listConversationItems
     "CreateResponse",                       # response.create's fields, the Responses WebSocket's client event
     "ResponseSteerEvent",                   # response.steer, the WebSocket's other client event
     "ResponseSteerAcceptedEvent",           # the WebSocket's steering events, outside ResponseStreamEvent
@@ -69,7 +69,7 @@ def build(raw):
                 sys.exit(f"extract: {name} has a $ref outside components.schemas: {ref}")
             todo.append(ref[len(PREFIX):])
     subset = {
-        "x-maic-subset": {
+        "x-maid-subset": {
             "source": REPO,
             "commit": COMMIT,
             "file": "openapi.json",

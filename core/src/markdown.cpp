@@ -1,8 +1,8 @@
-#include "maic/markdown.hpp"
+#include "maid/markdown.hpp"
 
 #include <sstream>
 
-namespace maic {
+namespace maid {
 
 namespace {
 
@@ -244,4 +244,4 @@ std::vector<StyledLine> wrap_line(const StyledLine& line, size_t width) {
     return out;
 }
 
-}  // namespace maic
+}  // namespace maid

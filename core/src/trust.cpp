@@ -1,11 +1,11 @@
-#include "maic/trust.hpp"
+#include "maid/trust.hpp"
 
-#include "maic/harness.hpp"
-#include "maic/instructions.hpp"
-#include "maic/llm.hpp"
-#include "maic/lua.hpp"
-#include "maic/paths.hpp"
-#include "maic/session.hpp"
+#include "maid/harness.hpp"
+#include "maid/instructions.hpp"
+#include "maid/llm.hpp"
+#include "maid/lua.hpp"
+#include "maid/paths.hpp"
+#include "maid/session.hpp"
 
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
@@ -33,7 +33,7 @@
 
 extern char** environ;
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -305,7 +305,7 @@ json capabilities(const ProjectDir& p) {
         for (const auto& f : list) caps["instructions"].push_back(rel(p.dir, f));
     }
     std::error_code ec;
-    for (const auto& e : fs::directory_iterator(p.dir / ".maic" / "tools", ec)) {
+    for (const auto& e : fs::directory_iterator(p.dir / ".maid" / "tools", ec)) {
         if (e.is_regular_file(ec) && e.path().extension() == ".lua") caps["lua_tools"].push_back(e.path().filename().string());
         if (e.is_directory(ec) && fs::is_regular_file(e.path() / "tool.json", ec)) {
             std::ifstream in(e.path() / "tool.json");
@@ -359,12 +359,12 @@ std::vector<std::string> widenings(const json& old_caps, const json& now) {
     if (!now.value("error", "").empty() && now.value("error", "") != old.value("error", "")) out.push_back("settings that do not load: " + now.value("error", ""));
     for (const char* key : {"instructions", "lua_tools"}) {
         for (const auto& x : set(now, key)) {
-            if (!set(old, key).count(x)) out.push_back(std::string(key[0] == 'i' ? "a new instruction file: " : "a new tool: .maic/tools/") + x);
+            if (!set(old, key).count(x)) out.push_back(std::string(key[0] == 'i' ? "a new instruction file: " : "a new tool: .maid/tools/") + x);
         }
     }
     json os = old.value("script_tools", json::object()), ns = now.value("script_tools", json::object());
     for (const auto& [name, v] : ns.items()) {
-        if (!os.contains(name)) out.push_back("a new tool: .maic/tools/" + name + "/");
+        if (!os.contains(name)) out.push_back("a new tool: .maid/tools/" + name + "/");
         else if (os[name] != v) out.push_back("tool " + name + "'s manifest changed its run, reads or writes");
     }
     return out;
@@ -466,7 +466,7 @@ void require_local(Origin origin) {
 fs::path project_arg(const fs::path& workspace, const std::string& path) {
     std::string p = expand_home(path);
     fs::path dir = absolute_dir(fs::path(p).is_absolute() ? fs::path(p) : workspace / p);
-    if (never_project(dir)) throw std::runtime_error(dir.string() + " is never a project (it is $HOME or /); your own settings and instructions go in ~/.config/maic/");
+    if (never_project(dir)) throw std::runtime_error(dir.string() + " is never a project (it is $HOME or /); your own settings and instructions go in ~/.config/maid/");
     std::error_code ec;
     if (!fs::is_directory(dir, ec)) throw std::runtime_error(dir.string() + " is not a directory");
     return dir;
@@ -524,7 +524,7 @@ ProtocolTier resolve_protocol_tier(const std::string& global_default, const std:
     ProtocolTier out{global_default, "global default", ""};
     for (fs::path d = absolute_dir(workspace.string());; d = d.parent_path()) {
         std::string tier = recorded.value(d.string(), "");
-        std::string how = "maic trust --protocol";
+        std::string how = "maid trust --protocol";
         for (const auto& [path, t] : per_directory) {
             if (tier.empty() && absolute_dir(expand_home(path)) == d) tier = t, how = "protocol_tiers";
         }
@@ -559,7 +559,7 @@ ProjectDir project_dir(const fs::path& dir) {
     p.dir = absolute_dir(dir);
     std::error_code ec;
     for (const char* name : {"settings.lua", "settings.json", "settings.local.lua", "settings.local.json"}) {
-        if (fs::is_regular_file(p.dir / ".maic" / name, ec)) p.settings.push_back(p.dir / ".maic" / name);
+        if (fs::is_regular_file(p.dir / ".maid" / name, ec)) p.settings.push_back(p.dir / ".maid" / name);
     }
     InstructionOptions options;
     {
@@ -610,7 +610,7 @@ ProjectDir project_dir(const fs::path& dir) {
         }
     }
     std::sort(p.imports.begin(), p.imports.end());
-    fs::path tools = p.dir / ".maic" / "tools";
+    fs::path tools = p.dir / ".maid" / "tools";
     p.tool_dir = fs::is_directory(tools, ec);
     if (p.tool_dir) {
         for (auto it = fs::recursive_directory_iterator(tools, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
@@ -687,7 +687,7 @@ TrustStatus trust_status(const ProjectDir& p) {
         s.reasons = widenings(entry.value("caps", json()), capabilities(p));
         // A fully trusted directory's settings.lua runs as you: its code can't be judged as data.
         for (const auto& f : s.changed) {
-            if (f.extension() == ".lua" && f.parent_path() == p.dir / ".maic" && trust_lua_tier(p.dir) == LuaTier::Full) {
+            if (f.extension() == ".lua" && f.parent_path() == p.dir / ".maid" && trust_lua_tier(p.dir) == LuaTier::Full) {
                 s.reasons.push_back(rel(p.dir, f) + " changed, and it runs with full Lua (trusted fully)");
             }
         }
@@ -778,9 +778,9 @@ std::string describe_project(const ProjectDir& p, const std::string& indent) {
     if (p.tool_dir) {
         std::vector<fs::path> top;
         std::error_code ec;
-        for (const auto& e : fs::directory_iterator(p.dir / ".maic" / "tools", ec)) top.push_back(e.path());
+        for (const auto& e : fs::directory_iterator(p.dir / ".maid" / "tools", ec)) top.push_back(e.path());
         std::sort(top.begin(), top.end());
-        out += indent + "tools:        " + (top.empty() ? std::string(".maic/tools/ (empty)") : file_list(p.dir, top)) + " (" + std::to_string(p.tools.size()) + " file" +
+        out += indent + "tools:        " + (top.empty() ? std::string(".maid/tools/ (empty)") : file_list(p.dir, top)) + " (" + std::to_string(p.tools.size()) + " file" +
                (p.tools.size() == 1 ? "" : "s") + ")\n";
     }
     if (!out.empty()) out.pop_back();
@@ -788,17 +788,17 @@ std::string describe_project(const ProjectDir& p, const std::string& indent) {
 }
 
 std::string lua_hint(const fs::path& dir) {
-    std::string cmd = "`maic trust " + dir.string() + " --lua ";
+    std::string cmd = "`maid trust " + dir.string() + " --lua ";
     switch (trust_lua_tier(dir)) {
         case LuaTier::Full: return "Lua full: its settings.lua runs as you; " + cmd + "sandbox` runs it in a child process that cannot reach the system";
         case LuaTier::Sandbox: return "Lua sandbox: its settings.lua runs in a child process that cannot reach the system; " + cmd + "full` runs it as you";
-        case LuaTier::Restricted: return "Lua restricted: its settings.lua runs in a restricted state in MAIC's own process; " + cmd + "sandbox` for the child process";
+        case LuaTier::Restricted: return "Lua restricted: its settings.lua runs in a restricted state in MAID's own process; " + cmd + "sandbox` for the child process";
     }
     return "";
 }
 
 std::string tier_hint(const fs::path& dir, const std::string& level) {
-    std::string cmd = "`maic trust " + dir.string() + " --level ";
+    std::string cmd = "`maid trust " + dir.string() + " --level ";
     if (level == "strict") return "tier strict: every change is asked about; " + cmd + "standard` lets your own edits pass";
     if (level == "relaxed") return "tier relaxed: only changes that widen what it can do are asked about; " + cmd + "standard` or " + cmd + "strict` to be asked about more";
     return "tier standard; " + cmd + "relaxed` to stop asking about your own edits, " + cmd + "strict` to be asked about every change";
@@ -806,7 +806,7 @@ std::string tier_hint(const fs::path& dir, const std::string& level) {
 
 std::string auto_held(const fs::path& workspace) {
     std::vector<ProjectDir> dirs = project_dirs(workspace);
-    if (dirs.empty()) return "auto mode waits: nothing here is trusted (no .maic/ or instruction file); :mode auto turns it on";
+    if (dirs.empty()) return "auto mode waits: nothing here is trusted (no .maid/ or instruction file); :mode auto turns it on";
     for (const auto& p : dirs) {
         if (!trusted(p.dir)) return "auto mode waits: " + p.dir.string() + " is not trusted; :mode auto turns it on";
         if (LuaTier t = trust_lua_tier(p.dir); t != LuaTier::Full) {
@@ -822,7 +822,7 @@ std::vector<std::string> trust_notices(const fs::path& workspace) {
     if (never_project(ws)) {
         if (ProjectDir p = project_dir(ws); !p.empty()) {
             out.push_back(ws.string() + " is " + (ws == ws.root_path() ? "/" : "$HOME") + ", never a project: its files are ignored\n" + describe_project(p, "  ") +
-                          "\nyour own settings, instructions and tools go in ~/.config/maic/");
+                          "\nyour own settings, instructions and tools go in ~/.config/maid/");
         }
         return out;
     }
@@ -832,7 +832,7 @@ std::vector<std::string> trust_notices(const fs::path& workspace) {
         std::string line = "untrusted (" + trust_name(s.trust) + "): " + p.dir.string() + "\n" + describe_project(p, "  ");
         if (!s.changed.empty()) line += "\n  changed:      " + file_list(p.dir, s.changed);
         for (const auto& r : s.reasons) line += "\n  asks because: " + r;
-        line += "\nits settings are not applied, its instructions not given to the model, its tools not loaded. :trust (or maic trust " + p.dir.string() + ") trusts it; " +
+        line += "\nits settings are not applied, its instructions not given to the model, its tools not loaded. :trust (or maid trust " + p.dir.string() + ") trusts it; " +
                 tier_hint(p.dir, s.level);
         out.push_back(line);
     }
@@ -846,7 +846,7 @@ std::string grant_trust(const fs::path& workspace, const std::string& path, Orig
     std::vector<ProjectDir> dirs;
     if (!path.empty()) {
         ProjectDir p = project_dir(project_arg(workspace, path));
-        if (p.empty()) throw std::runtime_error("nothing to trust in " + p.dir.string() + ": no .maic/settings.*, instruction files or .maic/tools/");
+        if (p.empty()) throw std::runtime_error("nothing to trust in " + p.dir.string() + ": no .maid/settings.*, instruction files or .maid/tools/");
         dirs.push_back(std::move(p));
     } else {
         for (auto& p : project_dirs(workspace)) {
@@ -855,7 +855,7 @@ std::string grant_trust(const fs::path& workspace, const std::string& path, Orig
         if (dirs.empty()) {
             std::string out = "nothing to trust here:";
             for (const auto& p : project_dirs(workspace)) out += "\n  " + p.dir.string() + "  (" + trust_name(trust_status(p).trust) + ")";
-            if (project_dirs(workspace).empty()) out += " no directory from under $HOME down to " + absolute_dir(workspace).string() + " holds .maic/ or an instruction file";
+            if (project_dirs(workspace).empty()) out += " no directory from under $HOME down to " + absolute_dir(workspace).string() + " holds .maid/ or an instruction file";
             return out;
         }
     }
@@ -866,7 +866,7 @@ std::string grant_trust(const fs::path& workspace, const std::string& path, Orig
         out += (out.empty() ? "" : "\n") + std::string("trusted ") + p.dir.string() + "\n" + describe_project(p, "  ") + "\n  " + lua_hint(p.dir) + "\n  " +
                tier_hint(p.dir, trust_status(p).level);
     }
-    return out + "\nsettings and tools apply when MAIC next starts there; instructions from the next turn";
+    return out + "\nsettings and tools apply when MAID next starts there; instructions from the next turn";
 }
 
 std::string revoke_trust(const fs::path& workspace, const std::string& path) {
@@ -881,7 +881,7 @@ std::string revoke_trust(const fs::path& workspace, const std::string& path) {
         untrust(d);
         out += (out.empty() ? "" : "\n") + std::string("untrusted ") + d.string();
     }
-    return out + "\nasked about again when MAIC next starts there";
+    return out + "\nasked about again when MAID next starts there";
 }
 
 std::string trust_listing() {
@@ -1073,11 +1073,11 @@ std::string trust_command(const std::string& command, const std::vector<std::str
 
 std::vector<std::string> trust_prompt(const ProjectDir& p) {
     TrustStatus s = trust_status(p);
-    std::vector<std::string> lines = {std::string("MAIC: ") + (s.trust == Trust::Changed ? "a trusted project directory changed" : "a project directory you have not trusted"),
+    std::vector<std::string> lines = {std::string("MAID: ") + (s.trust == Trust::Changed ? "a trusted project directory changed" : "a project directory you have not trusted"),
                                       "  " + p.dir.string()};
     std::istringstream files(describe_project(p, "  "));
     for (std::string l; std::getline(files, l);) lines.push_back(l);
-    if (s.trust == Trust::Unknown && !list_sessions(p.dir).empty()) lines.push_back("  MAIC used this directory before this check existed.");
+    if (s.trust == Trust::Unknown && !list_sessions(p.dir).empty()) lines.push_back("  MAID used this directory before this check existed.");
     if (!s.changed.empty()) lines.push_back("  changed:      " + file_list(p.dir, s.changed));
     for (const auto& r : s.reasons) lines.push_back("  asks because: " + r);
     lines.push_back("  " + tier_hint(p.dir, s.level));
@@ -1094,7 +1094,7 @@ std::string answer_trust(const ProjectDir& p, const std::string& given) {
     }
     if (answer == "v" || answer == "never") {
         never_trust(p.dir, Origin::Local);
-        return "never: " + p.dir.string() + " stays untrusted (maic trust " + p.dir.string() + " changes that)";
+        return "never: " + p.dir.string() + " stays untrusted (maid trust " + p.dir.string() + " changes that)";
     }
     not_now(p.dir);
     return "not now: " + p.dir.string() + " is untrusted for this session";
@@ -1168,4 +1168,4 @@ std::string remote_trust_change(const std::string& device, const std::string& pr
     return done;
 }
 
-}  // namespace maic
+}  // namespace maid

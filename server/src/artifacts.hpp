@@ -9,9 +9,9 @@
 #include <string_view>
 #include <vector>
 
-namespace maic::server {
+namespace maid::server {
 
-// Artifacts: pages maic-server serves at /a/<id>/ from <state>/artifacts/<id>/, sandboxed (docs/artifacts.md).
+// Artifacts: pages maid-server serves at /a/<id>/ from <state>/artifacts/<id>/, sandboxed (docs/artifacts.md).
 
 constexpr size_t kArtifactDataMax = 1 << 20;  // a data document's size cap, 1 MiB
 
@@ -35,14 +35,14 @@ std::string data_rev(const std::string& body);
 std::optional<std::string> data_revision(const std::filesystem::path& dir, const std::string& name);
 void write_data(const std::filesystem::path& dir, const std::string& name, const std::string& body);
 
-// index.html with the capability as <meta name="maic-artifact-token">, first in <head>.
+// index.html with the capability as <meta name="maid-artifact-token">, first in <head>.
 std::string page_with_token(std::string html, const std::string& token);
 
-// The trust recorded beside an artifact (`.maic-artifact.json`): "trusted" only when it says exactly that, and
+// The trust recorded beside an artifact (`.maid-artifact.json`): "trusted" only when it says exactly that, and
 // "sandboxed" for anything else, missing or unreadable. Nothing reads it to loosen the sandbox.
 std::string artifact_trust(const std::filesystem::path& dir);
 
-// ALLOW_INSECURE beside the trust (`.maic-artifact.json`): true only when it is the JSON value true, and false for
+// ALLOW_INSECURE beside the trust (`.maid-artifact.json`): true only when it is the JSON value true, and false for
 // anything else, missing or unreadable. It adds 'unsafe-eval' to that artifact's script policy and nothing else.
 bool artifact_allow_insecure(const std::filesystem::path& dir);
 void set_artifact_allow_insecure(const std::filesystem::path& dir, bool on);
@@ -61,13 +61,13 @@ std::vector<ArtifactInfo> list_artifacts(const std::filesystem::path& root);
 // the trust as sandboxed the first time. Returns what it skipped.
 std::vector<std::string> add_artifact(const std::filesystem::path& root, const std::filesystem::path& src, const std::string& id);
 
-// Telling an agent when a page submits (docs/agent-kit.md): `maic artifact watch ID [--doc NAME] [--once]` prints a
-// line per event, and `maic artifact protocol ID [--propose FILE | --approve | --verify HASH]` shows, proposes,
-// approves or re-hashes the notify protocol beside the artifact (.maic-notify-protocol.json) that every event names. Return the exit code.
+// Telling an agent when a page submits (docs/agent-kit.md): `maid artifact watch ID [--doc NAME] [--once]` prints a
+// line per event, and `maid artifact protocol ID [--propose FILE | --approve | --verify HASH]` shows, proposes,
+// approves or re-hashes the notify protocol beside the artifact (.maid-notify-protocol.json) that every event names. Return the exit code.
 int artifact_watch(const std::filesystem::path& root, const std::vector<std::string>& args);
 int artifact_protocol(const std::filesystem::path& root, const std::vector<std::string>& args);
 
-// One-time browser logins: `maic artifact open` writes one under <state>/artifact-logins/ (only the code's SHA-256
+// One-time browser logins: `maid artifact open` writes one under <state>/artifact-logins/ (only the code's SHA-256
 // names the file), and the server claims it once, before it expires.
 std::string new_artifact_login(const std::filesystem::path& state, int seconds = 120);
 bool claim_artifact_login(const std::filesystem::path& state, const std::string& code);
@@ -92,4 +92,4 @@ private:
     std::map<std::string, Grant> grants_;  // by the secret's SHA-256
 };
 
-}  // namespace maic::server
+}  // namespace maid::server

@@ -2,7 +2,7 @@
 
 `default` is diction as it always ran: Claude Haiku through the `claude` CLI on the user's own login, and
 distil-large-v3 for speech. `api` is the same Haiku through Anthropic's API. `local` and `local-small` keep the
-narration on this machine. `presets.NAME` in diction.lua (beside MAIC's settings.lua) adds a preset, or overrides a
+narration on this machine. `presets.NAME` in diction.lua (beside MAID's settings.lua) adds a preset, or overrides a
 built-in one field by field.
 """
 
@@ -26,13 +26,13 @@ BUILTIN = {
                     "note": "fits beside a parked ComfyUI (~4.7 GB); nothing leaves the machine"},
 }
 FIELDS = ("backend", "scribe", "whisper", "note")
-# claude-cli: the `claude` process diction always ran. api: a cloud provider through `maic model resolve`.
-# local: an OpenAI-compatible MAIC server (llama-server), likewise resolved, never a cloud one.
+# claude-cli: the `claude` process diction always ran. api: a cloud provider through `maid model resolve`.
+# local: an OpenAI-compatible MAID server (llama-server), likewise resolved, never a cloud one.
 BACKENDS = ("claude-cli", "api", "local")
 CLAUDE_MISSING = ("the default scribe runs through the claude CLI, which is not installed; "
                   "--preset api (needs ANTHROPIC_API_KEY) or --preset local keeps working")
 
-# `maic models install` ids for the scribe models the built-in presets name.
+# `maid models install` ids for the scribe models the built-in presets name.
 SCRIBE_CATALOG = {"Qwen3.5-9B-Q4_K_M-text": "qwen3.5-9b-text", "Qwen3.5-4B-Q4_K_M": "qwen3.5-4b"}
 
 
@@ -108,13 +108,13 @@ def scribe_state(backend: str, name: str) -> str:
         return f"{where}, cloud: the narration's text goes to {agent['provider']}; {key}"
     notes = []
     if agent["provider"].startswith("llamacpp") and not scribe_installed(agent["model"]):
-        hint = (f"maic models install {SCRIBE_CATALOG[agent['model']]}" if agent["model"] in SCRIBE_CATALOG
+        hint = (f"maid models install {SCRIBE_CATALOG[agent['model']]}" if agent["model"] in SCRIBE_CATALOG
                 else f"no {agent['model']} under {whisper_mod.models_root().parent / 'llamacpp'}")
         notes.append(f"{YELLOW}not installed: {hint}{OFF}")
     if server_answers(agent["base_url"]):
         notes.append(f"server answers at {agent['base_url']}")
     else:
-        notes.append(f"{YELLOW}server not answering at {agent['base_url']}: maic up {agent['provider']}{OFF}")
+        notes.append(f"{YELLOW}server not answering at {agent['base_url']}: maid up {agent['provider']}{OFF}")
     return f"{where}, local; " + "; ".join(notes)
 
 

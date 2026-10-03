@@ -18,7 +18,7 @@ import os
 import re
 import shutil
 
-from cai.grammar import maic
+from cai.grammar import maid
 from cai.grammar import records
 
 # Shape-only patterns for locating candidates. This file's own text must never
@@ -82,10 +82,10 @@ def load(path):
         return fh.read().splitlines()
 
 
-#: MAIC's threading keys, protected the way Claude Code's are, for a MAIC session only:
+#: MAID's threading keys, protected the way Claude Code's are, for a MAID session only:
 #: `tool_call_id` pairs a tool message with its call, `id` names the call inside `tool_calls`
 #: and the parent inside `resumed_from`, `child` names a subagent's transcript.
-MAIC_STRUCTURAL_KEYS = ("tool_call_id", "id", "child")
+MAID_STRUCTURAL_KEYS = ("tool_call_id", "id", "child")
 
 
 def structural_values(lines, extra_keys=()):
@@ -97,9 +97,9 @@ def structural_values(lines, extra_keys=()):
     return keep
 
 
-def is_maic_lines(lines):
-    """Whether these raw lines are a MAIC session, by content."""
-    return maic.is_maic(records.load("\n".join(lines)))
+def is_maid_lines(lines):
+    """Whether these raw lines are a MAID session, by content."""
+    return maid.is_maid(records.load("\n".join(lines)))
 
 
 # `string_values` moved to `cai.grammar.records`, which is where a fact about what
@@ -321,7 +321,7 @@ def redact(transcript, backup_dest, blank_lines=(), only_lines=(),
     # transcript being cleaned, and here it would record BOTH halves.
     subs = load_substitutions(substitutions_from) if substitutions_from else {}
 
-    keep = structural_values(lines, MAIC_STRUCTURAL_KEYS if is_maic_lines(lines) else ())
+    keep = structural_values(lines, MAID_STRUCTURAL_KEYS if is_maid_lines(lines) else ())
     source_lines = load(candidates_from) if candidates_from else lines
     scoped = source_lines
     if only_lines:
@@ -418,7 +418,7 @@ def verify(transcript, backup_path, only_lines=()):
     live_lines = load(transcript)
     live = "\n".join(live_lines)
     backup_lines = load(backup_path)
-    keep = structural_values(live_lines, MAIC_STRUCTURAL_KEYS if is_maic_lines(live_lines) else ())
+    keep = structural_values(live_lines, MAID_STRUCTURAL_KEYS if is_maid_lines(live_lines) else ())
 
     scope = backup_lines
     if only_lines:
@@ -478,8 +478,8 @@ def load_records(path):
             out.append(json.loads(line))
         except ValueError:
             continue
-    # A MAIC session is projected onto the grammar, so the selections below read it unchanged.
-    return maic.to_claude(out) if maic.is_maic(out) else out
+    # A MAID session is projected onto the grammar, so the selections below read it unchanged.
+    return maid.to_claude(out) if maid.is_maid(out) else out
 
 
 def _cap(text, limit):

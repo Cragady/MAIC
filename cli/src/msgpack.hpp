@@ -7,7 +7,7 @@
 
 // The part of msgpack that talking to nvim over msgpack-rpc needs: nil, booleans, integers, floats, strings
 // (binary is read as a string), arrays, maps, and ext (nvim's Buffer / Window / Tabpage handles).
-namespace maic::msgpack {
+namespace maid::msgpack {
 
 struct Value {
     enum class Kind { Nil, Bool, Int, Float, Str, Array, Map, Ext };
@@ -38,4 +38,4 @@ std::string encode(const Value& v);
 // bytes end before the value does (read more and retry). Throws std::runtime_error on a byte that is not msgpack.
 bool decode(const std::string& bytes, size_t& pos, Value& out);
 
-}  // namespace maic::msgpack
+}  // namespace maid::msgpack

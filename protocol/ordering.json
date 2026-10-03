@@ -1,14 +1,14 @@
 {
-  "$comment": "The state machines of docs/design/engine-protocol.md section 10 as data: the engine's runtime ordering checks and the conformance checker (maic protocol check, ctest protocol_conformance) both load this file. A machine has states, an initial and terminal states, and transitions {from, on (event types), when (JSON pointer into the event: allowed values), key (JSON pointers naming the instance; the machine's key by default), to}. An event concerns a machine when one of its transitions lists the event's type and its `when` holds and its key is present; it must then be legal from the instance's state. `openai: true` machines also run over the OpenAI-only view (rule openai.view); `scope: response` instances live inside the open response; `one_open` and `closes` are the response machine's rules response.one_open and response.items_done. The rules that are not a single machine (sequence numbers, turns, schemas) are listed with their ids and implemented in core/src/protocol.cpp. `filter` lists the event types a connection may be spared (`filterable`, named in maic.hello's `exclude`) and the types a capability covers (sent only to a connection that announces it); rule seq.filtered. The machine for reviews joins with step 10.",
+  "$comment": "The state machines of docs/design/engine-protocol.md section 10 as data: the engine's runtime ordering checks and the conformance checker (maid protocol check, ctest protocol_conformance) both load this file. A machine has states, an initial and terminal states, and transitions {from, on (event types), when (JSON pointer into the event: allowed values), key (JSON pointers naming the instance; the machine's key by default), to}. An event concerns a machine when one of its transitions lists the event's type and its `when` holds and its key is present; it must then be legal from the instance's state. `openai: true` machines also run over the OpenAI-only view (rule openai.view); `scope: response` instances live inside the open response; `one_open` and `closes` are the response machine's rules response.one_open and response.items_done. The rules that are not a single machine (sequence numbers, turns, schemas) are listed with their ids and implemented in core/src/protocol.cpp. `filter` lists the event types a connection may be spared (`filterable`, named in maid.hello's `exclude`) and the types a capability covers (sent only to a connection that announces it); rule seq.filtered. The machine for reviews joins with step 10.",
   "version": 1,
   "rules": [
     {
       "id": "seq.start",
-      "text": "The first event of an epoch has sequence_number 0, and the first event of every load of a session is maic.session.state carrying the epoch and the protocol hash; a load that continues an epoch goes on from the number the last one closed at."
+      "text": "The first event of an epoch has sequence_number 0, and the first event of every load of a session is maid.session.state carrying the epoch and the protocol hash; a load that continues an epoch goes on from the number the last one closed at."
     },
     {
       "id": "seq.next",
-      "text": "Each event's sequence_number, or else its maic.filtered_from or maic.merged_from (in that order) when it carries one, is one more than the last event's: a larger number is a gap."
+      "text": "Each event's sequence_number, or else its maid.filtered_from or maid.merged_from (in that order) when it carries one, is one more than the last event's: a larger number is a gap."
     },
     {
       "id": "seq.repeat",
@@ -16,7 +16,7 @@
     },
     {
       "id": "seq.filtered",
-      "text": "A connection is sent no event of a type its maic.hello answer lists in `exclude`. The first event sent after filtered ones carries maic.filtered_from, the first number filtered out; a connection that excludes nothing never gets it."
+      "text": "A connection is sent no event of a type its maid.hello answer lists in `exclude`. The first event sent after filtered ones carries maid.filtered_from, the first number filtered out; a connection that excludes nothing never gets it."
     },
     {
       "id": "skeleton.hash",
@@ -36,15 +36,15 @@
     },
     {
       "id": "schema.event",
-      "text": "Every event fits event.schema.json: OpenAI's shape for OpenAI's types, MAIC's for maic.* types."
+      "text": "Every event fits event.schema.json: OpenAI's shape for OpenAI's types, MAID's for maid.* types."
     },
     {
       "id": "schema.extra",
-      "text": "An OpenAI-shaped object carries no field beyond OpenAI's but `maic` (and `stream_id` on an event): MAIC's own fields go in one maic object."
+      "text": "An OpenAI-shaped object carries no field beyond OpenAI's but `maid` (and `stream_id` on an event): MAID's own fields go in one maid object."
     },
     {
       "id": "schema.message",
-      "text": "Every request's params, result and notification fits maic.openrpc.json."
+      "text": "Every request's params, result and notification fits maid.openrpc.json."
     },
     {
       "id": "machine",
@@ -68,19 +68,19 @@
     },
     {
       "id": "turn.number",
-      "text": "A response that opens a turn carries maic.turn one more than the previous turn; a later response of the same turn carries the same number and names the previous response in previous_response_id."
+      "text": "A response that opens a turn carries maid.turn one more than the previous turn; a later response of the same turn carries the same number and names the previous response in previous_response_id."
     },
     {
       "id": "turn.final",
-      "text": "A turn closes at the terminal event that carries maic.final: true; a new turn opens only after that."
+      "text": "A turn closes at the terminal event that carries maid.final: true; a new turn opens only after that."
     },
     {
       "id": "turn.paused",
-      "text": "maic.turn.paused comes only while a turn is open and none of its responses is: right after a maic.response.cancelled with maic.final: false."
+      "text": "maid.turn.paused comes only while a turn is open and none of its responses is: right after a maid.response.cancelled with maid.final: false."
     },
     {
       "id": "steer.in_turn",
-      "text": "response.steer.accepted, response.steer.failed and maic.steer.applied are legal only while a response of the turn is open or the turn is paused, and so before the events they cause."
+      "text": "response.steer.accepted, response.steer.failed and maid.steer.applied are legal only while a response of the turn is open or the turn is paused, and so before the events they cause."
     },
     {
       "id": "request.answered",
@@ -88,17 +88,17 @@
     },
     {
       "id": "openai.view",
-      "text": "With every maic.* event and every maic object removed, each event still fits OpenAI's ResponseStreamEvent and the response, item and content part machines still hold."
+      "text": "With every maid.* event and every maid object removed, each event still fits OpenAI's ResponseStreamEvent and the response, item and content part machines still hold."
     }
   ],
   "filter": {
-    "filterable": ["response.output_text.delta", "response.reasoning_text.delta", "response.shell_call_output_content.delta", "maic.tool.output.delta"],
-    "capabilities": {"tool_output": ["response.shell_call_output_content.delta", "maic.tool.output.delta"]}
+    "filterable": ["response.output_text.delta", "response.reasoning_text.delta", "response.shell_call_output_content.delta", "maid.tool.output.delta"],
+    "capabilities": {"tool_output": ["response.shell_call_output_content.delta", "maid.tool.output.delta"]}
   },
   "machines": [
     {
       "name": "session",
-      "description": "One per load of a session (maic.session.state). activity moves without changing the state. A load's first event carries the stream's epoch, so a parked session loaded again starts a new instance.",
+      "description": "One per load of a session (maid.session.state). activity moves without changing the state. A load's first event carries the stream's epoch, so a parked session loaded again starts a new instance.",
       "key": "stream",
       "initial": "-",
       "restarts_on": "/epoch",
@@ -114,7 +114,7 @@
             "background"
           ],
           "on": [
-            "maic.session.state"
+            "maid.session.state"
           ],
           "when": {
             "/state": [
@@ -130,7 +130,7 @@
             "background"
           ],
           "on": [
-            "maic.session.state"
+            "maid.session.state"
           ],
           "when": {
             "/state": [
@@ -145,7 +145,7 @@
             "background"
           ],
           "on": [
-            "maic.session.state"
+            "maid.session.state"
           ],
           "when": {
             "/state": [
@@ -160,7 +160,7 @@
             "background"
           ],
           "on": [
-            "maic.session.state"
+            "maid.session.state"
           ],
           "when": {
             "/state": [
@@ -255,7 +255,7 @@
             "in_progress"
           ],
           "on": [
-            "maic.response.cancelled"
+            "maid.response.cancelled"
           ],
           "to": "cancelled"
         }
@@ -299,7 +299,7 @@
             "response.shell_call_command.done",
             "response.shell_call_output_content.delta",
             "response.shell_call_output_content.done",
-            "maic.tool.output.delta"
+            "maid.tool.output.delta"
           ],
           "to": "open"
         },
@@ -400,7 +400,7 @@
             "proposed"
           ],
           "on": [
-            "maic.approval.requested"
+            "maid.approval.requested"
           ],
           "key": [
             "/call_id"
@@ -412,7 +412,7 @@
             "asking"
           ],
           "on": [
-            "maic.approval.answered"
+            "maid.approval.answered"
           ],
           "when": {
             "/choice": [
@@ -430,7 +430,7 @@
             "asking"
           ],
           "on": [
-            "maic.approval.answered"
+            "maid.approval.answered"
           ],
           "when": {
             "/choice": [
@@ -448,7 +448,7 @@
             "asking"
           ],
           "on": [
-            "maic.approval.answered"
+            "maid.approval.answered"
           ],
           "when": {
             "/choice": [
@@ -521,7 +521,7 @@
     },
     {
       "name": "approval",
-      "description": "Requested, then answered once. A late answer is a request error (maic_already_answered), never an event.",
+      "description": "Requested, then answered once. A late answer is a request error (maid_already_answered), never an event.",
       "key": [
         "/id"
       ],
@@ -535,7 +535,7 @@
             "-"
           ],
           "on": [
-            "maic.approval.requested"
+            "maid.approval.requested"
           ],
           "to": "requested"
         },
@@ -544,7 +544,7 @@
             "requested"
           ],
           "on": [
-            "maic.approval.answered"
+            "maid.approval.answered"
           ],
           "to": "answered"
         }
@@ -566,7 +566,7 @@
             "-"
           ],
           "on": [
-            "maic.question.asked"
+            "maid.question.asked"
           ],
           "to": "asked"
         },
@@ -575,7 +575,7 @@
             "asked"
           ],
           "on": [
-            "maic.question.answered"
+            "maid.question.answered"
           ],
           "to": "answered"
         }
@@ -598,7 +598,7 @@
             "-"
           ],
           "on": [
-            "maic.task.created"
+            "maid.task.created"
           ],
           "to": "running"
         },
@@ -607,7 +607,7 @@
             "running"
           ],
           "on": [
-            "maic.task.completed"
+            "maid.task.completed"
           ],
           "to": "completed"
         },
@@ -616,7 +616,7 @@
             "running"
           ],
           "on": [
-            "maic.task.failed"
+            "maid.task.failed"
           ],
           "to": "failed"
         }
@@ -624,7 +624,7 @@
     },
     {
       "name": "steer",
-      "description": "One steer, by its id: accepted (response.steer, and maic.steer's steer, drop and further), applied (the six actions), or failed when a keep or halt ends the turn before its successor commits it. Its commit is the successor's response.created, which names no steer.",
+      "description": "One steer, by its id: accepted (response.steer, and maid.steer's steer, drop and further), applied (the six actions), or failed when a keep or halt ends the turn before its successor commits it. Its commit is the successor's response.created, which names no steer.",
       "key": [
         "/steer/id"
       ],
@@ -648,7 +648,7 @@
             "accepted"
           ],
           "on": [
-            "maic.steer.applied"
+            "maid.steer.applied"
           ],
           "key": [
             "/steer"

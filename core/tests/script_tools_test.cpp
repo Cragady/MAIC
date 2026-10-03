@@ -2,8 +2,8 @@
 // sandboxed run with the arguments on stdin. The sandbox is the real bubblewrap, used the way harness_test uses it.
 #include "check.hpp"
 
-#include "maic/script_tools.hpp"
-#include "maic/trust.hpp"
+#include "maid/script_tools.hpp"
+#include "maid/trust.hpp"
 
 #include <unistd.h>
 
@@ -14,7 +14,7 @@
 #include <functional>
 #include <thread>
 
-using namespace maic;
+using namespace maid;
 using nlohmann::json;
 namespace fs = std::filesystem;
 
@@ -25,9 +25,9 @@ void write_file(const fs::path& p, const std::string& content) {
     std::ofstream(p, std::ios::binary) << content;
 }
 
-// A tool directory under ws/.maic/tools/<dir> holding tool.json (from `manifest`, with `run` and a script when given).
+// A tool directory under ws/.maid/tools/<dir> holding tool.json (from `manifest`, with `run` and a script when given).
 fs::path make_tool(const fs::path& ws, const std::string& dir, json manifest, const std::string& script = "", const std::string& script_name = "main.sh") {
-    fs::path d = ws / ".maic" / "tools" / dir;
+    fs::path d = ws / ".maid" / "tools" / dir;
     fs::create_directories(d);
     if (!script.empty()) write_file(d / script_name, script);
     std::ofstream(d / "tool.json") << manifest.dump(2);
@@ -64,8 +64,8 @@ std::string caught(const std::function<void()>& f) {
 }  // namespace
 
 int main() {
-    setenv("MAIC_TRIPWIRE_FILE", ("/tmp/maic-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);
-    fs::path ws = fs::temp_directory_path() / "maic-script-tools-test";
+    setenv("MAID_TRIPWIRE_FILE", ("/tmp/maid-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);
+    fs::path ws = fs::temp_directory_path() / "maid-script-tools-test";
     fs::remove_all(ws);
     fs::create_directories(ws / "cfg");
     setenv("XDG_CONFIG_HOME", (ws / "cfg").c_str(), 1);
@@ -90,10 +90,10 @@ int main() {
     make_tool(ws, "bad_reads", [] { json m = manifest("bad_reads"); m["reads"] = "docs/**"; return m; }(), echo_sh);
     make_tool(ws, "zz_dup", manifest("echo_args"), echo_sh);
     make_tool(ws, "taken", manifest("word_count"), echo_sh);
-    write_file(ws / ".maic" / "tools" / "not_json" / "tool.json", "{nope");
-    write_file(ws / ".maic" / "tools" / "loose.lua", "return {}");  // a Lua file: not this loader's business
-    write_file(ws / "cfg" / "maic" / "tools" / "global_tool" / "tool.json", manifest("global_tool", {"python3", "main.py"}).dump());
-    write_file(ws / "cfg" / "maic" / "tools" / "global_tool" / "main.py", "import json, sys\nprint('from the config dir', json.load(sys.stdin)['text'])\n");
+    write_file(ws / ".maid" / "tools" / "not_json" / "tool.json", "{nope");
+    write_file(ws / ".maid" / "tools" / "loose.lua", "return {}");  // a Lua file: not this loader's business
+    write_file(ws / "cfg" / "maid" / "tools" / "global_tool" / "tool.json", manifest("global_tool", {"python3", "main.py"}).dump());
+    write_file(ws / "cfg" / "maid" / "tools" / "global_tool" / "main.py", "import json, sys\nprint('from the config dir', json.load(sys.stdin)['text'])\n");
     ScriptToolSet set = load_script_tools(ws, {"word_count"});
     expect(set.tools.size() == 2 && find(set, "echo_args") && find(set, "global_tool"), "the good workspace tool and the global tool load; " + std::to_string(set.tools.size()) + " loaded");
     expect(set.notices.size() == 15, "every bad manifest gets one notice: " + std::to_string(set.notices.size()));
@@ -109,11 +109,11 @@ int main() {
     expect(has_notice(set, "taken", "already defined by a Lua tool"), "a name a Lua tool holds is skipped");
     expect(has_notice(set, "not_json", "not valid JSON"), "a manifest that is not JSON is skipped");
     const ScriptTool& echo = *find(set, "echo_args");
-    expect(echo.timeout_s == 60 && echo.reads.empty() && echo.writes.empty() && echo.dir == ws / ".maic" / "tools" / "echo_args", "defaults: 60 s, nothing declared, the directory remembered");
+    expect(echo.timeout_s == 60 && echo.reads.empty() && echo.writes.empty() && echo.dir == ws / ".maid" / "tools" / "echo_args", "defaults: 60 s, nothing declared, the directory remembered");
     expect(echo.run.size() == 2 && echo.run[0] == "sh" && echo.run[1] == (echo.dir / "main.sh").string(), "an argument naming a file in the directory is made absolute: " + echo.run[1]);
     expect(script_tool_language(echo) == "sh" && script_tool_language(*find(set, "global_tool")) == "python", "the language comes from the program");
-    std::string err = caught([&] { read_script_tool(ws / ".maic" / "tools" / "net" / "tool.json"); });
-    expect(err.find("network") != std::string::npos, "read_script_tool throws the same reason for `maic tools check`: " + err);
+    std::string err = caught([&] { read_script_tool(ws / ".maid" / "tools" / "net" / "tool.json"); });
+    expect(err.find("network") != std::string::npos, "read_script_tool throws the same reason for `maid tools check`: " + err);
 
     section("arguments against the schema");
     json schema = {{"type", "object"},

@@ -1,12 +1,12 @@
 // Credential scrubbing for session files. Patterns describe shapes, never values, and run with glibc's
 // regcomp (a DFA: a 3 MB tool result cannot overflow the stack the way std::regex once did in search_files).
 // Replacement happens inside JSON string values, never in the serialised line, so the copy stays valid JSON.
-#include "maic/redact.hpp"
+#include "maid/redact.hpp"
 
-#include "maic/full_output.hpp"
-#include "maic/session.hpp"
-#include "maic/tools.hpp"
-#include "maic/vendor.hpp"
+#include "maid/full_output.hpp"
+#include "maid/session.hpp"
+#include "maid/tools.hpp"
+#include "maid/vendor.hpp"
 
 #include <fcntl.h>
 #include <regex.h>
@@ -21,7 +21,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -246,7 +246,7 @@ RedactReport redact_session(const fs::path& in, const fs::path& out) {
 }
 
 fs::path redact_session_in_place(const fs::path& path, const std::string& invocation, RedactReport& report) {
-    bool maic_session = is_maic_session(path);
+    bool maid_session = is_maid_session(path);
     fs::path backup = backup_session(path), tmp = path.string() + ".redacting";
     fs::path side = side_dir(path), side_tmp = side.string() + ".redacting";
     report = redact_records(path, tmp, side_tmp, side.filename());
@@ -257,15 +257,15 @@ fs::path redact_session_in_place(const fs::path& path, const std::string& invoca
     }
     if (fs::is_directory(side_tmp, ec)) fs::rename(side_tmp, side);
     fs::rename(tmp, path);
-    if (maic_session) {
+    if (maid_session) {
         std::time_t t = std::time(nullptr);
         char stamp[40];
         std::strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%S%z", std::localtime(&t));
-        json rec = {{"type", "rewritten"}, {"time", stamp}, {"tool", "maic sessions redact"}, {"invocation", invocation}, {"backup", backup.string()},
+        json rec = {{"type", "rewritten"}, {"time", stamp}, {"tool", "maid sessions redact"}, {"invocation", invocation}, {"backup", backup.string()},
                     {"records_before", report.records}, {"records_after", report.records}};
         std::ofstream(path, std::ios::app) << rec.dump() << '\n';
     }
     return backup;
 }
 
-}  // namespace maic
+}  // namespace maid

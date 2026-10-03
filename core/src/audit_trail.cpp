@@ -1,8 +1,8 @@
-#include "maic/audit_trail.hpp"
+#include "maid/audit_trail.hpp"
 
-#include "maic/lua.hpp"
-#include "maic/paths.hpp"
-#include "maic/settings.hpp"
+#include "maid/lua.hpp"
+#include "maid/paths.hpp"
+#include "maid/settings.hpp"
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -17,7 +17,7 @@
 #include <stdexcept>
 #include <string_view>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -32,7 +32,7 @@ std::string utc(std::time_t t, const char* format) {
     return buf;
 }
 
-// "2026-10-01T12:00:00Z", as maic-leak-audit writes index.json; 0 for anything else.
+// "2026-10-01T12:00:00Z", as maid-leak-audit writes index.json; 0 for anything else.
 std::time_t parse_utc(const std::string& text) {
     std::tm tm{};
     const char* end = strptime(text.c_str(), "%Y-%m-%dT%H:%M:%SZ", &tm);
@@ -84,7 +84,7 @@ AuditSettings load_audit_settings() {
     if (!fs::is_regular_file(path, ec)) return a;
     LuaDataLimits limits = lua_data_limits();
     json j = eval_lua_data_file(path, fs::current_path(), limits.tier, limits.memory_mb);
-    if (!j.is_object()) throw std::runtime_error(path.string() + ": must return a table (maic audit-trail init writes one)");
+    if (!j.is_object()) throw std::runtime_error(path.string() + ": must return a table (maid audit-trail init writes one)");
     auto fail = [&](const std::string& key, const std::string& what) { throw std::runtime_error(path.string() + ": " + key + " " + what); };
     auto boolean = [&](const char* key, bool& out) {
         if (!j.contains(key)) return;
@@ -148,14 +148,14 @@ bool write_default_audit_settings() {
         throw std::runtime_error("can't create " + path.string() + ": " + std::strerror(errno));
     }
     static const char* const text =
-        "-- MAIC's audit trail (docs/audit-trail.md). This file is yours alone: no project can set or override any of\n"
-        "-- it. Once maic-server has accounts, only an administrator configures it.\n"
+        "-- MAID's audit trail (docs/audit-trail.md). This file is yours alone: no project can set or override any of\n"
+        "-- it. Once maid-server has accounts, only an administrator configures it.\n"
         "return {\n"
         "  -- Off by default. On: every tool call of every session, recorded or not, appends one entry to\n"
-        "  -- <state>/maic/audit-trail/: the call and the harness's decisions, never conversation text, typed feedback\n"
+        "  -- <state>/maid/audit-trail/: the call and the harness's decisions, never conversation text, typed feedback\n"
         "  -- or tool output.\n"
         "  enabled = false,\n"
-        "  -- How often maic-leak-audit audits the trail: the systemd timer (maic audit-trail schedule install) and\n"
+        "  -- How often maid-leak-audit audits the trail: the systemd timer (maid audit-trail schedule install) and\n"
         "  -- the due check at every start. 30m, 12h, 1d, 2w.\n"
         "  every = \"1d\",\n"
         "  -- With the timer installed, a start holds only once the audit is grace x every overdue.\n"
@@ -175,7 +175,7 @@ bool write_default_audit_settings() {
         "  -- The model that judges: a preset that resolves to this machine.\n"
         "  judge = \"qwen-9b\",\n"
         "  -- The judge thinks before its verdict: better calls on borderline cases (reached or only mentioned), at\n"
-        "  -- the cost of time and tokens per candidate. maic-leak-audit --thinking on|off overrides it for a run.\n"
+        "  -- the cost of time and tokens per candidate. maid-leak-audit --thinking on|off overrides it for a run.\n"
         "  judge_thinking = true,\n"
         "  -- The judge's reply budget per candidate, thinking included, so one candidate cannot run away.\n"
         "  judge_max_tokens = 2048,\n"
@@ -187,7 +187,7 @@ bool write_default_audit_settings() {
         "  chunk_mb = 256,\n"
         "  -- \"off\": retired entries are deleted. A directory (an external drive, a network share, an rclone mount):\n"
         "  -- retired entries move there as verified chunks instead. Moving old chunks on to cold storage (off-site)\n"
-        "  -- is yours to run: maic audit-trail offsite DEST prints the commands.\n"
+        "  -- is yours to run: maid audit-trail offsite DEST prints the commands.\n"
         "  archive = \"off\",\n"
         "}\n";
     bool ok = write_all(fd, text);
@@ -248,7 +248,7 @@ void append_audit_trail(json entry, int file_mb) {
 AuditDue audit_due(const AuditSettings& s, std::time_t now) {
     AuditDue d;
     std::error_code ec;
-    d.scheduled = fs::exists(systemd_user_dir() / "maic-leak-audit.timer", ec);
+    d.scheduled = fs::exists(systemd_user_dir() / "maid-leak-audit.timer", ec);
     fs::path dir = audit_trail_dir();
     std::time_t oldest = 0;
     bool any = false;
@@ -290,12 +290,12 @@ fs::path systemd_user_dir() {
     return fs::path(std::getenv("HOME")) / ".config" / "systemd" / "user";
 }
 
-std::string render_unit(const std::string& template_text, const std::string& exec, const std::string& maic, const std::string& every) {
+std::string render_unit(const std::string& template_text, const std::string& exec, const std::string& maid, const std::string& every) {
     std::string out = template_text;
-    for (const auto& [mark, value] : {std::pair<std::string, std::string>{"@EXEC@", exec}, {"@MAIC@", maic}, {"@EVERY@", every}}) {
+    for (const auto& [mark, value] : {std::pair<std::string, std::string>{"@EXEC@", exec}, {"@MAID@", maid}, {"@EVERY@", every}}) {
         for (size_t at = out.find(mark); at != std::string::npos; at = out.find(mark, at + value.size())) out.replace(at, mark.size(), value);
     }
     return out;
 }
 
-}  // namespace maic
+}  // namespace maid

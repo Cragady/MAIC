@@ -13,11 +13,11 @@
 #include <regex>
 #include <stdexcept>
 
-#ifndef MAIC_VERSION
-#define MAIC_VERSION "dev"
+#ifndef MAID_VERSION
+#define MAID_VERSION "dev"
 #endif
 
-namespace maic {
+namespace maid {
 
 using msgpack::Value;
 using nlohmann::json;
@@ -96,8 +96,8 @@ std::string connect_host_socket(const std::string& path, int& fd) {
             why = "its name says nvim " + m[1].str() + " but nvim " + std::to_string(cred.pid) + " is behind it";
         }
     }
-    bool trust = env_is("MAIC_TESTING", "1") && env_is("MAIC_NVIM_TRUST_SOCKET", "1");
-    if (why.empty() && !trust && !is_ancestor(cred.pid)) why = "nvim " + std::to_string(cred.pid) + " behind it is not one of this MAIC's parent processes";
+    bool trust = env_is("MAID_TESTING", "1") && env_is("MAID_NVIM_TRUST_SOCKET", "1");
+    if (why.empty() && !trust && !is_ancestor(cred.pid)) why = "nvim " + std::to_string(cred.pid) + " behind it is not one of this MAID's parent processes";
     if (!why.empty()) {
         close(s);
         return why;
@@ -167,9 +167,9 @@ std::shared_ptr<HostNvim> HostNvim::connect(const std::string& socket, std::stri
         Value info = host->request("nvim_get_api_info", {});
         if (!info.is_array() || info.array.empty() || !info.array[0].is_int()) throw std::runtime_error("nvim_get_api_info gave no channel");
         host->channel_ = info.array[0].i;
-        json version = {{"major", 0}, {"minor", 0}, {"patch", 0}, {"prerelease", MAIC_VERSION}};
+        json version = {{"major", 0}, {"minor", 0}, {"patch", 0}, {"prerelease", MAID_VERSION}};
         json attributes = {{"pid", std::to_string(getpid())}};
-        host->request("nvim_set_client_info", {Value::str("maic"), to_msgpack(version), Value::str("remote"), to_msgpack(json::object()), to_msgpack(attributes)});
+        host->request("nvim_set_client_info", {Value::str("maid"), to_msgpack(version), Value::str("remote"), to_msgpack(json::object()), to_msgpack(attributes)});
     } catch (const std::exception& e) {
         why = e.what();
         return nullptr;
@@ -290,7 +290,7 @@ void HostNvim::exec_lua_async(const std::string& code, const json& args) {
 }
 
 // Replies go to the request waiting for them; notifications become tasks for the handler thread; a request
-// from nvim (nothing of maic.nvim's sends one) is answered with an error so nvim never waits on MAIC.
+// from nvim (nothing of maid.nvim's sends one) is answered with an error so nvim never waits on MAID.
 void HostNvim::read_loop() {
     std::string buf;
     char chunk[65536];
@@ -314,16 +314,16 @@ void HostNvim::read_loop() {
                 } else if (a[0].i == 2 && a.size() == 3 && a[1].is_str()) {
                     std::string method = a[1].s;
                     std::string text = a[2].is_array() && !a[2].array.empty() && a[2].array[0].is_str() ? a[2].array[0].s : "";
-                    if (method == "maic_send") queue([this, text] { if (handlers_.send) handlers_.send(text); });
-                    else if (method == "maic_command") queue([this, text] { if (handlers_.command) handlers_.command(text); });
-                    else if (method == "maic_interrupt") queue([this] { if (handlers_.interrupt) handlers_.interrupt(); });
-                    else if (method == "maic_colorscheme") queue([this] { if (handlers_.colorscheme) handlers_.colorscheme(); });
+                    if (method == "maid_send") queue([this, text] { if (handlers_.send) handlers_.send(text); });
+                    else if (method == "maid_command") queue([this, text] { if (handlers_.command) handlers_.command(text); });
+                    else if (method == "maid_interrupt") queue([this] { if (handlers_.interrupt) handlers_.interrupt(); });
+                    else if (method == "maid_colorscheme") queue([this] { if (handlers_.colorscheme) handlers_.colorscheme(); });
                     else if (method == "nvim_error_event") {
                         std::string why = a[2].is_array() && a[2].array.size() >= 2 && a[2].array[1].is_str() ? a[2].array[1].s : "error";
                         queue([this, why] { if (handlers_.error) handlers_.error(why); });
                     }
                 } else if (a[0].i == 0 && a.size() == 4 && a[1].is_int()) {
-                    write_all(msgpack::encode(Value::arr({Value::integer(1), a[1], Value::str("maic takes no requests; use rpcnotify"), Value::nil()})));
+                    write_all(msgpack::encode(Value::arr({Value::integer(1), a[1], Value::str("maid takes no requests; use rpcnotify"), Value::nil()})));
                 }
             }
         } catch (const std::exception&) {
@@ -339,4 +339,4 @@ void HostNvim::read_loop() {
     queue([this] { if (handlers_.closed) handlers_.closed(); });
 }
 
-}  // namespace maic
+}  // namespace maid

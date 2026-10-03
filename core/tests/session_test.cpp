@@ -1,13 +1,13 @@
 // Import, redact and fork-at, against fixture files and a throwaway state directory. The real
-// ~/.local/state/maic is never touched: XDG_STATE_HOME points under ~/.cache for the whole run.
+// ~/.local/state/maid is never touched: XDG_STATE_HOME points under ~/.cache for the whole run.
 #include "check.hpp"
 
-#include "maic/artifacts.hpp"
-#include "maic/full_output.hpp"
-#include "maic/import.hpp"
-#include "maic/redact.hpp"
-#include "maic/session.hpp"
-#include "maic/vendor.hpp"
+#include "maid/artifacts.hpp"
+#include "maid/full_output.hpp"
+#include "maid/import.hpp"
+#include "maid/redact.hpp"
+#include "maid/session.hpp"
+#include "maid/vendor.hpp"
 
 #include <signal.h>
 #include <sys/stat.h>
@@ -26,7 +26,7 @@
 #include <thread>
 
 namespace fs = std::filesystem;
-using namespace maic;
+using namespace maid;
 using nlohmann::json;
 
 namespace {
@@ -84,15 +84,15 @@ bool mode_is_0600(const fs::path& p) {
 
 int main() {
     fs::path home = std::getenv("HOME");
-    fs::path ws = home / ".cache" / "maic-session-test";
+    fs::path ws = home / ".cache" / "maid-session-test";
     fs::remove_all(ws);
     fs::create_directories(ws);
     setenv("XDG_STATE_HOME", (ws / "state").c_str(), 1);
     // The holds on open sessions and the unrecorded ones: this run's own, never the machine's or another run's.
-    fs::path run = fs::temp_directory_path() / ("maic-session-test-run-" + std::to_string(getpid()));
+    fs::path run = fs::temp_directory_path() / ("maid-session-test-run-" + std::to_string(getpid()));
     fs::remove_all(run);
     setenv("XDG_RUNTIME_DIR", run.c_str(), 1);
-    fs::path fixtures = MAIC_FIXTURES;
+    fs::path fixtures = MAID_FIXTURES;
     fs::path ai_export = fixtures / "claude-ai-export.json";
     fs::path cc_transcript = fixtures / "claude-code.jsonl";
 
@@ -146,7 +146,7 @@ int main() {
             if (info.path != path) continue;
             found = true;
             expect(info.title == "Fennec ears for the mascot" && info.turns == 2 && info.kind == "import" && info.first_prompt == "How big should the ears be?",
-                   "maic sessions lists it with the title, the turns and the first prompt");
+                   "maid sessions lists it with the title, the turns and the first prompt");
         }
         expect(found, "the imported session is listed");
         // trans-fairy-write's copies (docs/cai.md) sit under sessions/.backups/<id>/ and are not sessions.
@@ -191,7 +191,7 @@ int main() {
                "calls and results stay paired after the round trip");
         std::string md = export_markdown(*info, loaded);
         expect(md.find("## User\n\nCount the lines in notes.md") != std::string::npos && md.find("```\n12 notes.md\n```") != std::string::npos,
-               "maic sessions export works on an imported session");
+               "maid sessions export works on an imported session");
     }
 
     section("import: overrides and bad input");
@@ -330,7 +330,7 @@ int main() {
         log.write("user", {{"text", "here is my key sk-abcdefghijklmnopqrstuvwxyz"}});
         std::string before = read_whole(log.path());
         RedactReport rep;
-        fs::path backup = redact_session_in_place(log.path(), "maic sessions redact " + log.path().stem().string() + " --in-place", rep);
+        fs::path backup = redact_session_in_place(log.path(), "maid sessions redact " + log.path().stem().string() + " --in-place", rep);
         fs::path dir = sessions_dir() / ".backups" / log.path().stem();
         std::string name = backup.filename().string();
         bool stamp = name.size() == 22 && name.substr(8, 1) == "T" && name.substr(15) == "Z.jsonl";
@@ -342,21 +342,21 @@ int main() {
                "it is the original byte for byte, 0600 inside 0700 directories");
         auto recs = records(log.path());
         expect(recs.size() == 4 && recs[1]["content"] == "here is my key [REDACTED:api-key]" && recs[2]["text"] == "here is my key [REDACTED:api-key]", "the session itself is redacted");
-        expect(recs[3]["type"] == "rewritten" && recs[3]["backup"] == backup.string() && recs[3]["tool"] == "maic sessions redact" &&
-                   recs[3]["invocation"] == "maic sessions redact " + log.path().stem().string() + " --in-place" && recs[3].contains("time"),
+        expect(recs[3]["type"] == "rewritten" && recs[3]["backup"] == backup.string() && recs[3]["tool"] == "maid sessions redact" &&
+                   recs[3]["invocation"] == "maid sessions redact " + log.path().stem().string() + " --in-place" && recs[3].contains("time"),
                "and ends with a rewritten record naming the copy and the command");
         fs::path again = backup_session(log.path());
         expect(again != backup && again.parent_path() == dir && fs::exists(backup), "a second copy never replaces the first (a -N suffix within the same second)");
 
-        // A file that is not a MAIC session (Claude Code's shape) gets the copy but no record of MAIC's.
+        // A file that is not a MAID session (Claude Code's shape) gets the copy but no record of MAID's.
         fs::path cc = ws / "cc-transcript.jsonl";
         {
             std::ofstream f(cc);
             f << json{{"type", "user"}, {"uuid", "u1"}, {"parentUuid", nullptr}, {"sessionId", "s"}, {"message", {{"role", "user"}, {"content", "token sk-abcdefghijklmnopqrstuvwxyz"}}}}.dump() << "\n";
         }
-        expect(is_maic_session(log.path()) && !is_maic_session(cc), "is_maic_session tells a MAIC session from a Claude Code transcript");
+        expect(is_maid_session(log.path()) && !is_maid_session(cc), "is_maid_session tells a MAID session from a Claude Code transcript");
         std::string cc_before = read_whole(cc);
-        fs::path cc_backup = redact_session_in_place(cc, "maic sessions redact " + cc.string() + " --in-place", rep);
+        fs::path cc_backup = redact_session_in_place(cc, "maid sessions redact " + cc.string() + " --in-place", rep);
         expect(read_whole(cc_backup) == cc_before && records(cc).size() == 1 && read_whole(cc).find("[REDACTED:api-key]") != std::string::npos &&
                    cc_backup.parent_path() == sessions_dir() / ".backups" / "cc-transcript",
                "a Claude Code transcript gets the copy and the redaction, and no rewritten record");
@@ -396,7 +396,7 @@ int main() {
         expect(read_whole(parent.path()) == before && load_session(parent.path()).messages.size() == 5, "the parent is byte for byte unchanged");
         auto info = find_session(child.path().stem().string());
         expect(info && info->parent == parent.path().stem().string() && info->parent_records == 6 && info->workspace == "/w",
-               "maic sessions shows the fork point and inherits the parent's workspace");
+               "maid sessions shows the fork point and inherits the parent's workspace");
     }
 
     // Two sessions of two turns each; a's records: 0 start, 1 system, 2-3 "a one", 4-5 "a first", 6-7 "a two", 8-9 "a second",
@@ -724,7 +724,7 @@ int main() {
         for (const auto& info : list_sessions()) {
             if (info.id == from.stem().string()) listed = info.home == "projects/" + project_home_name(proj) && info.path == to;
         }
-        expect(listed, "maic sessions lists it in its new home");
+        expect(listed, "maid sessions lists it in its new home");
         log.reset();
 
         // The rename path: same filesystem, the same inode, nothing to buffer for long.
@@ -815,7 +815,7 @@ int main() {
         expect(recover_relocations().empty(), "nothing is left to recover");
     }
 
-    section("maic sessions rehome: several sessions, subagent sessions on request");
+    section("maid sessions rehome: several sessions, subagent sessions on request");
     {
         fs::path proj = ws / "proj4";
         fs::create_directories(proj);
@@ -903,13 +903,13 @@ int main() {
                "an ambiguous prefix lists its candidates, an unknown id is named, and the command refuses");
         expect(fs::exists(dest / x.filename()), "nothing moved, not even the target that resolved");
 
-        // A live session (its process is a maic on this host) is refused.
+        // A live session (its process is a maid on this host) is refused.
         pid_t live = fork();
         if (live == 0) {
-            execlp("sleep", "maic-live-test", "30", static_cast<char*>(nullptr));
+            execlp("sleep", "maid-live-test", "30", static_cast<char*>(nullptr));
             _exit(127);
         }
-        for (int i = 0; i < 1000 && read_whole("/proc/" + std::to_string(live) + "/cmdline").find("maic") == std::string::npos; ++i) {
+        for (int i = 0; i < 1000 && read_whole("/proc/" + std::to_string(live) + "/cmdline").find("maid") == std::string::npos; ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
         char host[256] = "";
@@ -952,8 +952,8 @@ int main() {
         expect(side_dir(path) == path.parent_path() / (id + ".d") && read_whole(out) == whole, "the kept output sits in <id>.d beside the session");
         std::string text = render_text(load_session(path), 0, 0, true);
         expect(text.find("[result]\nexit code 0\n(capped)\n\n[full output, display only: the model saw the capped result] " + std::to_string(whole.size()) +
-                         " bytes: maic sessions output " + id + " call_1") != std::string::npos,
-               "maic sessions read shows the model's result, then the label and how to see the rest");
+                         " bytes: maid sessions output " + id + " call_1") != std::string::npos,
+               "maid sessions read shows the model's result, then the label and how to see the rest");
         auto info = find_session(id);
         expect(info && export_markdown(*info, load_session(path)).find("_[full output, display only: the model saw the capped result]") != std::string::npos,
                "so does the markdown export");
@@ -987,13 +987,13 @@ int main() {
         expect(!fs::exists(side_dir(moved)) && read_whole(side_dir(relocated) / "call_1.out") == whole, ":init's move takes them along too");
 
         RedactReport rep;
-        fs::path backup = redact_session_in_place(relocated, "maic sessions redact " + id + " --in-place", rep);
+        fs::path backup = redact_session_in_place(relocated, "maid sessions redact " + id + " --in-place", rep);
         expect(read_whole(side_dir(backup) / "call_1.out") == whole && read_whole(side_dir(relocated) / "call_1.out").find("ghp_") == std::string::npos &&
                    resolve_full_output(relocated, records(relocated)[1]["full_output"]) == side_dir(relocated) / "call_1.out",
                "redact --in-place: the original kept output goes beside the backup, the redacted one takes its place");
 
-        // `maic artifacts clean --older-than`: a kept output goes when its session goes, by the session's age.
-        Artifact sessions{"maic", "sessions", "", sessions_dir()};
+        // `maid artifacts clean --older-than`: a kept output goes when its session goes, by the session's age.
+        Artifact sessions{"maid", "sessions", "", sessions_dir()};
         auto age = [](const fs::path& p, int days) { fs::last_write_time(p, fs::file_time_type::clock::now() - std::chrono::hours(24 * days)); };
         age(side_dir(relocated) / "call_1.out", 90);
         age(side_dir(relocated) / "call_1.idx", 90);
@@ -1016,9 +1016,9 @@ int main() {
                                                      b.path().stem().string() + ")");
         std::string why;
         try { SessionLog::reopen(a.path()); } catch (const std::runtime_error& e) { why = e.what(); }
-        expect(why.find("is open in another MAIC (pid " + std::to_string(getpid()) + ")") != std::string::npos,
+        expect(why.find("is open in another MAID (pid " + std::to_string(getpid()) + ")") != std::string::npos,
                "a second log on an open transcript is refused, from the same process too: " + why);
-        fs::path lock = run / "maic" / "held" / (a.path().stem().string() + ".lock");
+        fs::path lock = run / "maid" / "held" / (a.path().stem().string() + ".lock");
         expect(fs::exists(lock), "the hold is under the runtime directory it was taken in");
         setenv("XDG_RUNTIME_DIR", (run / "elsewhere").c_str(), 1);
         a.release();

@@ -1,13 +1,13 @@
 #include "style.hpp"
 
-#include "maic/theme.hpp"
+#include "maid/theme.hpp"
 
 #include <ftxui/screen/terminal.hpp>
 
 #include <cstdlib>
 #include <map>
 
-namespace maic {
+namespace maid {
 
 using namespace ftxui;
 
@@ -126,4 +126,4 @@ Element render_line(const Settings& settings, const StyledLine& line, const Styl
     return hbox(out);
 }
 
-}  // namespace maic
+}  // namespace maid

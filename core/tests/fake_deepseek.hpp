@@ -5,12 +5,12 @@
 // final chunk only (null before), DeepSeek's usage fields and finish reasons. It refuses what the real one refuses: a
 // wrong key (401), a `thinking` that is not {"type": "enabled" | "disabled"}, a request with tools whose earlier
 // assistant turns lack their reasoning_content, a picture sent to deepseek-v4-pro, stream_options without stream,
-// tool_choice required or named while thinking. It is stricter than the real API where MAIC must not send misleading
+// tool_choice required or named while thinking. It is stricter than the real API where MAID must not send misleading
 // or extra data: a top_p while thinking outside 0.95 to 1.0 (the API raises it), any top_p without thinking (the API
-// fixes it at 1.0), and any field DeepSeek does not document (the API's behaviour is unstated; MAIC sends only standard
+// fixes it at 1.0), and any field DeepSeek does not document (the API's behaviour is unstated; MAID sends only standard
 // fields, no ids or telemetry). GET /models answers with the documented per-model facts (window, output cap, effort
 // levels), or with `models_status` when that is not 200. Nothing here reaches the network.
-#include "maic/http.hpp"
+#include "maid/http.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -49,7 +49,7 @@ struct FakeDeepSeek {
     int delay_ms = 0;               // each chat request is held this long before it is answered
     std::atomic<int> active{0}, max_active{0};  // chat requests open at once, and the most there were
 
-    // GET /models as the documentation's example gives it: every field MAIC reads, and some it does not.
+    // GET /models as the documentation's example gives it: every field MAID reads, and some it does not.
     static nlohmann::json model_list(long flash_context) {
         auto model = [](const std::string& id, long context, nlohmann::json modalities, const std::string& prompt_update) {
             return nlohmann::json{{"id", id}, {"object", "model"}, {"owned_by", "deepseek"}, {"context_window", context}, {"max_output_tokens", 393216},
@@ -129,7 +129,7 @@ struct FakeDeepSeek {
             requests.push_back(body);
             std::string sent = req.get_header_value("Authorization");
             if (sent != "Bearer " + key) {
-                // The real API masks all but the end of the key; this one echoes it whole, so a test sees MAIC's own redaction.
+                // The real API masks all but the end of the key; this one echoes it whole, so a test sees MAID's own redaction.
                 res.status = 401;
                 res.set_content(error("Authentication Fails, Your api key: " + sent.substr(sent.find(' ') + 1) + " is invalid", "authentication_error").dump(), "application/json");
                 return;

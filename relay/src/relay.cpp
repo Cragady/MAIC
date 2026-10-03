@@ -2,7 +2,7 @@
 
 #include "tls.hpp"
 
-#include "maic/http.hpp"
+#include "maid/http.hpp"
 
 #include <unistd.h>
 
@@ -16,7 +16,7 @@
 #include <mutex>
 #include <thread>
 
-namespace maic::relay {
+namespace maid::relay {
 
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
@@ -24,7 +24,7 @@ using Clock = std::chrono::steady_clock;
 
 namespace {
 
-// localhost, ::1 or 127.0.0.0/8 as a plain dotted quad, the rule of maic::loopback_host (core/src/llm.cpp), which
+// localhost, ::1 or 127.0.0.0/8 as a plain dotted quad, the rule of maid::loopback_host (core/src/llm.cpp), which
 // the relay does not link: a name that only starts with "127." is not loopback.
 bool loopback_host(const std::string& host) {
     if (host == "localhost" || host == "::1") return true;
@@ -203,7 +203,7 @@ struct Relay::Impl {
         srv->Get("/", [this](const httplib::Request&, httplib::Response& res) {
             std::ifstream in(options.web);
             if (options.web.empty() || !in) {
-                fail(res, 404, "this is a maic-relay; it serves no web client (start it with --web)");
+                fail(res, 404, "this is a maid-relay; it serves no web client (start it with --web)");
                 return;
             }
             res.set_content(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()), "text/html; charset=utf-8");
@@ -373,4 +373,4 @@ size_t Relay::pairs() const {
     return n;
 }
 
-}  // namespace maic::relay
+}  // namespace maid::relay

@@ -1,6 +1,6 @@
-#include "maic/status.hpp"
+#include "maid/status.hpp"
 
-#include "maic/http.hpp"
+#include "maid/http.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -11,15 +11,15 @@
 #include <fstream>
 #include <thread>
 
-#include "maic/helper.hpp"
-#include "maic/paths.hpp"
-#include "maic/tripwire.hpp"
-#include "maic/vendor.hpp"
+#include "maid/helper.hpp"
+#include "maid/paths.hpp"
+#include "maid/tripwire.hpp"
+#include "maid/vendor.hpp"
 
 #include <algorithm>
 #include <filesystem>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -100,7 +100,7 @@ std::string router_state(const std::string& base_url, const std::string& id) {
 }
 
 // The services that unloaded the completion server's coder while it was loaded, one per line; when the last of
-// them stops through MAIC, the coder is loaded again.
+// them stops through MAID, the coder is loaded again.
 fs::path fim_evicted_path() {
     return state_dir() / "run" / "llamacpp-fim.evicted";
 }
@@ -167,17 +167,17 @@ std::vector<ServiceReport> service_reports(const std::vector<ServiceDef>& servic
                 r.who = st.who();
                 r.where = r.who + (url.empty() ? "" : " · " + url);
                 r.detail = service_detail(def, st);
-                r.actions = {"maic down " + def.name, "maic logs " + def.name};
+                r.actions = {"maid down " + def.name, "maid logs " + def.name};
                 break;
             case ServiceState::Foreign:
                 r.state = "foreign";
-                r.where = "port " + std::to_string(def.port) + " is held by a process MAIC did not start";
-                r.actions = {"stop that process yourself, then: maic up " + def.name};
+                r.where = "port " + std::to_string(def.port) + " is held by a process MAID did not start";
+                r.actions = {"stop that process yourself, then: maid up " + def.name};
                 break;
             case ServiceState::Stopped:
                 r.state = st.crashed ? "failed" : "stopped";
                 r.where = url;
-                r.actions = st.crashed ? std::vector<std::string>{"maic logs " + def.name, "maic up " + def.name} : std::vector<std::string>{"maic up " + def.name};
+                r.actions = st.crashed ? std::vector<std::string>{"maid logs " + def.name, "maid up " + def.name} : std::vector<std::string>{"maid up " + def.name};
                 break;
         }
         out.push_back(r);
@@ -190,7 +190,7 @@ StatusReport status_report(const std::vector<ServiceDef>& services) {
     if (auto lock = tripwire_state()) {
         rep.tripped = true;
         rep.tripwire = *lock;
-        rep.actions.push_back("maic unlock   (asks for your sudo password)");
+        rep.actions.push_back("maid unlock   (asks for your sudo password)");
     }
     rep.services = service_reports(services);
     return rep;
@@ -232,16 +232,16 @@ std::string missing_requirement(const ServiceDef& def) {
     for (const auto& path : def.requires_paths) {
         if (std::filesystem::exists(path, ec)) continue;
         if (is_fim_server(def.name)) {
-            return def.name + " needs a completion model: maic models install qwen2.5-coder-7b --link (or the 3b or 1.5b) links " + path.string();
+            return def.name + " needs a completion model: maid models install qwen2.5-coder-7b --link (or the 3b or 1.5b) links " + path.string();
         }
         if (is_llama_server(def.name)) {
-            return def.name + " needs a models directory: put a GGUF under " + path.string() + " or run maic vendor model llamacpp URL SHA256 (models_dir in settings moves it)";
+            return def.name + " needs a models directory: put a GGUF under " + path.string() + " or run maid vendor model llamacpp URL SHA256 (models_dir in settings moves it)";
         }
         if (def.name == "whisper" && path.filename().string().rfind("ggml-silero", 0) == 0) {
-            return "whisper needs its VAD model: maic vendor model whisper URL SHA256 puts " + path.filename().string() + " at " + path.parent_path().string() + " (docs/diction.md has both)";
+            return "whisper needs its VAD model: maid vendor model whisper URL SHA256 puts " + path.filename().string() + " at " + path.parent_path().string() + " (docs/diction.md has both)";
         }
         if (def.name == "whisper") {
-            return "whisper needs a model: maic vendor use whisper FILE, or maic vendor model whisper URL SHA256 (docs/diction.md names one; " + path.string() + " is the link)";
+            return "whisper needs a model: maid vendor use whisper FILE, or maid vendor model whisper URL SHA256 (docs/diction.md names one; " + path.string() + " is the link)";
         }
         return def.name + " needs " + path.string() + " (is the drive mounted?)";
     }
@@ -302,7 +302,7 @@ std::string free_gpu_for(const ServiceDef& def, const std::vector<ServiceDef>& s
     }
     if (!out.empty()) out += " to free the GPU for " + def.name + " (they reload on the next request)";
     if (const auto* w = by_name(services, "whisper"); w && def.name != "whisper" && service_status(*w).state == ServiceState::Running) {
-        out += std::string(out.empty() ? "" : "; ") + "whisper still holds its model (maic down whisper releases it)";
+        out += std::string(out.empty() ? "" : "; ") + "whisper still holds its model (maid down whisper releases it)";
     }
     return out;
 }
@@ -368,23 +368,23 @@ std::string GpuReport::text() const {
     for (const auto& s : servers) {
         out += s.name + ": ";
         if (!s.running) out += "not running\n";
-        else if (is_fim_server(s.name) && !s.models.empty()) out += joined(s.models) + " loaded (maic gpu free " + s.name + " unloads it until maic gpu load " + s.name + ")\n";
-        else if (is_fim_server(s.name) && !s.linked.empty()) out += s.linked + " unloaded (maic gpu load " + s.name + ")\n";
-        else if (is_fim_server(s.name)) out += "running, not linked (maic models install qwen2.5-coder-7b --link)\n";
+        else if (is_fim_server(s.name) && !s.models.empty()) out += joined(s.models) + " loaded (maid gpu free " + s.name + " unloads it until maid gpu load " + s.name + ")\n";
+        else if (is_fim_server(s.name) && !s.linked.empty()) out += s.linked + " unloaded (maid gpu load " + s.name + ")\n";
+        else if (is_fim_server(s.name)) out += "running, not linked (maid models install qwen2.5-coder-7b --link)\n";
         else if (s.models.empty()) out += "running, no model resident\n";
-        else out += "holds " + joined(s.models) + " (maic gpu free " + s.name + " unloads; it reloads on the next request)\n";
+        else out += "holds " + joined(s.models) + " (maid gpu free " + s.name + " unloads; it reloads on the next request)\n";
     }
     if (comfyui_running) {
         out += "comfyui: running";
         if (comfyui_vram_total > 0) out += ", the card as it sees it: " + gib(comfyui_vram_used) + " used of " + gib(comfyui_vram_total);
-        out += " (maic gpu free comfyui unloads its models and caches)\n";
+        out += " (maid gpu free comfyui unloads its models and caches)\n";
     } else {
         out += "comfyui: not running\n";
     }
     if (has_whisper) {
         std::string model = fs::path(whisper_model).filename().string() + (whisper_bytes >= 0 ? " (" + gib(whisper_bytes) + ")" : "");
-        if (whisper_model.empty()) out += "whisper: " + std::string(whisper_running ? "running" : "not running") + ", no model linked (maic vendor use whisper FILE)\n";
-        else if (whisper_running) out += "whisper: running, holds " + model + " (maic down whisper releases it)\n";
+        if (whisper_model.empty()) out += "whisper: " + std::string(whisper_running ? "running" : "not running") + ", no model linked (maid vendor use whisper FILE)\n";
+        else if (whisper_running) out += "whisper: running, holds " + model + " (maid down whisper releases it)\n";
         else out += "whisper: not running; its model is " + model + "\n";
     }
     return out;
@@ -413,18 +413,18 @@ std::string gpu_free(const std::vector<ServiceDef>& services, const std::string&
     if (what == "all" || what == "whisper") {
         // whisper-server has no unload: it holds its model for as long as it runs.
         if (const auto* w = by_name(services, "whisper"); w && service_status(*w).state == ServiceState::Running) {
-            out += "whisper: holds its model while it runs; maic down whisper releases it\n";
+            out += "whisper: holds its model while it runs; maid down whisper releases it\n";
         } else if (what == "whisper") {
             out += "whisper: not running\n";
         }
     }
-    if (!known) throw std::runtime_error("maic gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui]");
+    if (!known) throw std::runtime_error("maid gpu free [all|llamacpp|llamacpp-2|llamacpp-fim|whisper|comfyui]");
     return out;
 }
 
 std::string load_fim(const ServiceDef& def, const std::vector<ServiceDef>& services, std::chrono::seconds timeout) {
     std::string id = fim_current_id();
-    if (id.empty()) throw std::runtime_error(def.name + " has no coder linked: maic models install qwen2.5-coder-7b --link (or the 3b or 1.5b)");
+    if (id.empty()) throw std::runtime_error(def.name + " has no coder linked: maid models install qwen2.5-coder-7b --link (or the 3b or 1.5b)");
     std::string url = local_url(def), why;
     std::string state = router_state(url, "current");
     if (state != "loaded" && state != "loading") {
@@ -446,20 +446,20 @@ std::string load_fim(const ServiceDef& def, const std::vector<ServiceDef>& servi
             set_fim_evictors({});
             return def.name + ": loaded " + id;
         }
-        if (state == "failed" || state == "unloaded") why = "it exited while loading (maic logs " + def.name + ")";
+        if (state == "failed" || state == "unloaded") why = "it exited while loading (maid logs " + def.name + ")";
         else if (std::chrono::steady_clock::now() >= deadline) why = "it was not loaded after " + std::to_string(timeout.count()) + " s";
         else std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
     std::string fit = gpu_budget(gpu_report(services), load_settings());
-    throw std::runtime_error(def.name + " could not load " + id + ": " + why + ". " + (fit.empty() ? "maic gpu shows who holds the card" : "On the card: " + fit) +
-                             "; a smaller coder needs less (maic models install qwen2.5-coder-3b --link)");
+    throw std::runtime_error(def.name + " could not load " + id + ": " + why + ". " + (fit.empty() ? "maid gpu shows who holds the card" : "On the card: " + fit) +
+                             "; a smaller coder needs less (maid models install qwen2.5-coder-3b --link)");
 }
 
 std::string gpu_load(const std::vector<ServiceDef>& services, const std::string& what) {
-    if (!is_fim_server(what)) throw std::runtime_error("maic gpu load llamacpp-fim (the other llama servers load their model on the next request)");
+    if (!is_fim_server(what)) throw std::runtime_error("maid gpu load llamacpp-fim (the other llama servers load their model on the next request)");
     const auto* def = by_name(services, what);
     if (!def) throw std::runtime_error("there is no " + what + " service (services/llamacpp-fim.json)");
-    if (service_status(*def).state != ServiceState::Running) return what + ": not running (maic up " + what + " starts it and loads its coder)\n";
+    if (service_status(*def).state != ServiceState::Running) return what + ": not running (maid up " + what + " starts it and loads its coder)\n";
     return load_fim(*def, services) + "\n";
 }
 
@@ -468,7 +468,7 @@ std::string reload_fim(const std::vector<ServiceDef>& services) {
     if (!def || service_status(*def).state != ServiceState::Running) return "";
     std::string url = local_url(*def);
     auto was = unload_resident(url);
-    if (was.empty()) return def->name + " holds no coder now; maic gpu load " + def->name + " loads the new link\n";
+    if (was.empty()) return def->name + " holds no coder now; maid gpu load " + def->name + " loads the new link\n";
     // The router unloads in the background; a load while the old one still runs is refused.
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (!resident_models(url).empty() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(250));
@@ -570,7 +570,7 @@ std::string gpu_budget(const GpuReport& report, const Settings& settings, long c
     std::string main_model;
     for (const auto& s : report.servers) {
         if (is_fim_server(s.name)) {
-            // Counted while loaded: it loads only when MAIC asks (no autoload), never on llama.vim's requests.
+            // Counted while loaded: it loads only when MAID asks (no autoload), never on llama.vim's requests.
             std::string id = s.models.empty() ? "" : s.models.front();
             long bytes = id.empty() ? -1 : model_footprint({id, s.context}, fim_models_root());
             if (bytes >= 0) plans.push_back({"", 0, "completion " + size_label(id) + " at " + k_tokens(s.context), bytes});
@@ -610,12 +610,12 @@ std::string explain_exit(const ServiceDef& def, const std::vector<ServiceDef>& s
         }
         if (who.empty() && g.comfyui_running && def.name != "comfyui") who = "comfyui holds its models";
         if (g.whisper_running && def.name != "whisper") who += (who.empty() ? "" : ", ") + std::string("whisper holds its model");
-        std::string out = "CUDA out of memory: the card is full" + (who.empty() ? std::string(" (maic gpu shows who holds it)") : " (" + who + "). maic gpu free releases it, then maic up " + def.name + " again");
-        if (is_fim_server(def.name)) out += "; a smaller completion model also helps: maic models install qwen2.5-coder-3b --link (or qwen2.5-coder-1.5b)";
+        std::string out = "CUDA out of memory: the card is full" + (who.empty() ? std::string(" (maid gpu shows who holds it)") : " (" + who + "). maid gpu free releases it, then maid up " + def.name + " again");
+        if (is_fim_server(def.name)) out += "; a smaller completion model also helps: maid models install qwen2.5-coder-3b --link (or qwen2.5-coder-1.5b)";
         return out;
     }
-    if (has("Address already in use")) return "port " + std::to_string(def.port) + " is already in use: another copy is running, or something else took the port (maic status)";
-    if (has("ModuleNotFoundError") || has("No module named")) return "a Python module is missing: the venv is incomplete (maic vendor update " + def.name + " rebuilds it)";
+    if (has("Address already in use")) return "port " + std::to_string(def.port) + " is already in use: another copy is running, or something else took the port (maid status)";
+    if (has("ModuleNotFoundError") || has("No module named")) return "a Python module is missing: the venv is incomplete (maid vendor update " + def.name + " rebuilds it)";
     if (has("Driver/library version mismatch")) return "the NVIDIA driver in the kernel does not match the libraries on disk: a reboot fixes it";
     return "";
 }
@@ -662,13 +662,13 @@ std::string unreachable_hint(const Provider& provider, const std::vector<Service
         std::string p = std::to_string(port);
         switch (st.state) {
             case ServiceState::Running:
-                if (!st.port_open) return def.name + " is starting (" + st.who() + ") and not answering on port " + p + " yet: maic logs " + def.name;
-                return def.name + " is running on port " + p + " but the request failed: maic logs " + def.name;
+                if (!st.port_open) return def.name + " is starting (" + st.who() + ") and not answering on port " + p + " yet: maid logs " + def.name;
+                return def.name + " is running on port " + p + " but the request failed: maid logs " + def.name;
             case ServiceState::Foreign:
-                return "port " + p + " is held by a process MAIC did not start: maic status";
+                return "port " + p + " is held by a process MAID did not start: maid status";
             case ServiceState::Stopped: {
                 std::string missing = missing_requirement(def);
-                return def.name + " is not running: maic up " + def.name + (missing.empty() ? "" : " (" + missing.substr(def.name.size() + 1) + ")");
+                return def.name + " is not running: maid up " + def.name + (missing.empty() ? "" : " (" + missing.substr(def.name.size() + 1) + ")");
             }
         }
     }
@@ -690,7 +690,7 @@ std::string apply_preset(Settings& settings, const std::string& query) {
 }
 
 void set_context(std::vector<Provider>& providers, int tokens, const std::string& service) {
-    setenv(service == "llamacpp" ? "MAIC_CONTEXT" : "MAIC_CONTEXT_2", std::to_string(tokens).c_str(), 1);
+    setenv(service == "llamacpp" ? "MAID_CONTEXT" : "MAID_CONTEXT_2", std::to_string(tokens).c_str(), 1);
     for (auto& p : providers) {
         if (p.name == service) p.options["context_window"] = tokens;
     }
@@ -722,4 +722,4 @@ std::string preset_lines(const Settings& settings) {
     return out;
 }
 
-}  // namespace maic
+}  // namespace maid

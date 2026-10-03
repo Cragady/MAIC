@@ -2,9 +2,9 @@
 #include "check.hpp"
 
 #include "commands.hpp"
-#include "maic/agent.hpp"
-#include "maic/engine.hpp"
-#include "maic/status.hpp"
+#include "maid/agent.hpp"
+#include "maid/engine.hpp"
+#include "maid/status.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -16,15 +16,15 @@
 #include "msgpack.hpp"
 #include "style.hpp"
 #include "view.hpp"
-#include "maic/markdown.hpp"
-#include "maic/theme.hpp"
+#include "maid/markdown.hpp"
+#include "maid/theme.hpp"
 
 #include <ftxui/dom/node.hpp>
 #include <ftxui/screen/screen.hpp>
 #include <ftxui/screen/terminal.hpp>
 
 namespace fs = std::filesystem;
-using namespace maic;
+using namespace maid;
 using ftxui::Event;
 
 namespace {
@@ -65,7 +65,7 @@ void check(const std::string& typed, const std::string& then, const std::string&
 }  // namespace
 
 int main() {
-    setenv("MAIC_NO_CLIPBOARD", "1", 1);  // never touch the real clipboard from a test
+    setenv("MAID_NO_CLIPBOARD", "1", 1);  // never touch the real clipboard from a test
     section("insert mode");
     {
         Editor ed(&reg);
@@ -844,9 +844,9 @@ int main() {
         expect(std::find(h.begin(), h.end(), "sessions") != h.end() && std::find(h.begin(), h.end(), "session") != h.end(), "help topics and commands complete");
         expect(help_text("").find(":w") != std::string::npos && help_text("").find("modes") != std::string::npos, ":h alone is an index");
         expect(help_text("w").find("*:w*") == 0, ":h w is the :w page");
-        expect(help_text("bare").find("*bare*") == 0 && help_text("bare").find("MAIC_BARE=1") != std::string::npos && help_text("bare").find("--ui nvim") != std::string::npos,
-               ":h bare names --bare, MAIC_BARE=1 and the future --ui nvim");
-        expect(help_text("nvim").find(":h bare") != std::string::npos && help_text("nvim").find(":MaicInterrupt") != std::string::npos, ":h nvim points at :h bare and names :MaicInterrupt");
+        expect(help_text("bare").find("*bare*") == 0 && help_text("bare").find("MAID_BARE=1") != std::string::npos && help_text("bare").find("--ui nvim") != std::string::npos,
+               ":h bare names --bare, MAID_BARE=1 and the future --ui nvim");
+        expect(help_text("nvim").find(":h bare") != std::string::npos && help_text("nvim").find(":MaidInterrupt") != std::string::npos, ":h nvim points at :h bare and names :MaidInterrupt");
         expect(help_text(":w") == help_text("w") && help_text("write") == help_text("w"), "a colon or an alias also finds it");
         expect(help_text("Ctrl-W").find("*conversation*") == 0 && help_text("<C-w>") == help_text("ctrl-w"), "key names normalise");
         expect(help_text("Alt+Enter").find("Sends") != std::string::npos && help_text("M-CR") == help_text("alt-enter"), "Alt+Enter in several spellings");
@@ -870,7 +870,7 @@ int main() {
             expect(help_text("profile").find("*agent*") == 0 && help_text("delegate").find("*task*") == 0 && help_text("agent") == help_text("profile"),
                    ":h profile finds the agent page and :h delegate the task page");
             {
-                std::filesystem::path empty = std::filesystem::temp_directory_path() / ("maic-editor-agent-" + std::to_string(getpid()));
+                std::filesystem::path empty = std::filesystem::temp_directory_path() / ("maid-editor-agent-" + std::to_string(getpid()));
                 std::filesystem::create_directories(empty);
                 Agent fable(empty, "anthropic/claude-fable-5-1");
                 ApiError limit(429, "anthropic returned HTTP 429: You've reached your Fable limit. Run /usage-credits to continue or switch models with /model.", 0, "rate_limit_error");
@@ -892,8 +892,8 @@ int main() {
             for (const auto& p : ss.providers) side_window = side_window || (p.name == "llamacpp-2" && p.options.value("context_window", 0) == 4096);
             expect(ss.model == "llamacpp-2/Qwen3.5-4B-Q4_K_M" && ss.context_2 == 4096 && ss.context == Settings{}.context && side_window,
                    "a preset on the side server sets context_2 and that provider's window, not the main server's");
-            unsetenv("MAIC_CONTEXT");
-            unsetenv("MAIC_CONTEXT_2");
+            unsetenv("MAID_CONTEXT");
+            unsetenv("MAID_CONTEXT_2");
             std::vector<Provider> provs = default_providers();
             set_context(provs, 32768);
             set_context(provs, 4096, "llamacpp-2");
@@ -902,10 +902,10 @@ int main() {
                 if (p.name == "llamacpp") main_window = p.options.value("context_window", 0);
                 if (p.name == "llamacpp-2") side = p.options.value("context_window", 0);
             }
-            expect(std::string(std::getenv("MAIC_CONTEXT")) == "32768" && std::string(std::getenv("MAIC_CONTEXT_2")) == "4096" && main_window == 32768 && side == 4096,
-                   "set_context exports MAIC_CONTEXT for llamacpp and MAIC_CONTEXT_2 for llamacpp-2, and sizes each provider's readout");
-            unsetenv("MAIC_CONTEXT");
-            unsetenv("MAIC_CONTEXT_2");
+            expect(std::string(std::getenv("MAID_CONTEXT")) == "32768" && std::string(std::getenv("MAID_CONTEXT_2")) == "4096" && main_window == 32768 && side == 4096,
+                   "set_context exports MAID_CONTEXT for llamacpp and MAID_CONTEXT_2 for llamacpp-2, and sizes each provider's readout");
+            unsetenv("MAID_CONTEXT");
+            unsetenv("MAID_CONTEXT_2");
             CompletionContext two_servers{{"llamacpp", "llamacpp-2", "comfyui"}, {"llamacpp", "llamacpp-2", "anthropic"}};
             auto gfree = complete_argument("gpu", "free l", two_servers);
             expect(gfree == std::vector<std::string>{"free llamacpp", "free llamacpp-2"}, ":gpu free completes both llama servers");
@@ -917,9 +917,9 @@ int main() {
             expect(help_text("ctx2").find("*:ctx2*") == 0 && help_text("ctx2").find("llamacpp-2") != std::string::npos, ":h ctx2 is the side server's context page");
         }
         {
-            // :open NAME folder / maic open --folder: a file place opens its parent, a directory itself.
+            // :open NAME folder / maid open --folder: a file place opens its parent, a directory itself.
             Settings so;
-            fs::path ws = fs::temp_directory_path() / "maic-editor-open-test";
+            fs::path ws = fs::temp_directory_path() / "maid-editor-open-test";
             fs::create_directories(ws);
             std::vector<ServiceDef> none;
             auto [c1, w1] = open_command("session", so, ws, none, ws / "t.jsonl", "", true);
@@ -1080,7 +1080,7 @@ int main() {
 
     section("msgpack");
     {
-        using namespace maic::msgpack;
+        using namespace maid::msgpack;
         Value m;
         m.kind = Value::Kind::Map;
         m.map.push_back({Value::str("k"), Value::boolean(true)});
@@ -1129,7 +1129,7 @@ int main() {
                    capture_flags("string") == HlString && capture_flags("comment.documentation") == HlComment && capture_flags("markup.strong") == MdBold &&
                    capture_flags("markup.link.url") == MdLink && capture_flags("punctuation.special") == MdNone,
                "capture names map to the hl_* and md_* flags");
-        fs::path dir = fs::temp_directory_path() / ("maic-editor-nvim-" + std::to_string(getpid()));
+        fs::path dir = fs::temp_directory_path() / ("maid-editor-nvim-" + std::to_string(getpid()));
         fs::create_directories(dir);
         // A stand-in nvim: answers request 1 with [1, 1, nil, [[1, 1, 6, "keyword"]]] and then waits for the channel to close.
         fs::path fake = dir / "nvim";

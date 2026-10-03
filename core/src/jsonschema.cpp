@@ -1,6 +1,6 @@
-// JSON Schema validation for the keyword subset named in maic/jsonschema.hpp: MAIC's protocol schemas and the
+// JSON Schema validation for the keyword subset named in maid/jsonschema.hpp: MAID's protocol schemas and the
 // pinned OpenAI description. No dependency beyond nlohmann-json and glibc's regcomp.
-#include "maic/jsonschema.hpp"
+#include "maid/jsonschema.hpp"
 
 #include <regex.h>
 
@@ -11,7 +11,7 @@
 #include <set>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 using nlohmann::json;
 
@@ -344,4 +344,4 @@ std::string schema_unsupported(const json& schema) {
     return unsupported_at(schema, "");
 }
 
-}  // namespace maic
+}  // namespace maid

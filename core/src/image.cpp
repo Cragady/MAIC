@@ -1,4 +1,4 @@
-#include "maic/image.hpp"
+#include "maid/image.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -6,7 +6,7 @@
 #include <iterator>
 #include <stdexcept>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -59,4 +59,4 @@ ImageData load_image(const fs::path& p) {
     return {mime, base64_encode(bytes), p.filename().string()};
 }
 
-}  // namespace maic
+}  // namespace maid

@@ -1,18 +1,18 @@
 # Assessment: ComfyUI-llama-cpp_vlm as a replacement for comfyui-ollama
 
-> Note (2026-10-01): Ollama was removed from MAIC in favour of llama.cpp (docs/llamacpp.md). The Ollama references below are history.
+> Note (2026-10-01): Ollama was removed from MAID in favour of llama.cpp (docs/llamacpp.md). The Ollama references below are history.
 
 **Done (2026-09-30):** the section 7 alternative is built as `vendor/comfyui-maic-llamacpp` (nodes `MaicLlmServer`, `MaicLlmChat`), `comfyui-ollama` and its patch are gone, and `example_workflows/story-chat-llamacpp.json` is the rewritten workflow.
 
 Date: 2026-09-30. Read-only review of `~/dev2/tools-and-things/ComfyUI-llama-cpp_vlm` (upstream `lihaoyun6/ComfyUI-llama-cpp_vlm`, HEAD `f2209cc`, 2026-08-17) against the vendored `~/dev2/tools-and-things/comfyui-ollama` (`stavsap/comfyui-ollama` at `6db7560` plus `vendor/patches/comfyui-ollama-think.patch`). Question: can it replace the Ollama nodes in Micaiah's ComfyUI workflows so ComfyUI no longer needs Ollama at all.
 
-**Verdict: reject as a vendored replacement.** It has no license file, it loads the GGUF in-process (a second copy of the model next to MAIC's `llama-server`, on an 8 GB card), it cannot express the per-run `think` switch that the Ollama patch exists for, and the two-model "Story chat" cannot be rebuilt on its single global model slot. The right replacement is a small MAIC-owned node that talks to `llama-server` on `127.0.0.1:8081` over HTTP (section 7). Nothing in the Manga workflows depends on Ollama, so only one workflow is affected.
+**Verdict: reject as a vendored replacement.** It has no license file, it loads the GGUF in-process (a second copy of the model next to MAID's `llama-server`, on an 8 GB card), it cannot express the per-run `think` switch that the Ollama patch exists for, and the two-model "Story chat" cannot be rebuilt on its single global model slot. The right replacement is a small MAID-owned node that talks to `llama-server` on `127.0.0.1:8081` over HTTP (section 7). Nothing in the Manga workflows depends on Ollama, so only one workflow is affected.
 
 Line numbers below refer to the current checkouts; `nodes.py` is the candidate's `nodes.py` unless another file is named.
 
 ## 1. What the workflows use today
 
-`~/.local/state/maic/workflows/comfyui/` holds six files. Node types per file:
+`~/.local/state/maid/workflows/comfyui/` holds six files. Node types per file:
 
 | Workflow | Ollama nodes |
 | :--- | :--- |
@@ -30,7 +30,7 @@ The "BETA captions" variants put captions on with core `TextOverlay`; no LLM is 
 | 2 "Quick pass" | `OllamaChat` | system (co-writer prompt with the story bible), prompt, think `false`, format `text`, reset_session `false` | result -> 3 `PreviewAny`, 4 `SaveText` (`story/chat_4b`, md); history (output 3) -> node 6 `history` |
 | 5 "Deep model" | `OllamaConnectivityV2` | same, model `qwen3.5:9b` | -> node 6; muted (mode 2) |
 | 6 "Deep pass" | `OllamaChat` | same system, a "review the whole conversation" prompt, think `false`, format `text` | result -> 7 `PreviewAny`, 8 `SaveText` (`story/chat_9b`); muted (mode 2) |
-| 9 | `Note` | "Needs the Ollama server running: `maic up ollama`" ... "think = true makes Qwen3.5 reason first" | |
+| 9 | `Note` | "Needs the Ollama server running: `maid up ollama`" ... "think = true makes Qwen3.5 reason first" | |
 
 Neither chat node connects `options` or `images`. Nodes 5 to 8 are muted and enabled by hand for the deep pass, which reads the quick pass's history through the `OLLAMA_HISTORY` link.
 
@@ -45,8 +45,8 @@ Neither chat node connects `options` or `images`. Nodes 5 to 8 are muted and ena
 
 Repository facts (from `git log`, `git tag`, `git ls-files`):
 
-* One author (`lihaoyun6`), 50-odd commits since 2025-11-25, last commit `f2209cc` on 2026-08-17. Only one tag, `1.2.2` at `cc71cc3` (2026-01-01); `pyproject.toml:4` says version `1.3.1`, untagged. **MAIC would have to pin a commit, not a tag.**
-* **No LICENSE file.** `pyproject.toml:5` declares `license = {file = "LICENSE"}` but no such file exists in the tree or in any commit (`git log --all -- LICENSE` is empty). Without a license grant the code is all rights reserved by default; MAIC cannot vendor it as a submodule and redistribute it.
+* One author (`lihaoyun6`), 50-odd commits since 2025-11-25, last commit `f2209cc` on 2026-08-17. Only one tag, `1.2.2` at `cc71cc3` (2026-01-01); `pyproject.toml:4` says version `1.3.1`, untagged. **MAID would have to pin a commit, not a tag.**
+* **No LICENSE file.** `pyproject.toml:5` declares `license = {file = "LICENSE"}` but no such file exists in the tree or in any commit (`git log --all -- LICENSE` is empty). Without a license grant the code is all rights reserved by default; MAID cannot vendor it as a submodule and redistribute it.
 * `README.md:13` tells users to clone `ComfyUI-llama-cpp.git`, a different repository name from the one in `pyproject.toml:26` (`ComfyUI-llama-cpp_vlm`). Minor, but it shows the README is not maintained with the code.
 * Files: `nodes.py` (1559 lines), `support/cqdm.py` (progress bar), `support/gguf_layers.py` (reads block_count from a GGUF header), `support/prompt_enhancer_preset.py` (108 KB of system prompts for Qwen-Image, Flux.2, Wan and friends), two requirements files, one preview image. No example workflows in the repository.
 
@@ -81,9 +81,9 @@ Repository facts (from `git log`, `git tag`, `git ls-files`):
 * `n_gpu_layers` is -1 (everything on the GPU, 270) unless `vram_limit` is set, in which case it estimates layers from the GGUF's block_count and `file_size * 1.55` (275 to 278, 288 to 290, 313 to 314). That estimate calls `support/gguf_layers.py:get_layer_count`, whose fallback at line 100 prints an undefined variable `e` (NameError) for any GGUF without a `.block_count` key.
 * The weights live outside torch's allocator, so `comfy.model_management` cannot see or evict them. The node monkeypatches `mm.unload_all_models` (339 to 346) so a manual "free memory" clears it, but the automatic path that loads the diffusion model before a KSampler works from torch's own accounting and will OOM or thrash with a 3.4 GB 4B (plus KV cache at `n_ctx` 8192) already resident. `force_offload=True` (525 to 528, 747 to 748) unloads after each run, at the price of re-reading the GGUF from the external drive on every run. There is **no keep_alive timer**; the model stays until something unloads it or ComfyUI exits.
 * **One global model slot** (`LLAMA_CPP_STORAGE`, 123 to 129). The Instruct node does not check that the loaded model is the one it was handed: it loads only if nothing is loaded (576 to 577) and otherwise uses whatever is there. A loader with a different config reloads (492 to 494) and wipes every conversation (260, 201 to 202). The `queue_handler` input exists precisely because two Instruct nodes in one graph need manual ordering.
-* **VRAM next to MAIC**: `services/llamacpp.json` runs `llama-server -ngl 99 --ctx-size 16384`, which `docs/llamacpp.md:68` calls the ceiling of the card for a 9B Q4. A second in-process copy of a Qwen3.5 inside ComfyUI cannot coexist with that; one of the two has to be stopped, and ComfyUI's diffusion model needs the card too.
+* **VRAM next to MAID**: `services/llamacpp.json` runs `llama-server -ngl 99 --ctx-size 16384`, which `docs/llamacpp.md:68` calls the ceiling of the card for a 9B Q4. A second in-process copy of a Qwen3.5 inside ComfyUI cannot coexist with that; one of the two has to be stopped, and ComfyUI's diffusion model needs the card too.
 
-**Wheels.** `requirements.txt:9-27` and `requirements_cu131.txt:9-20` pin `llama-cpp-python` 0.3.46 as direct URLs to GitHub release assets of the **JamePeng fork** (not PyPI, not hash-pinned): cu128 or cu131 for cp310 to cp314 on Linux x86_64 and Windows, Metal on macOS. Her venv is Python 3.13.9 with torch 2.14.0+cu130 (checked with `.venv/bin/python`). Neither file matches cu130 exactly; cu131 is the closer one but `vendor/comfyui.sh:70` installs every `custom_nodes/*/requirements.txt`, so it would pull the cu128 wheel unless the script special-cases this node. Whether the fork's wheels are built with `sm_75` (Turing) and which CUDA driver they require cannot be checked offline; it is a must-test before any adoption. MAIC's own llama.cpp is compiled from source with the local `nvcc`, which sidesteps all of that. Other dependencies: `diskcache`, `scipy`, `numpy`, `pillow`, `gguf`, `tqdm`; the venv already has scipy, numpy, PIL and tqdm, and lacks `diskcache`, `gguf` and `llama_cpp`.
+**Wheels.** `requirements.txt:9-27` and `requirements_cu131.txt:9-20` pin `llama-cpp-python` 0.3.46 as direct URLs to GitHub release assets of the **JamePeng fork** (not PyPI, not hash-pinned): cu128 or cu131 for cp310 to cp314 on Linux x86_64 and Windows, Metal on macOS. Her venv is Python 3.13.9 with torch 2.14.0+cu130 (checked with `.venv/bin/python`). Neither file matches cu130 exactly; cu131 is the closer one but `vendor/comfyui.sh:70` installs every `custom_nodes/*/requirements.txt`, so it would pull the cu128 wheel unless the script special-cases this node. Whether the fork's wheels are built with `sm_75` (Turing) and which CUDA driver they require cannot be checked offline; it is a must-test before any adoption. MAID's own llama.cpp is compiled from source with the local `nvcc`, which sidesteps all of that. Other dependencies: `diskcache`, `scipy`, `numpy`, `pillow`, `gguf`, `tqdm`; the venv already has scipy, numpy, PIL and tqdm, and lacks `diskcache`, `gguf` and `llama_cpp`.
 
 **Where it expects GGUFs.** Hardcoded `<ComfyUI>/models/LLM` (272, 281). Line 349 **assigns** `folder_paths.folder_names_and_paths["LLM"]` outright instead of calling `add_model_folder_path`, and custom nodes load (`main.py:591` -> `init_extra_nodes` at 526) after `apply_custom_paths()` (`main.py:231`), so an `LLM:` line in `extra_model_paths.yaml` would be discarded; and `load_model` joins `models_dir/LLM/<name>` itself anyway. The only wiring that works is a symlink `ComfyUI/models/LLM -> <models_dir>/LLM` (`folder_paths.recursive_search` follows symlinks, `folder_paths.py:416`). The external drive has no `LLM/` folder today; the Qwen3.5 GGUFs she has are Ollama blobs (`ollama/blobs/sha256-81fb...`, 3.4 GB, tag `4b`; `sha256-dec5...`, 6.6 GB, tag `9b`) with no `.gguf` suffix, and the loader lists only files with the extensions at 348, so each blob would also need a `.gguf`-named symlink.
 
@@ -112,7 +112,7 @@ Repository facts (from `git log`, `git tag`, `git ls-files`):
 1. No `think` switch per run. To stop Qwen3.5 reasoning she would need the "Qwen3.5" handler, which the code only wires up when an mmproj is loaded; otherwise she gets the default-on reasoning and the empty-reply failure. This is a regression to the state before the think patch.
 2. **The 9B deep pass cannot coexist.** Loading the second model wipes the shared history (260, 201 to 202), and an Instruct node uses whichever model happens to be loaded (576 to 577), so with both loaders in one graph the quick pass can silently run on the 9B. The two-model design becomes one model, or a reload with lost memory each time.
 3. The model stays resident in VRAM with no timeout; she would toggle `force_offload` by hand before running a Manga workflow, or restart ComfyUI.
-4. `maic up ollama` in the note becomes "nothing to start", but `maic up llamacpp` for MAIC's own use would then fight ComfyUI for the card.
+4. `maid up ollama` in the note becomes "nothing to start", but `maid up llamacpp` for MAID's own use would then fight ComfyUI for the card.
 
 ## 5. Code quality and risk
 
@@ -127,32 +127,32 @@ Repository facts (from `git log`, `git tag`, `git ls-files`):
 
 ## 6. Maintenance burden versus today
 
-Today MAIC carries one one-line patch. Adopting the candidate would mean at least four:
+Today MAID carries one one-line patch. Adopting the candidate would mean at least four:
 
 1. a per-run `think` control for text-only models (not a one-liner: the fork's handlers take `enable_thinking` at construction, so it needs a handler rebuild or a `chat_template_kwargs` path that `create_chat_completion` does not take);
 2. `folder_paths.get_full_path("LLM", ...)` instead of the hardcoded join, so `extra_model_paths.yaml` works (272, 281, 349);
 3. `vendor/comfyui.sh` choosing `requirements_cu131.txt` for this node and verifying the wheel against cu130 torch and sm_75;
 4. the line 300 comma.
 
-Plus re-checking the private-attribute code on every llama-cpp-python bump. **Coexistence with comfyui-ollama** is fine: different node class names (`llama_cpp_*` vs `Ollama*`), categories and types; nothing shared. Coexistence with **MAIC's llama-server** is the problem: two copies of a Qwen3.5 on one 8 GB card.
+Plus re-checking the private-attribute code on every llama-cpp-python bump. **Coexistence with comfyui-ollama** is fine: different node class names (`llama_cpp_*` vs `Ollama*`), categories and types; nothing shared. Coexistence with **MAID's llama-server** is the problem: two copies of a Qwen3.5 on one 8 GB card.
 
 ## 7. Recommendation: reject, and write the small HTTP node instead
 
 Do not add `ComfyUI-llama-cpp_vlm` to `vendor/manifest.json`. Reasons in order: no license; in-process second model copy on the same card as `llama-server` and the diffusion model; loses the per-run `think` switch (the reason the think patch exists); cannot host the two-model Story chat; one-maintainer untagged code that reaches into a fork's private API and needs matching prebuilt CUDA wheels.
 
-**Alternative: `vendor/comfyui-maic-llamacpp`**, a MAIC-owned custom node beside `vendor/comfyui-maic-templates`, under MAIC's license, calling `llama-server`'s OpenAI-compatible `/v1/chat/completions` on `127.0.0.1:8081`. It avoids a second copy of the model (the node uses the one MAIC already serves), needs no wheel and no new dependency (`urllib.request` from the standard library, or the `aiohttp` ComfyUI already ships), and gives ComfyUI every sampler `docs/llamacpp.md:78-92` lists.
+**Alternative: `vendor/comfyui-maic-llamacpp`**, a MAID-owned custom node beside `vendor/comfyui-maic-templates`, under MAID's license, calling `llama-server`'s OpenAI-compatible `/v1/chat/completions` on `127.0.0.1:8081`. It avoids a second copy of the model (the node uses the one MAID already serves), needs no wheel and no new dependency (`urllib.request` from the standard library, or the `aiohttp` ComfyUI already ships), and gives ComfyUI every sampler `docs/llamacpp.md:78-92` lists.
 
 Shape, mirroring the Ollama nodes one for one so the workflow is a rename:
 
 * **"llama.cpp Server"** -> `LLAMACPP_SERVER`: `url` (default `http://127.0.0.1:8081`), `model` (default `current`, the `--alias` in `services/llamacpp.json`; a free string is enough because the server ignores the field, `docs/llamacpp.md:70`). About 30 lines, the same as `OllamaConnectivityV2` (203 to 236). A model dropdown fed by `GET /v1/models`, like the `/ollama/get_models` route (62 to 76) and `web/js/OllamaNode.js`, is optional and adds about 40 lines of JS.
 * **"llama.cpp Chat"** -> `result`, `thinking`, `history`: `system`, `prompt`, `think` (BOOLEAN sent as `chat_template_kwargs: {"enable_thinking": ...}`, with `reasoning_format` so the reasoning comes back in `reasoning_content` and fills the `thinking` output), `format` text/json (`response_format: {"type": "json_object"}`), optional `images` (base64 `image_url` parts; works when the service adds `--mmproj`), optional `history` and `reset_session` using the same in-process `CHAT_SESSIONS` dict as `CompfyuiOllama.py:25-32` and `578-610`, optional `sampling` as a JSON string merged into the request body (temperature, top_k, top_p, min_p, repeat_penalty, n_predict, seed, XTC, DRY, `grammar`, `json_schema`, `logit_bias`, all by llama-server's own names). About 150 lines: `OllamaChat` is 170 lines (391 to 658) and the replacement swaps the `ollama` client for one `urllib` POST and a 20-line body builder.
 
-Total roughly 200 lines of Python in one file plus a 10-line `__init__.py` and `pyproject.toml`. The "no internet requests" rule in `AGENTS.md` is about core ComfyUI; a MAIC custom node talking to loopback is the same category as the Ollama node it replaces. Two things to confirm against the llama.cpp checkout once `maic vendor add llamacpp` has fetched it (the submodule directory is empty on this machine, so they could not be verified for tag `b11284` offline): that `chat_template_kwargs` and `reasoning_format` are accepted on `/v1/chat/completions`, and whether the server's multi-model router mode (`--models-dir`) is present, which would let the 4B and 9B both stay reachable from one server for the deep pass.
+Total roughly 200 lines of Python in one file plus a 10-line `__init__.py` and `pyproject.toml`. The "no internet requests" rule in `AGENTS.md` is about core ComfyUI; a MAID custom node talking to loopback is the same category as the Ollama node it replaces. Two things to confirm against the llama.cpp checkout once `maid vendor add llamacpp` has fetched it (the submodule directory is empty on this machine, so they could not be verified for tag `b11284` offline): that `chat_template_kwargs` and `reasoning_format` are accepted on `/v1/chat/completions`, and whether the server's multi-model router mode (`--models-dir`) is present, which would let the 4B and 9B both stay reachable from one server for the deep pass.
 
 **Plan**
 
 1. Leave `comfyui-ollama` vendored and patched until the new node runs; it costs nothing while Ollama stays an optional backend.
-2. Add `vendor/comfyui-maic-llamacpp/` (nodes as above) and a `wire()` line in `vendor/comfyui.sh` next to line 43 (`ln -s "$MAIC_ROOT/vendor/comfyui-maic-llamacpp" custom_nodes/comfyui-maic-llamacpp`). No requirements file, so line 70's loop is untouched.
-3. Put `story-chat-llamacpp.json` in `~/.local/state/maic/templates/comfyui/`: the same nine nodes with `OllamaConnectivityV2` -> "llama.cpp Server" and `OllamaChat` -> "llama.cpp Chat", widgets carried over, the note changed to `maic up llamacpp` and `maic vendor use llamacpp <gguf>`. The deep pass stays as muted nodes pointing at a second server on another port (a `services/llamacpp-9b.json` with `--port 8082`), which on 8 GB means stopping the 4B first; or, if router mode is available at `b11284`, one server with both GGUFs. Micaiah decides which; the quick pass alone is the safe first cut.
+2. Add `vendor/comfyui-maic-llamacpp/` (nodes as above) and a `wire()` line in `vendor/comfyui.sh` next to line 43 (`ln -s "$MAID_ROOT/vendor/comfyui-maic-llamacpp" custom_nodes/comfyui-maic-llamacpp`). No requirements file, so line 70's loop is untouched.
+3. Put `story-chat-llamacpp.json` in `~/.local/state/maid/templates/comfyui/`: the same nine nodes with `OllamaConnectivityV2` -> "llama.cpp Server" and `OllamaChat` -> "llama.cpp Chat", widgets carried over, the note changed to `maid up llamacpp` and `maid vendor use llamacpp <gguf>`. The deep pass stays as muted nodes pointing at a second server on another port (a `services/llamacpp-9b.json` with `--port 8082`), which on 8 GB means stopping the 4B first; or, if router mode is available at `b11284`, one server with both GGUFs. Micaiah decides which; the quick pass alone is the safe first cut.
 4. Test by status and timing only (no reading of generated text): a quick-pass run with `think` off returns in the 3 s range she measured on Ollama, a run with `think` on fills the `thinking` output, `reset_session` empties the session, and a Manga workflow still loads its checkpoint while `llama-server` is up.
 5. When the template works, drop `comfyui-ollama` from `comfyui.needs` in `vendor/manifest.json`, delete the patch, and update `docs/comfyui-setup.md:3,70,114` and `docs/vendor.md`, which still say the Story chat needs Ollama.

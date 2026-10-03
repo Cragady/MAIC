@@ -144,8 +144,8 @@ class Tests(unittest.TestCase):
         self.assertIn("no ComfyUI checkout", r.stderr)
         # The default checkout is the vendored one under the state directory.
         env = dict(os.environ, XDG_STATE_HOME=os.path.join(self.dir, "state"))
-        os.makedirs(os.path.join(self.dir, "state", "maic", "vendor"))
-        os.symlink(root, os.path.join(self.dir, "state", "maic", "vendor", "ComfyUI"))
+        os.makedirs(os.path.join(self.dir, "state", "maid", "vendor"))
+        os.symlink(root, os.path.join(self.dir, "state", "maid", "vendor", "ComfyUI"))
         r = subprocess.run([sys.executable, TOOL, "check", self.path], capture_output=True, text=True, env=env)
         self.assertIn("missing: FaceDetailer", r.stdout)
 

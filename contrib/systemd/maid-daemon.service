@@ -1,0 +1,14 @@
+# The MAID daemon as a systemd user service (docs/daemon.md). Written by `maid daemon unit install` from
+# contrib/systemd/; `maid daemon unit remove` takes it away. MAID still keeps its own PID file, lock and socket, so
+# `maid daemon stop` and `maid daemon status` work the same under systemd.
+[Unit]
+Description=MAID daemon: sessions that outlive the window they started in
+
+[Service]
+Type=simple
+ExecStart=@MAID@ daemon run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

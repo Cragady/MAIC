@@ -1,11 +1,11 @@
-#include "maic/agent_def.hpp"
+#include "maid/agent_def.hpp"
 
 #include <fnmatch.h>
 
 #include <algorithm>
 #include <stdexcept>
 
-namespace maic {
+namespace maid {
 
 const char* role_name(Role r) {
     switch (r) {
@@ -95,4 +95,4 @@ AgentDef narrow_agent_def(const AgentDef& agent, Mode session_mode) {
     return a;
 }
 
-}  // namespace maic
+}  // namespace maid

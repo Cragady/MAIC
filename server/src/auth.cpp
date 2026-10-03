@@ -14,7 +14,7 @@
 #include <fstream>
 #include <stdexcept>
 
-namespace maic::server {
+namespace maid::server {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -163,4 +163,4 @@ void RateLimit::succeeded(const std::string& source) {
     failures_.erase(source);
 }
 
-}  // namespace maic::server
+}  // namespace maid::server

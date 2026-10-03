@@ -2,15 +2,15 @@
 #include "daemon.hpp"
 #include "nvim_host.hpp"
 #include "tui.hpp"
-#include "maic/agent.hpp"
-#include "maic/engine.hpp"
-#include "maic/lua.hpp"
-#include "maic/protocol.hpp"
-#include "maic/session.hpp"
-#include "maic/settings.hpp"
-#include "maic/status.hpp"
-#include "maic/tripwire.hpp"
-#include "maic/trust.hpp"
+#include "maid/agent.hpp"
+#include "maid/engine.hpp"
+#include "maid/lua.hpp"
+#include "maid/protocol.hpp"
+#include "maid/session.hpp"
+#include "maid/settings.hpp"
+#include "maid/status.hpp"
+#include "maid/tripwire.hpp"
+#include "maid/trust.hpp"
 
 #include <fcntl.h>
 #include <poll.h>
@@ -30,13 +30,13 @@
 #include <string>
 #include <thread>
 
-// `maic --rpc` (docs/design/engine-protocol.md, section 1 and build step 8): one engine, its parent the one local
+// `maid --rpc` (docs/design/engine-protocol.md, section 1 and build step 8): one engine, its parent the one local
 // client, JSON-RPC 2.0 one message per line on stdin and stdout. Each request runs on its own thread, so a long one
 // (`!cmd`, a `:` command that restarts a server) never holds up a cancel; a writer thread sends what the engine
 // queues. Diagnostics go to stderr, and so does anything else in the process that prints: the protocol has its
 // own copies of fd 0 and 1.
 
-namespace maic {
+namespace maid {
 namespace {
 
 using json = nlohmann::json;
@@ -44,7 +44,7 @@ using json = nlohmann::json;
 constexpr size_t kMaxLine = 1 << 20;  // a message is at most 1 MiB (section 1)
 constexpr int kInFlight = 64;         // requests a client may have running; the next line is read when one ends
 
-int signal_fds[2] = {-1, -1};  // `maic --rpc`: SIGINT, SIGTERM or SIGHUP ends the read loop
+int signal_fds[2] = {-1, -1};  // `maid --rpc`: SIGINT, SIGTERM or SIGHUP ends the read loop
 
 void on_signal(int) {
     char c = 0;
@@ -91,7 +91,7 @@ public:
 private:
     void record(const char* dir, const json& msg) {
         if (!recorder_) return;
-        if (auto v = recorder_->add(dir, client_, msg)) fprintf(stderr, "maic: protocol: %s\n", protocol::describe(*v).c_str());
+        if (auto v = recorder_->add(dir, client_, msg)) fprintf(stderr, "maid: protocol: %s\n", protocol::describe(*v).c_str());
     }
 
     int fd_;
@@ -110,7 +110,7 @@ json fault(int code, const std::string& data_code, const std::string& message) {
 // session's stream at the answer.
 bool subscribes(const json& msg) {
     std::string method = msg.is_object() ? msg.value("method", "") : "";
-    return method == "maic.session.attach" || method == "maic.session.subscribe";
+    return method == "maid.session.attach" || method == "maid.session.subscribe";
 }
 
 }  // namespace
@@ -147,7 +147,7 @@ bool serve_lines(Engine& engine, const std::string& client, int in, int out_fd, 
             }
             if (!msgs.empty()) continue;
             if (std::string why = engine.closed(client); !why.empty()) {
-                if (why != "maic_shutdown" && !stop) faulted = true;  // maic_too_slow, maic_too_large
+                if (why != "maid_shutdown" && !stop) faulted = true;  // maid_too_slow, maid_too_large
                 wake_reader();
                 return;
             }
@@ -199,7 +199,7 @@ bool serve_lines(Engine& engine, const std::string& client, int in, int out_fd, 
                 out.write(fault(-32700, "", "not JSON: each line is one JSON-RPC 2.0 message"), false);
                 continue;
             }
-            if (msg.is_object() && msg.value("method", "") == "maic.hello") {
+            if (msg.is_object() && msg.value("method", "") == "maid.hello") {
                 run(std::move(msg));  // in line, so whatever the client sends after it finds the hello done
                 continue;
             }
@@ -219,7 +219,7 @@ bool serve_lines(Engine& engine, const std::string& client, int in, int out_fd, 
         if (reading && buf.size() > kMaxLine) reading = false;
         if (!reading) {
             faulted = true;
-            out.write(fault(-32000, "maic_too_large", "a message is at most 1 MiB"), false);
+            out.write(fault(-32000, "maid_too_large", "a message is at most 1 MiB"), false);
         }
     }
 
@@ -241,7 +241,7 @@ int run_rpc(const TuiOptions& options) {
     int in = fcntl(STDIN_FILENO, F_DUPFD_CLOEXEC, 3);
     int out_fd = fcntl(STDOUT_FILENO, F_DUPFD_CLOEXEC, 3);
     if (in < 0 || out_fd < 0) {
-        perror("maic --rpc");
+        perror("maid --rpc");
         return 1;
     }
     if (int null = open("/dev/null", O_RDONLY | O_CLOEXEC); null >= 0) {
@@ -251,7 +251,7 @@ int run_rpc(const TuiOptions& options) {
     dup2(STDERR_FILENO, STDOUT_FILENO);
 
     // As the TUI starts, without its questions: trust is never asked here (stdin is the protocol).
-    const char* bare_env = std::getenv("MAIC_BARE");
+    const char* bare_env = std::getenv("MAID_BARE");
     bool bare = options.bare || (bare_env && std::string(bare_env) == "1");
     std::string host_refused;
     std::shared_ptr<HostNvim> host = bare ? nullptr : HostNvim::from_env(host_refused);
@@ -278,15 +278,15 @@ int run_rpc(const TuiOptions& options) {
         host.reset();
     }
     if (settings.harness != "smart" && settings.harness != "dumb") {
-        fprintf(stderr, "maic: --harness must be smart or dumb\n");
+        fprintf(stderr, "maid: --harness must be smart or dumb\n");
         return 2;
     }
     if (settings.tripwire == "isolated" && !settings.allow_isolated) {
-        fprintf(stderr, "maic: tripwire = \"isolated\" (opting out of the machine lock) is not allowed: set allow_isolated = true in settings to permit it\n");
+        fprintf(stderr, "maid: tripwire = \"isolated\" (opting out of the machine lock) is not allowed: set allow_isolated = true in settings to permit it\n");
         return 2;
     }
     if (!parse_mode(settings.mode)) {
-        fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
+        fprintf(stderr, "maid: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
         return 2;
     }
     set_tripwire_scope(settings.tripwire, runtime_sessions_dir() / ("rpc-" + std::to_string(getpid()) + ".tripped"));
@@ -315,7 +315,7 @@ int run_rpc(const TuiOptions& options) {
     std::string client = engine.connect(Origin::Local, "stdio", "stdio");
 
     if (pipe2(signal_fds, O_CLOEXEC | O_NONBLOCK) != 0) {
-        perror("maic --rpc");
+        perror("maid --rpc");
         return 1;
     }
     struct sigaction sa{};
@@ -324,9 +324,9 @@ int run_rpc(const TuiOptions& options) {
     for (int sig : {SIGINT, SIGTERM, SIGHUP}) sigaction(sig, &sa, nullptr);
     std::signal(SIGPIPE, SIG_IGN);
 
-    // MAIC_PROTOCOL_RECORD=DIR keeps the exchange for `maic protocol check`, as the TUI and maic -p do.
+    // MAID_PROTOCOL_RECORD=DIR keeps the exchange for `maid protocol check`, as the TUI and maid -p do.
     std::filesystem::path record;
-    if (const char* dir = std::getenv("MAIC_PROTOCOL_RECORD"); dir && *dir) record = std::filesystem::path(dir) / ("rpc-" + std::to_string(getpid()) + ".jsonl");
+    if (const char* dir = std::getenv("MAID_PROTOCOL_RECORD"); dir && *dir) record = std::filesystem::path(dir) / ("rpc-" + std::to_string(getpid()) + ".jsonl");
     // Stdin closed, a signal, or the connection ended: the client quits as `:q` does (leave.quit, and leave.no_daemon
     // for what would stay running), the rest is parked, then the last events go out.
     bool faulted = serve_lines(engine, client, in, out_fd, signal_fds[0], record, [&] {
@@ -339,4 +339,4 @@ int run_rpc(const TuiOptions& options) {
     return faulted ? 1 : 0;
 }
 
-}  // namespace maic
+}  // namespace maid

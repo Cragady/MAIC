@@ -1,6 +1,6 @@
-#include "maic/tripwire.hpp"
+#include "maid/tripwire.hpp"
 
-#include "maic/helper.hpp"
+#include "maid/helper.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -9,15 +9,15 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace maic {
+namespace maid {
 
 namespace {
-constexpr const char* kLockFile = "/var/lib/maic/tripwire";
+constexpr const char* kLockFile = "/var/lib/maid/tripwire";
 
-// Tests point MAIC_TRIPWIRE_FILE at a scratch path so the machine's real lock never decides a test; with it
+// Tests point MAID_TRIPWIRE_FILE at a scratch path so the machine's real lock never decides a test; with it
 // set, tripping writes that file directly instead of going through the root helper.
 const char* override_file() {
-    const char* env = std::getenv("MAIC_TRIPWIRE_FILE");
+    const char* env = std::getenv("MAID_TRIPWIRE_FILE");
     return env && *env ? env : nullptr;
 }
 
@@ -67,7 +67,7 @@ std::optional<std::string> tripwire_state() {
 void require_armed(const std::string& action) {
     if (auto state = tripwire_state()) {
         throw std::runtime_error("tripwire is tripped, refusing to " + action + ".\n" + *state +
-                                 "Inspect what happened, then run `maic unlock` (asks for your sudo password).");
+                                 "Inspect what happened, then run `maid unlock` (asks for your sudo password).");
     }
 }
 
@@ -80,9 +80,9 @@ void trip_tripwire(const std::string& reason) {
         std::ofstream(f, std::ios::trunc) << "reason: " << reason << "\n";
         return;
     }
-    if (run_helper("sudo -n /usr/local/sbin/maic-lock trip >/dev/null 2>&1", nullptr, &reason) != 0) {
-        throw std::runtime_error("maic-lock trip failed; is the tripwire installed? (sudo ./harness/install-tripwire.sh)");
+    if (run_helper("sudo -n /usr/local/sbin/maid-lock trip >/dev/null 2>&1", nullptr, &reason) != 0) {
+        throw std::runtime_error("maid-lock trip failed; is the tripwire installed? (sudo ./harness/install-tripwire.sh)");
     }
 }
 
-}  // namespace maic
+}  // namespace maid

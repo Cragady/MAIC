@@ -1,11 +1,11 @@
 {
-  "//": "MAIC's model catalog: what `maic models` lists and installs. Every file is pinned to a commit and checked by SHA-256 and size (both from Hugging Face's API: /api/models/<repo>/tree/<revision>?blobs=true). vram figures are estimates in GB with the arithmetic of `maic gpu` (the files' size plus a KV cache per 1k tokens; whisper models their file plus 300 MB of buffers). ~/.config/maic/models.json adds entries or overrides fields by id. docs/models.md",
+  "//": "MAID's model catalog: what `maid models` lists and installs. Every file is pinned to a commit and checked by SHA-256 and size (both from Hugging Face's API: /api/models/<repo>/tree/<revision>?blobs=true). vram figures are estimates in GB with the arithmetic of `maid gpu` (the files' size plus a KV cache per 1k tokens; whisper models their file plus 300 MB of buffers). ~/.config/maid/models.json adds entries or overrides fields by id. docs/models.md",
   "models": [
     {
       "id": "qwen3.5-4b",
       "name": "Qwen3.5 4B, Q4_K_M, with its vision projector",
       "role": "agent",
-      "brief": "Qwen3.5's 4B at 4-bit with its vision projector: MAIC's quick model, the default scribe for diction, and able to read images. It fits an 8 GB card at up to 32k context and leaves room beside a parked ComfyUI. It is weaker than the 9B at long multi-step work and makes more tool-call mistakes. Pick it when the card is shared or speed matters more than depth.",
+      "brief": "Qwen3.5's 4B at 4-bit with its vision projector: MAID's quick model, the default scribe for diction, and able to read images. It fits an 8 GB card at up to 32k context and leaves room beside a parked ComfyUI. It is weaker than the 9B at long multi-step work and makes more tool-call mistakes. Pick it when the card is shared or speed matters more than depth.",
       "license": "apache-2.0",
       "license_url": "https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/LICENSE",
       "source": {"repo": "unsloth/Qwen3.5-4B-GGUF", "revision": "e87f176479d0855a907a41277aca2f8ee7a09523"},
@@ -39,13 +39,13 @@
       "vram": [{"context": 8192, "gb": 7.2}],
       "context": 8192,
       "presets": ["qwen-9b-vision"],
-      "notes": "qwen3.5-9b-text shares this entry's GGUF, so it cannot be removed while that one is installed. Measured: a system-prompt rule is ignored on turns that call a tool (Qwen3.5 9B, 2026-10-02; docs/references/prompt-placement.md); MAIC's per-turn operator note holds it. Not yet measured on other families."
+      "notes": "qwen3.5-9b-text shares this entry's GGUF, so it cannot be removed while that one is installed. Measured: a system-prompt rule is ignored on turns that call a tool (Qwen3.5 9B, 2026-10-02; docs/references/prompt-placement.md); MAID's per-turn operator note holds it. Not yet measured on other families."
     },
     {
       "id": "qwen3.5-9b-text",
       "name": "Qwen3.5 9B, Q4_K_M, text only",
       "role": "agent",
-      "brief": "The 9B without image processing: a folder holding a relative link to qwen3.5-9b's GGUF and no projector, so nothing is stored twice and the gigabyte the projector costs goes to context instead (16k on an 8 GB card). This is the entry for MAIC's agent and for the diction scribe: stronger than the 4B at planning, tool calls and long instructions. It cannot see images, and it needs most of the card, so ComfyUI has to be stopped or unloaded. Installing it installs qwen3.5-9b first.",
+      "brief": "The 9B without image processing: a folder holding a relative link to qwen3.5-9b's GGUF and no projector, so nothing is stored twice and the gigabyte the projector costs goes to context instead (16k on an 8 GB card). This is the entry for MAID's agent and for the diction scribe: stronger than the 4B at planning, tool calls and long instructions. It cannot see images, and it needs most of the card, so ComfyUI has to be stopped or unloaded. Installing it installs qwen3.5-9b first.",
       "license": "apache-2.0",
       "license_url": "https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/LICENSE",
       "source": {"repo": "unsloth/Qwen3.5-9B-GGUF", "revision": "3885219b6810b007914f3a7950a8d1b469d598a5"},
@@ -58,7 +58,7 @@
       "vram": [{"context": 8192, "gb": 6.3}, {"context": 16384, "gb": 7.4}],
       "context": 16384,
       "presets": ["qwen-9b"],
-      "notes": "A first-class entry by Micaiah's requirement: the 9B without image processing is never dropped from the catalog. Its file is the link Qwen3.5-9B-Q4_K_M-text.gguf -> ../Qwen3.5-9B-Q4_K_M/Qwen3.5-9B-Q4_K_M.gguf (docs/llamacpp.md, One model, two entries). Measured: a system-prompt rule is ignored on turns that call a tool (Qwen3.5 9B, 2026-10-02; docs/references/prompt-placement.md); MAIC's per-turn operator note holds it. Not yet measured on other families."
+      "notes": "A first-class entry by Micaiah's requirement: the 9B without image processing is never dropped from the catalog. Its file is the link Qwen3.5-9B-Q4_K_M-text.gguf -> ../Qwen3.5-9B-Q4_K_M/Qwen3.5-9B-Q4_K_M.gguf (docs/llamacpp.md, One model, two entries). Measured: a system-prompt rule is ignored on turns that call a tool (Qwen3.5 9B, 2026-10-02; docs/references/prompt-placement.md); MAID's per-turn operator note holds it. Not yet measured on other families."
     },
     {
       "id": "whisper-distil-large-v3",
@@ -130,7 +130,7 @@
       "vram": [{"context": 8192, "gb": 5.4}, {"context": 16384, "gb": 6.4}],
       "context": 8192,
       "presets": [],
-      "notes": "Served by services/llamacpp-fim.json (router mode over <models_dir>/fim, the linked one as model \"current\"). The same repository has i1-Q5_K_M (5.1 GB) for a card with more room; add it in ~/.config/maic/models.json."
+      "notes": "Served by services/llamacpp-fim.json (router mode over <models_dir>/fim, the linked one as model \"current\"). The same repository has i1-Q5_K_M (5.1 GB) for a card with more room; add it in ~/.config/maid/models.json."
     },
     {
       "id": "qwen2.5-coder-3b",
@@ -148,7 +148,7 @@
       "vram": [{"context": 8192, "gb": 3.6}, {"context": 16384, "gb": 4.1}, {"context": 32768, "gb": 5.1}],
       "context": 8192,
       "presets": [],
-      "notes": "Served by services/llamacpp-fim.json when linked (maic models install qwen2.5-coder-3b --link)."
+      "notes": "Served by services/llamacpp-fim.json when linked (maid models install qwen2.5-coder-3b --link)."
     },
     {
       "id": "qwen2.5-coder-1.5b",
@@ -166,10 +166,10 @@
       "vram": [{"context": 8192, "gb": 2.1}, {"context": 16384, "gb": 2.6}, {"context": 32768, "gb": 3.6}],
       "context": 8192,
       "presets": [],
-      "notes": "Served by services/llamacpp-fim.json when linked (maic models install qwen2.5-coder-1.5b --link)."
+      "notes": "Served by services/llamacpp-fim.json when linked (maid models install qwen2.5-coder-1.5b --link)."
     }
   ],
-  "//api_models": "Models behind a metered API: what each costs and its limits, nothing to install. `provider` and `model` are what a preset names (provider/model). pricing.periods: the prices per pricing.per tokens in pricing.currency; the period without days and utc is the default, one with them applies on those UTC weekdays and hours. `checked` is the day the figures were read from `source`. maic models check validates them; docs/models.md",
+  "//api_models": "Models behind a metered API: what each costs and its limits, nothing to install. `provider` and `model` are what a preset names (provider/model). pricing.periods: the prices per pricing.per tokens in pricing.currency; the period without days and utc is the default, one with them applies on those UTC weekdays and hours. `checked` is the day the figures were read from `source`. maid models check validates them; docs/models.md",
   "api_models": [
     {
       "id": "deepseek-flash",

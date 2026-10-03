@@ -4,12 +4,12 @@ Three tools, which combine. All of them are configured in `settings.lua` under `
 
 | Tool | Works with | How |
 | :--- | :--- | :--- |
-| String bans (`bans.strings`, `--ban`, `:ban add`) | every provider | MAIC filters the streamed reply, cuts before the phrase reaches the screen, tells the model, re-asks; after `retries` it replaces the phrase |
+| String bans (`bans.strings`, `--ban`, `:ban add`) | every provider | MAID filters the streamed reply, cuts before the phrase reaches the screen, tells the model, re-asks; after `retries` it replaces the phrase |
 | Regex bans (`bans.patterns`, `--ban-pattern`, `:ban pattern`) | every provider | the same, with a POSIX extended regex; the last `window` characters are held back while a match could still grow |
 | Token bans (`bans.tokens`, `:ban token`) | OpenAI-compatible servers (llama.cpp, vLLM, LM Studio, ...) | `logit_bias` at minus infinity: the token can never be chosen, so the model takes another path |
 | XTC (`sampling.xtc_probability`, `:sampling xtc`) | llama.cpp-based servers | a sampler that throws away the top choices, so stock phrases lose their head start |
 
-The vendored llama.cpp (`maic vendor add llamacpp`, [llamacpp.md](llamacpp.md)) is the local server that takes all four.
+The vendored llama.cpp (`maid vendor add llamacpp`, [llamacpp.md](llamacpp.md)) is the local server that takes all four.
 
 ## Files
 
@@ -17,7 +17,7 @@ Wherever a ban is given, `@path` stands for a file: one entry per line, blank li
 
 ## Why not constrained decoding
 
-Grammar-guided or regex-guided decoding (GBNF on llama.cpp, guided regex on vLLM and friends) constrains the reply to *match* a grammar. Those engines have no complement and no negative lookahead, so "anything except a reply containing X" cannot be written down for them. That is why MAIC bans after the fact: the filter is provider-independent, it sees the exact text, and the model is told what it did so the retry can be different. The cost is one or more extra calls when a ban fires, which `retries` bounds.
+Grammar-guided or regex-guided decoding (GBNF on llama.cpp, guided regex on vLLM and friends) constrains the reply to *match* a grammar. Those engines have no complement and no negative lookahead, so "anything except a reply containing X" cannot be written down for them. That is why MAID bans after the fact: the filter is provider-independent, it sees the exact text, and the model is told what it did so the retry can be different. The cost is one or more extra calls when a ban fires, which `retries` bounds.
 
 ## Writing the regex
 
@@ -62,4 +62,4 @@ bans = {
 }
 ```
 
-In a JSON settings file the entry is `{"text": "...", "steer": "drop", "note": "..."}`. On a hit the filter cuts before the match as always, so it never reaches a screen, and the engine applies the action as a person's steer with `trigger: "ban"`: `drop` trims the partial reply (to before the match at least, further by `steering.drop_trim`) and the turn goes on with drop's text and the note; `steer` goes on with the note; `interrupt` pauses the turn for a person (`maic -p`, with no one to resume it, ends it); `keep` ends the turn with the clean part; `halt` discards it and tells the model so. `maic.steer.applied` names the entry (`ban: {list, index}`), never the matched text. An entry that fires again past `retries` halts the turn; in replace mode, after `retries`, a steer entry still cuts. Which actions an entry may name is `steering.ban_actions` (all but `further`, which would go deeper into the banned topic; naming it is an error when the settings load). Token bans never produce text, so they name nothing. Bans set with `:ban` are plain entries.
+In a JSON settings file the entry is `{"text": "...", "steer": "drop", "note": "..."}`. On a hit the filter cuts before the match as always, so it never reaches a screen, and the engine applies the action as a person's steer with `trigger: "ban"`: `drop` trims the partial reply (to before the match at least, further by `steering.drop_trim`) and the turn goes on with drop's text and the note; `steer` goes on with the note; `interrupt` pauses the turn for a person (`maid -p`, with no one to resume it, ends it); `keep` ends the turn with the clean part; `halt` discards it and tells the model so. `maid.steer.applied` names the entry (`ban: {list, index}`), never the matched text. An entry that fires again past `retries` halts the turn; in replace mode, after `retries`, a steer entry still cuts. Which actions an entry may name is `steering.ban_actions` (all but `further`, which would go deeper into the banned topic; naming it is an error when the settings load). Token bans never produce text, so they name nothing. Bans set with `:ban` are plain entries.

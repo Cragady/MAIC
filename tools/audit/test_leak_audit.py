@@ -65,7 +65,7 @@ SESSIONS = {
 
 
 def entry(id, tool, arguments, days=0, session="20261001-120000-headless-4242", recorded=False, decision="allow", ran=True, ok=True, **extra):
-    """One trail entry as MAIC writes it (core/src/audit_trail.cpp): the call and the harness's decisions, never text
+    """One trail entry as MAID writes it (core/src/audit_trail.cpp): the call and the harness's decisions, never text
     or output. `days` is its age."""
     return {"id": id, "time": (NOW - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ"), "session": session, "recorded": recorded,
             "workspace": "/w", "tool": tool, "arguments": arguments, "decision": decision, "reason": "", "judged_by": "harness",
@@ -157,11 +157,11 @@ class LeakAuditTest(unittest.TestCase):
         Judge.mode, Judge.verdicts, Judge.requests, Judge.fail_after, Judge.during = None, {}, [], None, None
         self.settings = {"on": True, "every_seconds": 86400, "live_window_seconds": 86400, "stale_days": 14, "order": "stale-first",
                          "judge": "qwen-9b", "judge_thinking": True, "judge_max_tokens": 2048, "chunk_mb": 256, "archive": "off"}
-        self.trail = self.dir / "state" / "maic" / "audit-trail"
+        self.trail = self.dir / "state" / "maid" / "audit-trail"
         self.archive = self.dir / "archive"
         self.tmpdir = self.dir / "tmp"
         self.tmpdir.mkdir()
-        self.fake_maic = self.dir / "maic"
+        self.fake_maid = self.dir / "maid"
         self.resolve_to(f"http://127.0.0.1:{self.port}/v1")
 
     def tearDown(self):
@@ -170,18 +170,18 @@ class LeakAuditTest(unittest.TestCase):
     def resolve_to(self, base_url, remote=False, provider="llamacpp", kind="openai"):
         spec = {"provider": provider, "kind": kind, "base_url": base_url, "model": "Qwen3.5-9B-Q4_K_M-text", "context": 16384,
                 "remote": remote, "api_key_env": "", "api_key_command": ""}
-        self.fake_maic.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+        self.fake_maid.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
                                   "if sys.argv[1:] == ['audit-trail', 'status', '--json']:\n"
                                   "    print(os.environ['FAKE_TRAIL_STATUS'])\n"
                                   "    sys.exit(0)\n"
                                   "assert sys.argv[1:3] == ['model', 'resolve']\n"
                                   f"print({json.dumps(json.dumps(spec))})\n")
-        self.fake_maic.chmod(0o755)
+        self.fake_maid.chmod(0o755)
 
     def run_tool(self, *args, roots=True):
         env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
         env.update(XDG_STATE_HOME=str(self.dir / "state"), XDG_RUNTIME_DIR=str(self.dir / "run"), HOME=str(self.dir / "home"),
-                   MAIC_BIN=str(self.fake_maic), PYTHONDONTWRITEBYTECODE="1", TMPDIR=str(self.tmpdir), FAKE_TRAIL_STATUS=json.dumps(self.settings))
+                   MAID_BIN=str(self.fake_maid), PYTHONDONTWRITEBYTECODE="1", TMPDIR=str(self.tmpdir), FAKE_TRAIL_STATUS=json.dumps(self.settings))
         argv = [sys.executable, TOOL] + (["--root", str(self.sessions)] if roots else []) + list(args)
         r = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=120)
         for secret in SECRETS:
@@ -198,7 +198,7 @@ class LeakAuditTest(unittest.TestCase):
         self.assertEqual(bool(m.group(1)), phase1)
         self.assertEqual(r.stderr, "")
         path = Path(m.group(2))
-        self.assertEqual(path.parent, self.dir / "state" / "maic" / "audits")
+        self.assertEqual(path.parent, self.dir / "state" / "maid" / "audits")
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
         return path.read_text()
@@ -248,7 +248,7 @@ class LeakAuditTest(unittest.TestCase):
 
     def test_dry_run(self):
         self.all_sessions()
-        os.unlink(self.fake_maic)
+        os.unlink(self.fake_maid)
         text = self.complete(self.run_tool("--dry-run"), "UNCLEAR", phase1=True)
         self.assertIn("not judged", text)
         self.assertIn("Phase 2 was not run", text)
@@ -266,7 +266,7 @@ class LeakAuditTest(unittest.TestCase):
             self.assertRegex(r.stdout, NOT_DONE)
             self.assertIn("not on this machine", r.stderr)
         self.assertEqual(Judge.requests, [])
-        self.assertFalse((self.dir / "state" / "maic" / "audits").exists())
+        self.assertFalse((self.dir / "state" / "maid" / "audits").exists())
 
     def test_server_down(self):
         self.all_sessions()
@@ -277,14 +277,14 @@ class LeakAuditTest(unittest.TestCase):
         r = self.run_tool()
         self.assertEqual(r.returncode, 2)
         self.assertRegex(r.stdout, NOT_DONE)
-        self.assertIn("maic up llamacpp", r.stderr)
-        self.assertFalse((self.dir / "state" / "maic" / "audits").exists())
+        self.assertIn("maid up llamacpp", r.stderr)
+        self.assertFalse((self.dir / "state" / "maid" / "audits").exists())
 
     def test_errors_keep_one_line(self):
         r = self.run_tool("--no-such-flag")
         self.assertEqual(r.returncode, 2)
         self.assertRegex(r.stdout, NOT_DONE)
-        os.unlink(self.fake_maic)
+        os.unlink(self.fake_maid)
         r = self.run_tool()
         self.assertEqual(r.returncode, 2)
         self.assertRegex(r.stdout, NOT_DONE)
@@ -421,7 +421,7 @@ class LeakAuditTest(unittest.TestCase):
 
     def test_never_audited_is_never_retired(self):
         self.write_entries([entry(1, "run_shell", {"command": "busctl --user list"}, days=400)])
-        os.unlink(self.fake_maic)
+        os.unlink(self.fake_maid)
         text = self.complete(self.run_tool("--dry-run"), "UNCLEAR", phase1=True)
         self.assertIn("Phase 1 only (--dry-run): the trail and its index are unchanged.", text)
         self.assertFalse((self.trail / "index.json").exists())
@@ -500,7 +500,7 @@ class LeakAuditTest(unittest.TestCase):
         self.assertEqual([(r["first"], r["last"], r["container"]) for r in mapping["ranges"]], [(1, 2, "20260920.jsonl"), (3, 3, "20260920.2.jsonl")])
         self.assertEqual(mapping["ranges"][0]["signature"], leak_audit.signature({"2": "reached"}))
         self.assertEqual(mapping["ranges"][0]["first_audited"], audited["first_audited"])
-        reports = [p.name for p in (self.dir / "state" / "maic" / "audits").iterdir()]
+        reports = [p.name for p in (self.dir / "state" / "maid" / "audits").iterdir()]
         self.assertIn(manifest["report"], reports)
         side = chunk.with_name(chunk.name + ".sha256").read_text()
         self.assertEqual(side, f"{leak_audit.hashlib.sha256(chunk.read_bytes()).hexdigest()}  {chunk.name}\n")
@@ -603,7 +603,7 @@ class LeakAuditTest(unittest.TestCase):
 
     def test_scan_marks_entries_pending_judgement(self):
         self.write_entries(self.TRAIL)
-        os.unlink(self.fake_maic)  # no judge and no settings are needed
+        os.unlink(self.fake_maid)  # no judge and no settings are needed
         text = self.complete(self.run_tool("--scan", roots=False), "UNCLEAR", phase1=True)
         self.assertIn("Audit trail scan (--scan)", text)
         self.assertIn("none (--scan reads the audit trail only)", text)
@@ -687,7 +687,7 @@ class LeakAuditTest(unittest.TestCase):
 
     def test_default_roots_follow_xdg(self):
         with mock.patch.dict(os.environ, XDG_STATE_HOME="/state-here", XDG_RUNTIME_DIR="/runtime-here"):
-            self.assertEqual(leak_audit.default_roots(), [Path("/state-here/maic/sessions"), Path("/runtime-here/maic/sessions")])
+            self.assertEqual(leak_audit.default_roots(), [Path("/state-here/maid/sessions"), Path("/runtime-here/maid/sessions")])
 
     def test_indicators(self):
         hits = {

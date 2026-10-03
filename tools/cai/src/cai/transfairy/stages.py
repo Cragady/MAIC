@@ -14,8 +14,8 @@ from datetime import datetime, timezone
 from cai.transfairy import build as buildmod
 from cai.grammar import records
 from cai.transfairy import graft as graftmod
-from cai.transfairy import maic as maicops
-from cai.grammar import maic as fmt
+from cai.transfairy import maid as maidops
+from cai.grammar import maid as fmt
 from cai.transfairy.pool import Pool
 from cai import mode as modemod
 
@@ -120,8 +120,8 @@ def install(tree, staged_path=None, reflow=False, dry_run=False):
     # sessionId inside, and the client cannot find it. Ruled 2026-09-01 -- send it
     # to the destination renamed as the sessionId, rather than trusting the name.
     _lines = _read_jsonl(staged_path)
-    if fmt.is_maic(_lines):
-        return _install_maic(tree, staged_path, _lines, reflow=reflow, dry_run=dry_run)
+    if fmt.is_maid(_lines):
+        return _install_maid(tree, staged_path, _lines, reflow=reflow, dry_run=dry_run)
     sid = graftmod.session_id_of(_lines)
     if not sid:
         raise ValueError("no sessionId found in %s; cannot name the destination" % staged_path)
@@ -185,14 +185,14 @@ def _now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _install_maic(tree, staged_path, lines, reflow=False, dry_run=False):
-    """A MAIC session into MAIC's sessions tree. **Never overwrite**, as for a projects dir.
+def _install_maid(tree, staged_path, lines, reflow=False, dry_run=False):
+    """A MAID session into MAID's sessions tree. **Never overwrite**, as for a projects dir.
 
-    The id is the file name, as MAIC has it; the destination is `--claude-projects` when
-    one was named, else the home MAIC would give the target cwd. A collision offers
+    The id is the file name, as MAID has it; the destination is `--claude-projects` when
+    one was named, else the home MAID would give the target cwd. A collision offers
     `--reflow`, which mints a fresh id and installs beside, with a boundary saying so.
     """
-    dest_dir = maicops.install_dir(tree)
+    dest_dir = maidops.install_dir(tree)
     sid = fmt.session_id(staged_path)
     dest = os.path.join(dest_dir, sid + ".jsonl")
     reflowed_from = None
@@ -209,14 +209,14 @@ def _install_maic(tree, staged_path, lines, reflow=False, dry_run=False):
                 % (dest, st.st_size, int(st.st_mtime)))
         old_sid, reflow_at = sid, _now_iso()
         sid = fmt.mint_id(dest_dir)
-        lines = [maicops.reflow_boundary(sid, old_sid, reflow_at)] + list(lines)
+        lines = [maidops.reflow_boundary(sid, old_sid, reflow_at)] + list(lines)
         staged_path = os.path.join(tree.staged, sid + ".jsonl")
         fmt.write_new(staged_path, lines, dry_run=dry_run)
         dest = os.path.join(dest_dir, sid + ".jsonl")
         reflowed_from = old_sid
         if os.path.exists(dest):
             raise FileExistsError("reflow collided again on %s" % dest)
-    resume_cmd, resume_fork = maicops.resume_commands(tree, sid)
+    resume_cmd, resume_fork = maidops.resume_commands(tree, sid)
     if not dry_run:
         os.makedirs(dest_dir, mode=0o700, exist_ok=True)
         shutil.copy2(staged_path, dest)
@@ -231,7 +231,7 @@ def _install_maic(tree, staged_path, lines, reflow=False, dry_run=False):
             "resume": resume_cmd,
             "resume_preserving": resume_fork,
             "note": "resume is a human step. Use `resume` to work in this session directly; use "
-                    "`resume_preserving` to keep the as-installed file byte-unchanged (maic forks "
+                    "`resume_preserving` to keep the as-installed file byte-unchanged (maid forks "
                     "into a new file that points at it)."}
 
 
@@ -274,11 +274,11 @@ def graft_install(tree, base_sid, staged_path=None, direction="after", dry_run=F
         base_path = found
     base = _read_jsonl(base_path)
     graft_lines = _read_jsonl(staged_path)
-    if fmt.is_maic(base):
+    if fmt.is_maid(base):
         at = _now_iso()
         base = fmt.flatten(base_path)
-        sid, out = maicops.graft(base, graft_lines, fmt.session_id(base_path),
-                                 fmt.session_id(staged_path) if fmt.is_maic(graft_lines)
+        sid, out = maidops.graft(base, graft_lines, fmt.session_id(base_path),
+                                 fmt.session_id(staged_path) if fmt.is_maid(graft_lines)
                                  else graftmod.session_id_of(graft_lines),
                                  at, direction=direction, out_dir=tree.staged)
         new_staged = os.path.join(tree.staged, sid + ".jsonl")
@@ -287,7 +287,7 @@ def graft_install(tree, base_sid, staged_path=None, direction="after", dry_run=F
         res["grafted_onto"] = base_sid
         res["direction"] = direction
         return res
-    if fmt.is_maic(graft_lines):
+    if fmt.is_maid(graft_lines):
         graft_lines = fmt.to_claude(graft_lines, fmt.session_id(staged_path), resumable=True)
     sid, out = graftmod.graft(base, graft_lines, _now_iso(), direction=direction)
     checks = buildmod.verify(out)
@@ -313,9 +313,9 @@ def inject_install(tree, mode="loud", source=None, staged_path=None, dry_run=Fal
     source = source or {"kind": "unspecified"}
     lines = _read_jsonl(staged_path)
     injectedAt = _now_iso()
-    if fmt.is_maic(lines):
+    if fmt.is_maid(lines):
         sid = fmt.session_id(staged_path)
-        out = maicops.mark_injected(lines, injectedAt, mode, source, sid)
+        out = maidops.mark_injected(lines, injectedAt, mode, source, sid)
     else:
         sid, out = graftmod.mark_injected(lines, injectedAt, mode, source)
     marked_path = os.path.join(tree.staged, sid + ".jsonl")
@@ -445,7 +445,7 @@ def rebuild_ledger(tree, dry_run=False):
                      if r.get("type") in ("user", "assistant")), None)
         if not last:
             continue
-        if fmt.is_maic(recs):
+        if fmt.is_maid(recs):
             last = dict(last, **fmt.lineage_of(recs))
         prev = last.get("previousSessionId")
         origin = last.get("originSessionId")
@@ -548,8 +548,8 @@ def compose(tree, root, suffix, source=None, mode="silent", out=None,
     root_lines = _read_jsonl(root)
     suf_lines = _read_jsonl(suffix)
     source = source or {"kind": "unspecified"}
-    if fmt.is_maic(root_lines) or fmt.is_maic(suf_lines):
-        return _compose_maic(tree, root, suffix, root_lines, suf_lines, source, mode, out, insert_at,
+    if fmt.is_maid(root_lines) or fmt.is_maid(suf_lines):
+        return _compose_maid(tree, root, suffix, root_lines, suf_lines, source, mode, out, insert_at,
                              notice_extra, notice_only, root_kind, dry_run)
     sid, lines = graftmod.compose_rooted(root_lines, suf_lines, _now_iso(), source,
                                          mode=mode, cwd=tree.target_cwd, insert_at=insert_at,
@@ -574,24 +574,24 @@ def compose(tree, root, suffix, source=None, mode="silent", out=None,
                     "only half the model reads, the suffix is verbatim"}
 
 
-def _compose_maic(tree, root, suffix, root_lines, suf_lines, source, mode, out, insert_at,
+def _compose_maid(tree, root, suffix, root_lines, suf_lines, source, mode, out, insert_at,
                   notice_extra, notice_only, root_kind, dry_run):
     # A fork is composed as the conversation it holds, its parent's records first.
-    root_lines = fmt.flatten(root) if fmt.is_maic(root_lines) else root_lines
-    suf_lines = fmt.flatten(suffix) if fmt.is_maic(suf_lines) else suf_lines
+    root_lines = fmt.flatten(root) if fmt.is_maid(root_lines) else root_lines
+    suf_lines = fmt.flatten(suffix) if fmt.is_maid(suf_lines) else suf_lines
     at = _now_iso()
-    sid, lines = maicops.compose(root_lines, suf_lines, at, source, mode, tree.target_cwd,
+    sid, lines = maidops.compose(root_lines, suf_lines, at, source, mode, tree.target_cwd,
                                  insert_at=insert_at, notice_extra=notice_extra, notice_only=notice_only,
                                  root_kind=root_kind, out_dir=tree.staged,
-                                 root_id=fmt.session_id(root) if fmt.is_maic(root_lines) else graftmod.session_id_of(root_lines),
-                                 suf_id=fmt.session_id(suffix) if fmt.is_maic(suf_lines) else graftmod.session_id_of(suf_lines))
+                                 root_id=fmt.session_id(root) if fmt.is_maid(root_lines) else graftmod.session_id_of(root_lines),
+                                 suf_id=fmt.session_id(suffix) if fmt.is_maid(suf_lines) else graftmod.session_id_of(suf_lines))
     dest = out or os.path.join(tree.staged, sid + ".jsonl")
     if os.path.exists(dest) and not dry_run:
         raise FileExistsError("%s exists; compose never overwrites" % dest)
     fmt.write_new(dest, lines, dry_run=dry_run)
     n_root = sum(1 for l in lines if (l.get("origin") or {}).get("kind") == "inject" and l.get("type") in ("user", "assistant"))
     return {"root": root, "suffix": suffix, "staged": dest, "sessionId": sid,
-            "verified": ["start record present", "notice present", "records are MAIC types"],
+            "verified": ["start record present", "notice present", "records are MAID types"],
             "mode": mode, "root_records": n_root,
             "suffix_records": sum(1 for l in lines if l.get("type") in ("user", "assistant")) - n_root,
             "note": "sources unmodified; the root is marked in meta only, the notice is the "
@@ -626,8 +626,8 @@ def truncate(tree, transcript, at_line=None, at_uuid=None, before_text=None,
     idx = None
     if at_line is not None:
         idx = int(at_line) - 1
-    elif at_uuid and fmt.is_maic(lines):
-        raise ValueError("a MAIC session carries no record uuids; cut with --at-line or --before-text")
+    elif at_uuid and fmt.is_maid(lines):
+        raise ValueError("a MAID session carries no record uuids; cut with --at-line or --before-text")
     elif at_uuid:
         idx = next((i for i, l in enumerate(lines) if l.get("uuid") == at_uuid), None)
         if idx is None:
@@ -646,7 +646,7 @@ def truncate(tree, transcript, at_line=None, at_uuid=None, before_text=None,
     if keep not in ("prefix", "suffix"):
         raise ValueError("keep must be 'prefix' (drop the tail) or 'suffix' (drop the head)")
 
-    if fmt.is_maic(lines):
+    if fmt.is_maid(lines):
         modemod.check(mode)
         if mode == "true-silent":
             sys.stderr.write(
@@ -657,7 +657,7 @@ def truncate(tree, transcript, at_line=None, at_uuid=None, before_text=None,
                 "  the mapping ledger or an audit. Nothing downstream can recover what\n"
                 "  this flag discards.\n")
         at = _now_iso()
-        sid, kept, added, dropped = maicops.truncate(
+        sid, kept, added, dropped = maidops.truncate(
             lines, idx, keep, mode, fmt.session_id(transcript), at, tree.target_cwd,
             loud_lineage=loud_lineage, out_dir=tree.staged)
         dest = out or os.path.join(tree.staged, sid + ".jsonl")

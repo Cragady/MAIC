@@ -1,9 +1,9 @@
--- word_count: a MAIC tool written in Lua. See docs/tools.md for the format.
+-- word_count: a MAID tool written in Lua. See docs/tools.md for the format.
 --
--- Install it by copying this file to .maic/tools/word_count.lua in a workspace (or to
--- ~/.config/maic/tools/ for every workspace). MAIC loads it when a session starts, the model sees it
--- beside the built-in tools, and every maic.* call below goes through the harness exactly as the
--- matching built-in would: maic.read is a read_file, so in manual mode inside the workspace it just
+-- Install it by copying this file to .maid/tools/word_count.lua in a workspace (or to
+-- ~/.config/maid/tools/ for every workspace). MAID loads it when a session starts, the model sees it
+-- beside the built-in tools, and every maid.* call below goes through the harness exactly as the
+-- matching built-in would: maid.read is a read_file, so in manual mode inside the workspace it just
 -- runs, and a path outside the workspace is asked about first.
 --
 -- The state this runs in has only the base, string, table, math and bit libraries: no io, os or
@@ -19,7 +19,7 @@ return {
     required = { "path" },
   },
   run = function(args)
-    local text = maic.read(args.path)
+    local text = maid.read(args.path)
     local words, lines = 0, 0
     for _ in text:gmatch("%S+") do words = words + 1 end
     for _ in text:gmatch("\n") do lines = lines + 1 end

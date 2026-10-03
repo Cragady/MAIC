@@ -1,15 +1,15 @@
-#include "maic/places.hpp"
+#include "maid/places.hpp"
 
-#include "maic/artifacts.hpp"
-#include "maic/instructions.hpp"
-#include "maic/paths.hpp"
-#include "maic/session.hpp"
-#include "maic/vendor.hpp"
+#include "maid/artifacts.hpp"
+#include "maid/instructions.hpp"
+#include "maid/paths.hpp"
+#include "maid/session.hpp"
+#include "maid/vendor.hpp"
 
 #include <cstdlib>
 #include <stdexcept>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -25,16 +25,16 @@ std::vector<Place> known_places(const Settings& settings, const fs::path& worksp
     add("workspace", workspace, "the directory this session works in");
     if (session) add("session", *session, "this session's transcript (JSONL)", true);
     add("sessions", sessions_dir(), "all transcripts, by home");
-    add("state", state_dir(), "MAIC's state: sessions, logs, vendor links, workflows, templates");
-    add("config", settings_path().parent_path(), "MAIC's configuration directory");
+    add("state", state_dir(), "MAID's state: sessions, logs, vendor links, workflows, templates");
+    add("config", settings_path().parent_path(), "MAID's configuration directory");
     fs::path lua = settings_path();
     lua.replace_extension(".lua");
     std::error_code ec;
     add("settings", fs::exists(lua, ec) ? lua : settings_path(), "the global settings file", true);
-    add("instructions", global_instructions_path(), "the global MAIC.md", true);
-    add("logs", state_dir() / "logs", "service logs (maic logs NAME shows one)");
-    add("root", root_dir(), "the MAIC repository (services/, vendor/, tools/)");
-    add("tools", root_dir() / "tools", "MAIC's helper scripts");
+    add("instructions", global_instructions_path(), "the global MAID.md", true);
+    add("logs", state_dir() / "logs", "service logs (maid logs NAME shows one)");
+    add("root", root_dir(), "the MAID repository (services/, vendor/, tools/)");
+    add("tools", root_dir() / "tools", "MAID's helper scripts");
     fs::path models = settings.models_dir.empty() ? state_dir() / "models" : fs::path(settings.models_dir);
     add("models", models, "model files (models_dir)");
     add("models/llamacpp", llamacpp_models_root(), "GGUFs the llama.cpp router serves");
@@ -55,7 +55,7 @@ const Place& find_place(const std::vector<Place>& places, const std::string& que
     for (const auto& p : places) {
         if (p.name == query) return p;
     }
-    // A prefix of a top-level name wins over one of an owner/name entry (`sess` is `sessions`, not `maic/sessions`).
+    // A prefix of a top-level name wins over one of an owner/name entry (`sess` is `sessions`, not `maid/sessions`).
     std::vector<const Place*> top, hits;
     for (const auto& p : places) {
         bool head = p.name.rfind(query, 0) == 0;
@@ -106,27 +106,27 @@ std::string browser_command(const std::string& browser, const std::string& url) 
 
 std::string shell_init(const std::string& shell) {
     if (shell == "fish") {
-        return "# maic shell integration (fish): eval (maic shell-init fish | psub)? Put this in ~/.config/fish/config.fish instead:\n"
-               "function mcd; set -l p (maic cd $argv[1]); and cd $p; end\n"
-               "function mpath; maic path $argv; end\n"
-               "function mcp; maic path $argv[1] --copy; end\n"
-               "complete -c mcd -f -a '(maic path --names)'\n"
-               "complete -c mpath -f -a '(maic path --names)'\n"
-               "complete -c mcp -f -a '(maic path --names)'\n";
+        return "# maid shell integration (fish): eval (maid shell-init fish | psub)? Put this in ~/.config/fish/config.fish instead:\n"
+               "function mcd; set -l p (maid cd $argv[1]); and cd $p; end\n"
+               "function mpath; maid path $argv; end\n"
+               "function mcp; maid path $argv[1] --copy; end\n"
+               "complete -c mcd -f -a '(maid path --names)'\n"
+               "complete -c mpath -f -a '(maid path --names)'\n"
+               "complete -c mcp -f -a '(maid path --names)'\n";
     }
     std::string s =
-        "# maic shell integration: eval \"$(maic shell-init)\" in your rc file\n"
-        "mcd() { local p; p=\"$(maic cd \"$1\")\" || return 1; cd \"$p\" || return 1; }\n"
-        "mpath() { maic path \"$@\"; }\n"
-        "mcp() { maic path \"$1\" --copy; }\n";
+        "# maid shell integration: eval \"$(maid shell-init)\" in your rc file\n"
+        "mcd() { local p; p=\"$(maid cd \"$1\")\" || return 1; cd \"$p\" || return 1; }\n"
+        "mpath() { maid path \"$@\"; }\n"
+        "mcp() { maid path \"$1\" --copy; }\n";
     if (shell == "bash") {
-        s += "_maic_places() { COMPREPLY=($(compgen -W \"$(maic path --names)\" -- \"${COMP_WORDS[COMP_CWORD]}\")); }\n"
-             "complete -F _maic_places mcd mpath mcp\n";
+        s += "_maid_places() { COMPREPLY=($(compgen -W \"$(maid path --names)\" -- \"${COMP_WORDS[COMP_CWORD]}\")); }\n"
+             "complete -F _maid_places mcd mpath mcp\n";
     } else {
-        s += "_maic_places() { local -a names; names=(${(f)\"$(maic path --names)\"}); _describe 'place' names; }\n"
-             "compdef _maic_places mcd mpath mcp 2>/dev/null\n";
+        s += "_maid_places() { local -a names; names=(${(f)\"$(maid path --names)\"}); _describe 'place' names; }\n"
+             "compdef _maid_places mcd mpath mcp 2>/dev/null\n";
     }
     return s;
 }
 
-}  // namespace maic
+}  // namespace maid

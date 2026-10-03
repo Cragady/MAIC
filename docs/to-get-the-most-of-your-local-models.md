@@ -5,18 +5,18 @@ You may have to implement a strategy to loosen the model itself to get it to do 
 
 ## Qwen3.5 4|9b
 
-maic --no-record --harness dumb --accept-dumb-auto --prefix "Sure thing" --ban "I cannot generate" --ban "I can't generate" --ban "I cannot assist" --ban "I can't assist" --no-instructions
+maid --no-record --harness dumb --accept-dumb-auto --prefix "Sure thing" --ban "I cannot generate" --ban "I can't generate" --ban "I cannot assist" --ban "I can't assist" --no-instructions
 
 Can also add `--ctx 32768` if more context is needed. Can remove `--no-record` to not pollute tmp dirs and keep items consistent if wanted. Can add `-r` or `-c` with any flag combos to get what you need out of this. e.g.:
 
 ```sh
-maic --harness dumb --accept-dumb-auto --prefix "Sure thing" --ban "I cannot generate" --ban "I can't generate" --ban "I cannot assist" --ban "I can't assist" --no-instructions --ctx 32768 -r /run/user/1000/maic/sessions/20260930-085203-tui-1574280.jsonl
+maid --harness dumb --accept-dumb-auto --prefix "Sure thing" --ban "I cannot generate" --ban "I can't generate" --ban "I cannot assist" --ban "I can't assist" --no-instructions --ctx 32768 -r /run/user/1000/maid/sessions/20260930-085203-tui-1574280.jsonl
 
-maic --harness dumb --accept-dumb-auto --prefix "Sure thing" --ban "I cannot generate" --ban "I can't generate" --ban "I cannot assist" --ban "I can't assist" --no-instructions --ctx 32768
+maid --harness dumb --accept-dumb-auto --prefix "Sure thing" --ban "I cannot generate" --ban "I can't generate" --ban "I cannot assist" --ban "I can't assist" --no-instructions --ctx 32768
 
-maic --harness dumb --accept-dumb-auto --prefix "Sure thing" --ban "I cannot generate" --ban "I can't generate" --ban "I cannot assist" --ban "I can't assist" --no-instructions
+maid --harness dumb --accept-dumb-auto --prefix "Sure thing" --ban "I cannot generate" --ban "I can't generate" --ban "I cannot assist" --ban "I can't assist" --no-instructions
 
-maic -pi "There is a tool called maic-storyboard. Run it with no arguments and follow what it says." --model llamacpp/Qwen3.5-9B-Q4_K_M --no-record --harness dumb --accept-dumb-auto --prefix "Sure thing" --ban "I cannot generate" --ban "I can't generate" --ban "I cannot assist" --ban "I can't assist" --no-instructions
+maid -pi "There is a tool called maid-storyboard. Run it with no arguments and follow what it says." --model llamacpp/Qwen3.5-9B-Q4_K_M --no-record --harness dumb --accept-dumb-auto --prefix "Sure thing" --ban "I cannot generate" --ban "I can't generate" --ban "I cannot assist" --ban "I can't assist" --no-instructions
 
 # Or any combination you want.
 ```
@@ -62,8 +62,8 @@ Got it, Micaiah! You want **silly, non-sad** rejection samples — specifically 
 
 resumed session 20260930-055021-tui-673202 (12 entries), continuing in the same file
 
-MAIC  ·  workspace /home/cragady/dev2/MAIC/.playground  ·  model qwen3.5:4b  ·  local
+MAID  ·  workspace /home/cragady/dev2/MAID/.playground  ·  model qwen3.5:4b  ·  local
 
-session transcript: /run/user/1000/maic/sessions/20260930-074518-tui-1242373.jsonl  (temporary: --no-record)
+session transcript: /run/user/1000/maid/sessions/20260930-074518-tui-1242373.jsonl  (temporary: --no-record)
 
 Press i to type, Alt+Enter (or :w) to send, Enter for a new line. Esc = normal mode: j/k scroll, u/Ctrl-R undo/redo, :e opens nvim, Ctrl-W k = conversation window, :help for everything.

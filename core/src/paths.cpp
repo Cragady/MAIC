@@ -1,9 +1,9 @@
-#include "maic/paths.hpp"
+#include "maid/paths.hpp"
 
 #include <cstdlib>
 #include <stdexcept>
 
-namespace maic {
+namespace maid {
 
 namespace {
 
@@ -17,28 +17,28 @@ std::filesystem::path home_dir() {
 
 }  // namespace
 
-// MAIC_HOME, else the source tree this binary was built from, else (an installed copy) <prefix>/share/maic.
+// MAID_HOME, else the source tree this binary was built from, else (an installed copy) <prefix>/share/maid.
 std::filesystem::path root_dir() {
-    if (const char* env = std::getenv("MAIC_HOME"); env && *env) {
+    if (const char* env = std::getenv("MAID_HOME"); env && *env) {
         return env;
     }
     std::error_code ec;
-    if (std::filesystem::is_directory(std::filesystem::path(MAIC_ROOT) / "services", ec)) {
-        return MAIC_ROOT;
+    if (std::filesystem::is_directory(std::filesystem::path(MAID_ROOT) / "services", ec)) {
+        return MAID_ROOT;
     }
     std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
     if (!ec) {
-        std::filesystem::path share = exe.parent_path().parent_path() / "share" / "maic";
+        std::filesystem::path share = exe.parent_path().parent_path() / "share" / "maid";
         if (std::filesystem::is_directory(share / "services", ec)) return share;
     }
-    return MAIC_ROOT;
+    return MAID_ROOT;
 }
 
 std::filesystem::path state_dir() {
     if (const char* xdg = std::getenv("XDG_STATE_HOME"); xdg && *xdg) {
-        return std::filesystem::path(xdg) / "maic";
+        return std::filesystem::path(xdg) / "maid";
     }
-    return home_dir() / ".local" / "state" / "maic";
+    return home_dir() / ".local" / "state" / "maid";
 }
 
 std::string expand_vars(std::string_view text) {
@@ -56,19 +56,19 @@ std::string expand_vars(std::string_view text) {
         }
         out.append(text.substr(pos, open - pos));
         std::string name(text.substr(open + 2, close - open - 2));
-        // MAIC's own locations first, so service files never hard-code them.
-        if (name == "MAIC_VENDOR") out.append((state_dir() / "vendor").string());
-        else if (name == "MAIC_STATE") out.append(state_dir().string());
-        else if (name == "MAIC_ROOT") out.append(root_dir().string());
-        else if (name == "MAIC_CONTEXT") {
-            const char* c = std::getenv("MAIC_CONTEXT");
+        // MAID's own locations first, so service files never hard-code them.
+        if (name == "MAID_VENDOR") out.append((state_dir() / "vendor").string());
+        else if (name == "MAID_STATE") out.append(state_dir().string());
+        else if (name == "MAID_ROOT") out.append(root_dir().string());
+        else if (name == "MAID_CONTEXT") {
+            const char* c = std::getenv("MAID_CONTEXT");
             out.append(c && *c ? std::string(c) : "16384");
-        } else if (name == "MAIC_CONTEXT_2") {
-            const char* c = std::getenv("MAIC_CONTEXT_2");
+        } else if (name == "MAID_CONTEXT_2") {
+            const char* c = std::getenv("MAID_CONTEXT_2");
             out.append(c && *c ? std::string(c) : "8192");
-        } else if (name == "MAIC_MODELS") {
+        } else if (name == "MAID_MODELS") {
             // The models directory from settings (main() exports it), else a default under the state directory.
-            const char* m = std::getenv("MAIC_MODELS_DIR");
+            const char* m = std::getenv("MAID_MODELS_DIR");
             out.append(m && *m ? std::string(m) : (state_dir() / "models").string());
         }
         else {
@@ -83,4 +83,4 @@ std::string expand_vars(std::string_view text) {
     return out;
 }
 
-}  // namespace maic
+}  // namespace maid

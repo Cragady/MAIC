@@ -1,4 +1,4 @@
-"""Tests for the MAIC llama.cpp nodes, without ComfyUI: a fake OpenAI-compatible server on a loopback port.
+"""Tests for the MAID llama.cpp nodes, without ComfyUI: a fake OpenAI-compatible server on a loopback port.
 
     python3 -m unittest -v test_node      (ctest name: comfy_node)
 """
@@ -14,7 +14,7 @@ import threading
 import unittest
 import zlib
 
-spec = importlib.util.spec_from_file_location("maic_llamacpp", os.path.join(os.path.dirname(os.path.abspath(__file__)), "__init__.py"))
+spec = importlib.util.spec_from_file_location("maid_llamacpp", os.path.join(os.path.dirname(os.path.abspath(__file__)), "__init__.py"))
 node = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(node)
 
@@ -224,7 +224,7 @@ class ChatTests(unittest.TestCase):
         connection = {"base_url": "http://127.0.0.1:%d/v1" % port, "model": "current", "timeout": 5}
         with self.assertRaises(RuntimeError) as cm:
             chat(self.server, connection=connection)
-        self.assertTrue(str(cm.exception).startswith("llama.cpp is not running: maic up llamacpp"))
+        self.assertTrue(str(cm.exception).startswith("llama.cpp is not running: maid up llamacpp"))
 
 
 class ServerTests(unittest.TestCase):

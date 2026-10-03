@@ -3,7 +3,7 @@
 
     python3 build_local.py review.json [-o OUTDIR]
 
-OUTDIR defaults to ~/.local/state/maic/reviews/<id>/. The folder holds index.html, boot.js, app.js, style.css,
+OUTDIR defaults to ~/.local/state/maid/reviews/<id>/. The folder holds index.html, boot.js, app.js, style.css,
 vendor/vue.global.prod.js, data.js and replies.js. data.js is rewritten on every run; replies.js (Claude writes it)
 and answers.js / answers.json (the page writes them; answers.js starts as a null placeholder) are never overwritten. Nothing here is committed: the folder
 holds unique data.
@@ -43,11 +43,11 @@ def load_data(src):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("data", help="page data JSON (review.json, or example.json style input)")
-    ap.add_argument("-o", "--out", help="output folder (default ~/.local/state/maic/reviews/<id>/)")
+    ap.add_argument("-o", "--out", help="output folder (default ~/.local/state/maid/reviews/<id>/)")
     args = ap.parse_args()
 
     data = load_data(args.data)
-    out = Path(args.out).expanduser().resolve() if args.out else Path.home() / ".local/state/maic/reviews" / data["id"]
+    out = Path(args.out).expanduser().resolve() if args.out else Path.home() / ".local/state/maid/reviews" / data["id"]
     (out / "vendor").mkdir(parents=True, exist_ok=True)
 
     for name in PAGE_FILES:

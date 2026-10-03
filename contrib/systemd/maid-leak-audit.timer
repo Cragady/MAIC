@@ -1,0 +1,11 @@
+# Runs maid-leak-audit.service every `every` from ~/.config/maid/audit.lua (docs/audit-trail.md). Written by
+# `maid audit-trail schedule install`; run it again after changing `every`.
+[Unit]
+Description=MAID leak audit, every @EVERY@
+
+[Timer]
+OnActiveSec=10min
+OnUnitActiveSec=@EVERY@
+
+[Install]
+WantedBy=timers.target

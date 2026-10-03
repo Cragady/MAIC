@@ -1,6 +1,6 @@
 """cai reflow -- reshape data with any member of an open family, verifying content survived."""
 from cai import safewrite
-from cai.grammar import maic as mfmt
+from cai.grammar import maid as mfmt
 from cai.grammar import records as grecords
 from cai.transfairywrite import writer as tfw
 import argparse
@@ -18,17 +18,17 @@ CONFIRM = "yes, rewrite it"
 
 
 def _session_kind(path):
-    """Which refusal guards this file: "claude" (a Claude projects directory), "maic" (a MAIC
-    session, in MAIC's sessions folder or recognised by its records anywhere), or None."""
+    """Which refusal guards this file: "claude" (a Claude projects directory), "maid" (a MAID
+    session, in MAID's sessions folder or recognised by its records anywhere), or None."""
     full = os.path.abspath(path)
     if PROJECTS.search(full):
         return "claude"
     sessions = os.path.abspath(mfmt.sessions_dir()) + os.sep
     if full.startswith(sessions):
-        return "maic"
+        return "maid"
     try:
-        if full.endswith(".jsonl") and mfmt.is_maic(mfmt.load(full)):
-            return "maic"
+        if full.endswith(".jsonl") and mfmt.is_maid(mfmt.load(full)):
+            return "maid"
     except OSError:
         pass
     return None
@@ -39,10 +39,10 @@ def _refusal(kind, path):
         return ("this file is in a Claude projects directory. A live "
                 "session appends to it, so a write underneath one loses "
                 "whatever it wrote in between. Use --to.")
-    where = ("in MAIC's sessions directory" if os.path.abspath(path).startswith(
-        os.path.abspath(mfmt.sessions_dir()) + os.sep) else "a MAIC session")
-    return ("this file is %s. MAIC appends to a session as it runs, and a reflow "
-            "rewrites its records into a shape MAIC cannot load. Use --to." % where)
+    where = ("in MAID's sessions directory" if os.path.abspath(path).startswith(
+        os.path.abspath(mfmt.sessions_dir()) + os.sep) else "a MAID session")
+    return ("this file is %s. MAID appends to a session as it runs, and a reflow "
+            "rewrites its records into a shape MAID cannot load. Use --to." % where)
 
 
 def _counts(records):
@@ -57,13 +57,13 @@ def _verdict(kind, before_text, after_text):
     own checks decide, as they do before any of its writes."""
     if kind is None:
         return True, "not a transcript: no validation applies"
-    label = "a MAIC session" if kind == "maic" else "a Claude Code transcript"
+    label = "a MAID session" if kind == "maid" else "a Claude Code transcript"
     before, after = grecords.load(before_text), grecords.load(after_text)
     rb, tb = _counts(before)
     ra, ta = _counts(after)
     failed = [(name, detail) for name, ok, detail in tfw.check_source(after) if not ok]
-    if kind == "maic" and not mfmt.is_maic(after):
-        failed.insert(0, ("is a MAIC session", "its records no longer read as one"))
+    if kind == "maid" and not mfmt.is_maid(after):
+        failed.insert(0, ("is a MAID session", "its records no longer read as one"))
     if failed:
         name, detail = failed[0]
         return False, ("the result would NOT load as %s: %s%s (records %d -> %d, turns %d -> %d)"
@@ -76,7 +76,7 @@ def _rewrite_session(op, op_name, f, kind, src, new, invocation):
     """The operator's way past the refusal: says what will happen, recommends the dry run,
     asks for the exact phrase at a terminal, backs up, writes, then checks what landed."""
     ok, verdict = _verdict(kind, src, new)
-    label = "a MAIC session" if kind == "maic" else "a Claude Code transcript"
+    label = "a MAID session" if kind == "maid" else "a Claude Code transcript"
     dry = shlex.join(invocation + ["--dry-run"])
     err = sys.stderr
     print("cai reflow: %s is %s and will be rewritten IN PLACE by %r." % (f, label, op_name), file=err)
@@ -101,7 +101,7 @@ def _rewrite_session(op, op_name, f, kind, src, new, invocation):
         tfw.replace_file(f, made)
         return {"refused": "what landed differs from what was validated; the backup %s was put "
                            "back" % made, "backup": made}
-    if kind == "maic":
+    if kind == "maid":
         rec = tfw.rewritten_record(shlex.join(invocation), made)
         rec["tool"] = "reflow"
         tfw.append_record(f, rec)
@@ -188,10 +188,10 @@ OPTIONS REACH ONLY THE MEMBERS THAT ACCEPT THEM
   -n            dry run
   --rewrite-session
                 OPERATOR ONLY, at a terminal: rewrite a transcript the refusal
-                protects (a Claude projects file, a MAIC session) IN PLACE. Shows
+                protects (a Claude projects file, a MAID session) IN PLACE. Shows
                 whether the result still loads, recommends the dry run, asks for
-                the exact phrase "yes, rewrite it", copies the original to MAIC's
-                backups first and checks what landed. A MAIC session is refused
+                the exact phrase "yes, rewrite it", copies the original to MAID's
+                backups first and checks what landed. A MAID session is refused
                 like a Claude projects file; with -n its validity is reported.
 
 EXIT   0 ok   1 a file was refused   2 usage   4 no such member here
@@ -320,7 +320,7 @@ def main(argv=None):
             return 2
         rep["file"] = f
         kind = _session_kind(f) if family.in_place(op) else None
-        if args.dry_run and kind and (kind == "maic" or args.rewrite_session):
+        if args.dry_run and kind and (kind == "maid" or args.rewrite_session):
             valid, verdict = _verdict(kind, src, new)
             print("cai reflow: %s: %s" % (f, verdict), file=sys.stderr)
             if args.rewrite_session and not valid:

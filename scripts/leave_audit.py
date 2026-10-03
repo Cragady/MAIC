@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The leave-cases audit: every way of leaving a session (tests/leave_cases.json) against what MAIC defines today.
+"""The leave-cases audit: every way of leaving a session (tests/leave_cases.json) against what MAID defines today.
 
 Prints how many combinations are defined and how many are UNDEFINED, with the UNDEFINED ones grouped by reason.
 A reminder, never a gate: it always exits 0, whatever the file says or however it is broken (docs/testing.md).

@@ -7,14 +7,14 @@ person would see. Keys are given in a small notation, literal text plus these to
 
     <esc> <cr> <tab> <s-tab> <bs> <space> <lt>        escape, Enter, Tab, Shift-Tab, Backspace, a space, a literal "<"
     <c-X>                                              Ctrl plus a letter (<c-w>, <c-p>, <c-z>, <c-c>)
-    <m-X> <m-cr>                                       Alt plus a key (an ESC prefix): <m-cr> sends the input in maic
+    <m-X> <m-cr>                                       Alt plus a key (an ESC prefix): <m-cr> sends the input in maid
     <up> <down> <left> <right> <home> <end>            cursor keys
     <wheel-up> <wheel-down>                            SGR mouse wheel at the middle of the screen
     <wait>                                             let the screen settle before the next key
 
 Standalone use (for poking at the UI by hand, each argument one key sequence):
 
-    uv run --with pyte tests/tui_driver.py build/cli/maic -- 'ihello<esc>' ':help<cr>' ':q<cr>'
+    uv run --with pyte tests/tui_driver.py build/cli/maid -- 'ihello<esc>' ':help<cr>' ':q<cr>'
 """
 import fcntl, os, pty, re, select, signal, struct, sys, termios, time
 

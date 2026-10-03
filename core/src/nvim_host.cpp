@@ -1,15 +1,15 @@
-#include "maic/nvim_host.hpp"
+#include "maid/nvim_host.hpp"
 
 #include <stdexcept>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
 
 namespace {
 
-// The window the user edits in: the current one unless it is a terminal (MAIC's own) or a float, then the
+// The window the user edits in: the current one unless it is a terminal (MAID's own) or a float, then the
 // previous window, then any plain window in the tab. nil when the tab has none.
 const char* kEditingWin = R"lua(
 local function editing_win()
@@ -107,7 +107,7 @@ vim.bo[b].buftype = 'nofile'
 vim.bo[b].bufhidden = 'wipe'
 vim.bo[b].swapfile = false
 vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
-pcall(vim.api.nvim_buf_set_name, b, 'maic://proposed/' .. path)
+pcall(vim.api.nvim_buf_set_name, b, 'maid://proposed/' .. path)
 vim.bo[b].filetype = vim.filetype.match({ filename = path }) or ''
 vim.bo[b].modifiable = false
 vim.bo[b].readonly = true
@@ -121,9 +121,9 @@ vim.api.nvim_exec_autocmds('User', { pattern = pattern, data = data, modeline = 
 
 const char* kWatchColorscheme = R"lua(
 local chan = ...
-local group = vim.api.nvim_create_augroup('maic_theme_' .. chan, { clear = true })
+local group = vim.api.nvim_create_augroup('maid_theme_' .. chan, { clear = true })
 vim.api.nvim_create_autocmd('ColorScheme', { group = group, callback = function()
-  if not pcall(vim.rpcnotify, chan, 'maic_colorscheme') then return true end
+  if not pcall(vim.rpcnotify, chan, 'maid_colorscheme') then return true end
 end })
 )lua";
 
@@ -220,11 +220,11 @@ const json& diagnostics_tool_schema() {
         {"function",
          {{"name", "diagnostics"},
           {"description",
-           "LSP diagnostics (errors, warnings) from the user's nvim, which MAIC is running inside: for one file, or for every open "
+           "LSP diagnostics (errors, warnings) from the user's nvim, which MAID is running inside: for one file, or for every open "
            "file in the workspace when `path` is left out. One line each: `path:line:col: severity: message`. Only files open in nvim "
            "have diagnostics; an empty result means none were reported."},
           {"parameters", {{"type", "object"}, {"properties", {{"path", {{"type", "string"}, {"description", "A file; leave out for the whole workspace"}}}}}}}}}};
     return schema;
 }
 
-}  // namespace maic
+}  // namespace maid

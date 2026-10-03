@@ -1,10 +1,10 @@
-#include "maic/settings.hpp"
+#include "maid/settings.hpp"
 
-#include "maic/lua.hpp"
-#include "maic/paths.hpp"
-#include "maic/session.hpp"
-#include "maic/theme.hpp"
-#include "maic/trust.hpp"
+#include "maid/lua.hpp"
+#include "maid/paths.hpp"
+#include "maid/session.hpp"
+#include "maid/theme.hpp"
+#include "maid/trust.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -14,7 +14,7 @@
 #include <regex>
 #include <stdexcept>
 
-namespace maic {
+namespace maid {
 
 std::vector<ModelPreset> default_presets() {
     // Context sizes are the figures Micaiah gave or the provider's documented ones; a settings `models` entry
@@ -37,7 +37,7 @@ std::vector<ModelPreset> default_presets() {
         // vision projector at 8k, the most an 8 GB card holds for it.
         {"qwen-9b", "llamacpp/Qwen3.5-9B-Q4_K_M-text", 16384, "same", 0, 12, false, local},
         {"qwen-9b-vision", "llamacpp/Qwen3.5-9B-Q4_K_M", 8192, "same", 0, 12, false, local},
-        // Claude Code on the user's own login and plan: the helpers' model, or the agent on MAIC's tools over MCP.
+        // Claude Code on the user's own login and plan: the helpers' model, or the agent on MAID's tools over MCP.
         {"claude-haiku-cli", "claude-cli/haiku", 200000, "", -1, 20, false, {}},
         {"claude-sonnet-cli", "claude-cli/sonnet", 1000000, "", -1, 30, false, {}},
         {"deepseek-pro", "deepseek/deepseek-v4-pro", 1000000, "deepseek-flash-nothink", 1, 35, false, deepseek, "", "", true},
@@ -280,8 +280,8 @@ const Style& Settings::style(const std::string& name) const {
 }
 
 fs::path settings_path() {
-    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return fs::path(xdg) / "maic" / "settings.json";
-    return fs::path(std::getenv("HOME")) / ".config" / "maic" / "settings.json";
+    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return fs::path(xdg) / "maid" / "settings.json";
+    return fs::path(std::getenv("HOME")) / ".config" / "maid" / "settings.json";
 }
 
 namespace {
@@ -817,8 +817,8 @@ Settings load_settings(const fs::path& workspace) {
     for (const auto& d : config_chain(workspace)) {
         if (!trusted(d)) continue;
         LuaTier tier = trust_lua_tier(d);
-        apply_file(s, d / ".maic" / "settings.json", workspace, false, tier, s.lua_memory_mb);
-        apply_file(s, d / ".maic" / "settings.local.json", workspace, false, tier, s.lua_memory_mb);
+        apply_file(s, d / ".maid" / "settings.json", workspace, false, tier, s.lua_memory_mb);
+        apply_file(s, d / ".maid" / "settings.local.json", workspace, false, tier, s.lua_memory_mb);
     }
     // An agent's model, small_model and the names inside presets may be preset names; presets from every
     // layer are known only now.
@@ -856,7 +856,7 @@ Settings load_settings(const fs::path& workspace) {
         }
     }
     add_key_envs(s.providers);
-    if (const char* bare = std::getenv("MAIC_BARE"); bare && std::string(bare) == "1") s.bare = true;
+    if (const char* bare = std::getenv("MAID_BARE"); bare && std::string(bare) == "1") s.bare = true;
     // The theme is read once every layer has had its say; a broken one leaves the built-in default and the reason.
     try {
         apply_theme(s, load_theme(s.theme));
@@ -885,7 +885,7 @@ std::string resolve_system_prompt(const std::string& value) {
 fs::path resolve_sessions_home(const Settings& settings, const fs::path& workspace) {
     std::string home = settings.sessions_home;
     if (home == "auto") {
-        // Where transcripts go is not a matter of trust: a MAIC.md on the chain counts whether or not it is trusted.
+        // Where transcripts go is not a matter of trust: a MAID.md on the chain counts whether or not it is trusted.
         bool project = false;
         std::error_code ec;
         for (const auto& d : config_chain(workspace)) {
@@ -940,7 +940,7 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         providers[pr.name] = pj;
     }
     json j = {
-        {"//", "MAIC settings. Every key is optional; delete what you don't change. Comments are allowed."},
+        {"//", "MAID settings. Every key is optional; delete what you don't change. Comments are allowed."},
         {"model", d.model},
         {"mode", d.mode},
         {"think", d.think},
@@ -950,21 +950,21 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"init_move_outside_reads", d.init_move_outside_reads},
         {"//init_move_outside_reads", ":init moves this session into the project's home without asking when it wrote nothing outside the project and read at most this many files there"},
         {"full_output", d.full_output},
-        {"//full_output", "keep a command's whole output beside the session when the model gets it capped: <session>.d/<call>.out, display only (maic sessions output). docs/sessions.md"},
+        {"//full_output", "keep a command's whole output beside the session when the model gets it capped: <session>.d/<call>.out, display only (maid sessions output). docs/sessions.md"},
         {"full_output_max_mb", d.full_output_max_mb},
         {"//full_output_max_mb", "at most this many MiB of it per call; past that the file keeps the head and the tail and says how much was dropped"},
         {"leader", "space"},
         {"highlight", d.highlight},
         {"theme", d.theme},
-        {"//theme", "a theme by name: default, gruvbox-dark, gruvbox-light, mono, or a file of yours in ~/.config/maic/themes/NAME.lua; `style` entries below override single roles on top of it. :theme lists and switches, :theme nvim:NAME imports a neovim colorscheme. docs/themes.md"},
+        {"//theme", "a theme by name: default, gruvbox-dark, gruvbox-light, mono, or a file of yours in ~/.config/maid/themes/NAME.lua; `style` entries below override single roles on top of it. :theme lists and switches, :theme nvim:NAME imports a neovim colorscheme. docs/themes.md"},
         {"follow_nvim_theme", d.follow_nvim_theme},
-        {"//follow_nvim_theme", "inside nvim with maic.nvim (a connected host): follow its colorscheme live as the session theme nvim:NAME; false keeps `theme`"},
+        {"//follow_nvim_theme", "inside nvim with maid.nvim (a connected host): follow its colorscheme live as the session theme nvim:NAME; false keeps `theme`"},
         {"ui", d.ui},
-        {"//ui", "tui: MAIC's own interface; nvim: nvim with maic.nvim as the whole interface, your config and mappings included, the engine its job (maic --ui nvim; never inside nvim, never with bare). maic help ui"},
+        {"//ui", "tui: MAID's own interface; nvim: nvim with maid.nvim as the whole interface, your config and mappings included, the engine its job (maid --ui nvim; never inside nvim, never with bare). maid help ui"},
         {"daemon", d.daemon},
-        {"//daemon", "attach: when a daemon runs (maic daemon start), the TUI and maic --rpc (maic.nvim) open their sessions in it, so a session outlives the window it started in; off: each runs its own engine. maic help daemon"},
+        {"//daemon", "attach: when a daemon runs (maid daemon start), the TUI and maid --rpc (maid.nvim) open their sessions in it, so a session outlives the window it started in; off: each runs its own engine. maid help daemon"},
         {"bare", d.bare},
-        {"//bare", "true: nothing from nvim (no $NVIM host, the built-in highlighter, no theme from nvim, no lazy-lock notice, no keymap check); MAIC's own settings, themes, Lua and tools still load. Also maic --bare and MAIC_BARE=1. :h bare"},
+        {"//bare", "true: nothing from nvim (no $NVIM host, the built-in highlighter, no theme from nvim, no lazy-lock notice, no keymap check); MAID's own settings, themes, Lua and tools still load. Also maid --bare and MAID_BARE=1. :h bare"},
         {"colors", d.colors},
         {"//colors", "colour depth: auto (truecolor when COLORTERM says so, 256 when TERM does, else 16), truecolor, 256 or 16"},
         {"//highlight", "builtin, or nvim: an embedded nvim --embed highlights the input (markdown with treesitter); falls back to builtin when nvim is missing"},
@@ -980,9 +980,9 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"record", d.record},
         {"models_dir", models_dir.empty() ? d.models_dir : models_dir},
         {"context", d.context},
-        {"//context", "context window in tokens for the local llama.cpp server (${MAIC_CONTEXT} in service files) and the usage readout; --ctx N and :ctx N override"},
+        {"//context", "context window in tokens for the local llama.cpp server (${MAID_CONTEXT} in service files) and the usage readout; --ctx N and :ctx N override"},
         {"context_2", d.context_2},
-        {"//context_2", "the same for the side server llamacpp-2 on port 8082 (${MAIC_CONTEXT_2}); --ctx2 N and :ctx2 N override"},
+        {"//context_2", "the same for the side server llamacpp-2 on port 8082 (${MAID_CONTEXT_2}); --ctx2 N and :ctx2 N override"},
         {"small_model", d.small_model},
         {"//small_model", "opencode's small_model: a cheap model (a preset or provider/model) that titles each session after its first turn and is the reviewer's default; empty: no titles, and the reviewer uses the session preset's lowest non-limited tier (haiku-4.5 for the Anthropic presets, the model itself for a local one). title_model is its older name"},
         {"budget_tokens", d.budget_tokens},
@@ -991,9 +991,9 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"compact_keep_results", d.compact_keep_results},
         {"compact_model", d.compact_model},
         {"//compact_model", "the model that writes compaction summaries (a preset or provider/model, e.g. claude-sonnet-cli); empty: the session's model. A remote one is used only when the session's model is remote too"},
-        {"//sessions_home", "auto: a project's transcripts (it has a MAIC.md) go under sessions/projects/, others under sessions/general/. Or: general, project, a name."},
+        {"//sessions_home", "auto: a project's transcripts (it has a MAID.md) go under sessions/projects/, others under sessions/general/. Or: general, project, a name."},
         {"instructions", {{"files", d.instructions.files}, {"read", "all"}, {"local_files", d.instructions.local_files}, {"imports", {{"depth", d.instructions.import_depth}}}, {"extra_dirs", d.instructions.extra_dirs}}},
-        {"//instructions", "which instruction files the model sees, global settings only: files are the classes, lowest priority first; read = \"highest\" takes only the top class in each directory; local_files reads MAIC.local.md and the like; imports.depth is how far @path imports go (0: none); extra_dirs lets extra directories add theirs. Also project_markers and bound. docs/instructions.md"},
+        {"//instructions", "which instruction files the model sees, global settings only: files are the classes, lowest priority first; read = \"highest\" takes only the top class in each directory; local_files reads MAID.local.md and the like; imports.depth is how far @path imports go (0: none); extra_dirs lets extra directories add theirs. Also project_markers and bound. docs/instructions.md"},
         {"load_instructions", d.load_instructions},
         {"system_prompt", d.system_prompt},
         {"prefill", d.prefill},
@@ -1002,7 +1002,7 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"agents", nlohmann::json::object()},
         {"forbid", nlohmann::json::array()},
         {"//forbid", "terms no tool call may contain, in any letter case; write /.../ for a POSIX extended regex. A search, a command, a path or any argument with one is halted before it runs, under the dumb harness too. Added to the built-in list. :forbid in a session"},
-        {"//permission", "allow / ask / deny lists of \"tool:pattern\" (run_shell:pytest *, write_file:src/**, read_file:/etc/**; write: and read: for any such tool). deny wins over ask over allow; allow runs without asking or review in every mode but plan. Trip patterns, secrets and system paths are checked first and are not touched. MAIC's own helpers (maic-storyboard*, maic-workflow-edit*, maic-panel-check*, maic path* ...) are always allowed. Layers add up. :allow in a session"},
+        {"//permission", "allow / ask / deny lists of \"tool:pattern\" (run_shell:pytest *, write_file:src/**, read_file:/etc/**; write: and read: for any such tool). deny wins over ask over allow; allow runs without asking or review in every mode but plan. Trip patterns, secrets and system paths are checked first and are not touched. MAID's own helpers (maid-storyboard*, maid-workflow-edit*, maid-panel-check*, maid path* ...) are always allowed. Layers add up. :allow in a session"},
         {"//agents", "agents by name (opencode's term), adding to or narrowing the built-in build, plan, general and explore: agents = { explore = { budget_tokens = 20000 }, docs = { mode = \"edit\", role = \"subagent\", write_paths = { \"docs/**\" }, tools = { \"read_file\", \"edit_file\", \"write_file\" }, model = \"qwen-4b\" } }. Fields: mode, role (primary, subagent, all: who may run it; the task tool runs subagent and all), description, write_paths, read_outside, budget_tokens, max_steps, tools, reviewer, model. A built-in can only be narrowed. profiles is the older name for this key. docs/settings.md"},
         {"//rules", "standing one-line instructions (\"always answer in French\"); they ride with system_prompt at both ends of the system prompt and in the per-turn note. :rule in a session, --rule on the command line"},
         {"//prefill", "text every reply starts with, sent as the opening of the assistant turn; a guarantee where a system prompt is a request"},
@@ -1011,14 +1011,14 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"allow_isolated", d.allow_isolated},
         {"//allow_isolated", "true lets a session set tripwire = \"isolated\" (ignore the machine lock); such a session is confined: no reads outside its directory, no remote requests, no server work"},
         {"browser", d.browser},
-        {"//browser", "what maic open SERVICE uses: default (the system's), firefox, chrome"},
+        {"//browser", "what maid open SERVICE uses: default (the system's), firefox, chrome"},
         {"remote", d.remote},
-        {"//remote", "a maic-server you subscribe to, e.g. https://workstation:7373; maic open prefers the remote's services when it answers"},
+        {"//remote", "a maid-server you subscribe to, e.g. https://workstation:7373; maid open prefers the remote's services when it answers"},
         {"lazy_lock", d.lazy_lock},
-        {"//lazy_lock", "nvim's lazy-lock.json, watched for plugin and lazy.nvim updates; empty: $XDG_CONFIG_HOME/$NVIM_APPNAME/lazy-lock.json (~/.config/nvim/lazy-lock.json). maic lazy-lock, docs/lazy-lock.md"},
+        {"//lazy_lock", "nvim's lazy-lock.json, watched for plugin and lazy.nvim updates; empty: $XDG_CONFIG_HOME/$NVIM_APPNAME/lazy-lock.json (~/.config/nvim/lazy-lock.json). maid lazy-lock, docs/lazy-lock.md"},
         {"lazy_lock_notice", d.lazy_lock_notice},
-        {"//lazy_lock_notice", "false: no start notice and no lock≠ in the status strip when lazy-lock.json is out of sync; maic status, maic doctor and maic lazy-lock still report"},
-        {"//tripwire", "machine: a trip sets the root-owned lock every MAIC process respects, unlock asks for sudo; session: a trip locks this session only (a file beside its transcript), :unlock removes it without sudo. A project's .maic/settings.lua can choose per project"},
+        {"//lazy_lock_notice", "false: no start notice and no lock≠ in the status strip when lazy-lock.json is out of sync; maid status, maid doctor and maid lazy-lock still report"},
+        {"//tripwire", "machine: a trip sets the root-owned lock every MAID process respects, unlock asks for sudo; session: a trip locks this session only (a file beside its transcript), :unlock removes it without sudo. A project's .maid/settings.lua can choose per project"},
         {"//harness", "smart: a model reads the conversation and reviews every command or write the rules would allow without asking (auto, edit); dumb: the rule list alone"},
         {"reviewer_model", d.reviewer_model},
         {"//reviewer_model", "pins the reviewer; empty: the preset's reviewer, else small_model (docs/settings.md)"},
@@ -1028,7 +1028,7 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"//checkers", "global file only: the judges of the smart harness in place of the single reviewer. A shipped setup, \"dual-9b\" (Qwen3.5 9B, no thinking, then Claude Haiku 4.5 on your Claude plan only when Qwen does not allow or cannot answer) or \"dual-4b\" (the same with the 4B), or { judges = { \"qwen-9b\", { model = \"claude-haiku-cli\", timeout = 60 } }, combine = \"escalate\" }; combine: primary, escalate or both; a table may start from a setup (setup = \"dual-9b\"). Before a metered judge (Claude Code, a metered preset) is called you are asked each time; ask_before_metered = false calls it without asking. Empty: the reviewer alone. docs/harness.md"},
         {"dumb_auto_ok", d.dumb_auto_ok},
         {"protocol_tier", d.protocol_tier},
-        {"//protocol_tier", "this file only: how closely the engine checks its protocol. open: no checks (an unchecked session shows OPEN); guarded: every check runs and logs what it finds (<state>/engine/protocol.log); airtight: refuses what fails (needs a build that passed conformance). protocol_tiers = { [\"~/scratch\"] = \"open\" } sets one per directory, as does maic trust DIR --protocol TIER; agents.NAME.protocol_tier one per agent; :tier tightens a session. docs/design/protocol-security.md"},
+        {"//protocol_tier", "this file only: how closely the engine checks its protocol. open: no checks (an unchecked session shows OPEN); guarded: every check runs and logs what it finds (<state>/engine/protocol.log); airtight: refuses what fails (needs a build that passed conformance). protocol_tiers = { [\"~/scratch\"] = \"open\" } sets one per directory, as does maid trust DIR --protocol TIER; agents.NAME.protocol_tier one per agent; :tier tightens a session. docs/design/protocol-security.md"},
         {"protocol_tiers", json::object()},
         {"bans", {{"strings", nlohmann::json::array()}, {"patterns", nlohmann::json::array()}, {"tokens", nlohmann::json::array()}, {"retries", 3}, {"replacement", "[banned]"}, {"ignore_case", false}, {"window", 64}}},
         {"//steering", "the six steering actions (steer, drop, further, interrupt, keep, halt): which a session accepts (actions), from which clients (clients, this file only), drop's trim, what steer and drop do to a running tool, the halt message, and which actions a ban entry may name. :steering shows them. docs/design/engine-protocol.md section 11"},
@@ -1036,7 +1036,7 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"sampling", nlohmann::json::object()},
         {"//sampling", "sampler keys sent with every request: temperature, top_k, top_p, min_p, seed, repeat_penalty; xtc_probability / xtc_threshold on llama.cpp-style servers only. :sampling changes them live"},
         {"//system_prompt", "text placed first in every system prompt, or \"@~/path/to/file.md\"; independent of instruction files"},
-        {"//server", "maic server: listen ADDR:PORT (TLS is required off loopback), workspaces remote sessions may open, cert/key (empty: self-signed), relay (https://host:port of a maic-relay the server dials out to for the phone away from home; pair with maic server pair), relay_cert (PEM pinning a self-signed relay certificate)."},
+        {"//server", "maid server: listen ADDR:PORT (TLS is required off loopback), workspaces remote sessions may open, cert/key (empty: self-signed), relay (https://host:port of a maid-relay the server dials out to for the phone away from home; pair with maid server pair), relay_cert (PEM pinning a self-signed relay certificate)."},
         {"server", {{"listen", d.server.listen}, {"workspaces", json::array()}, {"cert", ""}, {"key", ""}, {"relay", ""}, {"relay_cert", ""}}},
         {"providers", providers},
         {"models", json::object()},
@@ -1050,11 +1050,11 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         return;
     }
     j.erase("//");
-    out << "-- MAIC settings (Lua). Every key is optional; delete what you don't change. This file is code: use\n"
-           "-- os.getenv, maic.hostname, maic.home or maic.workspace for per-machine choices. A settings.json in the same\n"
+    out << "-- MAID settings (Lua). Every key is optional; delete what you don't change. This file is code: use\n"
+           "-- os.getenv, maid.hostname, maid.home or maid.workspace for per-machine choices. A settings.json in the same\n"
            "-- place is used only when no settings.lua exists. Reference: docs/settings.md\n"
            "return "
         << lua_literal(j, 0) << "\n";
 }
 
-}  // namespace maic
+}  // namespace maid

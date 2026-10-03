@@ -46,7 +46,7 @@ class _Entry:
 def pyproject_entry_points(group, path=PYPROJECT):
     """The entry points `pyproject.toml` beside this package registers under `group`.
 
-    **The registry has one home, and it is that file.** Inside MAIC the package runs
+    **The registry has one home, and it is that file.** Inside MAID the package runs
     from its directory without ever being installed, so `importlib.metadata` has no
     distribution to ask; the same table is read from where it is written instead
     of being copied into code, which is the two-homes drift this suite closes
@@ -70,7 +70,7 @@ def discover():
         found[ep.name] = ep
     if not found:
         found = pyproject_entry_points(GROUP)
-        # MAIC's own diction (its top-level diction/, which the `cai` wrapper puts on
+        # MAID's own diction (its top-level diction/, which the `cai` wrapper puts on
         # sys.path) registers the way the docstring above shows; until it is there,
         # `cai diction` answers from KNOWN as before.
         if importlib.util.find_spec("diction") and importlib.util.find_spec("diction.cli"):

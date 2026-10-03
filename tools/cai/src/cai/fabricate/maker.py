@@ -31,7 +31,7 @@ import json
 import os
 import uuid
 
-from cai.grammar import maic as fmt
+from cai.grammar import maid as fmt
 
 
 def _record(sid, parent, text, role, cwd, at, marked=True, source=None):
@@ -94,12 +94,12 @@ def insert(lines, turns, at_index, cwd, timestamp, mode="marked", source=None):
     return out, made
 
 
-def insert_maic(lines, turns, at_index, cwd, timestamp, mode="marked", source=None):
-    """The same insertion into a MAIC session: each turn as the `msg` the model replays
+def insert_maid(lines, turns, at_index, cwd, timestamp, mode="marked", source=None):
+    """The same insertion into a MAID session: each turn as the `msg` the model replays
     and the transcript record a reader sees, placed after `at_index`.
 
     The three modes mean what they mean above. `marked` puts `origin.kind: "fabricated"`
-    and the `fabricated` flag on both records, fields MAIC's loader ignores, so the
+    and the `fabricated` flag on both records, fields MAID's loader ignores, so the
     model is unaffected and every tool can see them; `loud` says so in the text;
     `true-silent` writes nothing but the turn.
     """

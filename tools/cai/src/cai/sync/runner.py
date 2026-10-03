@@ -8,7 +8,7 @@ import json
 import os
 
 #: This repository's root, for jobs whose source or destination is not SOPIA.
-#: Inside MAIC that is MAIC's root, where diction lives (tools/cai/src/cai/sync -> ../../../../..).
+#: Inside MAID that is MAID's root, where diction lives (tools/cai/src/cai/sync -> ../../../../..).
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", ".."))
 
 #: Provenance for a snapshot that cannot hold JSON keys. Same fields as the JSON

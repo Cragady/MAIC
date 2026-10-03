@@ -1,4 +1,4 @@
-// maic-relay: the rendezvous point a workstation's maic-server dials out to and a phone connects to. It
+// maid-relay: the rendezvous point a workstation's maid-server dials out to and a phone connects to. It
 // carries encrypted frames between the two and keeps nothing. docs/remote.md.
 #include "relay.hpp"
 
@@ -22,13 +22,13 @@ void on_signal(int) {
 }
 
 void usage(std::ostream& out) {
-    out << "usage: maic-relay [--listen ADDR:PORT] [--cert FILE --key FILE] [--state DIR] [--web FILE]\n"
+    out << "usage: maid-relay [--listen ADDR:PORT] [--cert FILE --key FILE] [--state DIR] [--web FILE]\n"
            "                  [--idle SECONDS] [--max-pairs N] [--rate BYTES_PER_SECOND] [--log FILE]\n"
            "\n"
            "  --listen     default 127.0.0.1:7474; any other address needs TLS: --cert/--key, or a self-signed\n"
-           "               pair made under --state (default ~/.local/state/maic-relay) whose fingerprint is printed\n"
-           "  --web        the MAIC web client to serve at /, so a phone can open the relay's address\n"
-           "               (default: share/maic/server/web/index.html beside this binary, when it exists)\n"
+           "               pair made under --state (default ~/.local/state/maid-relay) whose fingerprint is printed\n"
+           "  --web        the MAID web client to serve at /, so a phone can open the relay's address\n"
+           "               (default: share/maid/server/web/index.html beside this binary, when it exists)\n"
            "  --idle       drop a side silent this long, and its pair (default 60)\n"
            "  --max-pairs  pairing ids held at once (default 64)\n"
            "  --rate       bytes per second per pairing id (default 4194304)\n"
@@ -37,16 +37,16 @@ void usage(std::ostream& out) {
 }
 
 std::filesystem::path default_state() {
-    if (const char* x = std::getenv("XDG_STATE_HOME"); x && *x) return std::filesystem::path(x) / "maic-relay";
-    if (const char* home = std::getenv("HOME"); home && *home) return std::filesystem::path(home) / ".local" / "state" / "maic-relay";
-    return std::filesystem::current_path() / "maic-relay-state";
+    if (const char* x = std::getenv("XDG_STATE_HOME"); x && *x) return std::filesystem::path(x) / "maid-relay";
+    if (const char* home = std::getenv("HOME"); home && *home) return std::filesystem::path(home) / ".local" / "state" / "maid-relay";
+    return std::filesystem::current_path() / "maid-relay-state";
 }
 
 std::filesystem::path default_web() {
     std::error_code ec;
     auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
     if (ec) return {};
-    auto web = exe.parent_path().parent_path() / "share" / "maic" / "server" / "web" / "index.html";
+    auto web = exe.parent_path().parent_path() / "share" / "maid" / "server" / "web" / "index.html";
     return std::filesystem::exists(web, ec) ? web : std::filesystem::path{};
 }
 
@@ -54,7 +54,7 @@ std::filesystem::path default_web() {
 
 int main(int argc, char** argv) {
     std::vector<std::string> args(argv + 1, argv + argc);
-    maic::relay::RelayOptions o;
+    maid::relay::RelayOptions o;
     o.state = default_state();
     o.web = default_web();
     std::ofstream log_file;
@@ -82,9 +82,9 @@ int main(int argc, char** argv) {
                 return 0;
             } else throw std::runtime_error("unknown option " + args[i]);
         }
-        maic::relay::Relay relay(o);
+        maid::relay::Relay relay(o);
         int port = relay.bind();
-        std::cout << "maic-relay on " << (relay.tls() ? "https://" : "http://") << o.listen.substr(0, o.listen.rfind(':')) << ":" << port
+        std::cout << "maid-relay on " << (relay.tls() ? "https://" : "http://") << o.listen.substr(0, o.listen.rfind(':')) << ":" << port
                   << "  idle " << o.idle_seconds << "s  max-pairs " << o.max_pairs << "  rate " << o.rate << " B/s\n";
         if (relay.tls()) std::cout << "certificate SHA-256: " << relay.fingerprint() << "  (server.relay_cert on the workstation pins it; the phone compares it when its browser warns)\n";
         std::cout << (o.web.empty() ? "no web client at / (start with --web to serve one)\n" : "web client at /: " + o.web.string() + "\n")
@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
         serving.join();
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "maic-relay: " << e.what() << "\n";
+        std::cerr << "maid-relay: " << e.what() << "\n";
         return 1;
     }
 }

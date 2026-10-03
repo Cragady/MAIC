@@ -1,6 +1,6 @@
 # How DeepSeek Harness and opencode sandbox artifacts
 
-Written 2026-10-03, clean-room: everything below is MAIC's own description of public documentation and of open-source repositories read for ideas. No code was copied, run or built. Nothing was logged into.
+Written 2026-10-03, clean-room: everything below is MAID's own description of public documentation and of open-source repositories read for ideas. No code was copied, run or built. Nothing was logged into.
 
 ## Sources (all read 2026-10-03)
 
@@ -38,10 +38,10 @@ Isolation that does exist: its own web UI is served with a CSP (self scripts, on
 
 Artifacts run in a sandboxed iframe on a separate domain, so they are walled off from claude.ai cookies and DOM. The CSP restricts outbound requests and script sources. Direct page-to-service access is replaced by capability grants: connected-app calls are mediated through Claude, and the first use shows which apps and tools will be used and asks for approval, per viewer even on shared artifacts. Persistent storage is capped (20 MB, text only) and is personal or shared. Third-party write-ups report the CSP `sandbox` header without `allow-same-origin`, so even opening the URL directly gives an opaque origin; that detail is not in Anthropic's own article.
 
-## Lessons for MAIC
+## Lessons for MAID
 
-1. Opaque origin is the real boundary. Both DeepSeek's scripted mode and Claude rely on a sandbox without `allow-same-origin`. MAIC's CSP `sandbox` header gives the same effect even when the URL is opened directly, which an iframe attribute alone does not. Keep it on every response, including errors.
-2. Pair `sandbox` with a network CSP. DeepSeek's static mode shows a usable floor (`default-src 'none'`, `data:` images). Scripted mode there leaves network open; MAIC should default `connect-src` to its own capability endpoint only.
+1. Opaque origin is the real boundary. Both DeepSeek's scripted mode and Claude rely on a sandbox without `allow-same-origin`. MAID's CSP `sandbox` header gives the same effect even when the URL is opened directly, which an iframe attribute alone does not. Keep it on every response, including errors.
+2. Pair `sandbox` with a network CSP. DeepSeek's static mode shows a usable floor (`default-src 'none'`, `data:` images). Scripted mode there leaves network open; MAID should default `connect-src` to its own capability endpoint only.
 3. Do not make `trusted` a loosening of the origin. Neither tool ties trust to the artifact; DeepSeek's global switch fails closed while unresolved. If `trusted` ever does something, let it widen capabilities (a larger token scope, an extra allowed CDN) never remove `sandbox`, and resolve it server-side so an unknown value means untrusted.
-4. Keep capability grants out of the page. Claude's per-viewer, first-use approval for connected apps is the model for MAIC's per-artifact tokens: show what the token can do, ask once, scope it to the viewer.
-5. The unsandbox toggle is the cautionary tale. DeepSeek's Browser lets a user drop the sandbox per tab and documents top-navigation, popups and dialogs as the cost. For generated pages MAIC should offer no such toggle; an "open raw" action should be a separate, clearly labelled download or a different origin.
+4. Keep capability grants out of the page. Claude's per-viewer, first-use approval for connected apps is the model for MAID's per-artifact tokens: show what the token can do, ask once, scope it to the viewer.
+5. The unsandbox toggle is the cautionary tale. DeepSeek's Browser lets a user drop the sandbox per tab and documents top-navigation, popups and dialogs as the cost. For generated pages MAID should offer no such toggle; an "open raw" action should be a separate, clearly labelled download or a different origin.

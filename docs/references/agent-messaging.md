@@ -35,7 +35,7 @@ Clean-room, read 2026-10-03; no code copied.
 
 Channels are MCP servers that push `notifications/claude/channel`. Servers must be allowlisted or loaded with a development flag, and organizations can disable them. The reference calls an ungated channel an injection vector: gate on sender, not room. Relay accepts verdicts only for issued request ids. A headless `claude -p` session reached an interactive one via an undocumented local socket (tested 2026-10-03), with no approved channel involved.
 
-## Lessons for MAIC
+## Lessons for MAID
 
 1. Hash-pin protocols. Neither tool verifies what a notifier may say. Receivers refuse any protocol whose hash Micaiah has not approved.
 2. Events carry ids and types, never instructions (OpenAI's webhook shape). The receiver fetches content and labels it data.

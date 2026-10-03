@@ -1,13 +1,13 @@
 #!/bin/sh
-# artifact-watch.sh: `maic artifact watch` for an agent outside MAIC (docs/agent-kit.md). It watches one artifact's
-# data document, ${XDG_STATE_HOME:-~/.local/state}/maic/artifacts/ID/data/NAME.json (NAME is answers unless --doc),
+# artifact-watch.sh: `maid artifact watch` for an agent outside MAID (docs/agent-kit.md). It watches one artifact's
+# data document, ${XDG_STATE_HOME:-~/.local/state}/maid/artifacts/ID/data/NAME.json (NAME is answers unless --doc),
 # checks it once a second, and prints a line per event an agent acts on, flushed:
 #
 #     EVENT<TAB>ARTIFACT<TAB>DETAIL<TAB>ISO TIME<TAB>protocol=TAG
 #
 # EVENT is submitted (DETAIL the document's name), side_prompt or after_prompt (DETAIL the new entry's index in
 # side_prompts or after_prompts, from 0) or split (DETAIL the requested split's id). TAG is ID@SHORT for the notify
-# protocol the user approved (.maic-notify-protocol.json beside the artifact, `maic artifact protocol ID`), none
+# protocol the user approved (.maid-notify-protocol.json beside the artifact, `maid artifact protocol ID`), none
 # without one, unapproved otherwise. It never prints the document: the agent reads the file itself. An event is a
 # trigger only; it carries no instructions.
 #
@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 case $id$doc in *[!A-Za-z0-9_-]*) echo "$0: an id and a document name are letters, digits, '_' and '-'" >&2; exit 2 ;; esac
-dir=${XDG_STATE_HOME:-$HOME/.local/state}/maic/artifacts/$id
+dir=${XDG_STATE_HOME:-$HOME/.local/state}/maid/artifacts/$id
 [ -d "$dir" ] || { echo "$0: no artifact $id in ${dir%/*}" >&2; exit 1; }
 file=$dir/data/$doc.json
 tmp=$(mktemp -d) || exit 1
@@ -98,7 +98,7 @@ crude() {
 }
 
 protocol() {
-    p=$dir/.maic-notify-protocol.json
+    p=$dir/.maid-notify-protocol.json
     [ -e "$p" ] || { echo none; return; }
     [ -n "$py" ] || { echo unapproved; return; }
     "$py" - "$p" <<'PY'

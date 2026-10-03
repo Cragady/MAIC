@@ -1,13 +1,13 @@
 # protocol/openai
 
-OpenAI's API description, pinned, and the subset of it MAIC validates against. The engine protocol takes OpenAI's names and shapes unchanged ([docs/design/engine-protocol.md](../../docs/design/engine-protocol.md) section 10, [docs/standards.md](../../docs/standards.md)); these files are where those shapes come from.
+OpenAI's API description, pinned, and the subset of it MAID validates against. The engine protocol takes OpenAI's names and shapes unchanged ([docs/design/engine-protocol.md](../../docs/design/engine-protocol.md) section 10, [docs/standards.md](../../docs/standards.md)); these files are where those shapes come from.
 
 | File | What |
 | :--- | :--- |
 | `openapi.json` | the whole description, byte for byte as upstream has it; kept for reference (Micaiah's decision on open question 22) |
 | `LICENSE` | upstream's MIT license, copied unchanged |
 | `extract.py` | writes `subset.json` from `openapi.json`; standard library only |
-| `subset.json` | the schemas MAIC references and everything they `$ref`: what the tests validate against |
+| `subset.json` | the schemas MAID references and everything they `$ref`: what the tests validate against |
 
 ## Provenance
 
@@ -26,7 +26,7 @@ python3 protocol/openai/extract.py --check   # ctest openai_subset: openapi.json
 
 The roots are listed in `extract.py`: `ResponseStreamEvent` (the 59 stream events), `Response`, `OutputItem`, `ResponseUsage`, `ResponseError`, `ErrorResponse`, `CreateChatCompletionStreamResponse`, `ConversationResource`, `ConversationItem`, `CreateResponse`, and the WebSocket's steering events (`ResponseSteerEvent`, `ResponseSteerAcceptedEvent`, `ResponseSteerFailedEvent`, which are not in `ResponseStreamEvent`). With their `$ref` closure that is 357 schemas, copied unchanged with upstream's key order, sorted by name, under `components.schemas`, so a `$ref` reads the same in both files. A schema joins the subset by adding a root.
 
-Validated by MAIC's own validator (`core/src/jsonschema.cpp`, no new dependency): `jsonschema_test` checks that every schema in the subset uses only keywords it implements, a Responses stream shaped as the engine will send it, and llama-server's chat-completions chunks; `agent_test` checks every chunk its `FakeServer` sends; `llm_test` parses the llama-server stream.
+Validated by MAID's own validator (`core/src/jsonschema.cpp`, no new dependency): `jsonschema_test` checks that every schema in the subset uses only keywords it implements, a Responses stream shaped as the engine will send it, and llama-server's chat-completions chunks; `agent_test` checks every chunk its `FakeServer` sends; `llm_test` parses the llama-server stream.
 
 ## Bumping the pin
 

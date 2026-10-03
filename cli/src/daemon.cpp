@@ -2,13 +2,13 @@
 
 #include "audit_trail.hpp"
 #include "tui.hpp"
-#include "maic/agent.hpp"
-#include "maic/audit_trail.hpp"
-#include "maic/engine.hpp"
-#include "maic/paths.hpp"
-#include "maic/session.hpp"
-#include "maic/settings.hpp"
-#include "maic/tripwire.hpp"
+#include "maid/agent.hpp"
+#include "maid/audit_trail.hpp"
+#include "maid/engine.hpp"
+#include "maid/paths.hpp"
+#include "maid/session.hpp"
+#include "maid/settings.hpp"
+#include "maid/tripwire.hpp"
 
 #include <fcntl.h>
 #include <poll.h>
@@ -33,11 +33,11 @@
 #include <sstream>
 
 // The daemon (docs/design/engine-protocol.md, section 8 and build step 13; docs/daemon.md): one engine behind a
-// Unix socket that owns sessions, so a session outlives the window it started in. The TUI and maic.nvim attach to
-// it when it answers and run their own engine when it does not. MAIC keeps its PID with the process's start time,
-// as it keeps its services' (MAIC owns the PID, not systemd), and a lock file makes it the only one.
+// Unix socket that owns sessions, so a session outlives the window it started in. The TUI and maid.nvim attach to
+// it when it answers and run their own engine when it does not. MAID keeps its PID with the process's start time,
+// as it keeps its services' (MAID owns the PID, not systemd), and a lock file makes it the only one.
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -49,7 +49,7 @@ namespace {
 // user's own directory.
 fs::path daemon_dir() {
     const char* rt = std::getenv("XDG_RUNTIME_DIR");
-    return rt && *rt ? fs::path(rt) / "maic" : state_dir() / "run";
+    return rt && *rt ? fs::path(rt) / "maid" : state_dir() / "run";
 }
 
 void secure_dir(const fs::path& dir) {
@@ -116,13 +116,13 @@ json request(const std::string& method, json params = json::object()) {
     return {{"jsonrpc", "2.0"}, {"id", "daemon-" + std::to_string(++next)}, {"method", method}, {"params", std::move(params)}};
 }
 
-// `maic daemon run`: the engine on the socket, in the foreground, until SIGTERM, SIGINT or SIGHUP.
+// `maid daemon run`: the engine on the socket, in the foreground, until SIGTERM, SIGINT or SIGHUP.
 int run_daemon() {
     fs::path dir = daemon_dir();
     secure_dir(dir);
     int lock = open((dir / "engine.lock").c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
     if (lock < 0 || flock(lock, LOCK_EX | LOCK_NB) != 0) {
-        std::cerr << "maic daemon: already running" << (running_pid() ? " (pid " + std::to_string(running_pid()) + ")" : "") << "\n";
+        std::cerr << "maid daemon: already running" << (running_pid() ? " (pid " + std::to_string(running_pid()) + ")" : "") << "\n";
         return 1;
     }
     // Holding the lock, no other daemon owns the socket: one left there was a daemon's that did not end cleanly.
@@ -135,7 +135,7 @@ int run_daemon() {
     int bound = bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof addr);
     umask(old_mask);
     if (listener < 0 || bound != 0 || chmod(sock.c_str(), 0600) != 0 || listen(listener, 16) != 0) {
-        std::cerr << "maic daemon: cannot listen on " << sock.string() << ": " << std::strerror(errno) << "\n";
+        std::cerr << "maid daemon: cannot listen on " << sock.string() << ": " << std::strerror(errno) << "\n";
         return 1;
     }
     {
@@ -177,9 +177,9 @@ int run_daemon() {
     sigemptyset(&sa.sa_mask);
     for (int sig : {SIGINT, SIGTERM, SIGHUP}) sigaction(sig, &sa, nullptr);
     std::signal(SIGPIPE, SIG_IGN);
-    std::cerr << "maic daemon " MAIC_VERSION ": listening on " << sock.string() << " (pid " << getpid() << ")\n" << std::flush;
+    std::cerr << "maid daemon " MAID_VERSION ": listening on " << sock.string() << " (pid " << getpid() << ")\n" << std::flush;
 
-    const char* record_dir = std::getenv("MAIC_PROTOCOL_RECORD");
+    const char* record_dir = std::getenv("MAID_PROTOCOL_RECORD");
     struct Connection {
         std::thread thread;
         std::shared_ptr<std::atomic<bool>> done = std::make_shared<std::atomic<bool>>(false);
@@ -221,26 +221,26 @@ int run_daemon() {
 
     // Stopped: no new connections; the sessions are parked (their turns interrupted, each resumes where it stopped)
     // and every connection ends with what was queued for it.
-    std::cerr << "maic daemon: stopping\n" << std::flush;
+    std::cerr << "maid daemon: stopping\n" << std::flush;
     close(listener);
     fs::remove(sock, ec);
     engine.shutdown();
     for (auto& c : connections) c.thread.join();
     fs::remove(pid_file(), ec);
-    std::cerr << "maic daemon: stopped\n" << std::flush;
+    std::cerr << "maid daemon: stopped\n" << std::flush;
     close(lock);
     return 0;
 }
 
-// `maic daemon start`: `maic daemon run` detached, its output in <state>/engine/daemon.log; returns once it answers.
+// `maid daemon start`: `maid daemon run` detached, its output in <state>/engine/daemon.log; returns once it answers.
 int start_daemon() {
     if (int fd = daemon_connect(); fd >= 0) {
         close(fd);
-        std::cout << "maic daemon: already running (pid " << running_pid() << ")\n";
+        std::cout << "maid daemon: already running (pid " << running_pid() << ")\n";
         return 0;
     }
     std::string exe = self_exe();
-    if (exe.empty()) throw std::runtime_error("cannot find this maic binary to start the daemon");
+    if (exe.empty()) throw std::runtime_error("cannot find this maid binary to start the daemon");
     fs::create_directories(log_file().parent_path());
     pid_t pid = fork();
     if (pid < 0) throw std::runtime_error(std::string("fork: ") + std::strerror(errno));
@@ -253,19 +253,19 @@ int start_daemon() {
             dup2(log, STDOUT_FILENO);
             dup2(log, STDERR_FILENO);
         }
-        execl(exe.c_str(), "maic", "daemon", "run", static_cast<char*>(nullptr));
+        execl(exe.c_str(), "maid", "daemon", "run", static_cast<char*>(nullptr));
         _exit(127);
     }
     for (auto until = std::chrono::steady_clock::now() + 30s; std::chrono::steady_clock::now() < until; std::this_thread::sleep_for(50ms)) {
         if (int fd = daemon_connect(); fd >= 0) {
             close(fd);
-            std::cout << "maic daemon: running (pid " << pid << "), socket " << daemon_socket().string() << "\n"
-                      << "the TUI and maic.nvim open their sessions there now (daemon = \"off\" in settings keeps them in their own process)\n";
+            std::cout << "maid daemon: running (pid " << pid << "), socket " << daemon_socket().string() << "\n"
+                      << "the TUI and maid.nvim open their sessions there now (daemon = \"off\" in settings keeps them in their own process)\n";
             return 0;
         }
         if (waitpid(pid, nullptr, WNOHANG) == pid) break;
     }
-    std::cerr << "maic daemon: did not start; the end of " << log_file().string() << ":\n";
+    std::cerr << "maid daemon: did not start; the end of " << log_file().string() << ":\n";
     std::ifstream in(log_file());
     std::deque<std::string> tail;
     for (std::string l; std::getline(in, l);) {
@@ -279,18 +279,18 @@ int start_daemon() {
 // The daemon's sessions with a turn under way (or waiting for a person), from its index.
 std::vector<json> working(DaemonClient& d) {
     std::vector<json> out;
-    json r = d.call(request("maic.index.get"));
+    json r = d.call(request("maid.index.get"));
     for (const auto& e : r.value("result", json::object()).value("entries", json::array())) {
         if (e.value("state", "") != "parked" && e.value("activity", "idle") != "idle") out.push_back(e);
     }
     return out;
 }
 
-// `maic daemon stop`: asks first when a turn is running, since stopping interrupts it (it resumes where it stopped).
+// `maid daemon stop`: asks first when a turn is running, since stopping interrupts it (it resumes where it stopped).
 int stop_daemon(bool yes) {
     pid_t pid = running_pid();
     if (auto d = DaemonClient::connect()) {
-        d->call(request("maic.hello", {{"protocol", 1}, {"client", {{"name", "maic daemon stop"}, {"version", MAIC_VERSION}}}}));
+        d->call(request("maid.hello", {{"protocol", 1}, {"client", {{"name", "maid daemon stop"}, {"version", MAID_VERSION}}}}));
         auto busy = working(*d);
         d->close();
         if (!busy.empty() && !yes) {
@@ -301,7 +301,7 @@ int stop_daemon(bool yes) {
             }
             std::cerr << "stopping interrupts them; each is parked and resumes where it stopped. ";
             if (!isatty(STDIN_FILENO)) {
-                std::cerr << "maic daemon stop --yes stops it anyway\n";
+                std::cerr << "maid daemon stop --yes stops it anyway\n";
                 return 1;
             }
             std::cerr << "Stop the daemon? [y/N] " << std::flush;
@@ -314,17 +314,17 @@ int stop_daemon(bool yes) {
         }
     }
     if (!pid) {
-        std::cout << "maic daemon: not running\n";
+        std::cout << "maid daemon: not running\n";
         return 0;
     }
     kill(pid, SIGTERM);
     for (auto until = std::chrono::steady_clock::now() + 60s; std::chrono::steady_clock::now() < until; std::this_thread::sleep_for(50ms)) {
         if (!running_pid()) {
-            std::cout << "maic daemon: stopped; its sessions are parked (maic -r, or :switch in MAIC, resumes one)\n";
+            std::cout << "maid daemon: stopped; its sessions are parked (maid -r, or :switch in MAID, resumes one)\n";
             return 0;
         }
     }
-    std::cerr << "maic daemon: pid " << pid << " did not stop within a minute\n";
+    std::cerr << "maid daemon: pid " << pid << " did not stop within a minute\n";
     return 1;
 }
 
@@ -332,7 +332,7 @@ std::string ago(const std::string& when) {
     return when.empty() ? "" : "  " + when;
 }
 
-// `maic daemon status`: 0 when it runs, 3 when it does not (systemctl's convention).
+// `maid daemon status`: 0 when it runs, 3 when it does not (systemctl's convention).
 int status_daemon(bool as_json, bool text_base) {
     auto d = DaemonClient::connect();
     if (!d) {
@@ -342,14 +342,14 @@ int status_daemon(bool as_json, bool text_base) {
         } else if (text_base) {
             std::cout << "daemon\tstopped\t-\t" << daemon_socket().string() << "\n";
         } else {
-            std::cout << "maic daemon: not running" << (left ? " (a socket was left at " + daemon_socket().string() + "; maic daemon start clears it)" : "")
-                      << "\nmaic daemon start runs it\n";
+            std::cout << "maid daemon: not running" << (left ? " (a socket was left at " + daemon_socket().string() + "; maid daemon start clears it)" : "")
+                      << "\nmaid daemon start runs it\n";
         }
         return 3;
     }
-    json hello = d->call(request("maic.hello", {{"protocol", 1}, {"client", {{"name", "maic daemon status"}, {"version", MAIC_VERSION}}}})).value("result", json::object());
-    json st = d->call(request("maic.engine.status")).value("result", json::object());
-    json entries = d->call(request("maic.index.get")).value("result", json::object()).value("entries", json::array());
+    json hello = d->call(request("maid.hello", {{"protocol", 1}, {"client", {{"name", "maid daemon status"}, {"version", MAID_VERSION}}}})).value("result", json::object());
+    json st = d->call(request("maid.engine.status")).value("result", json::object());
+    json entries = d->call(request("maid.index.get")).value("result", json::object()).value("entries", json::array());
     d->close();
     pid_t pid = running_pid();
     if (as_json) {
@@ -367,7 +367,7 @@ int status_daemon(bool as_json, bool text_base) {
         }
         return 0;
     }
-    std::cout << "maic daemon: running (pid " << pid << ", maic " << hello.value("engine", json::object()).value("version", "?") << "), socket " << daemon_socket().string()
+    std::cout << "maid daemon: running (pid " << pid << ", maid " << hello.value("engine", json::object()).value("version", "?") << "), socket " << daemon_socket().string()
               << "\nlog: " << log_file().string() << "\n";
     if (entries.empty()) {
         std::cout << "no sessions\n";
@@ -384,16 +384,16 @@ int status_daemon(bool as_json, bool text_base) {
     return 0;
 }
 
-// `maic daemon unit [install|remove]`: the systemd user unit from contrib/systemd/, printed, written or taken away.
+// `maid daemon unit [install|remove]`: the systemd user unit from contrib/systemd/, printed, written or taken away.
 // Installing writes it only; enabling it (start at login) is a command the user runs.
 int unit_daemon(const std::string& what) {
-    fs::path templ = root_dir() / "contrib" / "systemd" / "maic-daemon.service";
+    fs::path templ = root_dir() / "contrib" / "systemd" / "maid-daemon.service";
     std::ifstream in(templ);
     if (!in) throw std::runtime_error("no " + templ.string());
-    std::string maic = find_on_path("maic");
-    if (maic.empty()) maic = self_exe();
-    std::string text = render_unit(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()), "", maic, "");
-    fs::path target = systemd_user_dir() / "maic-daemon.service";
+    std::string maid = find_on_path("maid");
+    if (maid.empty()) maid = self_exe();
+    std::string text = render_unit(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()), "", maid, "");
+    fs::path target = systemd_user_dir() / "maid-daemon.service";
     std::string systemctl = find_on_path("systemctl");
     if (what.empty()) {
         std::cout << text;
@@ -403,8 +403,8 @@ int unit_daemon(const std::string& what) {
         fs::create_directories(target.parent_path());
         std::ofstream(target, std::ios::trunc) << text;
         if (!systemctl.empty()) run({systemctl, "--user", "daemon-reload"}, nullptr);
-        std::cout << "wrote " << target.string() << " (maic daemon run, from " << maic << ")\n"
-                  << "start it now and at each login with: systemctl --user enable --now maic-daemon.service\n";
+        std::cout << "wrote " << target.string() << " (maid daemon run, from " << maid << ")\n"
+                  << "start it now and at each login with: systemctl --user enable --now maid-daemon.service\n";
         return 0;
     }
     if (what == "remove") {
@@ -412,13 +412,13 @@ int unit_daemon(const std::string& what) {
             std::cout << "no " << target.string() << "\n";
             return 0;
         }
-        if (!systemctl.empty()) run({systemctl, "--user", "disable", "--now", "maic-daemon.service"}, nullptr);
+        if (!systemctl.empty()) run({systemctl, "--user", "disable", "--now", "maid-daemon.service"}, nullptr);
         fs::remove(target);
         if (!systemctl.empty()) run({systemctl, "--user", "daemon-reload"}, nullptr);
         std::cout << "removed " << target.string() << "; a daemon it was running is stopped and its sessions parked\n";
         return 0;
     }
-    throw std::runtime_error("maic daemon unit [install|remove]");
+    throw std::runtime_error("maid daemon unit [install|remove]");
 }
 
 }  // namespace
@@ -527,7 +527,7 @@ json DaemonClient::call(const json& message) {
         answers_.erase(it);
         return reply;
     }
-    return {{"jsonrpc", "2.0"}, {"id", message.value("id", json())}, {"error", {{"code", -32000}, {"message", "the daemon has gone (maic daemon status)"}}}};
+    return {{"jsonrpc", "2.0"}, {"id", message.value("id", json())}, {"error", {{"code", -32000}, {"message", "the daemon has gone (maid daemon status)"}}}};
 }
 
 std::vector<json> DaemonClient::take() {
@@ -595,7 +595,7 @@ int cmd_daemon(const std::vector<std::string>& args) {
     if (sub == "stop") return stop_daemon(has("--yes") || has("-y"));
     if (sub == "status") return status_daemon(has("--json"), has("--text-base"));
     if (sub == "unit") return unit_daemon(args.size() > 1 ? args[1] : "");
-    throw std::runtime_error("maic daemon start | stop [--yes] | status [--json|--text-base] | run | unit [install|remove]");
+    throw std::runtime_error("maid daemon start | stop [--yes] | status [--json|--text-base] | run | unit [install|remove]");
 }
 
-}  // namespace maic
+}  // namespace maid

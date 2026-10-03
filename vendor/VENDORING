@@ -1,5 +1,5 @@
 Third-party source is vendored as SUBMODULES pinned to a commit or tag, never a
-branch head. vendor/manifest.json is the ledger `maic vendor` reads.
+branch head. vendor/manifest.json is the ledger `maid vendor` reads.
 
     vendor/ComfyUI
         https://github.com/Comfy-Org/ComfyUI
@@ -8,7 +8,7 @@ branch head. vendor/manifest.json is the ledger `maic vendor` reads.
         API nodes and auto-launch off, models on the external drive.
 
     vendor/comfyui-maic-llamacpp, vendor/comfyui-maic-templates
-        Not vendored: MAIC's own ComfyUI custom nodes, written here under MAIC's
+        Not vendored: MAID's own ComfyUI custom nodes, written here under MAID's
         license. comfyui.sh links them into ComfyUI's custom_nodes/. The
         llamacpp one talks to llama-server on 127.0.0.1:8081; it replaced the
         third-party comfyui-ollama submodule and its think patch.
@@ -18,7 +18,7 @@ branch head. vendor/manifest.json is the ledger `maic vendor` reads.
         pinned at 37bb6c600a9f16684db5d7d9e49b2bff23332d69
         The two Lua sources Neovim v0.12.2 pins, each with its own PROVENANCE,
         upstream url and sha256, and a verify.sh that fetches upstream, checks
-        the hash and diffs the committed tree. MAIC builds
+        the hash and diffs the committed tree. MAID builds
         luajit-2.1.1774638290/luajit (LuaJIT at fbb36bb6) through
         vendor/luajit.cmake, OUT OF TREE: the source is copied into the build
         directory and its own Makefile produces a static libluajit.a there. The
@@ -28,25 +28,25 @@ branch head. vendor/manifest.json is the ledger `maic vendor` reads.
     vendor/llama.cpp
         https://github.com/ggml-org/llama.cpp
         pinned at b11284  (25747b08e7a0f9a59a2089ce6b98d2229b76042a)
-        llama.cpp is MIT. Nothing from it is copied into MAIC; the submodule is
+        llama.cpp is MIT. Nothing from it is copied into MAID; the submodule is
         the only source. Built by vendor/llamacpp.sh OUT OF TREE into
         <state>/vendor/llama.cpp-build (Release, GGML_CUDA when nvcc is found,
         LLAMA_OPENSSL=OFF so the binaries cannot fetch models over https):
         llama-server, llama-cli, llama-quantize, llama-gguf-split, linked in as
         <state>/vendor/llamacpp/bin. The model llama-server loads is the link
-        <state>/vendor/llamacpp/current-model.gguf (`maic vendor use llamacpp PATH`).
+        <state>/vendor/llamacpp/current-model.gguf (`maid vendor use llamacpp PATH`).
         Tags are b<build number>; bump to the newest one, never a branch head.
 
     vendor/whisper.cpp
         https://github.com/ggml-org/whisper.cpp
         pinned at v1.9.4  (927cfce34f31707e17f2bff35c349632fb9e2c3a)
-        whisper.cpp is MIT. Nothing from it is copied into MAIC; the submodule is
+        whisper.cpp is MIT. Nothing from it is copied into MAID; the submodule is
         the only source. Built by vendor/whispercpp.sh OUT OF TREE into
         <state>/vendor/whisper.cpp-build (Release, GGML_CUDA when nvcc is found,
         WHISPER_CURL off so nothing in it downloads a model, no ffmpeg, no SDL2):
         whisper-server and whisper-cli, linked in as <state>/vendor/whisper/bin.
         The model whisper-server loads is the link <models_dir>/whisper/current.bin
-        (`maic vendor use whisper FILE`). diction is its client (docs/diction.md).
+        (`maid vendor use whisper FILE`). diction is its client (docs/diction.md).
         Tags are vX.Y.Z; bump to the newest one, never a branch head.
 
 WHY SUBMODULES AND NOT COPIES. A copy can be incomplete without anyone noticing
@@ -55,21 +55,21 @@ LuaJIT copy elsewhere; only a fresh clone would have shown it). A submodule's
 tree is whatever the pinned commit says it is; we do not filter it, and the pin
 is a hash rather than a copy someone might edit.
 
-WHERE THE RUNNING COPIES LIVE. Not here. ~/.local/state/maic/vendor/<Name> is a
+WHERE THE RUNNING COPIES LIVE. Not here. ~/.local/state/maid/vendor/<Name> is a
 symlink to a checkout (this repo's, or one the user adopted with
-`maic vendor adopt`). Services and `maic artifacts` go through those links, so a
+`maid vendor adopt`). Services and `maid artifacts` go through those links, so a
 user with an existing install keeps it and nothing moves.
 
 CHECKING
 
     git submodule update --init --recursive
     vendor/lua-pins/verify.sh                     # needs the network
-    maic vendor                                   # what is linked and installed
+    maid vendor                                   # what is linked and installed
 
 BUMPING
 
 Change the ref in vendor/manifest.json, move the submodule to that commit, and
-say why in the commit message and here. Then `maic vendor add NAME` re-runs the
+say why in the commit message and here. Then `maid vendor add NAME` re-runs the
 install script, which updates packages in place. Do not track a branch.
 
     vendor/vue
@@ -77,6 +77,6 @@ install script, which updates packages in place. Do not track a branch.
         build (vue.global.prod.js) and its MIT LICENSE, with PROVENANCE (upstream
         url and sha256) and verify.sh (fetches upstream, checks the hash, compares
         the committed copy). Loaded by artifact pages with a classic <script src>
-        from a relative path, which works over file://; maic-server serves it at
-        /a/_vendor/vue/ (installed to share/maic/vendor/vue). Bump by fetching the new
+        from a relative path, which works over file://; maid-server serves it at
+        /a/_vendor/vue/ (installed to share/maid/vendor/vue). Bump by fetching the new
         pinned version and updating PROVENANCE and verify.sh together.

@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 // One headless nvim with the user's configuration (the theme import, the keymap check): stdin, stdout and stderr
 // on /dev/null so nothing waits on a prompt, in its own process group so a plugin manager's children go with it,
@@ -19,4 +19,4 @@ struct NvimRun {
 NvimRun run_nvim_child(const std::vector<std::string>& args, const std::vector<std::string>& drop, const std::vector<std::string>& add,
                        std::chrono::seconds timeout, const std::atomic<bool>* cancel = nullptr);
 
-}  // namespace maic
+}  // namespace maid

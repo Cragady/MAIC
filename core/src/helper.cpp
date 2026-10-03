@@ -1,6 +1,6 @@
-#include "maic/helper.hpp"
+#include "maid/helper.hpp"
 
-#include "maic/llm.hpp"
+#include "maid/llm.hpp"
 
 #include <fcntl.h>
 #include <signal.h>
@@ -14,7 +14,7 @@
 
 extern char** environ;
 
-namespace maic {
+namespace maid {
 
 std::vector<std::string> keyless_environ() {
     std::vector<std::string> env;
@@ -51,7 +51,7 @@ int run_helper(const std::string& command, std::string* out, const std::string* 
     std::thread writer;
     if (input) {
         writer = std::thread([&] {
-            // A helper that exits without reading gives EPIPE here, not a SIGPIPE that ends MAIC.
+            // A helper that exits without reading gives EPIPE here, not a SIGPIPE that ends MAID.
             sigset_t pipe_sig;
             sigemptyset(&pipe_sig);
             sigaddset(&pipe_sig, SIGPIPE);
@@ -80,4 +80,4 @@ int run_helper(const std::string& command, std::string* out, const std::string* 
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }
 
-}  // namespace maic
+}  // namespace maid

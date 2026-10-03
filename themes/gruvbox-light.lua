@@ -1,6 +1,6 @@
--- gruvbox, light: the palette of morhetz/gruvbox (colors/gruvbox.vim, contrast medium), mapped onto MAIC's
+-- gruvbox, light: the palette of morhetz/gruvbox (colors/gruvbox.vim, contrast medium), mapped onto MAID's
 -- roles: errors red, added lines green, notices yellow, links blue, headings orange and bold, comments and
--- quiet text grey. Meant for a terminal with the gruvbox light background (#fbf1c7); MAIC paints no background
+-- quiet text grey. Meant for a terminal with the gruvbox light background (#fbf1c7); MAID paints no background
 -- of its own. Palette: bg0 #fbf1c7 bg1 #ebdbb2 bg2 #d5c4a1 bg3 #bdae93 gray #928374, fg0 #282828 fg1 #3c3836 fg4 #7c6f64,
 -- red #9d0006 green #79740e yellow #b57614 blue #076678 purple #8f3f71 aqua #427b58 orange #af3a03.
 return {

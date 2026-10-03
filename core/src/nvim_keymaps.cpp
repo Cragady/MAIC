@@ -1,6 +1,6 @@
-#include "maic/nvim_keymaps.hpp"
+#include "maid/nvim_keymaps.hpp"
 
-#include "maic/paths.hpp"
+#include "maid/paths.hpp"
 #include "nvim_run.hpp"
 
 #include <sys/wait.h>
@@ -9,7 +9,7 @@
 #include <fstream>
 #include <set>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -44,13 +44,13 @@ KeymapReport parse_keymap_report(const json& j) {
 
 KeymapReport run_keymap_check(const std::string& config, const std::atomic<bool>* cancel, std::chrono::seconds timeout, const std::string& nvim) {
     KeymapReport r;
-    fs::path script = root_dir() / "maic.nvim" / "lua" / "maic" / "keymaps.lua";
+    fs::path script = root_dir() / "maid.nvim" / "lua" / "maid" / "keymaps.lua";
     std::error_code ec;
     if (!fs::is_regular_file(script, ec)) {
-        r.error = "maic.nvim is not at " + script.parent_path().parent_path().parent_path().string();
+        r.error = "maid.nvim is not at " + script.parent_path().parent_path().parent_path().string();
         return r;
     }
-    std::string tmpl = (fs::temp_directory_path() / "maic-keymaps-XXXXXX").string();
+    std::string tmpl = (fs::temp_directory_path() / "maid-keymaps-XXXXXX").string();
     if (!mkdtemp(tmpl.data())) {
         r.error = "can't create a temporary directory for the nvim run";
         return r;
@@ -58,11 +58,11 @@ KeymapReport run_keymap_check(const std::string& config, const std::atomic<bool>
     fs::path dir = tmpl, out = dir / "report.json";
     std::vector<std::string> args = {nvim, "--headless", "-i", "NONE", "-n", "-V1" + (dir / "verbose.log").string()};
     if (!config.empty()) args.insert(args.end(), {"-u", config});
-    args.insert(args.end(), {"--cmd", "let g:maic_keymap_check = 1", "-c", "lua dofile(os.getenv('MAIC_KEYMAP_SCRIPT')).headless(os.getenv('MAIC_KEYMAP_OUT'))"});
+    args.insert(args.end(), {"--cmd", "let g:maid_keymap_check = 1", "-c", "lua dofile(os.getenv('MAID_KEYMAP_SCRIPT')).headless(os.getenv('MAID_KEYMAP_OUT'))"});
     try {
-        // $NVIM is dropped: the check is no job of the nvim MAIC may run inside.
-        NvimRun run = run_nvim_child(args, {"MAIC_KEYMAP_", "NVIM", "NVIM_LISTEN_ADDRESS"},
-                                     {"MAIC_KEYMAP_SCRIPT=" + script.string(), "MAIC_KEYMAP_OUT=" + out.string()}, timeout, cancel);
+        // $NVIM is dropped: the check is no job of the nvim MAID may run inside.
+        NvimRun run = run_nvim_child(args, {"MAID_KEYMAP_", "NVIM", "NVIM_LISTEN_ADDRESS"},
+                                     {"MAID_KEYMAP_SCRIPT=" + script.string(), "MAID_KEYMAP_OUT=" + out.string()}, timeout, cancel);
         if (run.cancelled) r.error = "stopped";
         else if (run.timed_out) r.error = nvim + " did not finish within " + std::to_string(timeout.count()) + " s and was stopped (a plugin manager installing in headless mode?)";
         else if (!fs::is_regular_file(out, ec)) {
@@ -95,7 +95,7 @@ std::string format_keymap_report(const KeymapReport& r, bool all) {
         out += "  " + tag + std::string(7 - tag.size(), ' ') + i.text + "\n";
         if (!i.hint.empty()) out += "         fix: " + i.hint + "\n";
     }
-    out += "\n:checkhealth maic in nvim shows the same" + std::string(all ? "" : " with every key (maic nvim keymaps --all here)") + "\n";
+    out += "\n:checkhealth maid in nvim shows the same" + std::string(all ? "" : " with every key (maid nvim keymaps --all here)") + "\n";
     return out;
 }
 
@@ -103,7 +103,7 @@ std::string keymap_summary(const KeymapReport& r) {
     if (!r.error.empty()) return r.error;
     size_t n = r.collisions().size();
     if (n == 0) return "no collisions";
-    return std::to_string(n) + (n == 1 ? " collision" : " collisions") + ": maic nvim keymaps";
+    return std::to_string(n) + (n == 1 ? " collision" : " collisions") + ": maid nvim keymaps";
 }
 
 int keymap_exit_code(const KeymapReport& r) {
@@ -149,4 +149,4 @@ std::vector<KeymapItem> new_collisions(const KeymapRecord& before, const KeymapR
     return out;
 }
 
-}  // namespace maic
+}  // namespace maid

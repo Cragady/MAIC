@@ -6,7 +6,7 @@ import os
 import sys
 
 from cai.fabricate import maker
-from cai.grammar import maic as fmt
+from cai.grammar import maid as fmt
 
 MAN_HELP = """cai fabricate -- full reference
 
@@ -117,18 +117,18 @@ def main(argv=None):
         turns.append(("user", args.user))
     if args.assistant:
         turns.append(("assistant", args.assistant))
-    is_maic = fmt.is_maic(lines)
-    cwd = (fmt.first_start(lines).get("workspace") if is_maic
+    is_maid = fmt.is_maid(lines)
+    cwd = (fmt.first_start(lines).get("workspace") if is_maid
            else next((r.get("cwd") for r in lines if r.get("cwd")), None)) or os.getcwd()
     ts = args.timestamp
-    if not ts and is_maic:
-        ts = fmt.stamp()  # a MAIC record's own form: local time with the offset
+    if not ts and is_maid:
+        ts = fmt.stamp()  # a MAID record's own form: local time with the offset
     if not ts:
         from cai.timekeeping import cli as timecli
         ts = timecli.stamp()
     try:
-        if is_maic:
-            out, made = maker.insert_maic(lines, turns, args.at, cwd, ts, mode=mode,
+        if is_maid:
+            out, made = maker.insert_maid(lines, turns, args.at, cwd, ts, mode=mode,
                                          source=args.source)
         else:
             out, made = maker.insert(lines, turns, args.at, cwd, ts, mode=mode,

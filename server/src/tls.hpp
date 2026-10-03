@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace maic::server {
+namespace maid::server {
 
 struct TlsPair {
     std::filesystem::path cert;
@@ -22,4 +22,4 @@ std::string cert_fingerprint(const std::filesystem::path& cert);
 // server listens on every interface.
 std::vector<std::string> interface_addresses();
 
-}  // namespace maic::server
+}  // namespace maid::server

@@ -24,7 +24,7 @@ if [ -z "${VCPKG_ROOT:-}" ]; then
     exit 2
 fi
 
-# A reminder, never a gate: which ways of leaving a session MAIC does not define yet (docs/testing.md).
+# A reminder, never a gate: which ways of leaving a session MAID does not define yet (docs/testing.md).
 python3 scripts/leave_audit.py || true
 
 step() {
@@ -39,12 +39,12 @@ step ctest --preset "$preset"
 
 build=build
 [ "$preset" = asan ] && build=build-asan
-step python3 tests/cli_smoke.py "$build/cli/maic"
-echo "== python3 tests/test_tui.py $build/cli/maic -v"
-python3 tests/test_tui.py "$build/cli/maic" -v
+step python3 tests/cli_smoke.py "$build/cli/maid"
+echo "== python3 tests/test_tui.py $build/cli/maid -v"
+python3 tests/test_tui.py "$build/cli/maid" -v
 rc=$?
 if [ "$rc" = 77 ]; then
-    echo "check: the TUI suite was skipped (no pyte, and no uv with pyte cached; MAIC_NETWORK_TESTS=1 lets uv fetch it)"
+    echo "check: the TUI suite was skipped (no pyte, and no uv with pyte cached; MAID_NETWORK_TESTS=1 lets uv fetch it)"
 elif [ "$rc" != 0 ]; then
     echo "check: FAILED at: tests/test_tui.py" >&2
     exit 1

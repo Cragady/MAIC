@@ -1,6 +1,6 @@
 # ComfyUI Setup
 
-Local image generation (full-color manga shorts). Runs in its own Python so system Python stays clean. LLM work goes through MAIC's llama-server with the `MAIC/llm` nodes: see [llamacpp.md](llamacpp.md) and `vendor/comfyui-maic-llamacpp/README.md`.
+Local image generation (full-color manga shorts). Runs in its own Python so system Python stays clean. LLM work goes through MAID's llama-server with the `MAID/llm` nodes: see [llamacpp.md](llamacpp.md) and `vendor/comfyui-maic-llamacpp/README.md`.
 
 ## Layout
 
@@ -33,10 +33,10 @@ uv pip install --python .venv -r requirements.txt
 # -> 2.14.0+cu130 True
 ```
 
-Model paths: `maic vendor wire comfyui` writes the `maic:` block of `extra_model_paths.yaml` from `models_dir` in settings and the manifest's `models` map (every category ComfyUI reads, `upscale_models` included), and leaves any other root key in the file alone. No symlinking into `ComfyUI/models` is needed. The block it writes:
+Model paths: `maid vendor wire comfyui` writes the `maid:` block of `extra_model_paths.yaml` from `models_dir` in settings and the manifest's `models` map (every category ComfyUI reads, `upscale_models` included), and leaves any other root key in the file alone. No symlinking into `ComfyUI/models` is needed. The block it writes:
 
 ```yaml
-maic:
+maid:
     base_path: "/path/to/llm-models/"
     checkpoints: checkpoints/
     clip_vision: clip_vision/
@@ -51,7 +51,7 @@ maic:
     vae: vae/
 ```
 
-The external drive must be mounted before ComfyUI starts, or those models won't show up. `maic doctor` says whether the venv's torch and the NVIDIA driver agree on a CUDA version.
+The external drive must be mounted before ComfyUI starts, or those models won't show up. `maid doctor` says whether the venv's torch and the NVIDIA driver agree on a CUDA version.
 
 ### Update
 
@@ -61,9 +61,9 @@ git pull && uv pip install --python .venv -r requirements.txt
 
 Custom node requirements go into the same venv: `uv pip install --python .venv -r custom_nodes/<node>/requirements.txt`.
 
-### MAIC's chat nodes
+### MAID's chat nodes
 
-`custom_nodes/comfyui-maic-llamacpp` is a link to `vendor/comfyui-maic-llamacpp` in the MAIC repo (`maic vendor add comfyui` or `vendor/comfyui.sh wire` makes it). It adds **MAIC LLM Server (llama.cpp)** and **MAIC LLM Chat** under `MAIC/llm`: a chat turn against the `llama-server` MAIC runs on `127.0.0.1:8081`, with a per-request `think` switch, JSON mode, the sampling widgets, an `extra_json` field for every other llama-server option, images for a server started with `--mmproj`, and a conversation kept per `session_id` until ComfyUI restarts. Standard library only, so nothing to install. Its README has the widget-by-widget mapping from the old Ollama nodes.
+`custom_nodes/comfyui-maic-llamacpp` is a link to `vendor/comfyui-maic-llamacpp` in the MAID repo (`maid vendor add comfyui` or `vendor/comfyui.sh wire` makes it). It adds **MAID LLM Server (llama.cpp)** and **MAID LLM Chat** under `MAID/llm`: a chat turn against the `llama-server` MAID runs on `127.0.0.1:8081`, with a per-request `think` switch, JSON mode, the sampling widgets, an `extra_json` field for every other llama-server option, images for a server started with `--mmproj`, and a conversation kept per `session_id` until ComfyUI restarts. Standard library only, so nothing to install. Its README has the widget-by-widget mapping from the old Ollama nodes.
 
 ### Uninstall / reset
 
@@ -75,17 +75,17 @@ NoobAI, Illustrious and Anima are trained on Danbooru tags. The tag group index,
 
 ## Editing workflows without the UI
 
-`maic-workflow-edit` (installed beside `maic`; source in `tools/comfyui/workflow_edit.py`) changes prompts, seeds, steps, captions and file prefixes in a workflow JSON by exact path, interactively or from the command line, without touching the wiring; the agent knows it from its briefing and drives it through `run_shell` when MAIC runs in the workflow's folder. `maic-workflow-edit check FILE` lists the node types a workflow uses that neither ComfyUI core nor the installed `custom_nodes/` provide, read from the vendored checkout, offline. See [tools/comfyui/README.md](../tools/comfyui/README.md).
+`maid-workflow-edit` (installed beside `maid`; source in `tools/comfyui/workflow_edit.py`) changes prompts, seeds, steps, captions and file prefixes in a workflow JSON by exact path, interactively or from the command line, without touching the wiring; the agent knows it from its briefing and drives it through `run_shell` when MAID runs in the workflow's folder. `maid-workflow-edit check FILE` lists the node types a workflow uses that neither ComfyUI core nor the installed `custom_nodes/` provide, read from the vendored checkout, offline. See [tools/comfyui/README.md](../tools/comfyui/README.md).
 
 ## Run
 
 ```sh
-maic up comfyui       # open http://127.0.0.1:8188
-maic down comfyui
-maic logs comfyui
+maid up comfyui       # open http://127.0.0.1:8188
+maid down comfyui
+maid logs comfyui
 ```
 
-MAIC starts it from `services/comfyui.json` with `--disable-api-nodes --listen 127.0.0.1 --port 8188` and reports ready once the port is open and the log says `To see the GUI go to` (the file's `ready_pattern`); `maic status` then shows its VRAM in use and whether the queue is busy. The Story chat workflow also needs `maic up llamacpp` (with a GGUF linked by `maic vendor use llamacpp`). A containerised ComfyUI instead: `services/comfyui-docker.json.example` and [vendor.md](vendor.md), Docker as a runtime.
+MAID starts it from `services/comfyui.json` with `--disable-api-nodes --listen 127.0.0.1 --port 8188` and reports ready once the port is open and the log says `To see the GUI go to` (the file's `ready_pattern`); `maid status` then shows its VRAM in use and whether the queue is busy. The Story chat workflow also needs `maid up llamacpp` (with a GGUF linked by `maid vendor use llamacpp`). A containerised ComfyUI instead: `services/comfyui-docker.json.example` and [vendor.md](vendor.md), Docker as a runtime.
 
 Useful flags (add them to the `command` in `services/comfyui.json`):
 
@@ -110,7 +110,7 @@ Useful flags (add them to the `command` in `services/comfyui.json`):
 | `qwen_image_edit_2509_fp8_e4m3fn.safetensors` | `diffusion_models/` | 20.4 GB | [Comfy-Org/Qwen-Image-Edit_ComfyUI](https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI) | Lettering speech bubbles (legible text) |
 | `qwen_2.5_vl_7b_fp8_scaled.safetensors` | `text_encoders/` | 9.4 GB | [Comfy-Org/Qwen-Image_ComfyUI](https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI) | Qwen-Image-Edit text encoder |
 | `Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors` | `loras/` | 0.8 GB | [lightx2v/Qwen-Image-Lightning](https://huggingface.co/lightx2v/Qwen-Image-Lightning) | 4-step speed LoRA for Qwen-Image-Edit |
-| `qwen3.5_4b_bf16.safetensors` | `text_encoders/` | 9.3 GB | Comfy-Org/Qwen3.5 | ComfyUI-native LLM. **Superseded by llama-server** through the MAIC nodes (1.5 vs 80.7 tok/s); safe to delete |
+| `qwen3.5_4b_bf16.safetensors` | `text_encoders/` | 9.3 GB | Comfy-Org/Qwen3.5 | ComfyUI-native LLM. **Superseded by llama-server** through the MAID nodes (1.5 vs 80.7 tok/s); safe to delete |
 
 Download pattern (resumable): `curl -fL -C - -o "<folder>/<file>" "<huggingface resolve URL>"`.
 
@@ -129,6 +129,6 @@ Negative: `nsfw, worst quality, old, early, low quality, lowres, signature, user
 | Manga 4-panel short (NoobAI) | 4 panels, shared character tags, fixed seeds, narration captions, stitched 2x2 page |
 | Manga 4-panel short (NoobAI) - BETA captions | Same, plus dialogue as caption strips until speech bubbles are ready |
 | Manga 4-panel short (Anima) [+ BETA] | Anima versions of the above |
-| story-chat-llamacpp | Story co-writer on MAIC's llama-server: quick pass with memory, optional muted deep pass on the same conversation. Ships in `vendor/comfyui-maic-llamacpp/example_workflows/`, so the template browser lists it under comfyui-maic-llamacpp |
+| story-chat-llamacpp | Story co-writer on MAID's llama-server: quick pass with memory, optional muted deep pass on the same conversation. Ships in `vendor/comfyui-maic-llamacpp/example_workflows/`, so the template browser lists it under comfyui-maic-llamacpp |
 
 Text in images: diffusion models garble lettering. Current approach: generate clean panels (negative prompt includes `text, speech bubble`), then add text with the **Draw Text Overlay** node (captions), Krita/GIMP (bubbles), or Qwen-Image-Edit (in progress).

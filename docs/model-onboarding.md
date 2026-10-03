@@ -1,6 +1,6 @@
 # Onboarding a model for tool use
 
-How a model earns the right to use tools in MAIC, how it is tested at each step, and what is recorded. One process for every model and provider, so onboarding a new one never means inventing a new procedure. Micaiah's rule (2026-10-03): no piece of trial data is lost, so a model can't bite us when we aren't looking.
+How a model earns the right to use tools in MAID, how it is tested at each step, and what is recorded. One process for every model and provider, so onboarding a new one never means inventing a new procedure. Micaiah's rule (2026-10-03): no piece of trial data is lost, so a model can't bite us when we aren't looking.
 
 ## The escalation chain
 
@@ -9,12 +9,12 @@ A model starts at the bottom and climbs one level at a time. Each level is a pol
 | Level | What the model may do | Who judges each call | To move up |
 | :- | :- | :- | :- |
 | 0. Text only | Answer in text; no tools at all. | Nobody needed. | Its answers are useful for the work at hand. |
-| 1. Text tool calls | Describe tool calls in its text; MAIC parses them, validates each against its schema, and another agent or MAIC itself carries out the valid ones. Requests carry no `tools` parameter. | MAIC's harness, with the checker panel. | Level 1 measurements meet their thresholds over a full trial. |
-| 2. Native tool calls | Use the provider's own tool-call format. | MAIC's harness, with the checker panel. | Level 2 measurements meet their thresholds. |
+| 1. Text tool calls | Describe tool calls in its text; MAID parses them, validates each against its schema, and another agent or MAID itself carries out the valid ones. Requests carry no `tools` parameter. | MAID's harness, with the checker panel. | Level 1 measurements meet their thresholds over a full trial. |
+| 2. Native tool calls | Use the provider's own tool-call format. | MAID's harness, with the checker panel. | Level 2 measurements meet their thresholds. |
 | 3. Its own checker | Also act as a judge of its own calls, alongside an established judge (the co-pilot setup), so its judgement can be compared. | The established judge decides; the model's verdict is recorded. | Its verdicts agree with the established judge closely enough, and it never allows what the judge denies. |
-| 4. Trusted driver | Drive a session with its verdicts counting as a judge, under MAIC's fixed rules, which always stay the floor. | The model, inside MAIC's harness. | Not a level to leave: review it periodically. |
+| 4. Trusted driver | Drive a session with its verdicts counting as a judge, under MAID's fixed rules, which always stay the floor. | The model, inside MAID's harness. | Not a level to leave: review it periodically. |
 
-A provider that runs its own harness on its servers (Anthropic's server tools, for example) is placed on this chain by what MAIC can see and control: server-side actions MAIC can't judge are not counted as judged.
+A provider that runs its own harness on its servers (Anthropic's server tools, for example) is placed on this chain by what MAID can see and control: server-side actions MAID can't judge are not counted as judged.
 
 ## Agentic tying
 

@@ -1,10 +1,10 @@
 // Every model provider against a fake server that misbehaves on purpose. No network, no API keys.
 #include "check.hpp"
 
-#include "maic/helper.hpp"
-#include "maic/llm.hpp"
+#include "maid/helper.hpp"
+#include "maid/llm.hpp"
 
-#include "maic/http.hpp"
+#include "maid/http.hpp"
 
 #include "fake_claude.hpp"
 #include "fake_deepseek.hpp"
@@ -25,7 +25,7 @@
 #include <sstream>
 #include <thread>
 
-using namespace maic;
+using namespace maid;
 using nlohmann::json;
 
 namespace {
@@ -80,8 +80,8 @@ const json kTools = json::array({{{"type", "function"},
 
 int main() {
     std::vector<Message> hello = {{"system", "be brief"}, {"user", "hi"}};
-    // GET /models's saved copies go under a scratch state directory, never ~/.local/state/maic.
-    const std::filesystem::path scratch_state = std::filesystem::temp_directory_path() / ("maic-llm-test-state-" + std::to_string(getpid()));
+    // GET /models's saved copies go under a scratch state directory, never ~/.local/state/maid.
+    const std::filesystem::path scratch_state = std::filesystem::temp_directory_path() / ("maid-llm-test-state-" + std::to_string(getpid()));
     std::filesystem::remove_all(scratch_state);
     setenv("XDG_STATE_HOME", scratch_state.c_str(), 1);
 
@@ -117,8 +117,8 @@ int main() {
     }
 
     section("anthropic");
-    setenv("MAIC_TEST_KEY", "sk-test", 1);
-    Provider anth{"anthropic", "anthropic", "", "MAIC_TEST_KEY", "", {{"max_tokens", 1000}, {"effort", "high"}, {"fallbacks", "default"}}};
+    setenv("MAID_TEST_KEY", "sk-test", 1);
+    Provider anth{"anthropic", "anthropic", "", "MAID_TEST_KEY", "", {{"max_tokens", 1000}, {"effort", "high"}, {"fallbacks", "default"}}};
     {
         Fake f;
         f.serve("/v1/messages", {
@@ -190,7 +190,7 @@ int main() {
         f.start();
         anth.base_url = f.url();
         auto m = run(anth, hello, nullptr, no_cancel, kTools);
-        expect(m.tool_calls.size() == 1 && m.tool_calls[0].arguments.contains("_maic_invalid_input"),
+        expect(m.tool_calls.size() == 1 && m.tool_calls[0].arguments.contains("_maid_invalid_input"),
                "invalid streamed tool JSON is flagged, not run with a half-parsed input");
     }
     {
@@ -212,16 +212,16 @@ int main() {
     }
     {
         Provider nokey = anth;
-        nokey.api_key_env = "MAIC_TEST_NO_SUCH_KEY";
+        nokey.api_key_env = "MAID_TEST_NO_SUCH_KEY";
         std::string msg;
         try { run(nokey, hello); } catch (const std::exception& e) { msg = e.what(); }
-        expect(msg.find("MAIC_TEST_NO_SUCH_KEY") != std::string::npos, "a missing key names the variable to set");
+        expect(msg.find("MAID_TEST_NO_SUCH_KEY") != std::string::npos, "a missing key names the variable to set");
         nokey.api_key_command = "echo sk-from-command";
         expect(nokey.api_key() == "sk-from-command", "api_key_command supplies the key");
     }
 
     section("openai-compatible");
-    Provider oai{"deepseek", "openai", "", "MAIC_TEST_KEY", "", json::object()};
+    Provider oai{"deepseek", "openai", "", "MAID_TEST_KEY", "", json::object()};
     {
         Fake f;
         f.serve("/v1/chat/completions", {
@@ -256,7 +256,7 @@ int main() {
         // llama-server b11284's stream as written in the fixture (jsonschema_test checks each chunk against OpenAI's
         // schema): the opening role chunk with null content, reasoning_content, content, a tool call in two pieces,
         // finish_reason tool_calls, then usage and timings on a chunk with no choices.
-        std::ifstream in(std::string(MAIC_FIXTURES) + "/llamacpp-b11284-chat.sse");
+        std::ifstream in(std::string(MAID_FIXTURES) + "/llamacpp-b11284-chat.sse");
         std::stringstream stream;
         stream << in.rdbuf();
         Fake f;
@@ -274,7 +274,7 @@ int main() {
     {
         // The shapes llama.cpp sends that OpenAI's do not allow: the adapter rules rewrite them and the caller hears
         // each rule once per call, also when the call ends in the error.
-        std::ifstream in(std::string(MAIC_FIXTURES) + "/llamacpp-b11284-oddities.sse");
+        std::ifstream in(std::string(MAID_FIXTURES) + "/llamacpp-b11284-oddities.sse");
         std::stringstream stream;
         stream << in.rdbuf();
         Fake f;
@@ -308,7 +308,7 @@ int main() {
         // The same server captured live (2026-10-02): a tool call with thinking, a logprobs chunk, and the router's
         // proxy error when the model went away mid-stream, which must end the call as an error, not a short reply.
         auto fixture = [](const std::string& name) {
-            std::ifstream in(std::string(MAIC_FIXTURES) + "/" + name);
+            std::ifstream in(std::string(MAID_FIXTURES) + "/" + name);
             std::stringstream stream;
             stream << in.rdbuf();
             return stream.str();
@@ -342,20 +342,20 @@ int main() {
     }
     {
         // The code names the software behind the provider, not what it is called here: both shipped llama servers
-        // say maic_llamacpp_500; a provider without `upstream` falls back to its own name.
+        // say maid_llamacpp_500; a provider without `upstream` falls back to its own name.
         auto code_for = [](const Provider& p) {
             json body = {{"error", {{"code", 500}, {"message", "the model crashed"}, {"type", "server_error"}}}};
             normalize_openai(body, p.upstream_name());
-            return body["error"]["code"].get<std::string>() + " " + body["error"]["maic"]["upstream"]["provider"].get<std::string>();
+            return body["error"]["code"].get<std::string>() + " " + body["error"]["maid"]["upstream"]["provider"].get<std::string>();
         };
         std::map<std::string, std::string> shipped;
         for (const auto& p : default_providers()) shipped[p.name] = code_for(p);
-        expect(shipped["llamacpp"] == "maic_llamacpp_500 llamacpp" && shipped["llamacpp-2"] == "maic_llamacpp_500 llamacpp",
-               "llamacpp and llamacpp-2 both give maic_llamacpp_500, upstream llamacpp: " + shipped["llamacpp-2"]);
+        expect(shipped["llamacpp"] == "maid_llamacpp_500 llamacpp" && shipped["llamacpp-2"] == "maid_llamacpp_500 llamacpp",
+               "llamacpp and llamacpp-2 both give maid_llamacpp_500, upstream llamacpp: " + shipped["llamacpp-2"]);
         Provider lab{"lab", "openai", "http://127.0.0.1:9/v1", "", "", json::object()};
-        expect(code_for(lab) == "maic_lab_500 lab", "a provider without upstream falls back to its name");
+        expect(code_for(lab) == "maid_lab_500 lab", "a provider without upstream falls back to its name");
         lab.upstream = "vllm";
-        expect(code_for(lab) == "maic_vllm_500 vllm", "a provider with upstream names that instead");
+        expect(code_for(lab) == "maid_vllm_500 vllm", "a provider with upstream names that instead");
     }
     {
         Fake f;
@@ -369,7 +369,7 @@ int main() {
         auto m = run(local, hello, &streamed);
         expect(m.content == "Hello there" && streamed == "Hello there", "events split across chunks are reassembled; junk lines skipped");
         expect(m.usage.input == 120 && m.usage.output == 7 && m.usage.context == 16384, "token counts come from the usage chunk, the context size from the provider's context_window");
-        expect(m.tool_calls.size() == 1 && m.tool_calls[0].id == "c1" && m.tool_calls[0].arguments.contains("_maic_invalid_input"),
+        expect(m.tool_calls.size() == 1 && m.tool_calls[0].id == "c1" && m.tool_calls[0].arguments.contains("_maid_invalid_input"),
                "nameless tool calls dropped, ids kept, unparseable arguments flagged");
     }
     {
@@ -440,7 +440,7 @@ int main() {
         json b = ds.last();
         expect(m.content == "done" && text == "done" && thought == "thought 1" && m.usage.input == 120 && m.usage.output == 30 && m.usage.cached == 64 && m.usage.context == 1048576,
                "thinking on: reasoning streams as thinking, the answer as text, usage from the final chunk with its cache hits, the window GET /models gave: " + text + " / " + thought);
-        expect(ds.models_reads == 1 && std::filesystem::exists(scratch_state / "maic" / "api-models" / "deepseek.json"),
+        expect(ds.models_reads == 1 && std::filesystem::exists(scratch_state / "maid" / "api-models" / "deepseek.json"),
                "GET /models is read at the first use, and kept under the state directory with the time it was read");
         expect(m.raw.value("model", "") == "deepseek-flash" && m.raw.value("system_fingerprint", "") == "fp_fake", "the model that answered and its fingerprint are kept with the turn");
         expect(b["thinking"] == json{{"type", "enabled"}} && b["stream"] == true, "thinking on is asked for with DeepSeek's own field: " + b.dump());
@@ -653,7 +653,7 @@ int main() {
         ApiModelFacts facts = api_model_facts(p, true);
         m = chat(p, o, hello, json::array(), [](std::string_view, bool) {}, no_cancel);
         expect(ds.models_reads == 2 && facts.error.empty() && facts.models.at("deepseek-flash").context == 2000000 && m.usage.context == 2000000,
-               "a refresh (maic models refresh) reads it again, and the new window is used");
+               "a refresh (maid models refresh) reads it again, and the new window is used");
         ds.models_status = 503;
         facts = api_model_facts(p, true);
         expect(facts.saved && facts.error.find("HTTP 503") != std::string::npos && facts.models.at("deepseek-flash").context == 2000000 && facts.read_at > 0,
@@ -664,7 +664,7 @@ int main() {
         unsetenv("DEEPSEEK_API_KEY");
     }
 
-    section("deepseek: MAIC's own cap on concurrent requests");
+    section("deepseek: MAID's own cap on concurrent requests");
     {
         FakeDeepSeek ds;
         Provider p = by_name("deepseek");
@@ -690,7 +690,7 @@ int main() {
         for (auto& t : threads) t.join();
         auto count = [&](const std::string& what) { return std::count_if(told.begin(), told.end(), [&](const std::string& n) { return n.find(what) != std::string::npos; }); };
         expect(done == 5 && ds.max_active == 2, "five at once with a cap of two: all answered, never more than two open (" + std::to_string(ds.max_active.load()) + ")");
-        expect(count("this one waits for a slot") >= 1 && count("2 of the 2 concurrent requests MAIC allows are open") == 1,
+        expect(count("this one waits for a slot") >= 1 && count("2 of the 2 concurrent requests MAID allows are open") == 1,
                "the ones past the cap are told they wait, and passing half the cap is told once: " + json(told).dump());
         ds.max_active = 0;
         ChatOptions pro{"deepseek-v4-pro", false};
@@ -1085,14 +1085,14 @@ int main() {
     section("claude-cli: Claude Code as a text-only provider (a fake claude on PATH)");
     {
         namespace fs = std::filesystem;
-        fs::path dir = fs::temp_directory_path() / ("maic-llm-test-cli-" + std::to_string(getpid()));
+        fs::path dir = fs::temp_directory_path() / ("maid-llm-test-cli-" + std::to_string(getpid()));
         fs::remove_all(dir);
         std::string saved_path = std::getenv("PATH") ? std::getenv("PATH") : "";
-        setenv("XDG_STATE_HOME", (dir / "state").c_str(), 1);  // the CLI's directory and log, never ~/.local/state/maic
+        setenv("XDG_STATE_HOME", (dir / "state").c_str(), 1);  // the CLI's directory and log, never ~/.local/state/maid
         setenv("ANTHROPIC_API_KEY", "sk-not-for-the-cli", 1);
         setenv("DEEPSEEK_API_KEY", "sk-deepseek-not-for-the-cli", 1);
-        setenv("MAIC_TEST_WORK_TOKEN", "work-key-not-for-the-cli", 1);  // a key in a variable named anyhow
-        Provider work{"work", "openai", "https://llm.example.com/v1", "MAIC_TEST_WORK_TOKEN", "", json::object()};
+        setenv("MAID_TEST_WORK_TOKEN", "work-key-not-for-the-cli", 1);  // a key in a variable named anyhow
+        Provider work{"work", "openai", "https://llm.example.com/v1", "MAID_TEST_WORK_TOKEN", "", json::object()};
         add_key_envs({work});
         fake_claude::install(dir);
         Provider cli = by_name("claude-cli");
@@ -1126,7 +1126,7 @@ int main() {
         expect(has("-p") && after("--input-format") == "stream-json" && after("--output-format") == "stream-json" && has("--verbose") && has("--include-partial-messages") &&
                    has("--no-session-persistence") && after("--system-prompt") == "be brief" && after("--model") == "haiku",
                "headless, stream-json both ways, no session persistence, the system prompt and --model from the model name");
-        expect(!starts.empty() && !starts[0].value("api_key", true) && starts[0].value("cwd", "") == fs::weakly_canonical(dir / "state" / "maic" / "cli" / "claude-cli").string(),
+        expect(!starts.empty() && !starts[0].value("api_key", true) && starts[0].value("cwd", "") == fs::weakly_canonical(dir / "state" / "maid" / "cli" / "claude-cli").string(),
                "the user's plan, not the API: ANTHROPIC_API_KEY is kept from it, and it runs in a directory of its own");
         expect(!starts.empty() && !starts[0].value("other_key", true) && !starts[0].value("work_key", true),
                "no other provider's key reaches it either: DEEPSEEK_API_KEY, nor a configured api_key_env without _API_KEY in its name");
@@ -1160,7 +1160,7 @@ int main() {
         expect(ask(cli, "haiku", "be brief", "still there").content.find("still there") != std::string::npos, "and the process stays usable after it");
 
         {
-            // Level 2: with tool schemas the CLI runs the loop on MAIC's tools over MCP. Each reply stops at its
+            // Level 2: with tool schemas the CLI runs the loop on MAID's tools over MCP. Each reply stops at its
             // calls; the next request carries their results, which go back over MCP, and the CLI continues.
             setenv("XDG_RUNTIME_DIR", (dir / "run").c_str(), 1);
             fs::create_directories(dir / "run");
@@ -1183,12 +1183,12 @@ int main() {
                 return std::string("(absent)");
             };
             json servers = json::parse(after("--mcp-config"), nullptr, false).value("mcpServers", json::object());
-            json maic = servers.value("maic", json::object());
-            std::string socket_path = maic.value("args", json::array()).size() == 2 ? maic["args"][1].get<std::string>() : "";
-            expect(starts.size() == spawned + 1 && after("--tools").empty() && servers.size() == 1 && maic.value("type", "") == "stdio" &&
-                       maic.value("command", "") == fs::read_symlink("/proc/self/exe").string() && maic["args"][0] == "mcp-bridge" &&
-                       socket_path.rfind((dir / "run" / "maic" / "mcp").string(), 0) == 0 && after("--allowedTools") == "mcp__maic" && after("--permission-mode") == "dontAsk",
-                   "an agent starts with its own tools off and only MAIC's MCP server, pre-approved, reached through `maic mcp-bridge` on a socket in the runtime directory: " + argv.dump());
+            json maid = servers.value("maid", json::object());
+            std::string socket_path = maid.value("args", json::array()).size() == 2 ? maid["args"][1].get<std::string>() : "";
+            expect(starts.size() == spawned + 1 && after("--tools").empty() && servers.size() == 1 && maid.value("type", "") == "stdio" &&
+                       maid.value("command", "") == fs::read_symlink("/proc/self/exe").string() && maid["args"][0] == "mcp-bridge" &&
+                       socket_path.rfind((dir / "run" / "maid" / "mcp").string(), 0) == 0 && after("--allowedTools") == "mcp__maid" && after("--permission-mode") == "dontAsk",
+                   "an agent starts with its own tools off and only MAID's MCP server, pre-approved, reached through `maid mcp-bridge` on a socket in the runtime directory: " + argv.dump());
             expect(starts.back().value("tool_timeout", "") == "86400000" && !starts.back().value("api_key", true),
                    "a call may wait on the harness a day before the CLI gives up on it, and the plan's login is used, not the API key");
             struct stat st{};
@@ -1199,10 +1199,10 @@ int main() {
             expect(shake["initialize"]["result"]["protocolVersion"] == "2025-06-18" && shake["initialize"]["result"]["capabilities"].contains("tools") &&
                        listed.size() == 2 && listed[0]["name"] == "read_file" && listed[0]["inputSchema"]["properties"].contains("path") && listed[1]["name"] == "run_shell" &&
                        shake["unknown"]["error"]["code"] == -32601,
-                   "MCP: the handshake keeps the client's version, tools/list serves MAIC's tools as MCP Tool objects, an unknown method is -32601: " + shake.dump());
+                   "MCP: the handshake keeps the client's version, tools/list serves MAID's tools as MCP Tool objects, an unknown method is -32601: " + shake.dump());
             expect(step.tool_calls.size() == 1 && step.tool_calls[0].name == "read_file" && step.tool_calls[0].arguments == json{{"path", "a.txt"}} &&
                        step.tool_calls[0].id.rfind("toolu_", 0) == 0 && step.content == "calling read_file" && streamed == step.content && step.usage.input == 13 && step.usage.output == 4,
-                   "the reply ends at the CLI's call, MAIC's tool name without the mcp__maic__ prefix, with the text before it and the step's usage: " + message_to_json(step).dump());
+                   "the reply ends at the CLI's call, MAID's tool name without the mcp__maid__ prefix, with the text before it and the step's usage: " + message_to_json(step).dump());
             convo.push_back(result_for(step.tool_calls[0], "contents of a"));
             Message done = send(convo);
             int agent_pid = pid_of(done);
@@ -1240,7 +1240,7 @@ int main() {
             std::vector<Message> stray = {{"system", "agent system"}, {"user", "STRAY"}};
             std::string stray_err;
             try { send(stray); } catch (const std::exception& e) { stray_err = e.what(); }
-            expect(stray_err == "claude-cli/sonnet: it called Bash, which is not one of MAIC's tools", "a call to anything but MAIC's tools is an error: " + stray_err);
+            expect(stray_err == "claude-cli/sonnet: it called Bash, which is not one of MAID's tools", "a call to anything but MAID's tools is an error: " + stray_err);
 
             std::vector<Message> waiting = {{"system", "agent system"}, {"user", "wait\nCALL read_file {\"path\": \"w\"}"}};
             Message pending = send(waiting);
@@ -1322,28 +1322,28 @@ int main() {
         setenv("PATH", saved_path.c_str(), 1);
         unsetenv("ANTHROPIC_API_KEY");
         unsetenv("DEEPSEEK_API_KEY");
-        unsetenv("MAIC_TEST_WORK_TOKEN");
+        unsetenv("MAID_TEST_WORK_TOKEN");
     }
 
     section("fixed helpers start without keys");
     {
         setenv("DEEPSEEK_API_KEY", "sk-helper-must-not-see", 1);
         setenv("SOMEONES_API_KEY", "sk-nor-this", 1);
-        setenv("MAIC_TEST_HELPER_TOKEN", "named-by-a-provider", 1);
-        setenv("MAIC_TEST_HELPER_PLAIN", "kept", 1);
-        add_key_envs({Provider{"helper-work", "openai", "https://llm.example.com/v1", "MAIC_TEST_HELPER_TOKEN", "", json::object()}});
+        setenv("MAID_TEST_HELPER_TOKEN", "named-by-a-provider", 1);
+        setenv("MAID_TEST_HELPER_PLAIN", "kept", 1);
+        add_key_envs({Provider{"helper-work", "openai", "https://llm.example.com/v1", "MAID_TEST_HELPER_TOKEN", "", json::object()}});
         std::string env;
         int rc = run_helper("env", &env);
-        expect(rc == 0 && env.find("MAIC_TEST_HELPER_PLAIN=kept") != std::string::npos && env.find("DEEPSEEK_API_KEY") == std::string::npos &&
-                   env.find("SOMEONES_API_KEY") == std::string::npos && env.find("MAIC_TEST_HELPER_TOKEN") == std::string::npos && env.find("sk-helper-must-not-see") == std::string::npos &&
+        expect(rc == 0 && env.find("MAID_TEST_HELPER_PLAIN=kept") != std::string::npos && env.find("DEEPSEEK_API_KEY") == std::string::npos &&
+                   env.find("SOMEONES_API_KEY") == std::string::npos && env.find("MAID_TEST_HELPER_TOKEN") == std::string::npos && env.find("sk-helper-must-not-see") == std::string::npos &&
                    env.find("named-by-a-provider") == std::string::npos,
                "a helper's environment has no *_API_KEY and no variable a provider's api_key_env names");
         std::string echoed, input = "through stdin\n";
         expect(run_helper("cat", &echoed, &input) == 0 && echoed == input && run_helper("exit 3") == 3, "input reaches its stdin, output comes back, and so does its exit code");
         unsetenv("DEEPSEEK_API_KEY");
         unsetenv("SOMEONES_API_KEY");
-        unsetenv("MAIC_TEST_HELPER_TOKEN");
-        unsetenv("MAIC_TEST_HELPER_PLAIN");
+        unsetenv("MAID_TEST_HELPER_TOKEN");
+        unsetenv("MAID_TEST_HELPER_PLAIN");
     }
 
     std::filesystem::remove_all(scratch_state);

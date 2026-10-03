@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 // The input box: a small vim. Starts in normal mode. Insert, normal, replace, visual and visual-line modes,
 // counts, operators (d c y > < gq gu gU g~), text objects, marks, named registers, macros, `.` repeat,
@@ -193,4 +193,4 @@ size_t utf8_len(const std::string& s);
 size_t utf8_offset(const std::string& s, size_t code_points);
 int char_class(unsigned char c);  // 0 space, 1 word, 2 punctuation
 
-}  // namespace maic
+}  // namespace maid

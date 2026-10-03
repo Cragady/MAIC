@@ -1,6 +1,6 @@
 #include "nvim_run.hpp"
 
-#include "maic/llm.hpp"
+#include "maid/llm.hpp"
 
 #include <fcntl.h>
 #include <signal.h>
@@ -12,7 +12,7 @@
 
 extern char** environ;
 
-namespace maic {
+namespace maid {
 
 NvimRun run_nvim_child(const std::vector<std::string>& args, const std::vector<std::string>& drop, const std::vector<std::string>& add,
                        std::chrono::seconds timeout, const std::atomic<bool>* cancel) {
@@ -64,4 +64,4 @@ NvimRun run_nvim_child(const std::vector<std::string>& args, const std::vector<s
     return r;
 }
 
-}  // namespace maic
+}  // namespace maid

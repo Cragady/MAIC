@@ -6,4 +6,4 @@ Observed 2026-10-02 by Micaiah in Konsole with Firefox: a Ctrl+click on a link p
 
 **Fix on the terminal side.** In the Konsole profile, under Mouse, turn off "Allow escape sequences for links" (the label varies by version) and keep plain-text URL detection, which nvim's links need. Turning off plain-text detection instead keeps real hyperlinks but makes nvim's links unclickable.
 
-**For MAIC.** MAIC's TUI prints no OSC 8 links today. If it starts to, it gets the `hyperlinks` setting described in the [roadmap](../roadmap.md), so a user whose terminal already detects URLs can keep links opening once.
+**For MAID.** MAID's TUI prints no OSC 8 links today. If it starts to, it gets the `hyperlinks` setting described in the [roadmap](../roadmap.md), so a user whose terminal already detects URLs can keep links opening once.

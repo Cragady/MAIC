@@ -1,14 +1,14 @@
 #pragma once
 
 // The `:` commands the engine owns (docs/design/engine-protocol.md, sections 7 and 8): everything that acts on one
-// session's agent, settings and transcript. maic.session.command runs them under the session's lock. A front end
+// session's agent, settings and transcript. maid.session.command runs them under the session's lock. A front end
 // keeps its own: the view, the editor, themes, registers, and the machine's services and trust store.
 
-#include "maic/agent.hpp"
-#include "maic/lua.hpp"
-#include "maic/session.hpp"
-#include "maic/settings.hpp"
-#include "maic/trust.hpp"
+#include "maid/agent.hpp"
+#include "maid/lua.hpp"
+#include "maid/session.hpp"
+#include "maid/settings.hpp"
+#include "maid/trust.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -21,10 +21,10 @@
 #include <string>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 // What a command answers: lines for the person who typed it ({text, level}: info, warn, error), a question to
-// put to them first, or text to send as their next message (:init's request for a MAIC.md).
+// put to them first, or text to send as their next message (:init's request for a MAID.md).
 struct CommandOutput {
     bool ok = true;
     nlohmann::json lines = nlohmann::json::array();
@@ -45,7 +45,7 @@ struct CommandOutput {
     std::string ask_id;  // set by SessionCommands
     std::string send;
 
-    nlohmann::json json() const;  // the result of maic.session.command
+    nlohmann::json json() const;  // the result of maid.session.command
 };
 
 class SessionCommands {
@@ -56,9 +56,9 @@ public:
         SessionLog& log;
         Settings& settings;  // the session's own: :ctx, :cd and a preset change it
         bool running;        // a turn is running
-        std::function<void(nlohmann::json)> changed;              // maic.session.settings with these fields
+        std::function<void(nlohmann::json)> changed;              // maid.session.settings with these fields
         std::function<void(const std::string&)> rename;           // the title, as updateConversation sets it
-        std::function<void(const std::string&)> notice;           // a maic.notice now (what a :lua chunk prints)
+        std::function<void(const std::string&)> notice;           // a maid.notice now (what a :lua chunk prints)
         std::function<Settings(const std::filesystem::path&)> settings_at;  // what a start in that directory reads
         std::string tier;  // "protocol tier: guarded (global default)", for :status and :harness
     };
@@ -96,4 +96,4 @@ private:
     std::function<void(const std::string&)> lua_notice_;
 };
 
-}  // namespace maic
+}  // namespace maid

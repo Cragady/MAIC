@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""word_count: a MAIC script tool in Python. See docs/tools.md for the format.
+"""word_count: a MAID script tool in Python. See docs/tools.md for the format.
 
-Install it by copying this directory to .maic/tools/word_count/ in a workspace (or to ~/.config/maic/tools/
-for every workspace). MAIC validates the model's arguments against tool.json, judges the declared reads
+Install it by copying this directory to .maid/tools/word_count/ in a workspace (or to ~/.config/maid/tools/
+for every workspace). MAID validates the model's arguments against tool.json, judges the declared reads
 through the harness, then runs `python3 main.py` inside the command sandbox with the arguments as JSON on
 stdin. Whatever is printed is the result; a non-zero exit fails the call and stderr goes to the model.
 """

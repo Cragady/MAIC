@@ -29,8 +29,8 @@ import time
 MIRROR = os.path.expanduser("~/.local/state/cai/mirror/SOPIA.git")
 REFRESH_SECONDS = 900
 SIBLING = "SOPIA"
-#: This package's own repository origin, recorded when it moved into MAIC
-#: (tools/cai/PROVENANCE.md). The repository it sits in now is MAIC's, whose origin
+#: This package's own repository origin, recorded when it moved into MAID
+#: (tools/cai/PROVENANCE.md). The repository it sits in now is MAID's, whose origin
 #: has a different owner, so the sibling is derived from the recorded one.
 ORIGIN = "git@github.com:CascadeRefiningInc/cai-tools.git"
 

@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
-# Builds the vendored llama.cpp OUT OF TREE into $MAIC_VENDOR/llama.cpp-build/ (Release; CUDA when nvcc is
+# Builds the vendored llama.cpp OUT OF TREE into $MAID_VENDOR/llama.cpp-build/ (Release; CUDA when nvcc is
 # around; no TLS, so the binaries cannot fetch models from Hugging Face or any other https host) and links
-# its bin/ in as $MAIC_VENDOR/llamacpp/bin. The model llama-server loads is the symlink
-# $MAIC_VENDOR/llamacpp/current-model.gguf, which `maic vendor use llamacpp PATH` points at a GGUF;
+# its bin/ in as $MAID_VENDOR/llamacpp/bin. The model llama-server loads is the symlink
+# $MAID_VENDOR/llamacpp/current-model.gguf, which `maid vendor use llamacpp PATH` points at a GGUF;
 # services/llamacpp.json runs the server on 127.0.0.1:8081 against it. Idempotent: run again to rebuild.
 #
-#   vendor/llamacpp.sh install|update|wire|check   MAIC_VENDOR=<state>/vendor  MAIC_STATE=<state>
+#   vendor/llamacpp.sh install|update|wire|check   MAID_VENDOR=<state>/vendor  MAID_STATE=<state>
 #   install/update configure and build (no network: the submodule is already fetched); wire only links bin/.
 #
-# The checkout is $MAIC_VENDOR/llama.cpp (a symlink to the submodule, or to an adopted checkout).
+# The checkout is $MAID_VENDOR/llama.cpp (a symlink to the submodule, or to an adopted checkout).
 set -euo pipefail
 cmd="${1:-install}"
-: "${MAIC_VENDOR:?set by maic}"
-: "${MAIC_STATE:?set by maic}"
-src="$MAIC_VENDOR/llama.cpp"
-build="$MAIC_VENDOR/llama.cpp-build"
-home="$MAIC_VENDOR/llamacpp"
-[ -f "$src/CMakeLists.txt" ] || { echo "no llama.cpp at $src (maic vendor add llamacpp, or maic vendor adopt llamacpp PATH)" >&2; exit 1; }
+: "${MAID_VENDOR:?set by maid}"
+: "${MAID_STATE:?set by maid}"
+src="$MAID_VENDOR/llama.cpp"
+build="$MAID_VENDOR/llama.cpp-build"
+home="$MAID_VENDOR/llamacpp"
+[ -f "$src/CMakeLists.txt" ] || { echo "no llama.cpp at $src (maid vendor add llamacpp, or maid vendor adopt llamacpp PATH)" >&2; exit 1; }
 
 wire() {
     mkdir -p "$home"
     if [ ! -x "$build/bin/llama-server" ]; then
-        echo "not built yet: maic vendor add llamacpp"
+        echo "not built yet: maid vendor add llamacpp"
         return 0
     fi
     ln -sfn "$build/bin" "$home/bin"
@@ -29,7 +29,7 @@ wire() {
     if [ -e "$home/current-model.gguf" ]; then
         echo "model: $(readlink -f "$home/current-model.gguf")"
     else
-        echo "no model yet: maic vendor use llamacpp /path/to/model.gguf"
+        echo "no model yet: maid vendor use llamacpp /path/to/model.gguf"
     fi
 }
 

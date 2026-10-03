@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
-"""Did any agent reach for a host socket from MAIC's command sandbox? Judged on this machine only.
+"""Did any agent reach for a host socket from MAID's command sandbox? Judged on this machine only.
 
-    maic-leak-audit [--root DIR ...] [--model PRESET] [--timeout S] [--dry-run] [--scan] [--order ORDER]
+    maid-leak-audit [--root DIR ...] [--model PRESET] [--timeout S] [--dry-run] [--scan] [--order ORDER]
                     [--thinking on|off] [--from-archive CHUNK|all]
 
 Until v0.3.1 the sandbox left host sockets reachable (docs/releases/v0.3.1.md, docs/harness.md rule 6). This reads
-every session transcript and MAIC's audit trail and answers one question about them:
+every session transcript and MAID's audit trail and answers one question about them:
 
   1. Phase 1, here and deterministic: every `tool` record whose arguments name an escape route (dbus-send, busctl,
      gdbus, qdbus, systemd-run, systemctl --user, nvim --server/--remote, socat, nc -U, docker, podman, virsh,
      screen -x/-r, mysql with a socket, /run/, /var/run/, the socket variables, the nix daemon socket, AF_UNIX and
      UNIX-CONNECT in inline scripts) is a candidate, with its harness decision, whether it ran and how it ended.
-  2. Phase 2, a local judge: each candidate and the exchange around it go to a model `maic model resolve` places on
+  2. Phase 2, a local judge: each candidate and the exchange around it go to a model `maid model resolve` places on
      this machine (default the audit trail's `judge`, qwen-9b), which answers reached, mentioned or unclear with one
      sentence, thinking first unless judge_thinking is false. A model that resolves off this machine is refused,
      and there is no flag to allow one.
 
-Everything found goes to a private report, <state>/maic/audits/leak-audit-<UTC time>.md (0600 in a 0700 directory).
+Everything found goes to a private report, <state>/maid/audits/leak-audit-<UTC time>.md (0600 in a 0700 directory).
 Standard output is one line and nothing else, whatever happens:
 
     leak audit complete: report at PATH. Something was reached for: YES|NO|UNCLEAR
 
 UNCLEAR when nothing was judged reached but something was judged unclear; UNKNOWN when the audit did not complete.
 --dry-run stops after phase 1 (any candidate is then UNCLEAR). Nothing from a transcript is ever printed, on
-standard output or on standard error. Sessions are read from MAIC's sessions directory and the runtime one
+standard output or on standard error. Sessions are read from MAID's sessions directory and the runtime one
 ($XDG_STATE_HOME and $XDG_RUNTIME_DIR honoured); --root DIR (repeatable) reads those directories instead.
 
-The audit trail (docs/audit-trail.md), <state>/maic/audit-trail/, holds one entry per tool call of every session,
+The audit trail (docs/audit-trail.md), <state>/maid/audit-trail/, holds one entry per tool call of every session,
 recorded or not, with a monotonic id. Each entry is judged with the calls its session made around it, and its
 state moves on its own: live (younger than live_window), stale live, and archival once it has been audited
 successfully and its result has not changed for stale_days. That one retirement signal ends the entry's time in
@@ -35,9 +35,9 @@ the live trail: with archive = "off" it is deleted, with archive = PATH it is mo
 checks. A result that changes restarts the entry's timer. index.json beside the trail keeps each id range's state,
 first and last audit, timer start and result signature, and a pointer for every archived range. --order picks
 which entries are judged first; when the judge fails the entries after it keep their state. --scan is phase 1 over
-the trail only, marking never-audited entries scanned, pending judgement (what maic runs when the judge cannot).
+the trail only, marking never-audited entries scanned, pending judgement (what maid runs when the judge cannot).
 --from-archive CHUNK|all audits archived chunks again from a private temporary copy, never taking them back.
-Settings come from `maic audit-trail status --json` (~/.config/maic/audit.lua).
+Settings come from `maid audit-trail status --json` (~/.config/maid/audit.lua).
 
 Exit code 0 when the audit completed, 2 when it could not run (usage, a model that is not local, no judge
 answering), 1 for an internal error.
@@ -138,10 +138,10 @@ def state_home() -> Path:
 
 
 def default_roots() -> list[Path]:
-    """MAIC's sessions directory and the runtime one, where core/src/session.cpp puts them."""
+    """MAID's sessions directory and the runtime one, where core/src/session.cpp puts them."""
     rt = os.environ.get("XDG_RUNTIME_DIR")
-    runtime = Path(rt) / "maic" / "sessions" if rt else Path("/tmp") / f"maic-{os.getuid()}" / "sessions"
-    return [state_home() / "maic" / "sessions", runtime]
+    runtime = Path(rt) / "maid" / "sessions" if rt else Path("/tmp") / f"maid-{os.getuid()}" / "sessions"
+    return [state_home() / "maid" / "sessions", runtime]
 
 
 def session_files(roots: list[Path]) -> list[Path]:
@@ -277,7 +277,7 @@ def collect(roots: list[Path]) -> tuple[list[dict], int, int]:
 
 
 def trail_dir() -> Path:
-    return state_home() / "maic" / "audit-trail"
+    return state_home() / "maid" / "audit-trail"
 
 
 def parse_stamp(text) -> datetime | None:
@@ -475,7 +475,7 @@ def ordered(entries: list[dict], info: dict[int, dict], order: str, now: datetim
 
 @contextmanager
 def seq_lock(tdir: Path):
-    """The lock maic's writer takes for every append (core/src/audit_trail.cpp): held while a container is rewritten,
+    """The lock maid's writer takes for every append (core/src/audit_trail.cpp): held while a container is rewritten,
     so no entry is appended to a file that is being replaced."""
     fd = os.open(tdir / "seq", os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -670,17 +670,17 @@ DEFAULTS = {"every_seconds": 86400, "live_window_seconds": 86400, "stale_days": 
 
 
 def trail_settings() -> dict:
-    """The audit trail's settings as `maic audit-trail status --json` gives them (audit.lua over the defaults)."""
-    exe = maic_bin()
+    """The audit trail's settings as `maid audit-trail status --json` gives them (audit.lua over the defaults)."""
+    exe = maid_bin()
     if not exe:
-        raise Refused("no maic found (MAIC_BIN or PATH) to read the audit trail settings with `maic audit-trail status --json`")
+        raise Refused("no maid found (MAID_BIN or PATH) to read the audit trail settings with `maid audit-trail status --json`")
     try:
         r = subprocess.run([exe, "audit-trail", "status", "--json"], capture_output=True, text=True, timeout=20)
         status = json.loads(r.stdout) if r.returncode == 0 else {}
     except (OSError, subprocess.TimeoutExpired, ValueError):
         status = {}
     if not isinstance(status, dict) or any(type(status.get(k)) is not type(v) for k, v in DEFAULTS.items()):
-        raise Refused("`maic audit-trail status --json` did not give the audit trail settings (is ~/.config/maic/audit.lua valid?)")
+        raise Refused("`maid audit-trail status --json` did not give the audit trail settings (is ~/.config/maid/audit.lua valid?)")
     return status
 
 
@@ -701,7 +701,7 @@ def archived_chunks(which: str, archive: str) -> list[Path]:
     folder = Path(archive) if archive != "off" else None
     if which == "all":
         if folder is None:
-            raise Refused("--from-archive all needs archive set to a directory in ~/.config/maic/audit.lua")
+            raise Refused("--from-archive all needs archive set to a directory in ~/.config/maid/audit.lua")
         return sorted(folder.glob("audit-chunk-*.tar.gz"))
     path = Path(which)
     if not path.is_file() and folder is not None:
@@ -746,25 +746,25 @@ def collect_archive(chunks: list[Path], tmp: Path) -> tuple[list[dict], list[str
     return found, lines, malformed
 
 
-def maic_bin() -> str | None:
-    """The maic that started us (it exports MAIC_BIN), else the one on PATH."""
-    return os.environ.get("MAIC_BIN") or shutil.which("maic")
+def maid_bin() -> str | None:
+    """The maid that started us (it exports MAID_BIN), else the one on PATH."""
+    return os.environ.get("MAID_BIN") or shutil.which("maid")
 
 
 def resolve(name: str) -> dict:
-    exe = maic_bin()
+    exe = maid_bin()
     if not exe:
-        raise Refused("no maic found (MAIC_BIN or PATH) to resolve the judge model with `maic model resolve`")
+        raise Refused("no maid found (MAID_BIN or PATH) to resolve the judge model with `maid model resolve`")
     try:
         r = subprocess.run([exe, "model", "resolve", name], capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.TimeoutExpired) as e:
-        raise Refused(f"`maic model resolve {name}` did not run: {type(e).__name__}") from None
+        raise Refused(f"`maid model resolve {name}` did not run: {type(e).__name__}") from None
     if r.returncode != 0:
-        raise Refused(f"`maic model resolve {name}` failed: " + (r.stderr.strip() or r.stdout.strip()).removeprefix("maic: ")[:300])
+        raise Refused(f"`maid model resolve {name}` failed: " + (r.stderr.strip() or r.stdout.strip()).removeprefix("maid: ")[:300])
     try:
         return json.loads(r.stdout)
     except ValueError:
-        raise Refused(f"`maic model resolve {name}` did not print JSON") from None
+        raise Refused(f"`maid model resolve {name}` did not print JSON") from None
 
 
 def loopback(url: str) -> bool:
@@ -919,7 +919,7 @@ def report(cands: list[dict], roots: list[Path], files: int, malformed: int, jud
 
 
 def write_report(text: str) -> Path:
-    d = state_home() / "maic" / "audits"
+    d = state_home() / "maid" / "audits"
     d.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(d, 0o700)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -948,13 +948,13 @@ class Parser(argparse.ArgumentParser):
 
 
 def audit(argv: list[str]) -> tuple[int, str]:
-    p = Parser(prog="maic-leak-audit", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = Parser(prog="maid-leak-audit", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--root", action="append", type=Path, help="a directory of session files to read instead of the default ones (repeatable)")
-    p.add_argument("--model", help="the judge: a MAIC preset or provider/model that resolves to this machine (default: judge in audit.lua, qwen-9b)")
+    p.add_argument("--model", help="the judge: a MAID preset or provider/model that resolves to this machine (default: judge in audit.lua, qwen-9b)")
     p.add_argument("--timeout", type=int, default=300, help="seconds per judgement (default 300)")
     p.add_argument("--dry-run", action="store_true", help="phase 1 only: find candidates, judge none, change nothing")
     p.add_argument("--scan", action="store_true", help="phase 1 over the audit trail only, marking never-audited entries scanned, pending "
-                   "judgement (what maic runs at start when the judge cannot)")
+                   "judgement (what maid runs at start when the judge cannot)")
     p.add_argument("--order", choices=ORDERS, help="which trail entries are judged first (default: order in audit.lua, stale-first)")
     p.add_argument("--thinking", choices=("on", "off"), help="whether the judge thinks first (default: judge_thinking in audit.lua, on)")
     p.add_argument("--from-archive", metavar="CHUNK|all", help="also audit archived trail chunks: one by path or name, or all of them")
@@ -1005,7 +1005,7 @@ def audit(argv: list[str]) -> tuple[int, str]:
         require_local(model, spec)
         if not server_answers(spec["base_url"]):
             raise Refused(f"the local model server {spec.get('provider')} is not answering at {spec['base_url']}; "
-                          f"start it with `maic up {spec.get('provider')}` and run the audit again (nothing was judged)")
+                          f"start it with `maid up {spec.get('provider')}` and run the audit again (nothing was judged)")
     locked = spec is not None and tdir.is_dir()
     if locked:
         lock_trail(tdir)
@@ -1021,7 +1021,7 @@ def audit(argv: list[str]) -> tuple[int, str]:
     cands += [found[e["id"]] for e in queue if e["id"] in found]
     trail = ["", f"Audit trail: `{tdir}`" + ("" if tdir.is_dir() else " (absent)") + f". Entries read: {len(entries)}"
              + (f" (ids {entries[0]['id']} to {entries[-1]['id']})" if entries else "") + f", candidates: {len(found)}, judged in {order} order."]
-    with tempfile.TemporaryDirectory(prefix="maic-leak-audit-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="maid-leak-audit-") as tmp:
         if args.from_archive:
             chunks = archived_chunks(args.from_archive, settings["archive"])
             acands, lines, amalformed = collect_archive(chunks, Path(tmp))
@@ -1097,7 +1097,7 @@ def main() -> int:
     try:
         code, line = audit(sys.argv[1:])
     except Refused as e:
-        print(f"maic-leak-audit: {e}", file=sys.stderr)
+        print(f"maid-leak-audit: {e}", file=sys.stderr)
         code, line = 2, "leak audit not completed: see standard error. Something was reached for: UNKNOWN"
     except KeyboardInterrupt:
         code, line = 1, "leak audit not completed: interrupted. Something was reached for: UNKNOWN"
@@ -1105,7 +1105,7 @@ def main() -> int:
         # Only the exception's type and this file's line: a message could quote a transcript.
         ours = [f for f in traceback.extract_tb(e.__traceback__) if f.filename == __file__]
         where = f" at line {ours[-1].lineno}" if ours else ""
-        print(f"maic-leak-audit: internal error ({type(e).__name__}{where})", file=sys.stderr)
+        print(f"maid-leak-audit: internal error ({type(e).__name__}{where})", file=sys.stderr)
         code, line = 1, "leak audit not completed: internal error. Something was reached for: UNKNOWN"
     print(line)
     return code

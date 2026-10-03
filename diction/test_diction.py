@@ -1,8 +1,8 @@
 """diction against a fake whisper-server and a fake OpenAI-compatible scribe, never the microphone.
 
 The pipeline runs as a user runs it, `python3 -m diction.cli`, with each utterance given as a WAV file (--from-wav)
-instead of being cut from the mic. A fake `maic` answers `maic model resolve` and hands `maic settings` to the real
-maic from MAIC_BIN (ctest sets it); the cases that need the real one are skipped without it.
+instead of being cut from the mic. A fake `maid` answers `maid model resolve` and hands `maid settings` to the real
+maid from MAID_BIN (ctest sets it); the cases that need the real one are skipped without it.
 
     python3 -m unittest -v diction.test_diction        from the repository root
 """
@@ -115,15 +115,15 @@ def silence(path: Path, seconds: float = 0.4):
         w.writeframes(b"\0\0" * int(16000 * seconds))
 
 
-FAKE_MAIC = """#!/usr/bin/env python3
+FAKE_MAID = """#!/usr/bin/env python3
 import json, os, sys
-if sys.argv[1:2] == ["settings"] and os.environ.get("REAL_MAIC"):
-    os.execv(os.environ["REAL_MAIC"], [os.environ["REAL_MAIC"], *sys.argv[1:]])
-specs = json.loads(os.environ["FAKE_MAIC_SPECS"])
+if sys.argv[1:2] == ["settings"] and os.environ.get("REAL_MAID"):
+    os.execv(os.environ["REAL_MAID"], [os.environ["REAL_MAID"], *sys.argv[1:]])
+specs = json.loads(os.environ["FAKE_MAID_SPECS"])
 if sys.argv[1:3] == ["model", "resolve"] and sys.argv[3] in specs:
     print(json.dumps(specs[sys.argv[3]]))
     sys.exit(0)
-print("maic: unknown model " + " ".join(sys.argv[1:]), file=sys.stderr)
+print("maid: unknown model " + " ".join(sys.argv[1:]), file=sys.stderr)
 sys.exit(1)
 """
 
@@ -187,9 +187,9 @@ class Pipeline(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="diction-test-"))
         self.work = self.tmp / "notes"
         self.work.mkdir()
-        maic = self.tmp / "maic"
-        maic.write_text(FAKE_MAIC)
-        maic.chmod(0o755)
+        maid = self.tmp / "maid"
+        maid.write_text(FAKE_MAID)
+        maid.chmod(0o755)
         # The fake claude is the only one on PATH; the real one is never reached.
         self.bin = self.tmp / "bin"
         self.bin.mkdir()
@@ -199,10 +199,10 @@ class Pipeline(unittest.TestCase):
         # The side server is a closed port here, so the default stays on the main one.
         self.specs = {"qwen-4b": spec("llamacpp", self.scribe.server_address[1]), "llamacpp-2/fake": spec("llamacpp-2", 9)}
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("DICTION_") and k != "ANTHROPIC_API_KEY"}
-        self.env.update(PYTHONPATH=str(REPO), PYTHONDONTWRITEBYTECODE="1", MAIC_BIN=str(maic),
-                        MAIC_MODELS_DIR=str(self.tmp / "models"), XDG_CONFIG_HOME=str(self.tmp / "config"),
+        self.env.update(PYTHONPATH=str(REPO), PYTHONDONTWRITEBYTECODE="1", MAID_BIN=str(maid),
+                        MAID_MODELS_DIR=str(self.tmp / "models"), XDG_CONFIG_HOME=str(self.tmp / "config"),
                         XDG_STATE_HOME=str(self.tmp / "state"), PATH=f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin",
-                        FAKE_CLAUDE_LOG=str(self.claude_log), REAL_MAIC=os.environ.get("MAIC_BIN", ""),
+                        FAKE_CLAUDE_LOG=str(self.claude_log), REAL_MAID=os.environ.get("MAID_BIN", ""),
                         DICTION_WHISPER_URL=f"http://127.0.0.1:{self.whisper.server_address[1]}")
         # Most cases exercise the pipeline on a local scribe and whatever whisper-server holds; the preset cases
         # below drop these to get the defaults.
@@ -229,7 +229,7 @@ class Pipeline(unittest.TestCase):
         return p, doc.read_text() if doc.exists() else ""
 
     def diction(self, *args: str):
-        env = dict(self.env, FAKE_MAIC_SPECS=json.dumps(self.specs))
+        env = dict(self.env, FAKE_MAID_SPECS=json.dumps(self.specs))
         return subprocess.run([sys.executable, "-P", "-m", "diction.cli", *args], cwd=self.work, env=env,
                               capture_output=True, text=True, timeout=60)
 
@@ -292,7 +292,7 @@ class Pipeline(unittest.TestCase):
             self.assertIn("Hello there.", doc)
             # Written out with its provider, the model stays on the main server.
             self.specs["llamacpp/fake"] = spec("llamacpp", self.scribe.server_address[1])
-            with mock.patch.dict(os.environ, MAIC_BIN=self.env["MAIC_BIN"], FAKE_MAIC_SPECS=json.dumps(self.specs)):
+            with mock.patch.dict(os.environ, MAID_BIN=self.env["MAID_BIN"], FAKE_MAID_SPECS=json.dumps(self.specs)):
                 self.assertEqual(resolve_agent("llamacpp/fake")["provider"], "llamacpp")
                 self.assertEqual(resolve_agent("qwen-4b")["provider"], "llamacpp-2")
         finally:
@@ -313,7 +313,7 @@ class Pipeline(unittest.TestCase):
         starts = [e for e in log if e["event"] == "start"]
         self.assertEqual(len(starts), 1, "one process for the session's scribe key, reused")
         self.assertEqual(starts[0]["argv"], legacy_argv(SYSTEM_PROMPT_INSERT, "haiku"))
-        self.assertEqual(starts[0]["cwd"], str(self.tmp / "state" / "maic" / "diction" / "agent-cwd"))
+        self.assertEqual(starts[0]["cwd"], str(self.tmp / "state" / "maid" / "diction" / "agent-cwd"))
         self.assertEqual([e["said"] for e in log if e["event"] == "message"], said)
         self.assertIn("<steps>\n1. Open the shared inbox.\n</steps>", log[-2]["payload"])
         self.assertEqual(log[-1]["event"], "eof", "stdin closed and the process ended on shutdown")
@@ -397,7 +397,7 @@ class Pipeline(unittest.TestCase):
     def test_legacy_alias_haiku_on_the_api_backend_is_haiku_4_5(self):
         self.anthropic_run("--backend", "api", "--agent-model", "haiku")
         self.specs.update({"sonnet-5": cloud_spec(9, "claude-sonnet-5"), "opus-5.5": cloud_spec(9, "claude-opus-5-5")})
-        with mock.patch.dict(os.environ, MAIC_BIN=self.env["MAIC_BIN"], FAKE_MAIC_SPECS=json.dumps(self.specs)):
+        with mock.patch.dict(os.environ, MAID_BIN=self.env["MAID_BIN"], FAKE_MAID_SPECS=json.dumps(self.specs)):
             self.assertEqual(resolve_agent("sonnet")["model"], "claude-sonnet-5")
             self.assertEqual(resolve_agent("opus")["model"], "claude-opus-5-5")
 
@@ -408,9 +408,9 @@ class Pipeline(unittest.TestCase):
         start = claude_log(self.claude_log)[0]
         self.assertEqual(start["argv"], legacy_argv(SYSTEM_PROMPT_NORMAL, "sonnet"))
 
-    @unittest.skipUnless(os.environ.get("MAIC_BIN"), "needs the built maic (MAIC_BIN; ctest sets it)")
-    def test_diction_lua_through_maic_overrides_a_preset_and_sets_the_log_dir(self):
-        lua = self.tmp / "config" / "maic" / "diction.lua"
+    @unittest.skipUnless(os.environ.get("MAID_BIN"), "needs the built maid (MAID_BIN; ctest sets it)")
+    def test_diction_lua_through_maid_overrides_a_preset_and_sets_the_log_dir(self):
+        lua = self.tmp / "config" / "maid" / "diction.lua"
         lua.parent.mkdir(parents=True)
         logs = self.tmp / "all-logs"
         lua.write_text('-- a comment, as Lua has them\n'
@@ -445,13 +445,13 @@ class Pipeline(unittest.TestCase):
         self.assertIn("whisper: distil-large-v3", p.stdout)
         self.assertIn(f"logs: {logs} ({toml})", p.stdout)
         notice = (f"diction reads {toml}; `diction migrate-config` writes "
-                  f"{self.tmp / 'config' / 'maic' / 'diction.lua'} from it")
+                  f"{self.tmp / 'config' / 'maid' / 'diction.lua'} from it")
         self.assertEqual(p.stdout.count(notice), 1, p.stdout)
 
-    @unittest.skipUnless(os.environ.get("MAIC_BIN"), "needs the built maic (MAIC_BIN; ctest sets it)")
+    @unittest.skipUnless(os.environ.get("MAID_BIN"), "needs the built maid (MAID_BIN; ctest sets it)")
     def test_diction_lua_wins_over_config_toml_and_says_so(self):
         toml = self.tmp / "config" / "diction" / "config.toml"
-        lua = self.tmp / "config" / "maic" / "diction.lua"
+        lua = self.tmp / "config" / "maid" / "diction.lua"
         for f in (toml, lua):
             f.parent.mkdir(parents=True)
         toml.write_text(f'log_dir = "{self.tmp / "toml-logs"}"\n')
@@ -463,9 +463,9 @@ class Pipeline(unittest.TestCase):
         self.assertNotIn("migrate-config", p.stdout)
         self.assertFalse((self.tmp / "toml-logs").exists())
 
-    @unittest.skipUnless(os.environ.get("MAIC_BIN"), "needs the built maic (MAIC_BIN; ctest sets it)")
+    @unittest.skipUnless(os.environ.get("MAID_BIN"), "needs the built maid (MAID_BIN; ctest sets it)")
     def test_a_broken_diction_lua_is_named_and_ignored(self):
-        lua = self.tmp / "config" / "maic" / "diction.lua"
+        lua = self.tmp / "config" / "maid" / "diction.lua"
         lua.parent.mkdir(parents=True)
         lua.write_text("return { log_dir = nil .. '/logs' }\n")
 
@@ -474,10 +474,10 @@ class Pipeline(unittest.TestCase):
         self.assertRegex(p.stdout, rf"ignoring {re.escape(str(lua))}: {re.escape(str(lua))}:1: ")
         self.assertTrue((self.work / "diction-logs").is_dir())
 
-    @unittest.skipUnless(os.environ.get("MAIC_BIN"), "needs the built maic (MAIC_BIN; ctest sets it)")
-    def test_migrate_config_round_trips_through_maic(self):
+    @unittest.skipUnless(os.environ.get("MAID_BIN"), "needs the built maid (MAID_BIN; ctest sets it)")
+    def test_migrate_config_round_trips_through_maid(self):
         toml = self.tmp / "config" / "diction" / "config.toml"
-        lua = self.tmp / "config" / "maic" / "diction.lua"
+        lua = self.tmp / "config" / "maid" / "diction.lua"
         toml.parent.mkdir(parents=True)
         text = ('# mine\nlog_dir = "~/diction-logs"\n\n[presets.mine]\nbackend = "local"\nscribe = "qwen-4b"\n'
                 'note = "says \\"hi\\", a \\\\ and a tab\\t, caf\u00e9"\n\n[presets.local]\nwhisper = "distil-large-v3"\n\n'
@@ -487,7 +487,7 @@ class Pipeline(unittest.TestCase):
         self.assertTrue(toml.exists(), "the TOML stays")
         written = lua.read_text()
         self.assertTrue(written.startswith(f"-- diction's settings, written by `diction migrate-config` from {toml}"), written)
-        r = subprocess.run([os.environ["MAIC_BIN"], "settings", "read", "diction"], env=self.env, capture_output=True, text=True, timeout=60)
+        r = subprocess.run([os.environ["MAID_BIN"], "settings", "read", "diction"], env=self.env, capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout), tomllib.loads(text))
 
@@ -503,7 +503,7 @@ class Pipeline(unittest.TestCase):
         p = self.diction("migrate-config")
         self.assertEqual(p.returncode, 1)
         self.assertIn("no " + str(self.tmp / "config" / "diction" / "config.toml"), p.stdout)
-        self.assertFalse((self.tmp / "config" / "maic" / "diction.lua").exists())
+        self.assertFalse((self.tmp / "config" / "maid" / "diction.lua").exists())
 
     def test_presets_lists_each_with_what_is_missing(self):
         conf = self.tmp / "config" / "diction" / "config.toml"
@@ -524,12 +524,12 @@ class Pipeline(unittest.TestCase):
         self.assertIn("narration goes to Anthropic through your claude login, as before", default)
         self.assertIn("backend  api\n  scribe   haiku-4.5: anthropic/claude-haiku-4-5-20251001, cloud", api)
         self.assertIn("no key: set ANTHROPIC_API_KEY", api)
-        self.assertIn("not installed: maic models install whisper-distil-large-v3", default)
+        self.assertIn("not installed: maid models install whisper-distil-large-v3", default)
         self.assertIn("backend  local", local)
-        self.assertIn("not installed: maic models install whisper-large-v3-turbo-q5_0", local)
-        self.assertIn("not installed: maic models install qwen3.5-9b-text", local)
-        self.assertIn("not installed: maic models install qwen3.5-4b", small)
-        self.assertIn("server not answering at http://127.0.0.1:9/v1: maic up llamacpp-2", small)
+        self.assertIn("not installed: maid models install whisper-large-v3-turbo-q5_0", local)
+        self.assertIn("not installed: maid models install qwen3.5-9b-text", local)
+        self.assertIn("not installed: maid models install qwen3.5-4b", small)
+        self.assertIn("server not answering at http://127.0.0.1:9/v1: maid up llamacpp-2", small)
         self.assertIn("my own", mine)
         self.assertIn("whisper  distil-large-v3", mine, "a config preset without whisper takes the default's")
 
@@ -544,14 +544,14 @@ class Pipeline(unittest.TestCase):
         self.assertIn("claude is not on PATH: the default scribe runs through the claude CLI", out)
         self.assertIn("ANTHROPIC_API_KEY is set", out)
         self.assertIn("whisper  large-v3-turbo-q5_0: installed (ggml-large-v3-turbo-q5_0.bin)", out)
-        self.assertNotIn("maic models install qwen3.5-4b", out)
-        self.assertIn("maic models install qwen3.5-9b-text", out)
+        self.assertNotIn("maid models install qwen3.5-4b", out)
+        self.assertIn("maid models install qwen3.5-9b-text", out)
 
     def test_whisper_server_down_says_how_to_start_it(self):
         self.env["DICTION_WHISPER_URL"] = "http://127.0.0.1:9"
         p, _ = self.run_diction(["anything"])
         self.assertEqual(p.returncode, 1)
-        self.assertIn("maic up whisper", p.stdout)
+        self.assertIn("maid up whisper", p.stdout)
 
 
 class Directives(unittest.TestCase):
@@ -673,42 +673,42 @@ class ClaudeCli(unittest.TestCase):
             p.stdout.close()
 
 
-@unittest.skipUnless(os.environ.get("MAIC_BIN"), "needs the built maic (MAIC_BIN; ctest sets it)")
-class Maic(unittest.TestCase):
+@unittest.skipUnless(os.environ.get("MAID_BIN"), "needs the built maid (MAID_BIN; ctest sets it)")
+class Maid(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="diction-maic-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="diction-maid-"))
         self.env = dict(os.environ, XDG_CONFIG_HOME=str(self.tmp / "config"), XDG_STATE_HOME=str(self.tmp / "state"),
                         PYTHONDONTWRITEBYTECODE="1")
-        self.env.pop("MAIC_MODELS_DIR", None)
+        self.env.pop("MAID_MODELS_DIR", None)
 
-    def maic(self, *args):
-        return subprocess.run([os.environ["MAIC_BIN"], *args], cwd=self.tmp, env=self.env, capture_output=True, text=True, timeout=60)
+    def maid(self, *args):
+        return subprocess.run([os.environ["MAID_BIN"], *args], cwd=self.tmp, env=self.env, capture_output=True, text=True, timeout=60)
 
     def test_model_resolve_qwen_4b(self):
-        p = self.maic("model", "resolve", "qwen-4b")
+        p = self.maid("model", "resolve", "qwen-4b")
         self.assertEqual(p.returncode, 0, p.stderr)
         got = json.loads(p.stdout)
         self.assertEqual({k: got[k] for k in ("provider", "kind", "base_url", "model", "context", "remote")},
                          {"provider": "llamacpp", "kind": "openai", "base_url": "http://127.0.0.1:8081/v1",
                           "model": "Qwen3.5-4B-Q4_K_M", "context": 16384, "remote": False})
-        side = json.loads(self.maic("model", "resolve", "llamacpp-2/Qwen3.5-4B-Q4_K_M").stdout)
+        side = json.loads(self.maid("model", "resolve", "llamacpp-2/Qwen3.5-4B-Q4_K_M").stdout)
         self.assertEqual((side["provider"], side["base_url"], side["context"]), ("llamacpp-2", "http://127.0.0.1:8082/v1", 8192))
-        cloud = json.loads(self.maic("model", "resolve", "haiku-4.5").stdout)
+        cloud = json.loads(self.maid("model", "resolve", "haiku-4.5").stdout)
         self.assertEqual((cloud["provider"], cloud["kind"], cloud["remote"], cloud["api_key_env"]), ("anthropic", "anthropic", True, "ANTHROPIC_API_KEY"))
-        # What the presets and the legacy aliases name exists in maic.
+        # What the presets and the legacy aliases name exists in maid.
         for name in ("sonnet-5", "opus-5.5"):
-            self.assertEqual(json.loads(self.maic("model", "resolve", name).stdout)["provider"], "anthropic", name)
+            self.assertEqual(json.loads(self.maid("model", "resolve", name).stdout)["provider"], "anthropic", name)
         for name in ("llamacpp-2/Qwen3.5-9B-Q4_K_M-text", "llamacpp-2/Qwen3.5-4B-Q4_K_M"):
-            got = json.loads(self.maic("model", "resolve", name).stdout)
+            got = json.loads(self.maid("model", "resolve", name).stdout)
             self.assertEqual((got["base_url"], got["model"], got["context"]), ("http://127.0.0.1:8082/v1", name.split("/")[1], 8192))
-        self.assertNotEqual(self.maic("model", "resolve").returncode, 0)
+        self.assertNotEqual(self.maid("model", "resolve").returncode, 0)
 
     def settings_read(self, lua: str | None):
-        path = self.tmp / "config" / "maic" / "diction.lua"
+        path = self.tmp / "config" / "maid" / "diction.lua"
         if lua is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(lua)
-        return self.maic("settings", "read", "diction")
+        return self.maid("settings", "read", "diction")
 
     def test_settings_read_diction_is_empty_without_the_file(self):
         p = self.settings_read(None)
@@ -728,12 +728,12 @@ class Maic(unittest.TestCase):
     def test_settings_read_diction_runs_at_global_lua(self):
         # diction.lua is the user's own file: full Lua by default, as settings.lua; global_lua = "sandbox" or
         # "restricted" in settings.lua runs it that way (docs/harness.md, Settings Lua runs at a level you choose).
-        path = self.tmp / "config" / "maic" / "diction.lua"
+        path = self.tmp / "config" / "maid" / "diction.lua"
         p = self.settings_read("os.execute('touch " + str(self.tmp / "full") + "')\nreturn { a = 1 }\n")
         self.assertEqual((p.returncode, json.loads(p.stdout)), (0, {"a": 1}), p.stderr)
         self.assertTrue((self.tmp / "full").exists(), "by default it runs as the user")
         for tier in ("sandbox", "restricted"):
-            (self.tmp / "config" / "maic" / "settings.lua").write_text(f'return {{ global_lua = "{tier}" }}\n')
+            (self.tmp / "config" / "maid" / "settings.lua").write_text(f'return {{ global_lua = "{tier}" }}\n')
             for line in ("os.execute('touch " + str(self.tmp / "ran") + "')", "io.open('/etc/hostname')", "require('os')",
                          "local _ = ffi.C", "require('ffi')", "jit.off()", "debug.getinfo(1)", "package.loaded.os.exit(0)",
                          "dofile('/dev/null')", "loadfile('/dev/null')", "os.exit(0)", "os.remove('x')",
@@ -741,21 +741,21 @@ class Maic(unittest.TestCase):
                          "while true do end", "while true do pcall(function() while true do end end) end", "return {"):
                 p = self.settings_read("local x = 1\n" + line + "\nreturn {}\n")
                 self.assertEqual((p.returncode, p.stdout), (1, ""), tier + ": " + line)
-                self.assertRegex(p.stderr, rf"^maic: {re.escape(str(path))}:[23]: ", tier + ": " + line)
+                self.assertRegex(p.stderr, rf"^maid: {re.escape(str(path))}:[23]: ", tier + ": " + line)
             p = self.settings_read("return 1\n")
-            self.assertEqual((p.returncode, p.stderr), (1, f"maic: {path}: must return a table\n"), tier)
+            self.assertEqual((p.returncode, p.stderr), (1, f"maid: {path}: must return a table\n"), tier)
             self.assertFalse((self.tmp / "ran").exists(), tier)
 
 
-    def test_maic_diction_passes_through(self):
-        p = self.maic("diction", "--help")
+    def test_maid_diction_passes_through(self):
+        p = self.maid("diction", "--help")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertTrue(p.stdout.startswith("usage: diction"), p.stdout[:200])
         self.assertIn("--agent-model", p.stdout)
         self.assertIn("--preset", p.stdout)
-        self.assertEqual(self.maic("help", "diction").stdout, p.stdout)
-        bad = self.maic("diction", "--no-such-flag")
-        self.assertEqual(bad.returncode, 2, "diction's own exit code comes back through maic")
+        self.assertEqual(self.maid("help", "diction").stdout, p.stdout)
+        bad = self.maid("diction", "--no-such-flag")
+        self.assertEqual(bad.returncode, 2, "diction's own exit code comes back through maid")
         self.assertIn("usage: diction", bad.stderr)
 
 

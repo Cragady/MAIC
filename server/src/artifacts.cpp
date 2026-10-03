@@ -16,7 +16,7 @@
 #include <fstream>
 #include <stdexcept>
 
-namespace maic::server {
+namespace maid::server {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -152,24 +152,24 @@ std::string page_with_token(std::string html, const std::string& token) {
     }
     // No <head>: after the doctype, so the page keeps its standards mode.
     if (at == 0 && lower.rfind("<!doctype", 0) == 0) at = lower.find('>') + 1;
-    html.insert(at, "<meta name=\"maic-artifact-token\" content=\"" + token + "\">");
+    html.insert(at, "<meta name=\"maid-artifact-token\" content=\"" + token + "\">");
     return html;
 }
 
 std::string artifact_trust(const fs::path& dir) {
-    std::ifstream in(dir / ".maic-artifact.json");
+    std::ifstream in(dir / ".maid-artifact.json");
     json j = in ? json::parse(in, nullptr, false) : json();
     return j.is_object() && j.value("trust", json()) == "trusted" ? "trusted" : "sandboxed";
 }
 
 bool artifact_allow_insecure(const fs::path& dir) {
-    std::ifstream in(dir / ".maic-artifact.json");
+    std::ifstream in(dir / ".maid-artifact.json");
     json j = in ? json::parse(in, nullptr, false) : json();
     return j.is_object() && j.value("ALLOW_INSECURE", json()) == json(true);
 }
 
 void set_artifact_allow_insecure(const fs::path& dir, bool on) {
-    fs::path file = dir / ".maic-artifact.json";
+    fs::path file = dir / ".maid-artifact.json";
     std::ifstream in(file);
     json meta = in ? json::parse(in, nullptr, false) : json();
     in.close();
@@ -185,7 +185,7 @@ std::vector<ArtifactInfo> list_artifacts(const fs::path& root) {
     for (const auto& e : fs::directory_iterator(root, ec)) {
         std::string id = e.path().filename().string();
         if (!artifact_name_ok(id) || !e.is_directory(ec)) continue;
-        std::ifstream in(e.path() / ".maic-artifact.json");
+        std::ifstream in(e.path() / ".maid-artifact.json");
         json meta = in ? json::parse(in, nullptr, false) : json();
         ArtifactInfo a{id, artifact_trust(e.path()), artifact_allow_insecure(e.path()), meta.is_object() ? meta.value("added", "") : "", {}};
         for (const auto& d : fs::directory_iterator(e.path() / "data", ec)) {
@@ -227,9 +227,9 @@ std::vector<std::string> add_artifact(const fs::path& root, const fs::path& src,
             fs::copy_file(it->path(), dest / rel, fs::copy_options::overwrite_existing);
         }
     }
-    if (!fs::exists(dest / ".maic-artifact.json", ec)) {
+    if (!fs::exists(dest / ".maid-artifact.json", ec)) {
         json meta = {{"trust", "sandboxed"}, {"added", utc_now()}, {"source", fs::absolute(src).lexically_normal().string()}};
-        write_0600(dest / ".maic-artifact.json", meta.dump(2) + "\n");
+        write_0600(dest / ".maid-artifact.json", meta.dump(2) + "\n");
     }
     return skipped;
 }
@@ -299,4 +299,4 @@ bool ArtifactGrants::valid(const std::string& secret, const std::string& artifac
     return it != grants_.end() && it->second.expires >= std::chrono::steady_clock::now() && it->second.artifact == artifact;
 }
 
-}  // namespace maic::server
+}  // namespace maid::server

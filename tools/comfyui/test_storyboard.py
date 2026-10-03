@@ -71,7 +71,7 @@ class Tests(unittest.TestCase):
         self.assertIn("john: \"black hair, long coat\"", out)
         self.assertIn(f"baseline (keep exactly): \"{BASE}\"", out)
         self.assertIn("baseline only, needs tags", out)
-        self.assertIn("maic-workflow-edit set", out)
+        self.assertIn("maid-workflow-edit set", out)
         self.assertIn("\"Panel 2 prompt\".text", out)
         self.assertNotIn("PANEL 1", out)  # one panel at a time
 
@@ -97,7 +97,7 @@ class Tests(unittest.TestCase):
         r = subprocess.run([sys.executable, TOOL, "start", self.story, self.wf, "--out", dest], capture_output=True, text=True, cwd=cwd)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("PANEL 1", r.stdout)
-        self.assertIn("maic-storyboard next", r.stdout)
+        self.assertIn("maid-storyboard next", r.stdout)
         self.assertTrue(os.path.exists(dest + ".storyboard-state.json"))
         self.assertEqual(json.load(open(self.wf)), WORKFLOW)  # the source is untouched
         by = {n["title"]: n for n in json.load(open(dest))["nodes"]}
@@ -155,7 +155,7 @@ class Tests(unittest.TestCase):
         png = os.path.join(d, "p1.png")
         with open(png, "wb") as f:
             f.write(b"\x89PNG\r\n\x1a\n" + b"x" * 20)
-        r = subprocess.run([sys.executable, TOOL, "critique", "1", "--image", png, "--server", "http://127.0.0.1:%d" % srv.server_address[1]], capture_output=True, text=True, cwd=d, env=dict(os.environ, MAIC_DANBOORU_TAGS=os.path.join(d, "none.json")))
+        r = subprocess.run([sys.executable, TOOL, "critique", "1", "--image", png, "--server", "http://127.0.0.1:%d" % srv.server_address[1]], capture_output=True, text=True, cwd=d, env=dict(os.environ, MAID_DANBOORU_TAGS=os.path.join(d, "none.json")))
         self.assertEqual(r.returncode, 0, r.stderr)
         body = Fake.seen["body"]
         self.assertEqual(body["model"], "Qwen3.5-9B-Q4_K_M")
@@ -165,7 +165,7 @@ class Tests(unittest.TestCase):
         self.assertIn("Prompt tags:", parts[0]["text"])
         self.assertIn("missing  red scarf", r.stdout)
         self.assertIn("wrong    two girls", r.stdout)
-        self.assertIn("maic-workflow-edit set", r.stdout)
+        self.assertIn("maid-workflow-edit set", r.stdout)
         self.assertIn("red_scarf", r.stdout)
         self.assertNotIn("bus stop", r.stdout.split("apply:")[1])
         srv.shutdown()
@@ -174,7 +174,7 @@ class Tests(unittest.TestCase):
         r = run()
         self.assertEqual(r.returncode, 0)
         self.assertIn("ask the user", r.stdout)
-        self.assertIn("maic-storyboard start", r.stdout)
+        self.assertIn("maid-storyboard start", r.stdout)
 
     def test_bad_workflow_layout(self):
         other = self.wf + ".x.json"

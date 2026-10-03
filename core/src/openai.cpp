@@ -8,7 +8,7 @@
 #include <mutex>
 #include <set>
 
-namespace maic::detail {
+namespace maid::detail {
 
 namespace {
 
@@ -51,9 +51,9 @@ std::string status_hint(const Provider& provider, int status) {
     return "";
 }
 
-// error.maic.upstream: the software that sent the error, what each rule replaced, and the rules' names.
+// error.maid.upstream: the software that sent the error, what each rule replaced, and the rules' names.
 json& upstream(json& error, const std::string& provider, const char* rule) {
-    json& u = error["maic"]["upstream"];
+    json& u = error["maid"]["upstream"];
     u["provider"] = provider;
     u["rules"].push_back(rule);
     return u;
@@ -67,7 +67,7 @@ bool error_code_string(json& body, const std::string& provider) {
     json* e = error_of(body);
     if (!e || !e->contains("code") || !(*e)["code"].is_number()) return false;
     upstream(*e, provider, "error_code_string")["code"] = (*e)["code"];
-    (*e)["code"] = "maic_" + provider + "_" + (*e)["code"].dump();
+    (*e)["code"] = "maid_" + provider + "_" + (*e)["code"].dump();
     return true;
 }
 
@@ -96,7 +96,7 @@ struct Rule {
     bool (*apply)(json& body, const std::string& provider);
 };
 constexpr Rule kRules[] = {
-    {"error_code_string", error_code_string},          // a numeric error code becomes "maic_<upstream>_<code>" (llama.cpp's 500)
+    {"error_code_string", error_code_string},          // a numeric error code becomes "maid_<upstream>_<code>" (llama.cpp's 500)
     {"error_param_null", error_param_null},            // an error without param gets param: null (llama.cpp)
     {"logprobs_refusal_null", logprobs_refusal_null},  // choices[].logprobs without refusal gets refusal: null (llama.cpp)
 };
@@ -123,7 +123,7 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
             if (!m.tool_calls.empty()) {
                 j["tool_calls"] = nlohmann::json::array();
                 for (const auto& call : m.tool_calls) {
-                    std::string id = call.id.empty() ? "call_maic_" + std::to_string(++generated) : call.id;
+                    std::string id = call.id.empty() ? "call_maid_" + std::to_string(++generated) : call.id;
                     pending_ids.push_back(id);
                     j["tool_calls"].push_back({{"id", id}, {"type", "function"},
                                                {"function", {{"name", call.name}, {"arguments", dump(call.arguments)}}}});
@@ -319,15 +319,15 @@ Message chat_openai(const Provider& provider, const ChatOptions& options, const 
     for (auto& [i, pc] : calls) {
         if (pc.name.empty()) continue;
         auto args = pc.args.empty() ? nlohmann::json::object() : nlohmann::json::parse(pc.args, nullptr, false);
-        if (!args.is_object()) args = {{"_maic_invalid_input", pc.args}};
+        if (!args.is_object()) args = {{"_maid_invalid_input", pc.args}};
         reply.tool_calls.push_back({pc.id, pc.name, args});
     }
     return reply;
 }
 
-}  // namespace maic::detail
+}  // namespace maid::detail
 
-namespace maic {
+namespace maid {
 
 std::vector<std::string> normalize_openai(nlohmann::json& body, const std::string& upstream) {
     std::vector<std::string> applied;
@@ -337,4 +337,4 @@ std::vector<std::string> normalize_openai(nlohmann::json& body, const std::strin
     return applied;
 }
 
-}  // namespace maic
+}  // namespace maid

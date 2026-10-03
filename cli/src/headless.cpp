@@ -2,15 +2,15 @@
 #include "commands.hpp"
 #include "headless.hpp"
 
-#include "maic/agent.hpp"
-#include "maic/engine.hpp"
-#include "maic/protocol.hpp"
-#include "maic/status.hpp"
-#include "maic/session.hpp"
-#include "maic/settings.hpp"
-#include "maic/tripwire.hpp"
-#include "maic/trust.hpp"
-#include "maic/vendor.hpp"
+#include "maid/agent.hpp"
+#include "maid/engine.hpp"
+#include "maid/protocol.hpp"
+#include "maid/status.hpp"
+#include "maid/session.hpp"
+#include "maid/settings.hpp"
+#include "maid/tripwire.hpp"
+#include "maid/trust.hpp"
+#include "maid/vendor.hpp"
 
 #include <unistd.h>
 
@@ -24,7 +24,7 @@
 #include <memory>
 #include <stdexcept>
 
-namespace maic {
+namespace maid {
 
 namespace {
 
@@ -47,8 +47,8 @@ struct ContextError : std::runtime_error {
 class Printer {
 public:
     Printer(Engine& engine, std::string client, bool json) : engine_(engine), client_(std::move(client)), json_(json) {
-        // MAIC_PROTOCOL_RECORD=DIR keeps the exchange for `maic protocol check`, as the TUI does.
-        if (const char* dir = std::getenv("MAIC_PROTOCOL_RECORD"); dir && *dir) {
+        // MAID_PROTOCOL_RECORD=DIR keeps the exchange for `maid protocol check`, as the TUI does.
+        if (const char* dir = std::getenv("MAID_PROTOCOL_RECORD"); dir && *dir) {
             recorder_ = std::make_unique<protocol::Recorder>(std::filesystem::path(dir) / ("headless-" + std::to_string(getpid()) + ".jsonl"));
         }
     }
@@ -72,16 +72,16 @@ public:
             }
             for (const auto& m : engine_.take(client_, std::chrono::milliseconds(100))) {
                 record("out", m);
-                if (m.value("method", "") != "maic.event") continue;
+                if (m.value("method", "") != "maid.event") continue;
                 const json& e = m["params"];
                 std::string type = e.value("type", "");
-                if (type == "response.completed" || type == "response.failed" || type == "maic.response.cancelled") {
-                    final = e["response"].contains("maic") && e["response"]["maic"].value("final", false);
+                if (type == "response.completed" || type == "response.failed" || type == "maid.response.cancelled") {
+                    final = e["response"].contains("maid") && e["response"]["maid"].value("final", false);
                     if (type == "response.failed") failure_ = e["response"]["error"].value("message", "the turn failed");
                 }
-                if (type == "maic.session.state" && e.value("activity", "") == "idle" && final) return failure_;
-                if (type == "maic.turn.paused") {
-                    // A ban's interrupt paused the turn for a person; maic -p has none, so the turn ends here.
+                if (type == "maid.session.state" && e.value("activity", "") == "idle" && final) return failure_;
+                if (type == "maid.turn.paused") {
+                    // A ban's interrupt paused the turn for a person; maid -p has none, so the turn ends here.
                     notice("paused by a ban's interrupt steer; with no one to resume it, the turn ends");
                     call("cancelResponse", {{"response_id", e.value("response_id", response)}});
                 }
@@ -93,12 +93,12 @@ public:
 
     std::string session;   // the one this connection follows
     std::string response;  // the running response, for Ctrl-C
-    json usage;            // the last maic.usage.updated
+    json usage;            // the last maid.usage.updated
 
 private:
     void record(const char* dir, const json& msg) {
         if (!recorder_) return;
-        if (auto v = recorder_->add(dir, client_, msg)) fprintf(stderr, "maic: protocol: %s\n", protocol::describe(*v).c_str());
+        if (auto v = recorder_->add(dir, client_, msg)) fprintf(stderr, "maid: protocol: %s\n", protocol::describe(*v).c_str());
     }
 
     void on_event(const json& e) {
@@ -109,29 +109,29 @@ private:
             text(e.value("delta", ""), type == "response.reasoning_text.delta");
         } else if (type == "response.output_item.added") {
             std::string kind = e["item"].value("type", "");
-            if (kind == "function_call" || kind == "shell_call") tool_call(e["item"].contains("maic") ? e["item"]["maic"].value("summary", "") : "");
+            if (kind == "function_call" || kind == "shell_call") tool_call(e["item"].contains("maid") ? e["item"]["maid"].value("summary", "") : "");
         } else if (type == "response.output_item.done") {
             const json& item = e["item"];
             std::string kind = item.value("type", "");
-            if ((kind != "function_call_output" && kind != "shell_call_output") || !item.contains("maic")) return;
+            if ((kind != "function_call_output" && kind != "shell_call_output") || !item.contains("maid")) return;
             tool_result(kind == "function_call_output" ? item.value("output", "") : item["output"].empty() ? "" : item["output"][0].value("stdout", ""),
-                        item["maic"].value("ok", false));
-        } else if (type == "maic.notice") {
+                        item["maid"].value("ok", false));
+        } else if (type == "maid.notice") {
             std::string kind = e.value("kind", "");
             if (kind == "tool_call") tool_call(e.value("text", ""));
             else if (kind == "tool_result") tool_result(e.value("text", ""), e.value("ok", false));
             else notice(e.value("text", ""));
-        } else if (type == "maic.todo.updated") {
+        } else if (type == "maid.todo.updated") {
             todo(e.value("items", json::array()));
-        } else if (type == "maic.approval.requested") {
+        } else if (type == "maid.approval.requested") {
             ask(e);
-        } else if (type == "maic.question.asked") {
+        } else if (type == "maid.question.asked") {
             question(e);
-        } else if (type == "maic.usage.updated") {
+        } else if (type == "maid.usage.updated") {
             usage = e;
         } else if (type == "error") {
             notice("halted: " + e.value("message", ""));
-        } else if (type == "maic.steer.applied") {
+        } else if (type == "maid.steer.applied") {
             notice("steered: " + e.value("action", "") + (e.value("trigger", "") == "ban" ? " (a ban's steer)" : ""));
         }
     }
@@ -181,7 +181,7 @@ private:
                 if (n >= 1 && n <= options.size()) answer = options[n - 1];
             }
         }
-        call("maic.question.reply", {{"session", session}, {"question", e.value("id", "")}, {"text", answer}});
+        call("maid.question.reply", {{"session", session}, {"question", e.value("id", "")}, {"text", answer}});
     }
 
     void ask(const json& r) {
@@ -206,7 +206,7 @@ private:
                 }
             }
         }
-        call("maic.approval.answer", {{"session", session}, {"approval", r.value("id", "")}, {"choice", choice}, {"feedback", why}});
+        call("maid.approval.answer", {{"session", session}, {"approval", r.value("id", "")}, {"choice", choice}, {"feedback", why}});
     }
 
     void emit(const json& j) {
@@ -246,12 +246,12 @@ int run_headless(const HeadlessOptions& options) {
     if (options.harness) settings.harness = *options.harness;
     if (options.think) settings.think = true;
     if (settings.harness != "smart" && settings.harness != "dumb") {
-        fprintf(stderr, "maic: --harness must be smart or dumb\n");
+        fprintf(stderr, "maid: --harness must be smart or dumb\n");
         return 2;
     }
     auto mode = parse_mode(settings.mode);
     if (!mode) {
-        fprintf(stderr, "maic: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
+        fprintf(stderr, "maid: unknown mode '%s' (manual, auto-read, edit, auto, plan)\n", settings.mode.c_str());
         return 2;
     }
     if (!options.mode && *mode == Mode::Auto) {
@@ -266,13 +266,13 @@ int run_headless(const HeadlessOptions& options) {
     std::string prompt = options.prompt;
     if (prompt.empty() || prompt == "-") {
         if (stdin_for_context) {
-            fprintf(stderr, "maic: stdin can be the prompt or a --context file, not both\n");
+            fprintf(stderr, "maid: stdin can be the prompt or a --context file, not both\n");
             return 2;
         }
         prompt.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
     }
     if (prompt.empty()) {
-        fprintf(stderr, "maic: nothing to send (give a prompt, or pipe one in with -p -)\n");
+        fprintf(stderr, "maid: nothing to send (give a prompt, or pipe one in with -p -)\n");
         return 2;
     }
 
@@ -309,7 +309,7 @@ int run_headless(const HeadlessOptions& options) {
         }
     }
     if (settings.tripwire == "isolated" && !settings.allow_isolated) {
-        fprintf(stderr, "maic: tripwire = \"isolated\" is not allowed: set allow_isolated = true in settings to permit it\n");
+        fprintf(stderr, "maid: tripwire = \"isolated\" is not allowed: set allow_isolated = true in settings to permit it\n");
         return 2;
     }
     set_tripwire_scope(settings.tripwire, transcript + ".tripped");
@@ -320,14 +320,14 @@ int run_headless(const HeadlessOptions& options) {
     eo.tier = settings.protocol_tier;
     eo.kind = "headless";
     Engine engine(eo);
-    std::string client = engine.connect(Origin::Local, "maic -p", "in-process");
+    std::string client = engine.connect(Origin::Local, "maid -p", "in-process");
     Printer printer(engine, client, options.json);
-    printer.call("maic.hello", {{"protocol", 1}, {"client", {{"name", "maic -p"}, {"version", MAIC_VERSION}}}});
+    printer.call("maid.hello", {{"protocol", 1}, {"client", {{"name", "maid -p"}, {"version", MAID_VERSION}}}});
     LocalSession ls;
     ls.workspace = std::filesystem::current_path();
     ls.settings = settings;
     ls.log = std::move(log);
-    ls.titles = false;  // a one-shot is not titled (maic sessions name does it on request)
+    ls.titles = false;  // a one-shot is not titled (maid sessions name does it on request)
     ls.setup = [&](Agent& agent, SessionLog& l) {
         configure_agent(agent, settings);
         apply_sampling(agent, settings, options.sampling);  // the command line wins
@@ -335,7 +335,7 @@ int run_headless(const HeadlessOptions& options) {
         if (settings.tripwire == "isolated") agent.set_confined(true);
         agent.reload_instructions();
         for (const auto& p : agent.pending_imports()) {
-            fprintf(stderr, "※ %s imports %s from outside your trusted directories: not read until you approve it (%s); maic trust imports --approve asks at a terminal\n",
+            fprintf(stderr, "※ %s imports %s from outside your trusted directories: not read until you approve it (%s); maid trust imports --approve asks at a terminal\n",
                     p.importer.c_str(), p.target.c_str(), p.changed ? "it changed since you did" : "not approved yet");
         }
         agent.set_log(&l);
@@ -360,20 +360,20 @@ int run_headless(const HeadlessOptions& options) {
     try {
         printer.session = engine.open_local(client, std::move(ls));
     } catch (const ContextError& e) {
-        fprintf(stderr, "maic: %s\n", e.what());
+        fprintf(stderr, "maid: %s\n", e.what());
         return 2;
     }
-    printer.call("maic.session.attach", {{"session", printer.session}});
+    printer.call("maid.session.attach", {{"session", printer.session}});
 
     std::signal(SIGINT, on_sigint);
     json reply = printer.call("response.create", {{"conversation", printer.session}, {"input", prompt}});
     if (reply.contains("error")) {
-        fprintf(stderr, "maic: %s\n", reply["error"].value("message", "the engine refused the prompt").c_str());
+        fprintf(stderr, "maid: %s\n", reply["error"].value("message", "the engine refused the prompt").c_str());
         return 1;
     }
     printer.response = reply["result"].value("id", "");
     if (std::string failure = printer.follow(); !failure.empty()) {
-        fprintf(stderr, "maic: %s\n", failure.c_str());
+        fprintf(stderr, "maid: %s\n", failure.c_str());
         return 1;
     }
     if (!options.json) fprintf(stdout, "\n");
@@ -394,4 +394,4 @@ int run_headless(const HeadlessOptions& options) {
     return g_cancel ? 130 : 0;
 }
 
-}  // namespace maic
+}  // namespace maid

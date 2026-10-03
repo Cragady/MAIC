@@ -25,21 +25,21 @@ def server_url() -> str:
     return os.environ.get("DICTION_WHISPER_URL", DEFAULT_URL).rstrip("/")
 
 
-def maic_bin() -> str | None:
-    """The maic that started us (it exports MAIC_BIN), else the one on PATH."""
-    return os.environ.get("MAIC_BIN") or shutil.which("maic")
+def maid_bin() -> str | None:
+    """The maid that started us (it exports MAID_BIN), else the one on PATH."""
+    return os.environ.get("MAID_BIN") or shutil.which("maid")
 
 
 @functools.cache
 def models_root() -> Path:
-    """<models_dir>/whisper: MAIC_MODELS_DIR (maic exports it), else `maic path models`, else MAIC's default."""
-    d = os.environ.get("MAIC_MODELS_DIR")
-    if not d and (exe := maic_bin()):
+    """<models_dir>/whisper: MAID_MODELS_DIR (maid exports it), else `maid path models`, else MAID's default."""
+    d = os.environ.get("MAID_MODELS_DIR")
+    if not d and (exe := maid_bin()):
         r = subprocess.run([exe, "path", "models"], capture_output=True, text=True, timeout=20)
         d = r.stdout.strip() if r.returncode == 0 else ""
     if not d:
         state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
-        d = str(Path(state) / "maic" / "models")
+        d = str(Path(state) / "maid" / "models")
     return Path(d) / "whisper"
 
 
@@ -63,7 +63,7 @@ def resolve_model(name: str) -> Path | None:
 
 def missing(name: str) -> str:
     """What to say about a model that is not there: a catalog name says how to get it."""
-    return "not installed" if "/" in name or name.endswith(".bin") else f"not installed: maic models install whisper-{name}"
+    return "not installed" if "/" in name or name.endswith(".bin") else f"not installed: maid models install whisper-{name}"
 
 
 def display_name(path: Path | None) -> str:
@@ -105,7 +105,7 @@ class Whisper:
         except urllib.error.HTTPError as e:
             raise RuntimeError(f"whisper-server: HTTP {e.code}: {e.read().decode(errors='replace')[:200]}") from None
         except (urllib.error.URLError, OSError) as e:
-            raise RuntimeError(f"whisper-server is not answering at {self.url} ({e}): maic up whisper") from None
+            raise RuntimeError(f"whisper-server is not answering at {self.url} ({e}): maid up whisper") from None
 
     def wait_ready(self, limit: float = 120.0):
         """Returns once /health says the model is loaded; 503 means still loading."""
@@ -119,8 +119,8 @@ class Whisper:
                 if e.code != 503:
                     raise RuntimeError(f"whisper-server: /health answered HTTP {e.code}") from None
             except (urllib.error.URLError, OSError):
-                raise RuntimeError(f"whisper-server is not answering at {self.url}: maic up whisper "
-                                   f"(it needs a model: maic vendor use whisper FILE; docs/diction.md)") from None
+                raise RuntimeError(f"whisper-server is not answering at {self.url}: maid up whisper "
+                                   f"(it needs a model: maid vendor use whisper FILE; docs/diction.md)") from None
             if time.time() > deadline:
                 raise RuntimeError(f"whisper-server at {self.url} is still loading its model after {limit:.0f}s")
             time.sleep(0.5)

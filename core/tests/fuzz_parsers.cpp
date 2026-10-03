@@ -5,13 +5,13 @@
 // event parsers, usage, tool-call assembly. FUZZ_SEED repeats a run; the seed is printed either way.
 #include "check.hpp"
 
-#include "maic/bans.hpp"
-#include "maic/import.hpp"
-#include "maic/llm.hpp"
-#include "maic/markdown.hpp"
-#include "maic/session.hpp"
+#include "maid/bans.hpp"
+#include "maid/import.hpp"
+#include "maid/llm.hpp"
+#include "maid/markdown.hpp"
+#include "maid/session.hpp"
 
-#include "maic/http.hpp"
+#include "maid/http.hpp"
 
 #include <regex.h>
 #include <unistd.h>
@@ -29,7 +29,7 @@
 #include <thread>
 #include <vector>
 
-using namespace maic;
+using namespace maid;
 namespace fs = std::filesystem;
 
 namespace {
@@ -442,7 +442,7 @@ int main() {
     double seconds = std::getenv("FUZZ_SECONDS") ? std::atof(std::getenv("FUZZ_SECONDS")) : 2.0;
     rng.seed(seed);
     std::cout << "seed " << seed << " (FUZZ_SEED=" << seed << " repeats this run), " << seconds << " s per target (FUZZ_SECONDS)" << std::endl;
-    fs::path dir = fs::temp_directory_path() / ("maic-fuzz-" + std::to_string(getpid()));
+    fs::path dir = fs::temp_directory_path() / ("maid-fuzz-" + std::to_string(getpid()));
     fs::create_directories(dir);
     setenv("XDG_STATE_HOME", (dir / "state").c_str(), 1);  // find_session during a resumed_from lookup stays out of the real state
 

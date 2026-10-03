@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 struct HeadlessOptions {
     std::string prompt;  // "-" or empty reads stdin
@@ -34,8 +34,8 @@ struct HeadlessOptions {
     std::optional<size_t> fork_at;  // with resume: fork from its first N records (append is then false)
 };
 
-// `maic -p "..."`: one turn, no UI. The reply streams to stdout, tool activity goes to stderr.
+// `maid -p "..."`: one turn, no UI. The reply streams to stdout, tool activity goes to stderr.
 // Approvals are asked on the terminal when stdin is one, otherwise denied.
 int run_headless(const HeadlessOptions& options);
 
-}  // namespace maic
+}  // namespace maid

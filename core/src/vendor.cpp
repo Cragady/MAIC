@@ -1,9 +1,9 @@
-#include "maic/vendor.hpp"
+#include "maid/vendor.hpp"
 
-#include "maic/helper.hpp"
-#include "maic/paths.hpp"
-#include "maic/settings.hpp"
-#include "maic/tripwire.hpp"
+#include "maid/helper.hpp"
+#include "maid/paths.hpp"
+#include "maid/settings.hpp"
+#include "maid/tripwire.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -16,7 +16,7 @@
 #include <stdexcept>
 #include <string_view>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -51,8 +51,8 @@ void run_or_throw(const std::string& command, const std::string& what) {
 
 std::string install_env() {
     Settings s = load_settings();
-    std::string env = "MAIC_VENDOR=" + sh(vendor_dir().string()) + " MAIC_STATE=" + sh(state_dir().string()) + " MAIC_ROOT=" + sh(root_dir().string());
-    if (!s.models_dir.empty()) env += " MAIC_MODELS_DIR=" + sh(s.models_dir);
+    std::string env = "MAID_VENDOR=" + sh(vendor_dir().string()) + " MAID_STATE=" + sh(state_dir().string()) + " MAID_ROOT=" + sh(root_dir().string());
+    if (!s.models_dir.empty()) env += " MAID_MODELS_DIR=" + sh(s.models_dir);
     return env;
 }
 
@@ -138,7 +138,7 @@ VendorStatus vendor_status(const VendorEntry& e) {
         s.linked = true;
         s.target = link.string();
     } else {
-        s.note = "maic vendor add " + e.name + " (or adopt an existing checkout)";
+        s.note = "maid vendor add " + e.name + " (or adopt an existing checkout)";
         return s;
     }
     if (e.install.empty()) {
@@ -147,7 +147,7 @@ VendorStatus vendor_status(const VendorEntry& e) {
     }
     fs::path script = root_dir() / e.install;
     s.installed = fs::exists(script) && run("env " + install_env() + " bash " + sh(script.string()) + " check >/dev/null 2>&1") == 0;
-    if (!s.installed) s.note = "linked but not installed: maic vendor add " + e.name;
+    if (!s.installed) s.note = "linked but not installed: maid vendor add " + e.name;
     return s;
 }
 
@@ -181,7 +181,7 @@ void vendor_adopt(const VendorEntry& e, const fs::path& existing) {
 }
 
 std::string merge_model_paths_yaml(const std::string& existing, const std::string& base_path, const std::map<std::string, std::string>& models) {
-    // Drop the old maic: block: its key line and every indented or blank line after it, up to the next root key.
+    // Drop the old maid: block: its key line and every indented or blank line after it, up to the next root key.
     std::string kept;
     bool in_block = false;
     size_t pos = 0;
@@ -190,14 +190,14 @@ std::string merge_model_paths_yaml(const std::string& existing, const std::strin
         std::string line = existing.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
         pos = nl == std::string::npos ? existing.size() : nl + 1;
         bool root_key = !line.empty() && line[0] != ' ' && line[0] != '\t' && line[0] != '#';
-        if (root_key) in_block = line == "maic:" || line.rfind("maic: ", 0) == 0;
+        if (root_key) in_block = line == "maid:" || line.rfind("maid: ", 0) == 0;
         if (!in_block) kept += line + "\n";
     }
     while (kept.size() > 1 && kept.compare(kept.size() - 2, 2, "\n\n") == 0) kept.pop_back();
     if (kept == "\n") kept.clear();
     std::string base = base_path;
     if (base.empty() || base.back() != '/') base += '/';
-    std::string block = "maic:\n    base_path: \"" + base + "\"\n";
+    std::string block = "maid:\n    base_path: \"" + base + "\"\n";
     for (const auto& [category, folder] : models) block += "    " + category + ": " + folder + (folder.empty() || folder.back() == '/' ? "" : "/") + "\n";
     return kept + (kept.empty() ? "" : "\n") + block;
 }
@@ -205,7 +205,7 @@ std::string merge_model_paths_yaml(const std::string& existing, const std::strin
 void vendor_wire(const VendorEntry& e) {
     if (e.name == "comfyui" && !e.models.empty()) {
         Settings s = load_settings();
-        if (s.models_dir.empty()) throw std::runtime_error("models_dir is not set in settings (maic settings init), so extra_model_paths.yaml cannot be written");
+        if (s.models_dir.empty()) throw std::runtime_error("models_dir is not set in settings (maid settings init), so extra_model_paths.yaml cannot be written");
         fs::path yaml = vendor_link(e) / "extra_model_paths.yaml";
         std::ifstream in(yaml);
         std::string existing((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -216,7 +216,7 @@ void vendor_wire(const VendorEntry& e) {
             tmp += ".tmp";
             std::ofstream(tmp, std::ios::trunc) << merged;
             fs::rename(tmp, yaml);
-            std::cout << "wrote the maic: block of " << yaml.string() << " -> " << s.models_dir << " (" << e.models.size() << " categories)\n";
+            std::cout << "wrote the maid: block of " << yaml.string() << " -> " << s.models_dir << " (" << e.models.size() << " categories)\n";
         }
     }
     if (!e.install.empty()) run_install(e, "wire");
@@ -337,7 +337,7 @@ std::vector<std::string> llamacpp_model_ids() {
 }
 
 void vendor_use(const VendorEntry& e, const fs::path& model) {
-    if (e.name != "llamacpp" && e.name != "whisper") throw std::runtime_error("maic vendor use picks the model for llamacpp or whisper; " + e.name + " takes no model");
+    if (e.name != "llamacpp" && e.name != "whisper") throw std::runtime_error("maid vendor use picks the model for llamacpp or whisper; " + e.name + " takes no model");
     std::error_code ec;
     // The folder is resolved, the file is not: a link such as the text-only 9B's stays the model it names.
     fs::path abs = fs::absolute(model, ec);
@@ -350,7 +350,7 @@ void vendor_use(const VendorEntry& e, const fs::path& model) {
         throw std::runtime_error(model.string() + " is not a GGUF (no .gguf suffix and no GGUF header)");
     }
     if (e.name == "llamacpp" && router_id(target, llamacpp_models_root()).empty() && !router_id(target, fim_models_root()).empty()) {
-        // A coder under <models_dir>/fim: it becomes llamacpp-fim's current.gguf, linked relatively like maic models install --link.
+        // A coder under <models_dir>/fim: it becomes llamacpp-fim's current.gguf, linked relatively like maid models install --link.
         fs::path link = fim_model_link(), rel = target.lexically_relative(fs::weakly_canonical(fim_models_root(), ec));
         if (fs::is_symlink(link, ec)) fs::remove(link);
         else if (fs::exists(link, ec)) throw std::runtime_error(link.string() + " exists and is not a link; remove it first");
@@ -359,7 +359,7 @@ void vendor_use(const VendorEntry& e, const fs::path& model) {
         return;
     }
     if (e.name == "llamacpp" && router_id(target, llamacpp_models_root()).empty()) {
-        throw std::runtime_error("the server only sees GGUFs under " + llamacpp_models_root().string() + " (or, for code completion, " + fim_models_root().string() + "); move or link the file there (a subdirectory named after the file when an mmproj goes with it), or maic vendor model llamacpp URL SHA256");
+        throw std::runtime_error("the server only sees GGUFs under " + llamacpp_models_root().string() + " (or, for code completion, " + fim_models_root().string() + "); move or link the file there (a subdirectory named after the file when an mmproj goes with it), or maid vendor model llamacpp URL SHA256");
     }
     fs::path link = vendor_model_link(e);
     fs::create_directories(link.parent_path());
@@ -370,7 +370,7 @@ void vendor_use(const VendorEntry& e, const fs::path& model) {
 }
 
 fs::path vendor_model(const VendorEntry& e, const std::string& url, const std::string& sha256, const fs::path& into) {
-    if (e.name != "llamacpp" && e.name != "whisper") throw std::runtime_error("maic vendor model fetches a model for llamacpp or whisper; " + e.name + " takes no model");
+    if (e.name != "llamacpp" && e.name != "whisper") throw std::runtime_error("maid vendor model fetches a model for llamacpp or whisper; " + e.name + " takes no model");
     fs::path dir = into;
     if (dir.empty()) dir = e.name == "whisper" ? whisper_models_root() : llamacpp_models_root();
     fs::path final = download_verified(url, sha256, dir);
@@ -408,7 +408,7 @@ fs::path download_verified(const std::string& url, const std::string& sha256, co
     fs::create_directories(dir);
     fs::path part = dir / (name + ".part"), final = dir / name;
     std::error_code ec;
-    if (fs::exists(final, ec) || fs::is_symlink(final, ec)) throw std::runtime_error(final.string() + " already exists; maic vendor use links a file that is there");
+    if (fs::exists(final, ec) || fs::is_symlink(final, ec)) throw std::runtime_error(final.string() + " already exists; maid vendor use links a file that is there");
     std::cout << "downloading " << name << " ...\n";
     run_or_throw("curl -fL --retry 3 --progress-bar -o " + sh(part.string()) + " " + sh(url), "download");
     std::string want = sha256;
@@ -423,4 +423,4 @@ fs::path download_verified(const std::string& url, const std::string& sha256, co
     return final;
 }
 
-}  // namespace maic
+}  // namespace maid

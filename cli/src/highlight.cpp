@@ -2,7 +2,7 @@
 
 #include "msgpack.hpp"
 
-#include "maic/helper.hpp"
+#include "maid/helper.hpp"
 
 #include <fcntl.h>
 #include <poll.h>
@@ -13,7 +13,7 @@
 #include <cerrno>
 #include <cstring>
 
-namespace maic {
+namespace maid {
 
 namespace {
 
@@ -293,4 +293,4 @@ std::optional<std::vector<StyledLine>> NvimHighlighter::highlight(const std::str
     }
 }
 
-}  // namespace maic
+}  // namespace maid

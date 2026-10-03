@@ -1,8 +1,8 @@
 {
   "name": "comfyui",
-  "description": "ComfyUI image generation, local only, vendored (maic vendor add comfyui; see docs/vendor.md)",
+  "description": "ComfyUI image generation, local only, vendored (maid vendor add comfyui; see docs/vendor.md)",
   "command": [
-    "${MAIC_VENDOR}/ComfyUI/.venv/bin/python",
+    "${MAID_VENDOR}/ComfyUI/.venv/bin/python",
     "main.py",
     "--disable-api-nodes",
     "--disable-auto-launch",
@@ -11,7 +11,7 @@
     "--port",
     "8188"
   ],
-  "cwd": "${MAIC_VENDOR}/ComfyUI",
+  "cwd": "${MAID_VENDOR}/ComfyUI",
   "port": 8188,
   "requires": [
     "/run/media/cragady/Extra Storage/LinBox-Overflow/llm-models"
@@ -22,32 +22,32 @@
     {
       "name": "outputs",
       "description": "generated images/videos (embed prompts unless --disable-metadata) and saved story replies",
-      "path": "${MAIC_VENDOR}/ComfyUI/output"
+      "path": "${MAID_VENDOR}/ComfyUI/output"
     },
     {
       "name": "workflows",
       "description": "your saved workflows, editable (ComfyUI's user workflow folder points here)",
-      "path": "${MAIC_STATE}/workflows/comfyui"
+      "path": "${MAID_STATE}/workflows/comfyui"
     },
     {
       "name": "templates",
       "description": "your own templates: originals shown in ComfyUI's template browser and opened as copies, never edited in place",
-      "path": "${MAIC_STATE}/templates/comfyui"
+      "path": "${MAID_STATE}/templates/comfyui"
     },
     {
       "name": "builtin-templates",
       "description": "ComfyUI's shipped templates (a pip package, read-only, replaced on upgrade); copy one into templates/ to make it yours",
-      "path": "${MAIC_VENDOR}/ComfyUI/.venv/lib/python3.13/site-packages/comfyui_workflow_templates_json/templates"
+      "path": "${MAID_VENDOR}/ComfyUI/.venv/lib/python3.13/site-packages/comfyui_workflow_templates_json/templates"
     },
     {
       "name": "uploads",
       "description": "images loaded into workflows",
-      "path": "${MAIC_VENDOR}/ComfyUI/input"
+      "path": "${MAID_VENDOR}/ComfyUI/input"
     },
     {
       "name": "temp",
       "description": "previews and intermediates (also cleared by ComfyUI on start)",
-      "path": "${MAIC_VENDOR}/ComfyUI/temp"
+      "path": "${MAID_VENDOR}/ComfyUI/temp"
     }
   ],
   "needs_gpu": true

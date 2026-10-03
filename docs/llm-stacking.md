@@ -1,5 +1,5 @@
 # Open-Weight AI Transition Plan & Conversation Archive
-> Note (2026-10-01): Ollama was removed from MAIC in favour of llama.cpp (docs/llamacpp.md). The Ollama references below are history.
+> Note (2026-10-01): Ollama was removed from MAID in favour of llama.cpp (docs/llamacpp.md). The Ollama references below are history.
 
 **Date:** September 2026  
 **Environment:** Neovim / Terminal / Cybersecurity & Pen-Testing Workflows  

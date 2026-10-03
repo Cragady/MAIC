@@ -35,7 +35,7 @@ class Tests(unittest.TestCase):
         cls.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fake)
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         cls.store = os.path.join(tempfile.mkdtemp(), "tags.json")
-        cls.env = dict(os.environ, MAIC_DANBOORU_TAGS=cls.store)
+        cls.env = dict(os.environ, MAID_DANBOORU_TAGS=cls.store)
 
     def run_tool(self, *args):
         return subprocess.run([sys.executable, TOOL, *args], capture_output=True, text=True, env=self.env)

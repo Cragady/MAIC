@@ -2,10 +2,10 @@
 // Everything lives in a temporary HOME with its own XDG directories; the real ~/.config is never read.
 #include "check.hpp"
 
-#include "maic/lazy_lock.hpp"
-#include "maic/nvim_keymaps.hpp"
-#include "maic/settings.hpp"
-#include "maic/status.hpp"
+#include "maid/lazy_lock.hpp"
+#include "maid/nvim_keymaps.hpp"
+#include "maid/settings.hpp"
+#include "maid/status.hpp"
 
 #include <unistd.h>
 
@@ -16,7 +16,7 @@
 #include <iterator>
 
 namespace fs = std::filesystem;
-using namespace maic;
+using namespace maid;
 
 namespace {
 
@@ -52,7 +52,7 @@ int command(const std::string& sub, const fs::path& lock, std::string& out) {
 }  // namespace
 
 int main() {
-    fs::path root = fs::temp_directory_path() / ("maic-lazy-lock-test-" + std::to_string(getpid()));
+    fs::path root = fs::temp_directory_path() / ("maid-lazy-lock-test-" + std::to_string(getpid()));
     fs::remove_all(root);
     fs::create_directories(root);
     setenv("HOME", root.c_str(), 1);
@@ -69,11 +69,11 @@ int main() {
     expect(lazy_lock_path("") == root / ".config" / "nvim" / "lazy-lock.json", "without XDG_CONFIG_HOME: ~/.config/nvim/lazy-lock.json");
     setenv("XDG_CONFIG_HOME", (root / "xdg").c_str(), 1);
     expect(lazy_lock_path("") == root / "xdg" / "nvim" / "lazy-lock.json", "XDG_CONFIG_HOME moves it");
-    expect(lazy_lock_hash_path() == root / "xdg" / "maic" / "nvim-lazy-lock.sha256", "the hash file follows XDG_CONFIG_HOME");
+    expect(lazy_lock_hash_path() == root / "xdg" / "maid" / "nvim-lazy-lock.sha256", "the hash file follows XDG_CONFIG_HOME");
     expect(lazy_lock_path("~/dots/lazy-lock.json") == root / "dots" / "lazy-lock.json", "the setting wins, ~ expands");
     expect(lazy_lock_path("/srv/lock.json") == "/srv/lock.json", "an absolute setting is kept");
-    expect(lazy_lock_snapshot_path() == root / "state" / "maic" / "lazy-lock" / "recorded.json", "the snapshot is under the state directory");
-    write_file(root / "xdg" / "maic" / "settings.lua", "return { lazy_lock = '~/dots/lazy-lock.json', lazy_lock_notice = false }\n");
+    expect(lazy_lock_snapshot_path() == root / "state" / "maid" / "lazy-lock" / "recorded.json", "the snapshot is under the state directory");
+    write_file(root / "xdg" / "maid" / "settings.lua", "return { lazy_lock = '~/dots/lazy-lock.json', lazy_lock_notice = false }\n");
     fs::create_directories(root / "ws");
     Settings set = load_settings(root / "ws");
     expect(set.lazy_lock == "~/dots/lazy-lock.json" && !set.lazy_lock_notice, "settings carry lazy_lock and lazy_lock_notice");
@@ -111,8 +111,8 @@ int main() {
     {
         LazyLockState s = lazy_lock_state(lock);
         expect(s.kind == LazyLockState::Kind::NotRecorded, "a lock file and no hash: not recorded");
-        expect(lazy_lock_notice(s) == "nvim's lazy-lock.json is not recorded yet: maic lazy-lock record", "notice: " + lazy_lock_notice(s));
-        expect(command("", lock, out) == 1 && out == "not recorded yet (maic lazy-lock record)\n", "status: exit 1: " + out);
+        expect(lazy_lock_notice(s) == "nvim's lazy-lock.json is not recorded yet: maid lazy-lock record", "notice: " + lazy_lock_notice(s));
+        expect(command("", lock, out) == 1 && out == "not recorded yet (maid lazy-lock record)\n", "status: exit 1: " + out);
         expect(command("diff", lock, out) == 1 && has(out, "not recorded yet"), "diff: exit 1");
     }
 
@@ -147,8 +147,8 @@ int main() {
         LazyLockState s = lazy_lock_state(lock);
         expect(s.kind == LazyLockState::Kind::Changed && s.snapshot, "changed, with the snapshot to compare");
         expect(s.updated == 3 && s.added == 1 && s.removed == 1 && s.manager_updated, "3 updated, 1 added, 1 removed, lazy.nvim among them");
-        expect(lazy_lock_notice(s) == "nvim's lazy-lock.json changed since it was recorded: 3 updated, lazy.nvim itself among them, 1 added, 1 removed. maic lazy-lock diff / record", "notice: " + lazy_lock_notice(s));
-        expect(command("", lock, out) == 1 && has(out, "changed since ") && has(out, ": 3 updated (lazy.nvim among them), 1 added, 1 removed\nmaic lazy-lock diff / record\n"), "status: exit 1: " + out);
+        expect(lazy_lock_notice(s) == "nvim's lazy-lock.json changed since it was recorded: 3 updated, lazy.nvim itself among them, 1 added, 1 removed. maid lazy-lock diff / record", "notice: " + lazy_lock_notice(s));
+        expect(command("", lock, out) == 1 && has(out, "changed since ") && has(out, ": 3 updated (lazy.nvim among them), 1 added, 1 removed\nmaid lazy-lock diff / record\n"), "status: exit 1: " + out);
         int rc = command("diff", lock, out);
         expect(rc == 1, "diff: exit 1");
         expect(has(out, "  updated  lazy.nvim  commit 1111111..2222222  (package manager updated)\n"), "diff calls out lazy.nvim as the package manager: " + out);
@@ -159,7 +159,7 @@ int main() {
         expect(has(out, "  removed  gone.nvim  was main 5555555\n"), "a removed plugin");
     }
 
-    section("maic status");
+    section("maid status");
     {
         StatusReport rep;
         expect(format_status(rep).find("lazy-lock") == std::string::npos, "nothing to say: no line");
@@ -174,15 +174,15 @@ int main() {
         s.snapshot = true;
         s.updated = 3;
         s.manager_updated = true;
-        expect(lazy_lock_notice(s) == "nvim's lazy-lock.json changed since it was recorded: 3 updated, lazy.nvim itself among them. maic lazy-lock diff / record", "notice: " + lazy_lock_notice(s));
+        expect(lazy_lock_notice(s) == "nvim's lazy-lock.json changed since it was recorded: 3 updated, lazy.nvim itself among them. maid lazy-lock diff / record", "notice: " + lazy_lock_notice(s));
         s.manager_updated = false;
         s.updated = 0;
         s.added = 2;
-        expect(lazy_lock_notice(s) == "nvim's lazy-lock.json changed since it was recorded: 2 added. maic lazy-lock diff / record", "only additions: " + lazy_lock_notice(s));
+        expect(lazy_lock_notice(s) == "nvim's lazy-lock.json changed since it was recorded: 2 added. maid lazy-lock diff / record", "only additions: " + lazy_lock_notice(s));
         s.added = 0;
-        expect(lazy_lock_notice(s) == "nvim's lazy-lock.json changed since it was recorded, though no plugin did (only the file's formatting). maic lazy-lock diff / record", "formatting only: " + lazy_lock_notice(s));
+        expect(lazy_lock_notice(s) == "nvim's lazy-lock.json changed since it was recorded, though no plugin did (only the file's formatting). maid lazy-lock diff / record", "formatting only: " + lazy_lock_notice(s));
         s.snapshot = false;
-        expect(lazy_lock_notice(s) == "nvim's lazy-lock.json changed since it was recorded (no snapshot on this machine to compare plugins). maic lazy-lock diff / record", "no snapshot: " + lazy_lock_notice(s));
+        expect(lazy_lock_notice(s) == "nvim's lazy-lock.json changed since it was recorded (no snapshot on this machine to compare plugins). maid lazy-lock diff / record", "no snapshot: " + lazy_lock_notice(s));
     }
 
     section("the watch rereads only on a change");
@@ -260,7 +260,7 @@ int main() {
         };
         KeymapReport first = report({{"ok", "a"}, {"warn", "llama.vim|<leader>llf"}});
         expect(first.error.empty() && first.items.size() == 2 && first.collisions().size() == 1 && keymap_exit_code(first) == 1, "a warn is a collision: exit 1");
-        expect(keymap_summary(first) == "1 collision: maic nvim keymaps", "doctor's line: " + keymap_summary(first));
+        expect(keymap_summary(first) == "1 collision: maid nvim keymaps", "doctor's line: " + keymap_summary(first));
         std::string text = format_keymap_report(first, false);
         expect(has(text, "1 collision") && has(text, "  WARN   llama.vim|<leader>llf text") && has(text, "fix: fix llama.vim|<leader>llf") && !has(text, "a text"), "the CLI lists the collisions with their fixes: " + text);
         expect(has(format_keymap_report(first, true), "  ok     a text"), "--all lists every key");
@@ -268,9 +268,9 @@ int main() {
         save_keymap_record(first, "lock1");
         KeymapRecord rec = load_keymap_record();
         expect(rec.exists && rec.lock_hash == "lock1" && rec.ids == std::vector<std::string>{"llama.vim|<leader>llf"}, "the record keeps the lock hash and the collision ids");
-        KeymapReport second = report({{"warn", "llama.vim|<leader>llf"}, {"error", "MAIC's terminal input|<C-w>"}});
+        KeymapReport second = report({{"warn", "llama.vim|<leader>llf"}, {"error", "MAID's terminal input|<C-w>"}});
         auto fresh = new_collisions(rec, second);
-        expect(fresh.size() == 1 && fresh[0].id == "MAIC's terminal input|<C-w>", "only the collision the record did not have is new");
+        expect(fresh.size() == 1 && fresh[0].id == "MAID's terminal input|<C-w>", "only the collision the record did not have is new");
         KeymapReport broken = parse_keymap_report({{"error", "boom"}});
         expect(keymap_exit_code(broken) == 2 && has(keymap_summary(broken), "boom"), "a check that failed inside nvim: exit 2");
         KeymapReport missing = run_keymap_check("", nullptr, std::chrono::seconds(10), "/nonexistent/nvim");

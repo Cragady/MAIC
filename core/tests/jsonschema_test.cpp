@@ -1,16 +1,16 @@
-// The JSON Schema validator (maic/jsonschema.hpp): every keyword it implements with known answers, then OpenAI's
+// The JSON Schema validator (maid/jsonschema.hpp): every keyword it implements with known answers, then OpenAI's
 // pinned subset (protocol/openai/subset.json) against a Responses stream shaped as the engine will send it and a
 // llama-server b11284 chat-completions stream (fixtures, written by hand from the spec and llama.cpp's source), and
 // the OpenAI-compatible client's adapter rules on the shapes llama.cpp sends that the schema refuses.
 #include "check.hpp"
 
-#include "maic/jsonschema.hpp"
-#include "maic/llm.hpp"
+#include "maid/jsonschema.hpp"
+#include "maid/llm.hpp"
 
 #include <fstream>
 #include <sstream>
 
-using namespace maic;
+using namespace maid;
 using nlohmann::json;
 
 namespace {
@@ -131,14 +131,14 @@ int main() {
         expect(schema_unsupported({{"x-anything", {{"if", 1}}}, {"description", "d"}, {"type", "string"}}).empty(), "x- keys and annotations are skipped whole");
     }
 
-    const std::string protocol = MAIC_PROTOCOL;
-    const std::string fixtures = MAIC_FIXTURES;
+    const std::string protocol = MAID_PROTOCOL;
+    const std::string fixtures = MAID_FIXTURES;
     json subset = load(protocol + "/openai/subset.json");
     auto against = [&](const std::string& name, const json& value) { return schema_error(subset, {{"$ref", "#/components/schemas/" + name}}, value); };
 
     section("the pinned OpenAI subset");
     {
-        expect(subset["x-maic-subset"]["commit"] == "de3a025c40f84b99d1401ee1c5fe69fbf8de789b", "subset.json is extracted at the pinned commit");
+        expect(subset["x-maid-subset"]["commit"] == "de3a025c40f84b99d1401ee1c5fe69fbf8de789b", "subset.json is extracted at the pinned commit");
         expect(subset["info"]["version"] == "2.3.0" && subset["openapi"] == "3.1.0", "API version 2.3.0, OpenAPI 3.1.0");
         std::string first;
         for (const auto& [name, schema] : subset["components"]["schemas"].items()) {
@@ -164,10 +164,10 @@ int main() {
         expect(against("ResponseStreamEvent", e) == "/delta: must be string, not integer", "a delta that is not text is refused");
         e = events[0];
         e["response"]["status"] = "denied";
-        expect(against("ResponseStreamEvent", e).rfind("/response/status: must be one of", 0) == 0, "a closed enum is not extended: status \"denied\" is refused (it goes in maic.status)");
+        expect(against("ResponseStreamEvent", e).rfind("/response/status: must be one of", 0) == 0, "a closed enum is not extended: status \"denied\" is refused (it goes in maid.status)");
         e = events[0];
-        e["type"] = "maic.review.started";
-        expect(!against("ResponseStreamEvent", e).empty(), "a maic.* event is not an OpenAI event");
+        e["type"] = "maid.review.started";
+        expect(!against("ResponseStreamEvent", e).empty(), "a maid.* event is not an OpenAI event");
         e = events[14];  // the function call's output_item.done
         e["item"].erase("call_id");
         expect(against("ResponseStreamEvent", e) == "/item/call_id: is required", "a function_call item without call_id is refused, inside the union of unions");
@@ -186,7 +186,7 @@ int main() {
         }
         expect(chunks.front()["choices"][0]["delta"]["content"].is_null() && chunks.back()["choices"].empty() && chunks.back().contains("timings"),
                "the fixture covers the opening null content, the empty-choices usage chunk and llama.cpp's timings");
-        // Shapes the schema refuses: what MAIC's client tolerates and what llama.cpp sends that OpenAI does not define.
+        // Shapes the schema refuses: what MAID's client tolerates and what llama.cpp sends that OpenAI does not define.
         expect(against("CreateChatCompletionStreamResponse", {{"choices", {{{"delta", {{"content", "ok"}}}}}}}) == "/choices/0/finish_reason: is required",
                "a bare {choices:[{delta}]} chunk is not OpenAI's shape (the client accepts it; llm_test's fakes send it)");
         json usage = chunks.back();
@@ -223,9 +223,9 @@ int main() {
                "logprobs_refusal_null adds refusal: null and leaves the tokens as they were");
 
         json err = normalized_case(odd[2], {"error_code_string", "error_param_null"}, "/error/code: must be string, not integer", "llama.cpp's error");
-        json want = {{"error", {{"code", "maic_llamacpp_500"}, {"message", "the model crashed"}, {"type", "server_error"}, {"param", nullptr},
-                                {"maic", {{"upstream", {{"provider", "llamacpp"}, {"code", 500}, {"rules", {"error_code_string", "error_param_null"}}}}}}}}};
-        expect(err == want, "the error keeps its original code and the rules' names under maic.upstream: " + err.dump());
+        json want = {{"error", {{"code", "maid_llamacpp_500"}, {"message", "the model crashed"}, {"type", "server_error"}, {"param", nullptr},
+                                {"maid", {{"upstream", {{"provider", "llamacpp"}, {"code", 500}, {"rules", {"error_code_string", "error_param_null"}}}}}}}}};
+        expect(err == want, "the error keeps its original code and the rules' names under maid.upstream: " + err.dump());
 
         json code_only = odd[2];
         code_only["error"]["param"] = nullptr;

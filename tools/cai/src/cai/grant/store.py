@@ -33,7 +33,7 @@ import time
 from cai import safewrite
 from cai import source
 from cai import tmp
-from cai.grammar import maic as fmt
+from cai.grammar import maid as fmt
 
 ENV_VAR = "CAI_GRANTS"
 # **Grant instances are not tracked.** A grant is a fact about right now -- this
@@ -274,9 +274,9 @@ def current_session(sessions_glob=None, cwd=None, session_id=None):
     which is how it was found -- a suite that passed alone and failed in a loop
     that exported it.
     """
-    # A MAIC session has no registry entry; a running one is known by the pid its last
+    # A MAID session has no registry entry; a running one is known by the pid its last
     # `start` record names. Consulted beside the client's records, for the default glob only.
-    maic_rows = fmt.live_sessions() if sessions_glob is None else []
+    maid_rows = fmt.live_sessions() if sessions_glob is None else []
     sessions_glob = sessions_glob or SESSIONS_GLOB
 
     stated = session_id or os.environ.get("CAI_SESSION_ID")
@@ -301,7 +301,7 @@ def current_session(sessions_glob=None, cwd=None, session_id=None):
                 continue
             if d.get("sessionId", "").startswith(stated):
                 return d
-        for d in maic_rows:
+        for d in maid_rows:
             if d["sessionId"].startswith(stated):
                 return d
         return None
@@ -315,7 +315,7 @@ def current_session(sessions_glob=None, cwd=None, session_id=None):
                 records.append(json.load(fh))
         except (OSError, ValueError):
             continue
-    for d in records + maic_rows:
+    for d in records + maid_rows:
         if d.get("cwd") and cwd.startswith(d["cwd"]):
             if best is None or len(d["cwd"]) > len(best.get("cwd", "")):
                 best = d
@@ -803,7 +803,7 @@ def _sessions(sessions_glob=None):
         if d.get("sessionId"):
             out.append(d)
     if sessions_glob is None:
-        # Running MAIC sessions, keyed by their id: a grantee and a caller like any other.
+        # Running MAID sessions, keyed by their id: a grantee and a caller like any other.
         out.extend(fmt.live_sessions())
     return out
 

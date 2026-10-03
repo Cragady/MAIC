@@ -5,17 +5,17 @@
 #include "check.hpp"
 #include "fake_server.hpp"
 
-#include "maic/agent.hpp"
-#include "maic/models.hpp"
-#include "maic/audit_trail.hpp"
-#include "maic/jsonschema.hpp"
-#include "maic/settings.hpp"
-#include "maic/tripwire.hpp"
-#include "maic/trust.hpp"
-#include "maic/paths.hpp"
-#include "maic/session.hpp"
+#include "maid/agent.hpp"
+#include "maid/models.hpp"
+#include "maid/audit_trail.hpp"
+#include "maid/jsonschema.hpp"
+#include "maid/settings.hpp"
+#include "maid/tripwire.hpp"
+#include "maid/trust.hpp"
+#include "maid/paths.hpp"
+#include "maid/session.hpp"
 
-#include "maic/http.hpp"
+#include "maid/http.hpp"
 
 #include "fake_claude.hpp"
 #include "fake_deepseek.hpp"
@@ -31,7 +31,7 @@
 #include <set>
 #include <thread>
 
-using namespace maic;
+using namespace maid;
 using nlohmann::json;
 namespace fs = std::filesystem;
 
@@ -126,14 +126,14 @@ bool offers_tool(const json& body, const std::string& name) {
 }  // namespace
 
 int main() {
-    setenv("MAIC_TRIPWIRE_FILE", ("/tmp/maic-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);  // never the machine's lock
+    setenv("MAID_TRIPWIRE_FILE", ("/tmp/maid-test-tripwire-" + std::to_string(getpid()) + ".none").c_str(), 1);  // never the machine's lock
     // Everything this run touches is its own: the workspace and the sessions under it carry the pid, so two
-    // runs at once (another worktree's ctest) never see each other's files, and ~/.local/state/maic stays as it is.
-    fs::path ws = fs::temp_directory_path() / ("maic-agent-test-" + std::to_string(getpid()));
+    // runs at once (another worktree's ctest) never see each other's files, and ~/.local/state/maid stays as it is.
+    fs::path ws = fs::temp_directory_path() / ("maid-agent-test-" + std::to_string(getpid()));
     fs::remove_all(ws);
     fs::create_directories(ws);
     setenv("XDG_STATE_HOME", (ws / "state").c_str(), 1);
-    fs::path runtime = fs::temp_directory_path() / ("maic-agent-test-run-" + std::to_string(getpid()));
+    fs::path runtime = fs::temp_directory_path() / ("maid-agent-test-run-" + std::to_string(getpid()));
     setenv("XDG_RUNTIME_DIR", runtime.c_str(), 1);  // the holds on open sessions and the unrecorded ones
     std::atomic<bool> no_cancel{false};
 
@@ -146,8 +146,8 @@ int main() {
         agent.submit("hello", Origin::Local, r, no_cancel);
         expect(r.text == "echo: hello", "streams the reply");
         expect(fake.requests.size() == 1 && fake.requests[0]["messages"][0]["role"] == "system" &&
-               fake.requests[0]["messages"][0]["content"].get<std::string>().find("inside MAIC") != std::string::npos,
-               "the model gets the MAIC briefing as the system prompt");
+               fake.requests[0]["messages"][0]["content"].get<std::string>().find("inside MAID") != std::string::npos,
+               "the model gets the MAID briefing as the system prompt");
         std::string sys = fake.requests[0]["messages"][0]["content"];
         expect(sys.find("You are not the user") != std::string::npos, "the briefing separates the agent from the user");
     }
@@ -306,8 +306,8 @@ int main() {
         }
         expect(fed_back && !fs::exists(ws / "note.txt"), "the reason reaches the model as the tool result and nothing was written");
         std::string briefing = fake.requests[0]["messages"][0]["content"];
-        expect(briefing.find("maic-workflow-edit inspect FILE --json") != std::string::npos, "the briefing names the workflow editor and how to start with it");
-        expect(briefing.find("maic-storyboard start STORY TEMPLATE --out DEST") != std::string::npos && briefing.find("ask the user for the story file") != std::string::npos,
+        expect(briefing.find("maid-workflow-edit inspect FILE --json") != std::string::npos, "the briefing names the workflow editor and how to start with it");
+        expect(briefing.find("maid-storyboard start STORY TEMPLATE --out DEST") != std::string::npos && briefing.find("ask the user for the story file") != std::string::npos,
                "and the storyboard driver, beginning by asking the user for the files");
     }
 
@@ -470,7 +470,7 @@ int main() {
         fake.tool_call = json{{"name", "read_file"}, {"arguments", {{"path", "svc/a.txt"}}}};
         fake.calls_left = 1;
         agent.submit("read it", Origin::Local, r, no_cancel);
-        expect(!r.results.empty() && r.results[0].find("svc rules: use tabs") != std::string::npos && r.results[0].find("[MAIC system note: standing instructions from " + (ws / "svc" / "AGENTS.md").string()) != std::string::npos,
+        expect(!r.results.empty() && r.results[0].find("svc rules: use tabs") != std::string::npos && r.results[0].find("[MAID system note: standing instructions from " + (ws / "svc" / "AGENTS.md").string()) != std::string::npos,
                "reading a file attaches the AGENTS.md above it, as a marked system note naming the file");
         fake.calls_left = 1;
         r.results.clear();
@@ -531,7 +531,7 @@ int main() {
         std::ifstream ok(ws / "svc" / "ok.txt");
         std::string oks((std::istreambuf_iterator<char>(ok)), std::istreambuf_iterator<char>());
         expect(r.results.size() == 1 && r.results[0].find("BLOCKED") == 0 && oks == "same\n" && tripwire_state(), "a patch with a file under /etc is blocked before anything is written, and trips");
-        fs::remove(std::getenv("MAIC_TRIPWIRE_FILE"));
+        fs::remove(std::getenv("MAID_TRIPWIRE_FILE"));
         expect(!tripwire_state(), "the test lock is cleared again");
     }
 
@@ -773,7 +773,7 @@ int main() {
             agent.submit("look around", Origin::Local, r, no_cancel);
             expect(tripwire_state() && child_calls == 1 && has_notice(r, "explore: the harness is tripped; the subagent stops here"), "the child's trip ends its turn at once (" + std::to_string(child_calls) + " child calls)");
             expect(!r.results.empty() && r.results.back().find("BLOCKED and the harness was tripped during the subagent's work") == 0, "the parent's result says so: " + r.results.back());
-            fs::remove(std::getenv("MAIC_TRIPWIRE_FILE"));
+            fs::remove(std::getenv("MAID_TRIPWIRE_FILE"));
             expect(!tripwire_state(), "the test lock is cleared again");
         }
         fake.tool_call_for = nullptr;
@@ -1101,16 +1101,16 @@ int main() {
         fs::path cfg = ws / "cfg";
         fs::create_directories(cfg);
         setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
-        fs::create_directories(ws / ".maic" / "tools");
-        std::ofstream(ws / ".maic" / "tools" / "read_note.lua") << "return {\n"
+        fs::create_directories(ws / ".maid" / "tools");
+        std::ofstream(ws / ".maid" / "tools" / "read_note.lua") << "return {\n"
                                                                     "  name = 'read_note', description = 'reads note.txt',\n"
                                                                     "  parameters = { type = 'object', properties = {} },\n"
-                                                                    "  run = function(args) return maic.read('note.txt') end,\n"
+                                                                    "  run = function(args) return maid.read('note.txt') end,\n"
                                                                     "}\n";
-        std::ofstream(ws / ".maic" / "tools" / "escape.lua") << "return {\n"
+        std::ofstream(ws / ".maid" / "tools" / "escape.lua") << "return {\n"
                                                                  "  name = 'escape', description = 'writes a file wherever it is told',\n"
                                                                  "  parameters = { type = 'object', properties = { where = { type = 'string' } }, required = { 'where' } },\n"
-                                                                 "  run = function(args) maic.write(args.where, 'x') return 'wrote ' .. args.where end,\n"
+                                                                 "  run = function(args) maid.write(args.where, 'x') return 'wrote ' .. args.where end,\n"
                                                                  "}\n";
         std::ofstream(ws / "note.txt") << "the note says heron\n";
         FakeServer fake;
@@ -1142,7 +1142,7 @@ int main() {
         const Message* last_tool = nullptr;
         for (const auto& m : agent.messages()) if (m.role == "tool") last_tool = &m;
         expect(last_tool && last_tool->is_error && last_tool->tool_name == "escape", "the model sees it as a failed call of the tool");
-        fs::remove_all(ws / ".maic");
+        fs::remove_all(ws / ".maid");
         unsetenv("XDG_CONFIG_HOME");
     }
 
@@ -1151,14 +1151,14 @@ int main() {
         fs::path cfg = ws / "cfg";
         fs::create_directories(cfg);
         setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
-        fs::create_directories(ws / ".maic" / "tools");
-        fs::copy(fs::path(MAIC_EXAMPLES) / "word_count", ws / ".maic" / "tools" / "word_count", fs::copy_options::recursive);
-        fs::copy(fs::path(MAIC_EXAMPLES) / "json_pick", ws / ".maic" / "tools" / "json_pick", fs::copy_options::recursive);
-        fs::create_directories(ws / ".maic" / "tools" / "writer");
-        std::ofstream(ws / ".maic" / "tools" / "writer" / "tool.json")
+        fs::create_directories(ws / ".maid" / "tools");
+        fs::copy(fs::path(MAID_EXAMPLES) / "word_count", ws / ".maid" / "tools" / "word_count", fs::copy_options::recursive);
+        fs::copy(fs::path(MAID_EXAMPLES) / "json_pick", ws / ".maid" / "tools" / "json_pick", fs::copy_options::recursive);
+        fs::create_directories(ws / ".maid" / "tools" / "writer");
+        std::ofstream(ws / ".maid" / "tools" / "writer" / "tool.json")
             << R"({"name": "writer", "description": "writes out/result.txt", "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
                    "run": ["sh", "main.sh"], "writes": ["out/*.txt"]})";
-        std::ofstream(ws / ".maic" / "tools" / "writer" / "main.sh") << "#!/bin/sh\nmkdir -p out && cat > out/result.txt && echo written\n";
+        std::ofstream(ws / ".maid" / "tools" / "writer" / "main.sh") << "#!/bin/sh\nmkdir -p out && cat > out/result.txt && echo written\n";
         std::ofstream(ws / "poem.txt") << "one two three\nfour\n";
         std::ofstream(ws / "data.json") << R"({"version": 3, "nodes": [{"title": "Panel 1 prompt"}]})";
         FakeServer fake;
@@ -1227,7 +1227,7 @@ int main() {
         const Message* last_tool = nullptr;
         for (const auto& m : agent.messages()) if (m.role == "tool") last_tool = &m;
         expect(last_tool && last_tool->tool_name == "word_count", "the result goes back under the tool's name");
-        fs::remove_all(ws / ".maic");
+        fs::remove_all(ws / ".maid");
         fs::remove_all(ws / "out");
         unsetenv("XDG_CONFIG_HOME");
     }
@@ -1237,14 +1237,14 @@ int main() {
         fs::path cfg = ws / "cfg";
         fs::create_directories(cfg);
         setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
-        fs::create_directories(ws / ".maic" / "tools" / "noisy");
-        std::ofstream(ws / ".maic" / "tools" / "noisy" / "tool.json")
+        fs::create_directories(ws / ".maid" / "tools" / "noisy");
+        std::ofstream(ws / ".maid" / "tools" / "noisy" / "tool.json")
             << R"({"name": "noisy", "description": "says how it is going", "parameters": {"type": "object", "properties": {}}, "run": ["sh", "main.sh"]})";
-        std::ofstream(ws / ".maic" / "tools" / "noisy" / "main.sh") << "#!/bin/sh\necho the result\necho working on it >&2\n";
-        std::ofstream(ws / ".maic" / "tools" / "shells.lua") << "return {\n"
+        std::ofstream(ws / ".maid" / "tools" / "noisy" / "main.sh") << "#!/bin/sh\necho the result\necho working on it >&2\n";
+        std::ofstream(ws / ".maid" / "tools" / "shells.lua") << "return {\n"
                                                                  "  name = 'shells', description = 'runs two commands',\n"
                                                                  "  parameters = { type = 'object', properties = {} },\n"
-                                                                 "  run = function() return maic.shell('echo first') .. maic.shell('echo second') end,\n"
+                                                                 "  run = function() return maid.shell('echo first') .. maid.shell('echo second') end,\n"
                                                                  "}\n";
         FakeServer fake;
         Agent agent(ws, "test");
@@ -1279,7 +1279,7 @@ int main() {
         fake.calls_left = 1;
         agent.submit("shells", Origin::Local, l, no_cancel);
         expect(all_before_result(l, "call_1") && l.streamed(OutputStream::Stdout) == "first\nsecond\n" && l.outputs.size() == 2 && l.outputs[1].offset == 6,
-               "a Lua tool's maic.shell commands stream as one stream, the second continuing the first's offsets");
+               "a Lua tool's maid.shell commands stream as one stream, the second continuing the first's offsets");
 
         Recorder c;
         c.reply = {Approval::Yes, ""};
@@ -1295,7 +1295,7 @@ int main() {
         for (const auto& sub : list_sessions(ws)) {
             if (sub.kind == "sub") fs::remove(sub.path);
         }
-        fs::remove_all(ws / ".maic");
+        fs::remove_all(ws / ".maid");
         unsetenv("XDG_CONFIG_HOME");
     }
 
@@ -1333,8 +1333,8 @@ int main() {
                "the tool record names the kept file, beside the session, and it holds all 2 MiB: " + rec.dump().substr(0, 300));
         expect(r.kept.size() == 1 && r.kept[0] == file, "the front end is told where, before the result");
         std::string read = render_text(load_session(log.path()), 0, 0, true);
-        expect(read.find("[full output, display only: the model saw the capped result] 2097152 bytes: maic sessions output " + log.path().stem().string() + " call_1") != std::string::npos,
-               "maic sessions read labels it display only");
+        expect(read.find("[full output, display only: the model saw the capped result] 2097152 bytes: maid sessions output " + log.path().stem().string() + " call_1") != std::string::npos,
+               "maid sessions read labels it display only");
         bool in_history = false;
         for (const auto& m : agent.messages()) in_history = in_history || m.content.find("full output") != std::string::npos;
         expect(!in_history, "and nothing of it reaches the model");
@@ -1404,13 +1404,13 @@ int main() {
             agent.submit("change the settings", Origin::Local, r, no_cancel);
             return r;
         };
-        std::string lock = std::getenv("MAIC_TRIPWIRE_FILE");
-        auto r = attempt(true, ".maic/settings.lua");
+        std::string lock = std::getenv("MAID_TRIPWIRE_FILE");
+        auto r = attempt(true, ".maid/settings.lua");
         bool tripped = false;
         for (const auto& n : r.notices) tripped = tripped || n.rfind("HARNESS TRIPPED", 0) == 0;
-        expect(tripped && fs::exists(lock) && !fs::exists(ws / ".maic" / "settings.lua"), "under the smart harness, writing MAIC's own settings trips the lock and writes nothing");
+        expect(tripped && fs::exists(lock) && !fs::exists(ws / ".maid" / "settings.lua"), "under the smart harness, writing MAID's own settings trips the lock and writes nothing");
         fs::remove(lock);
-        auto r2 = attempt(false, ".maic/settings.lua");
+        auto r2 = attempt(false, ".maid/settings.lua");
         expect(r2.asked.size() == 1 && r2.asked[0].reason.find("harness's own files") != std::string::npos && !fs::exists(lock), "the dumb harness asks instead");
         auto r3 = attempt(true, "notes.txt");
         expect(!fs::exists(lock) && fs::exists(ws / "notes.txt"), "an ordinary write is untouched by the guard");
@@ -1429,12 +1429,12 @@ int main() {
             agent.submit("trust it", Origin::Local, r, no_cancel);
             return r;
         };
-        auto t1 = call(true, json{{"name", "run_shell"}, {"arguments", {{"command", "maic trust ."}}}});
+        auto t1 = call(true, json{{"name", "run_shell"}, {"arguments", {{"command", "maid trust ."}}}});
         tripped = false;
         for (const auto& n : t1.notices) tripped = tripped || n.rfind("HARNESS TRIPPED", 0) == 0;
-        expect(tripped && fs::exists(lock), "under the smart harness, the agent running `maic trust` trips the lock");
+        expect(tripped && fs::exists(lock), "under the smart harness, the agent running `maid trust` trips the lock");
         fs::remove(lock);
-        auto t2 = call(false, json{{"name", "run_shell"}, {"arguments", {{"command", "maic trust . --level relaxed"}}}});
+        auto t2 = call(false, json{{"name", "run_shell"}, {"arguments", {{"command", "maid trust . --level relaxed"}}}});
         expect(t2.asked.empty() && !t2.results.empty() && t2.results[0].find("trust is the user's alone") != std::string::npos && !fs::exists(lock),
                "the dumb harness refuses it without asking, so no approval can let it through");
         auto t3 = call(false, json{{"name", "write_file"}, {"arguments", {{"path", (state_dir() / "trust.json").string()}, {"content", "{}"}}}});
@@ -1531,7 +1531,7 @@ int main() {
     section("operator prompt and instruction switch");
     {
         FakeServer fake;
-        std::ofstream(ws / "MAIC.md") << "project rule: always say pelican";
+        std::ofstream(ws / "MAID.md") << "project rule: always say pelican";
         fs::create_directories(ws / "deep");
         std::ofstream(ws / "deep" / "AGENTS.md") << "deep rule";
         std::ofstream(ws / "deep" / "f.txt") << "x";
@@ -1543,7 +1543,7 @@ int main() {
         Recorder r;
         agent.submit("hi", Origin::Local, r, no_cancel);
         std::string sys = fake.requests[0]["messages"][0]["content"];
-        expect(sys.rfind("# Operator instructions", 0) == 0 && sys.find("terse reviewer") < sys.find("inside MAIC"), "the operator text leads the system prompt");
+        expect(sys.rfind("# Operator instructions", 0) == 0 && sys.find("terse reviewer") < sys.find("inside MAID"), "the operator text leads the system prompt");
         expect(sys.rfind("terse reviewer") > sys.find("pelican") && sys.find("# Operator instructions, again") != std::string::npos, "and closes it, after the instruction files");
         std::string last_user = fake.requests[0]["messages"].back()["content"];
         expect(last_user.rfind("hi\n\n(Operator instructions in force", 0) == 0 && last_user.find("terse reviewer") != std::string::npos, "and rides at the end of the user's turn as the model sees it");
@@ -1565,25 +1565,25 @@ int main() {
         std::string sys2 = fake.requests.back()["messages"][0]["content"];
         expect(sys2.find("pelican") == std::string::npos && sys2.find("Operator") == std::string::npos, "with the switch off no instruction file is loaded");
         expect(!rb.results.empty() && rb.results[0].find("deep rule") == std::string::npos, "and none is attached on read");
-        fs::remove(ws / "MAIC.md");
+        fs::remove(ws / "MAID.md");
     }
 
     section("instruction files in the prompt: most general first, the workspace last");
     {
         FakeServer fake;
         fs::path cfg = ws / "prec-cfg", sys = ws / "prec-sys";
-        fs::create_directories(cfg / "maic");
+        fs::create_directories(cfg / "maid");
         fs::create_directories(sys);
         fs::create_directories(ws / "prec" / "sub");
-        std::ofstream(cfg / "maic" / "MAIC.md") << "user rule: herons";
-        std::ofstream(sys / "MAIC.md") << "system rule: egrets";
+        std::ofstream(cfg / "maid" / "MAID.md") << "user rule: herons";
+        std::ofstream(sys / "MAID.md") << "system rule: egrets";
         std::ofstream(ws / "CLAUDE.md") << "claude rule: storks";
-        std::ofstream(ws / "MAIC.md") << "maic rule: cranes";
+        std::ofstream(ws / "MAID.md") << "maid rule: cranes";
         std::ofstream(ws / "prec" / "sub" / "AGENTS.md") << "sub rule: ibises";
         std::ofstream(ws / "prec" / "sub" / "f.txt") << "x";
         setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
-        setenv("MAIC_TESTING", "1", 1);
-        setenv("MAIC_SYSTEM_CONFIG_DIR", sys.c_str(), 1);
+        setenv("MAID_TESTING", "1", 1);
+        setenv("MAID_SYSTEM_CONFIG_DIR", sys.c_str(), 1);
         trust_for_session(ws);
         Agent agent(ws, "test");
         agent.providers = {fake.provider()};
@@ -1594,12 +1594,12 @@ int main() {
         std::string sys_prompt = fake.requests[0]["messages"][0]["content"];
         size_t egrets = sys_prompt.find("egrets"), herons = sys_prompt.find("herons"), storks = sys_prompt.find("storks"), cranes = sys_prompt.find("cranes");
         expect(egrets != std::string::npos && egrets < herons && herons < storks && storks < cranes && cranes != std::string::npos,
-               "system-wide, then yours, then the workspace's CLAUDE.md, then its MAIC.md");
+               "system-wide, then yours, then the workspace's CLAUDE.md, then its MAID.md");
         expect(sys_prompt.find("where two conflict, the later one takes precedence") != std::string::npos, "a header says the later ones take precedence");
         fake.tool_call = json{{"name", "read_file"}, {"arguments", {{"path", "prec/sub/f.txt"}}}};
         fake.calls_left = 1;
         agent.submit("read", Origin::Local, r, no_cancel);
-        expect(!r.results.empty() && r.results.back().find("[MAIC system note: standing instructions from " + (ws / "prec" / "sub" / "AGENTS.md").string()) != std::string::npos &&
+        expect(!r.results.empty() && r.results.back().find("[MAID system note: standing instructions from " + (ws / "prec" / "sub" / "AGENTS.md").string()) != std::string::npos &&
                    r.results.back().find("ibises") != std::string::npos,
                "a read in a subdirectory attaches its instruction file as a marked system note");
         fake.calls_left = 1;
@@ -1611,13 +1611,13 @@ int main() {
         agent.submit("read after clear", Origin::Local, r, no_cancel);
         expect(r.results.back().find("ibises") != std::string::npos, "and again in a cleared conversation, which no longer has it");
         unsetenv("XDG_CONFIG_HOME");
-        unsetenv("MAIC_TESTING");
-        unsetenv("MAIC_SYSTEM_CONFIG_DIR");
+        unsetenv("MAID_TESTING");
+        unsetenv("MAID_SYSTEM_CONFIG_DIR");
         fs::remove_all(cfg);
         fs::remove_all(sys);
         fs::remove_all(ws / "prec");
         fs::remove(ws / "CLAUDE.md");
-        fs::remove(ws / "MAIC.md");
+        fs::remove(ws / "MAID.md");
     }
 
     section("a file your own instructions import is self-protected");
@@ -1625,7 +1625,7 @@ int main() {
         FakeServer fake;
         fs::path target = ws / "approved-style.md";
         std::ofstream(target) << "style\n";
-        approve_import(ws / "cfg-MAIC.md", target, Origin::Local);
+        approve_import(ws / "cfg-MAID.md", target, Origin::Local);
         fake.tool_call = json{{"name", "write_file"}, {"arguments", {{"path", "approved-style.md"}, {"content", "changed"}}}};
         Agent dumb(ws, "test");
         dumb.providers = {fake.provider()};
@@ -2314,7 +2314,7 @@ int main() {
             expect(write_turn(*a, r2, "next") && r2.asked.empty() && reviews_on_fake() == 1, "the next review runs on haiku-4.5");
         }
         {
-            // Level 2: Claude Code as the session's model runs the loop; every call it makes goes through MAIC's
+            // Level 2: Claude Code as the session's model runs the loop; every call it makes goes through MAID's
             // harness like any model's: asked in manual mode, refused when the person says no, in the transcript.
             const char* old_rt = std::getenv("XDG_RUNTIME_DIR");
             std::string saved_rt = old_rt ? old_rt : "";
@@ -2342,9 +2342,9 @@ int main() {
                 json j = json::parse(l, nullptr, false);
                 if (j.is_object() && j.value("type", "") == "tool" && (j.value("tool", "") == "write_file" || j.value("tool", "") == "run_shell")) ++tools;
             }
-            expect(tools == 2, "both calls are in the transcript as MAIC's own tool records (" + std::to_string(tools) + ")");
+            expect(tools == 2, "both calls are in the transcript as MAID's own tool records (" + std::to_string(tools) + ")");
             size_t spawned = 0;
-            for (const auto& sp : fake_claude::spawns(dir)) spawned += sp["argv"].dump().find("mcp__maic") != std::string::npos;
+            for (const auto& sp : fake_claude::spawns(dir)) spawned += sp["argv"].dump().find("mcp__maid") != std::string::npos;
             expect(spawned == 1, "one Claude Code process carried the conversation across both turns (" + std::to_string(spawned) + ")");
             fs::remove(log.path());
             if (old_rt) setenv("XDG_RUNTIME_DIR", saved_rt.c_str(), 1);
@@ -2359,7 +2359,7 @@ int main() {
             fs::create_directories(ws / "run-sub");
             auto agents_spawned = [&] {
                 size_t n = 0;
-                for (const auto& sp : fake_claude::spawns(dir)) n += sp["argv"].dump().find("mcp__maic") != std::string::npos;
+                for (const auto& sp : fake_claude::spawns(dir)) n += sp["argv"].dump().find("mcp__maid") != std::string::npos;
                 return n;
             };
             // Opus prefers claude-haiku-cli for its subagents and lists it; `opus` is the model the preset names.
@@ -2564,7 +2564,7 @@ int main() {
         fs::path a = ws / "cd-a", b = ws / "cd-b";
         fs::create_directories(a);
         fs::create_directories(b);
-        std::ofstream(b / "MAIC.md") << "Fennec ears stay a third of her height.\n";
+        std::ofstream(b / "MAID.md") << "Fennec ears stay a third of her height.\n";
         trust_for_session(b);  // this test's own project (trust_test covers untrusted ones)
         SessionLog log("agent-test");
         Agent agent(a, "test");
@@ -2601,7 +2601,7 @@ int main() {
 
     section("FakeServer's chunks against OpenAI's pinned CreateChatCompletionStreamResponse");
     {
-        std::ifstream in(std::string(MAIC_PROTOCOL) + "/openai/subset.json");
+        std::ifstream in(std::string(MAID_PROTOCOL) + "/openai/subset.json");
         json subset = json::parse(in);
         const json chunk = {{"$ref", "#/components/schemas/CreateChatCompletionStreamResponse"}};
         std::string first;

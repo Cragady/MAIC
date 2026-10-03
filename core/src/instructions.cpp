@@ -1,6 +1,6 @@
-#include "maic/instructions.hpp"
+#include "maid/instructions.hpp"
 
-#include "maic/trust.hpp"
+#include "maid/trust.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -9,7 +9,7 @@
 #include <fstream>
 #include <sstream>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -86,14 +86,14 @@ struct Loader {
             for (const auto& target : import_targets(file, text)) {
                 fs::path t = resolved(target);
                 if (!fs::is_regular_file(t, ec)) {
-                    text += "\n[MAIC: @" + target.string() + " was not imported: there is no such file]";
+                    text += "\n[MAID: @" + target.string() + " was not imported: there is no such file]";
                 } else if (!allowed(t) && !own(file)) {
-                    text += "\n[MAIC: @" + target.string() + " was not imported: it is outside the trusted directories and your config directory]";
+                    text += "\n[MAID: @" + target.string() + " was not imported: it is outside the trusted directories and your config directory]";
                 } else if (Trust st = allowed(t) ? Trust::Trusted : import_exception_status(file, t).trust; st != Trust::Trusted) {
                     bool changed = st == Trust::Changed;
                     if (pending) pending->push_back({file, t, changed});
-                    text += "\n[MAIC: @" + target.string() + " was not imported: it is outside the trusted directories, and the user has not " +
-                            (changed ? "approved it since it changed" : "approved it yet") + " (maic trust imports --approve)]";
+                    text += "\n[MAID: @" + target.string() + " was not imported: it is outside the trusted directories, and the user has not " +
+                            (changed ? "approved it since it changed" : "approved it yet") + " (maid trust imports --approve)]";
                 } else {
                     add(t, depth + 1, file);
                 }
@@ -124,19 +124,19 @@ std::vector<fs::path> base_roots(const std::vector<fs::path>& dirs) {
 }  // namespace
 
 fs::path user_instructions_dir() {
-    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return fs::path(xdg) / "maic";
-    return fs::path(std::getenv("HOME")) / ".config" / "maic";
+    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return fs::path(xdg) / "maid";
+    return fs::path(std::getenv("HOME")) / ".config" / "maid";
 }
 
 fs::path global_instructions_path() {
-    return user_instructions_dir() / "MAIC.md";
+    return user_instructions_dir() / "MAID.md";
 }
 
 fs::path system_instructions_dir() {
-    const char* testing = std::getenv("MAIC_TESTING");
-    const char* dir = std::getenv("MAIC_SYSTEM_CONFIG_DIR");
+    const char* testing = std::getenv("MAID_TESTING");
+    const char* dir = std::getenv("MAID_SYSTEM_CONFIG_DIR");
     if (testing && std::string(testing) == "1" && dir && *dir) return dir;
-    return "/etc/maic";
+    return "/etc/maid";
 }
 
 std::vector<std::string> instruction_names(const InstructionOptions& options) {
@@ -245,4 +245,4 @@ std::vector<InstructionFile> nested_instructions(const fs::path& workspace, cons
     return loader.out;
 }
 
-}  // namespace maic
+}  // namespace maid

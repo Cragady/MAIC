@@ -1,8 +1,8 @@
 // The engine protocol's schemas and ordering machines, from the protocol/ files built into the binary.
-#include "maic/protocol.hpp"
+#include "maid/protocol.hpp"
 
-#include "maic/jsonschema.hpp"
-#include "maic/skeleton.hpp"
+#include "maid/jsonschema.hpp"
+#include "maid/skeleton.hpp"
 #include "protocol_files.hpp"
 
 #include <fcntl.h>
@@ -14,7 +14,7 @@
 #include <functional>
 #include <stdexcept>
 
-namespace maic::protocol {
+namespace maid::protocol {
 
 using nlohmann::json;
 
@@ -128,15 +128,15 @@ Schemas::Schemas() {
         rewrite_refs(doc, f.path);
         bundle_["files"][f.path] = std::move(doc);
     }
-    const json& rpc = file("maic.openrpc.json");
+    const json& rpc = file("maid.openrpc.json");
     for (const auto& m : rpc.at("methods")) {
         Method method;
         method.name = m.at("name");
-        method.notification = m.value("x-maic-notification", false);
-        method.remote = m.value("x-maic-remote", true);
-        for (const auto& p : m.value("x-maic-local-only-params", json::array())) method.local_only_params.insert(p.get<std::string>());
-        if (m.contains("x-maic-params")) {
-            method.params = m["x-maic-params"];
+        method.notification = m.value("x-maid-notification", false);
+        method.remote = m.value("x-maid-remote", true);
+        for (const auto& p : m.value("x-maid-local-only-params", json::array())) method.local_only_params.insert(p.get<std::string>());
+        if (m.contains("x-maid-params")) {
+            method.params = m["x-maid-params"];
         } else {
             json props = json::object(), required = json::array();
             for (const auto& p : m.at("params")) {
@@ -209,8 +209,8 @@ std::string Schemas::event_error(const json& event) const {
 std::string Schemas::event_undeclared(const json& event) const {
     std::string type = event.value("type", "");
     if (std::find(event_types_.begin(), event_types_.end(), type) == event_types_.end()) return "";
-    std::string where = schema_undeclared(bundle_, ref_to(bundle_pointer("schemas/event.schema.json") + "/$defs/" + type), event, {"maic"});
-    return where.empty() ? "" : where + ": no schema declares it; MAIC's fields on an OpenAI-shaped object go in its maic object";
+    std::string where = schema_undeclared(bundle_, ref_to(bundle_pointer("schemas/event.schema.json") + "/$defs/" + type), event, {"maid"});
+    return where.empty() ? "" : where + ": no schema declares it; MAID's fields on an OpenAI-shaped object go in its maid object";
 }
 
 std::string Schemas::openai_event_error(const json& event) const {
@@ -222,13 +222,13 @@ std::string Schemas::openai_event_error(const json& event) const {
 
 std::string Schemas::params_error(const std::string& name, const json& params) const {
     const Method* m = method(name);
-    if (!m) return "(root): no method " + name + " in maic.openrpc.json";
+    if (!m) return "(root): no method " + name + " in maid.openrpc.json";
     return schema_error(bundle_, m->params, params);
 }
 
 std::string Schemas::result_error(const std::string& name, const json& result) const {
     const Method* m = method(name);
-    if (!m) return "(root): no method " + name + " in maic.openrpc.json";
+    if (!m) return "(root): no method " + name + " in maid.openrpc.json";
     if (m->result.is_null()) return "(root): " + name + " is a notification and has no result";
     return schema_error(bundle_, m->result, result);
 }
@@ -238,7 +238,7 @@ std::string Schemas::error_data_error(const json& data) const {
 }
 
 std::string Schemas::def_error(const std::string& def, const json& value) const {
-    return against(bundle_pointer("schemas/maic.schema.json") + "/$defs/" + def, value);
+    return against(bundle_pointer("schemas/maid.schema.json") + "/$defs/" + def, value);
 }
 
 // ---------- the ordering machines ----------
@@ -324,7 +324,7 @@ bool instance_key(const std::vector<json::json_pointer>& key, const json& event,
 }
 
 bool is_terminal_response(const std::string& type) {
-    return type == "response.completed" || type == "response.incomplete" || type == "response.failed" || type == "maic.response.cancelled";
+    return type == "response.completed" || type == "response.incomplete" || type == "response.failed" || type == "maid.response.cancelled";
 }
 
 const json& nothing() {
@@ -391,17 +391,17 @@ std::optional<Violation> StreamChecker::check(const json& event) {
 
     // Sequence numbers.
     long first = n;
-    const json& merged = at(event, "/maic/merged_from");
+    const json& merged = at(event, "/maid/merged_from");
     if (merged.is_number_integer()) first = merged.get<long>();
     if (exclude_.count(type)) return fail("seq.filtered", "a type this connection excluded");
-    const json& filtered = at(event, "/maic/filtered_from");
+    const json& filtered = at(event, "/maid/filtered_from");
     if (filtered.is_number_integer()) {
-        if (exclude_.empty()) return fail("seq.filtered", "maic.filtered_from on a connection that excludes nothing");
-        if (filtered.get<long>() >= first) return fail("seq.filtered", "maic.filtered_from " + filtered.dump() + " is not before #" + std::to_string(first));
+        if (exclude_.empty()) return fail("seq.filtered", "maid.filtered_from on a connection that excludes nothing");
+        if (filtered.get<long>() >= first) return fail("seq.filtered", "maid.filtered_from " + filtered.dump() + " is not before #" + std::to_string(first));
         first = filtered.get<long>();
     }
     if (!started_) {
-        if (!openai_only_ && (n != 0 || (!blind_ && type != "maic.session.state"))) return fail("seq.start", "the epoch's first event is #" + std::to_string(n));
+        if (!openai_only_ && (n != 0 || (!blind_ && type != "maid.session.state"))) return fail("seq.start", "the epoch's first event is #" + std::to_string(n));
     } else if (n <= last_) {
         return fail("seq.repeat", "after #" + std::to_string(last_));
     } else if (!openai_only_ && first != last_ + 1) {
@@ -430,7 +430,7 @@ std::optional<Violation> StreamChecker::check(const json& event) {
             closing = open;  // the OpenAI-only view never sees a cancelled response end
         }
         if (!openai_only_) {
-            const json& t = at(event, "/response/maic/turn");
+            const json& t = at(event, "/response/maid/turn");
             const json& prev = at(event, "/response/previous_response_id");
             if (t.is_number_integer()) {
                 long k = t.get<long>();
@@ -451,12 +451,12 @@ std::optional<Violation> StreamChecker::check(const json& event) {
         closing = rid;
         if (rid == open) open.clear();
         last_response = rid;
-        if (!openai_only_) turn_open = !(at(event, "/response/maic/final") == true);
-    } else if (type == "maic.turn.paused") {
+        if (!openai_only_) turn_open = !(at(event, "/response/maid/final") == true);
+    } else if (type == "maid.turn.paused") {
         if (!openai_only_ && !(joined_ && seen_responses_.empty()) && (!turn_open || !open.empty())) {
             return fail("turn.paused", open.empty() ? "no turn is open" : "response " + open + " is still open");
         }
-    } else if (type == "response.steer.accepted" || type == "response.steer.failed" || type == "maic.steer.applied") {
+    } else if (type == "response.steer.accepted" || type == "response.steer.failed" || type == "maid.steer.applied") {
         if (!openai_only_ && !(joined_ && seen_responses_.empty()) && !turn_open) return fail("steer.in_turn", "no turn is open");
     } else if (type == "response.output_item.added" && !open.empty()) {
         long want = next_output_index_.count(open) ? next_output_index_[open] : 0;
@@ -552,10 +552,10 @@ std::optional<Violation> StreamChecker::check(const json& event) {
 }
 
 std::optional<json> openai_view(const json& event) {
-    if (event.value("type", "").rfind("maic.", 0) == 0) return std::nullopt;
+    if (event.value("type", "").rfind("maid.", 0) == 0) return std::nullopt;
     std::function<void(json&)> strip = [&](json& v) {
         if (v.is_object()) {
-            v.erase("maic");
+            v.erase("maid");
             for (auto& [k, sub] : v.items()) strip(sub);
         } else if (v.is_array()) {
             for (auto& sub : v) strip(sub);
@@ -621,7 +621,7 @@ std::optional<Violation> Conformance::out(const std::string& conn, const json& m
             if (!blind_ && err.contains("data")) {
                 if (std::string e = schemas.error_data_error(err["data"]); !e.empty()) return fail({-1, "schema.message", req.method + " error data " + e});
             }
-            if (req.method == "maic.session.subscribe" && err.contains("data") && err["data"].value("code", json()) == "maic_resync") {
+            if (req.method == "maid.session.subscribe" && err.contains("data") && err["data"].value("code", json()) == "maid_resync") {
                 streams_[conn].erase(req.params.value("session", ""));
             }
             return std::nullopt;
@@ -632,15 +632,15 @@ std::optional<Violation> Conformance::out(const std::string& conn, const json& m
         if (!blind_) {
             if (std::string e = schemas.result_error(req.method, result); !e.empty()) return fail({-1, "schema.message", req.method + " result " + e});
         }
-        if (req.method == "maic.hello") {
+        if (req.method == "maid.hello") {
             exclude_[conn] = result.value("exclude", std::set<std::string>());
             for (auto& [session, c] : streams_[conn]) c.filter(exclude_[conn]);
-        } else if (req.method == "maic.session.attach") {
+        } else if (req.method == "maid.session.attach") {
             StreamChecker c(openai_only_, blind_);
             c.filter(exclude_[conn]);
             c.join(result.value("sequence_number", -1L));
             streams_[conn].insert_or_assign(result["entry"]["id"].get<std::string>(), c);
-        } else if (req.method == "maic.session.subscribe") {
+        } else if (req.method == "maid.session.subscribe") {
             std::string session = req.params.value("session", "");
             long after = req.params.value("starting_after", -1L);
             long from = result.value("replay_from", after + 1);
@@ -653,14 +653,14 @@ std::optional<Violation> Conformance::out(const std::string& conn, const json& m
                 if (from > 0) c.join(from - 1);
                 streams_[conn].emplace(session, c);
             }
-        } else if (req.method == "maic.session.unsubscribe") {
+        } else if (req.method == "maid.session.unsubscribe") {
             streams_[conn].erase(req.params.value("session", ""));
         }
         return std::nullopt;
     }
     std::string method = msg.value("method", "");
     json params = msg.value("params", json::object());
-    if (method != "maic.event") {
+    if (method != "maid.event") {
         if (blind_) return std::nullopt;
         if (!schemas.method(method)) return fail({-1, "schema.message", "a notification of no method: " + method});
         if (std::string e = schemas.params_error(method, params); !e.empty()) return fail({-1, "schema.message", method + " params " + e});
@@ -728,7 +728,7 @@ void Recorder::put(const json& r) {
 std::optional<Violation> Recorder::add(const std::string& dir, const std::string& conn, const json& msg) {
     if (fd_ < 0) return std::nullopt;
     std::vector<json> lines;
-    if (dir == "out" && msg.value("method", "") == "maic.event" && msg.contains("params")) {
+    if (dir == "out" && msg.value("method", "") == "maid.event" && msg.contains("params")) {
         json skeleton = skeleton_of(msg["params"]);
         std::string type = msg["params"].value("type", ""), hash = skeleton_hash(skeleton);
         if (described_.insert(type + "\x1f" + hash).second) {
@@ -768,4 +768,4 @@ std::optional<Violation> check_file(const std::string& path, bool openai_only, s
     return v;
 }
 
-}  // namespace maic::protocol
+}  // namespace maid::protocol

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "maic/markdown.hpp"
-#include "maic/settings.hpp"
+#include "maid/markdown.hpp"
+#include "maid/settings.hpp"
 
 #include <ftxui/component/event.hpp>
 #include <ftxui/dom/elements.hpp>
@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 enum class Kind { User, Assistant, Thinking, Tool, ToolOk, ToolErr, Notice, Error, Shell };
 
@@ -127,4 +127,4 @@ bool looks_like_diff(const std::string& text);
 unsigned diff_flags(const std::string& line);  // DiffAdd, DiffDel, DiffHunk or MdNone
 std::vector<StyledLine> diff_lines(const std::string& text);
 
-}  // namespace maic
+}  // namespace maid

@@ -3,7 +3,7 @@
 #include <cstring>
 #include <stdexcept>
 
-namespace maic::msgpack {
+namespace maid::msgpack {
 
 Value Value::boolean(bool v) {
     Value out;
@@ -205,4 +205,4 @@ bool decode(const std::string& bytes, size_t& pos, Value& out) {
     return true;
 }
 
-}  // namespace maic::msgpack
+}  // namespace maid::msgpack

@@ -1,0 +1,1412 @@
+{
+  "openrpc": "1.3.2",
+  "info": {
+    "title": "MAID engine protocol",
+    "version": "1",
+    "description": "JSON-RPC 2.0, one message per line, between MAID's engine and every interface (docs/design/engine-protocol.md). Names are OpenAI's where OpenAI's API description defines the concept (protocol/openai/), MAID's own under maid. and in a maid object. Every method here is in the engine's dispatcher and the reverse (ctest protocol_schema). x-maid-remote says whether a remote client may call it; x-maid-params on a notification is the schema of its whole params object; errors carry OpenAI's error object in data (schemas/maid.schema.json#/$defs/ErrorData)."
+  },
+  "methods": [
+    {
+      "name": "maid.hello",
+      "summary": "Opens the connection: the protocol version, who the client is, what it supports. Nothing else is accepted before it.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "protocol",
+          "description": "The highest protocol version the client speaks.",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        {
+          "name": "client",
+          "required": true,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        {
+          "name": "capabilities",
+          "required": false,
+          "schema": {
+            "$ref": "schemas/maid.schema.json#/$defs/Capabilities"
+          }
+        },
+        {
+          "name": "exclude",
+          "description": "Event types the client does not want, from ordering.json's filter.filterable (the deltas: their item's done event carries what they did). A type the engine does not know is ignored; any other is refused with maid_not_filterable.",
+          "required": false,
+          "schema": {"type": "array", "items": {"type": "string", "minLength": 1}}
+        },
+        {
+          "name": "view",
+          "required": false,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "collapse_over": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        {
+          "name": "auth",
+          "description": "Remote transports only: the token or the account's access token.",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "hello",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/HelloResult"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.engine.status",
+      "summary": "What maid-server's GET /api/status answered: the harness, the model, the sessions loaded.",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "status",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/EngineStatus"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.engine.trip",
+      "summary": "Trips the harness and cancels every response. Open to every client: stopping only adds restriction.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "reason",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "tripped",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "tripped": {
+              "const": true
+            }
+          },
+          "required": [
+            "tripped"
+          ]
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.index.get",
+      "summary": "The session index: the loaded and parked sessions.",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "index",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "schemas/maid.schema.json#/$defs/Entry"
+              }
+            }
+          },
+          "required": [
+            "entries"
+          ]
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.index.subscribe",
+      "summary": "maid.index notifications from now on.",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "ok",
+        "schema": {
+          "type": "object"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.index.unsubscribe",
+      "summary": "No more maid.index notifications.",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "ok",
+        "schema": {
+          "type": "object"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.session.list",
+      "summary": "Transcripts as `maid sessions` lists them, stopped ones included.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "all",
+          "description": "Every workspace, not only the engine's.",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "query",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      ],
+      "result": {
+        "name": "sessions",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "sessions": {
+              "type": "array",
+              "items": {
+                "$ref": "schemas/maid.schema.json#/$defs/SessionSummary"
+              }
+            }
+          },
+          "required": [
+            "sessions"
+          ]
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "createConversation",
+      "summary": "A new session (OpenAI's operationId). Remote: inside server.workspaces.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "metadata",
+          "required": false,
+          "schema": {
+            "$ref": "openai/subset.json#/components/schemas/Metadata"
+          }
+        },
+        {
+          "name": "maid",
+          "required": false,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "workspace": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "mode": {
+                "$ref": "schemas/maid.schema.json#/$defs/Mode"
+              },
+              "focus": {
+                "type": "boolean"
+              },
+              "leave": {
+                "$ref": "schemas/maid.schema.json#/$defs/Leave"
+              }
+            }
+          }
+        }
+      ],
+      "result": {
+        "name": "conversation",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/Conversation"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "getConversation",
+      "summary": "A session as OpenAI's conversation object, its index entry in maid.entry.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "conversation_id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "name": "conversation",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/Conversation"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.session.resume",
+      "summary": "Loads a transcript as a live session again: by id or a unique prefix (a path only locally).",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "focus",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "leave",
+          "description": "What happens to the session the client's focus leaves: `bg`, `park`, `stop`, or `default` (the session's `leave.switch` setting for an idle or a working one, unless another client has it in focus; `maid_leave_ask` when that case is `ask`). A session left working gets the case's `after` (park or stop once its work ends with no client in focus). Without `leave` it goes to the background.",
+          "required": false,
+          "schema": {
+            "$ref": "schemas/maid.schema.json#/$defs/Leave"
+          }
+        }
+      ],
+      "result": {
+        "name": "entry",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/Entry"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.session.fork",
+      "summary": "A second session from this one's transcript (its first `at` records, default all of it), by pointer; it starts as any session does, and its epoch names its parent's.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "at",
+          "required": false,
+          "schema": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        {
+          "name": "focus",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "leave",
+          "description": "What happens to the session the client's focus leaves: `bg`, `park`, `stop`, or `default` (the session's `leave.switch` setting for an idle or a working one, unless another client has it in focus; `maid_leave_ask` when that case is `ask`). A session left working gets the case's `after` (park or stop once its work ends with no client in focus). Without `leave` it goes to the background.",
+          "required": false,
+          "schema": {
+            "$ref": "schemas/maid.schema.json#/$defs/Leave"
+          }
+        }
+      ],
+      "result": {
+        "name": "entry",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/Entry"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.session.focus",
+      "summary": "`:switch`: the client's focus moves to a loaded session (maid.session.resume loads a parked one).",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "leave",
+          "description": "What happens to the session the client's focus leaves: `bg`, `park`, `stop`, or `default` (the session's `leave.switch` setting for an idle or a working one, unless another client has it in focus; `maid_leave_ask` when that case is `ask`). A session left working gets the case's `after` (park or stop once its work ends with no client in focus). Without `leave` it goes to the background.",
+          "required": false,
+          "schema": {
+            "$ref": "schemas/maid.schema.json#/$defs/Leave"
+          }
+        }
+      ],
+      "result": {
+        "name": "entry",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/Entry"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.session.background",
+      "summary": "`:bg`: the client lets go of the session; it keeps working, live while another client has it in focus.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "name": "entry",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/Entry"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.session.leave",
+      "summary": "`:q`: what the client's going does to the session in its focus, now, before it closes: `as`, else the session's `leave.quit` for an idle or a working one, unless another client has it in focus. Where sessions do not outlive their clients (no daemon), one that would stay loaded does what `leave.no_daemon` says, and so does every session in the background. A connection that ends without it leaves as `default`.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "as",
+          "description": "`bg`, `park`, `stop`, or `default` (the session's `leave.quit`; `maid_leave_ask` when that case is `ask`). A session left working in the background gets `leave.quit.after` (a background task's session, `leave.task.after`). A remote client's verb looser than the case (bg < park < stop) is refused with `maid_step_up_required`.",
+          "required": false,
+          "schema": {
+            "enum": ["default", "bg", "park", "stop"]
+          }
+        }
+      ],
+      "result": {
+        "name": "left",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "left": {
+              "description": "The entry of the session left, as it is now; null when the client had none in focus.",
+              "oneOf": [{"$ref": "schemas/maid.schema.json#/$defs/Entry"}, {"type": "null"}]
+            }
+          },
+          "required": ["left"]
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.session.park",
+      "summary": "Ends the session for now: it leaves memory, stays in the index with the messages that waited to run, and resumes where it was. maid_busy while a response runs, unless `interrupt`.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "interrupt",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "entry",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/Entry"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.session.stop",
+      "summary": "Ends the session: it leaves the index and stays an ordinary transcript (a parked one can be stopped too). maid_busy while a response runs, unless `interrupt`.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "interrupt",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "entry",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/Entry"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.session.attach",
+      "summary": "A snapshot of the session, and its events from the snapshot's sequence_number on, in one step.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "exchanges",
+          "required": false,
+          "schema": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      ],
+      "result": {
+        "name": "snapshot",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/Snapshot"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "listConversationItems",
+      "summary": "OpenAI's: a page of the conversation's history from its transcript, after an item, newest first unless order is asc; maid.exchanges pages by exchanges instead of limit.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "conversation_id",
+          "description": "A session id.",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "after",
+          "description": "An item id; the page starts past it in the order asked.",
+          "required": false,
+          "schema": {"type": "string"}
+        },
+        {
+          "name": "order",
+          "required": false,
+          "schema": {"enum": ["asc", "desc"]}
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "schema": {"type": "integer", "minimum": 1, "maximum": 100}
+        },
+        {
+          "name": "include",
+          "description": "Accepted as OpenAI's; history has nothing more to include.",
+          "required": false,
+          "schema": {"type": "array", "items": {"type": "string"}}
+        },
+        {
+          "name": "maid",
+          "required": false,
+          "schema": {"type": "object", "properties": {"exchanges": {"type": "integer", "minimum": 0}}}
+        }
+      ],
+      "result": {
+        "name": "list",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/ItemList"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "getConversationItem",
+      "summary": "OpenAI's: one item of the conversation's history, collapsed over the client's collapse_over as a page is.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "conversation_id",
+          "description": "A session id.",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "item_id",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "include",
+          "description": "Accepted as OpenAI's.",
+          "required": false,
+          "schema": {"type": "array", "items": {"type": "string"}}
+        }
+      ],
+      "result": {
+        "name": "item",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/HistoryItem"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.item.expand",
+      "summary": "Up to 256 KiB of a history item's text from offset: a tool's recorded result, an attached file, a message.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id.",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "item_id",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "offset",
+          "description": "In bytes; a part starts on a character.",
+          "required": false,
+          "schema": {"type": "integer", "minimum": 0}
+        },
+        {
+          "name": "length",
+          "required": false,
+          "schema": {"type": "integer", "minimum": 1, "maximum": 262144}
+        }
+      ],
+      "result": {
+        "name": "expanded",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/Expanded"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.session.subscribe",
+      "summary": "The session's events after starting_after, replayed from the ring, then as they come. maid_resync when they left the ring or the epoch changed.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "epoch",
+          "description": "The epoch the client's numbers belong to (attach's and subscribe's answers name it); another epoch answers maid_resync.",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "starting_after",
+          "description": "The last sequence_number the client holds; -1 or absent for the whole ring.",
+          "required": false,
+          "schema": {
+            "type": "integer",
+            "minimum": -1
+          }
+        }
+      ],
+      "result": {
+        "name": "subscribed",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/Subscribed"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.session.unsubscribe",
+      "summary": "No more of the session's events.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "name": "ok",
+        "schema": {
+          "type": "object"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.session.set",
+      "summary": "Changes one session's settings for every client, announced in maid.session.settings with `by`.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "mode",
+          "description": "A remote client tightens freely and loosens up to edit; auto needs a step-up.",
+          "required": false,
+          "schema": {
+            "$ref": "schemas/maid.schema.json#/$defs/Mode"
+          }
+        },
+        {
+          "name": "confirm",
+          "description": "Auto under a dumb harness answers maid_confirm_required until a local client confirms it.",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "entry",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/Entry"
+        }
+      },
+      "x-maid-remote": true,
+      "x-maid-remote-partly": "mode: tighten freely, loosen up to edit; auto only after a step-up (refused until accounts register a verifier)",
+      "x-maid-local-only-params": [
+        "confirm"
+      ]
+    },
+    {
+      "name": "response.create",
+      "summary": "Input on a session's lane: starts a turn when the session is idle and resumes a paused one. On a busy lane the response waits behind the running one (FIFO, status queued); a message for the running response is response.steer. With maid.now the input goes into the running response at once.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "stream_id",
+          "description": "The lane: the session id.",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        {
+          "name": "conversation",
+          "description": "The session, as OpenAI names a conversation.",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "openai/subset.json#/components/schemas/ConversationParam-2"
+              }
+            ]
+          }
+        },
+        {
+          "name": "input",
+          "required": false,
+          "schema": {
+            "$ref": "openai/subset.json#/components/schemas/InputParam"
+          },
+          "description": "Required unless maid.now asks to deliver what is already queued."
+        },
+        {
+          "name": "previous_response_id",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "name": "instructions",
+          "description": "Local clients only.",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "name": "tool_choice",
+          "required": false,
+          "schema": {
+            "$ref": "openai/subset.json#/components/schemas/ToolChoiceParam"
+          }
+        },
+        {
+          "name": "max_tool_calls",
+          "required": false,
+          "schema": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        {
+          "name": "truncation",
+          "required": false,
+          "schema": {
+            "enum": [
+              "auto",
+              "disabled",
+              null
+            ]
+          }
+        },
+        {
+          "name": "include",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "openai/subset.json#/components/schemas/IncludeEnum"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        {
+          "name": "maid",
+          "description": "MAID's own: `now` delivers the input into the running response at once, its model call abandoned (`:w now`); with no input, what is already queued goes in now.",
+          "required": false,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "now": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      ],
+      "result": {
+        "name": "response",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/MaidResponse"
+        }
+      },
+      "x-maid-remote": true,
+      "x-maid-local-only-params": [
+        "instructions"
+      ]
+    },
+    {
+      "name": "cancelResponse",
+      "summary": "Ends the running response (or a paused turn, by its last response), its partial output kept; the turn ends with it. A response still waiting on the lane is taken off it. Open to every client.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "response_id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "name": "response",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/MaidResponse"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "response.steer",
+      "summary": "OpenAI's steering: queues user input for the running response (or a paused turn's last, which it resumes). response.steer.accepted follows; the response finishes at its next boundary with response.incomplete (steered) and a successor's response.created commits the input.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "previous_response_id",
+          "description": "The running response, or a paused turn's last.",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "input",
+          "required": true,
+          "schema": {"$ref": "openai/subset.json#/components/schemas/ResponseSteerInput"}
+        }
+      ],
+      "result": {
+        "name": "steer",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/SteerResult"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.steer",
+      "summary": "One of the six steering actions on a running response (section 11): steer, drop and further redirect with a note, interrupt pauses the turn, keep accepts the partial reply, halt discards it. The action must be in steering.actions and allowed for the client's side (maid_steer_disabled).",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "response_id",
+          "description": "The running response, or a paused turn's last.",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        },
+        {
+          "name": "action",
+          "required": true,
+          "schema": {"$ref": "schemas/maid.schema.json#/$defs/SteerAction"}
+        },
+        {
+          "name": "note",
+          "description": "Text for the model: steer's direction, drop's and further's addition. A note is input: a remote one raises the turn's origin.",
+          "required": false,
+          "schema": {"type": "string"}
+        },
+        {
+          "name": "trim",
+          "description": "drop: how much of the partial reply goes; steering.drop_trim by default.",
+          "required": false,
+          "schema": {"enum": ["none", "sentence", "paragraph", "all"]}
+        },
+        {
+          "name": "at",
+          "description": "drop: the byte offset in the partial reply to cut from, chosen in the client; overrides trim.",
+          "required": false,
+          "schema": {"type": "integer", "minimum": 0}
+        },
+        {
+          "name": "tool",
+          "description": "steer and drop: a running tool is cancelled, or waited for; steering.on_running_tool by default.",
+          "required": false,
+          "schema": {"enum": ["cancel", "wait"]}
+        },
+        {
+          "name": "step_up",
+          "description": "The step-up proof the airtight tier asks of a remote client (step 18).",
+          "required": false,
+          "schema": {"type": "string"}
+        }
+      ],
+      "result": {
+        "name": "steer",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/SteerResult"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.approval.answer",
+      "summary": "Answers an approval. The first valid answer wins; a late one is maid_already_answered. A remote client cannot answer always.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "approval",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "choice",
+          "required": true,
+          "schema": {
+            "$ref": "schemas/maid.schema.json#/$defs/Choice"
+          }
+        },
+        {
+          "name": "feedback",
+          "description": "For no: a sentence for the model.",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "answered",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "choice": {
+              "$ref": "schemas/maid.schema.json#/$defs/Choice"
+            }
+          },
+          "required": [
+            "choice"
+          ]
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.question.reply",
+      "summary": "Answers the model's question.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "question",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "text",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "ok",
+        "schema": {
+          "type": "object"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "updateConversation",
+      "summary": "Renames a session (`:rename`): its title, announced in maid.session.title.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "conversation_id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "metadata",
+          "required": true,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "title"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "conversation",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/Conversation"
+        }
+      },
+      "x-maid-remote": true
+    },
+    {
+      "name": "maid.session.command",
+      "summary": "A `:` command the engine owns, typed into any client (`line`, without its colon), or the answer to a question one asked (`ask` and `key`). Its events come as it causes them.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "line",
+          "description": "The command line without its colon: \"ban add foo\".",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "ask",
+          "description": "The id of a question a command asked.",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "key",
+          "description": "The answer: one of the question's keys.",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "schemas/maid.schema.json#/$defs/CommandResult"
+        }
+      },
+      "x-maid-remote": true,
+      "x-maid-remote-partly": ":mode (tightening freely, loosening up to edit), :model, :think, :compact, :rename, :todo, :tools, :status, adding a :forbid term, lowering :budget and :trip; every other command, and a command's question, are local only",
+      "x-maid-local-only-params": [
+        "ask",
+        "key"
+      ]
+    },
+    {
+      "name": "maid.session.shell",
+      "summary": "`!cmd`: runs `command` in the user's own shell, unsandboxed, in the session's workspace; its output streams as maid.tool.output.delta with no output_index, and what it printed reaches the model as context. Answered when it ends. `interrupt` stops the one running.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "command",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "interrupt",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "item_id": {
+              "type": "string"
+            },
+            "interrupted": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "x-maid-remote": false
+    },
+    {
+      "name": "maid.approval.proposed",
+      "summary": "A waiting write's content after it, for a diff beside the approval (maid.approval.requested carries only proposed_size).",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "approval",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "result": {
+        "name": "proposed",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "text"
+          ]
+        }
+      },
+      "x-maid-remote": false
+    },
+    {
+      "name": "maid.session.describe",
+      "summary": "What a session loaded: its instruction files, its tools and the notices about them, for an interface's welcome.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "description": "A session id (a side thread's or a task's id works too).",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        }
+      ],
+      "result": {
+        "name": "described",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "instructions": {"type": "array", "items": {"type": "string"}},
+            "tools": {"type": "array", "items": {"type": "string"}},
+            "tool_notices": {"type": "array", "items": {"type": "string"}}
+          },
+          "required": ["instructions", "tools", "tool_notices"]
+        }
+      },
+      "x-maid-remote": false
+    },
+    {
+      "name": "maid.event",
+      "summary": "One session event, exactly as the Responses WebSocket would send it, with sequence_number and stream_id. Its params are the event: x-maid-params is its schema, the union over type.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "type",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "sequence_number",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        {
+          "name": "stream_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "x-maid-notification": true,
+      "x-maid-params": {
+        "$ref": "schemas/event.schema.json"
+      }
+    },
+    {
+      "name": "maid.index",
+      "summary": "An index entry changed or left; replaces state, carries no sequence_number.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "entry",
+          "required": false,
+          "schema": {
+            "$ref": "schemas/maid.schema.json#/$defs/Entry"
+          }
+        },
+        {
+          "name": "removed",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "x-maid-notification": true,
+      "x-maid-params": {
+        "$ref": "schemas/maid.schema.json#/$defs/IndexParams"
+      }
+    },
+    {
+      "name": "maid.engine",
+      "summary": "Engine-wide: the tripwire, or a protocol fault the guarded tier logged.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "tripped",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "reason",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "notice",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "level",
+          "required": false,
+          "schema": {
+            "enum": [
+              "info",
+              "warn",
+              "error"
+            ]
+          }
+        }
+      ],
+      "x-maid-notification": true,
+      "x-maid-params": {
+        "$ref": "schemas/maid.schema.json#/$defs/EngineParams"
+      }
+    }
+  ]
+}

@@ -18,7 +18,7 @@ import shutil
 import sys
 import time
 
-from cai.grammar import maic as fmt
+from cai.grammar import maid as fmt
 
 SESSIONS_GLOB = os.path.expanduser("~/.claude/sessions/*.json")
 LIVE_MTIME_SECONDS = 300
@@ -71,8 +71,8 @@ def liveness(target, sessions_glob=SESSIONS_GLOB, now=None):
         sid = session_id_of(lines)
     except (ValueError, OSError):
         lines, sid = [], None
-    if lines and fmt.is_maic(lines):
-        # MAIC keeps no registry; the `start` record of the last open names the host and pid.
+    if lines and fmt.is_maid(lines):
+        # MAID keeps no registry; the `start` record of the last open names the host and pid.
         reasons.extend(fmt.live_reasons(lines))
     if sid:
         # **Compare ids as IDS, not as substrings.** `sid in fh.read()` matched a
@@ -116,13 +116,13 @@ def backup(target, dest, force=False):
     return dest
 
 
-def maic_checks(lines):
-    """What a MAIC replacement must satisfy: the same question, MAIC's shapes.
+def maid_checks(lines):
+    """What a MAID replacement must satisfy: the same question, MAID's shapes.
 
     There is no uuid chain and no sessionId to agree on (the id is the file name), so
-    the structural checks are the ones MAIC's loader relies on: `msg` content a string
+    the structural checks are the ones MAID's loader relies on: `msg` content a string
     or a list of blocks, every tool message paired with a call the model made, and a
-    `resumed_from` pointer only where MAIC writes one, first.
+    `resumed_from` pointer only where MAID writes one, first.
     """
     checks = []
     msgs = [l for l in lines if l.get("type") in ("user", "assistant", "msg")]
@@ -151,9 +151,9 @@ def maic_checks(lines):
 
 
 def safety_backup(target, now=None):
-    """MAIC's copy before any in-place write: `<state>/sessions/.backups/<id>/<UTC>.jsonl`, 0600.
+    """MAID's copy before any in-place write: `<state>/sessions/.backups/<id>/<UTC>.jsonl`, 0600.
 
-    Taken for every target, MAIC session or Claude Code transcript, beside the backup
+    Taken for every target, MAID session or Claude Code transcript, beside the backup
     the operator named: the operator's copy is the one `--verify` compares against,
     this one is the one `restore` finds by id without being told where it is.
     """
@@ -231,7 +231,7 @@ def restore(spec, backup_ts=None, ignore_live=False, dry_run=False, invocation=N
     """
     path = fmt.find_session(spec)
     if not path:
-        raise FileNotFoundError("no session matching %r (a MAIC session id, a prefix, or a path)" % spec)
+        raise FileNotFoundError("no session matching %r (a MAID session id, a prefix, or a path)" % spec)
     rows = list_backups(path)["backups"]
     if not rows:
         raise FileNotFoundError("no backups recorded for %s under %s" % (fmt.session_id(path), fmt.backups_dir()))
@@ -260,13 +260,13 @@ def restore(spec, backup_ts=None, ignore_live=False, dry_run=False, invocation=N
         replace_file(path, chosen)
         if not filecmp.cmp(chosen, path, shallow=False):
             raise RuntimeError("cmp failed after restore: %s != %s" % (chosen, path))
-        if fmt.is_maic(chosen_lines):
+        if fmt.is_maid(chosen_lines):
             append_record(path, rewritten_record(invocation or "trans-fairy-write restore %s" % spec,
                                                  taken, restored_from=chosen,
                                                  before=len(current), after=len(chosen_lines)))
     return {"target": path, "restored_from": chosen, "backup_of_previous": taken,
             "records_before": len(current), "records_restored": len(chosen_lines),
-            "rewritten_record": fmt.is_maic(chosen_lines) and not dry_run,
+            "rewritten_record": fmt.is_maid(chosen_lines) and not dry_run,
             "liveness_overridden": bool(live and ignore_live), "dry_run": dry_run}
 
 
@@ -275,10 +275,10 @@ def check_source(lines):
 
     Checked BEFORE the write, not after: a malformed transcript that reaches a
     projects directory crashes the client on load, and by then the damage is
-    done whether or not a backup exists. A MAIC session gets MAIC's checks.
+    done whether or not a backup exists. A MAID session gets MAID's checks.
     """
-    if fmt.is_maic(lines):
-        return maic_checks(lines)
+    if fmt.is_maid(lines):
+        return maid_checks(lines)
     checks = []
     msgs = [l for l in lines if l.get("type") in ("user", "assistant")]
     checks.append(("has message records", bool(msgs), "" if msgs else "no user or assistant records"))
@@ -329,9 +329,9 @@ def write(target, source, backup_dest, force=False, ignore_live=False, dry_run=F
     target, validate the replacement, back up the original, write, verify the
     copy. A failure at any step leaves the target untouched.
 
-    MAIC's additions, after cai's own backup and before the write: a second copy under
+    MAID's additions, after cai's own backup and before the write: a second copy under
     `<state>/sessions/.backups/<id>/`, the write through a temp file and a rename, and
-    for a MAIC session a `rewritten` record appended naming that copy and this invocation.
+    for a MAID session a `rewritten` record appended naming that copy and this invocation.
     A Claude Code transcript gets the copy and the rename and stays byte for byte what
     `--from` gave, as it always has.
     """
@@ -374,7 +374,7 @@ def write(target, source, backup_dest, force=False, ignore_live=False, dry_run=F
         replace_file(target, source)
         if not filecmp.cmp(source, target, shallow=False):
             raise RuntimeError("cmp failed after write: %s != %s" % (source, target))
-        if fmt.is_maic(src_lines):
+        if fmt.is_maid(src_lines):
             append_record(target, rewritten_record(
                 invocation or "trans-fairy-write %s --from %s" % (target, source), safety,
                 before=before, after=len(src_lines)))

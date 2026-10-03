@@ -20,7 +20,7 @@
       "outputs": [
         {
           "name": "connection",
-          "type": "MAIC_LLM",
+          "type": "MAID_LLM",
           "links": [
             1
           ],
@@ -54,7 +54,7 @@
       "inputs": [
         {
           "name": "connection",
-          "type": "MAIC_LLM",
+          "type": "MAID_LLM",
           "link": 1
         }
       ],
@@ -192,7 +192,7 @@
       "outputs": [
         {
           "name": "connection",
-          "type": "MAIC_LLM",
+          "type": "MAID_LLM",
           "links": [
             4
           ],
@@ -226,7 +226,7 @@
       "inputs": [
         {
           "name": "connection",
-          "type": "MAIC_LLM",
+          "type": "MAID_LLM",
           "link": 4
         },
         {
@@ -372,7 +372,7 @@
         "Node name for S&R": "Note"
       },
       "widgets_values": [
-        "Needs llama-server running: `maic up llamacpp` (after `maic vendor use llamacpp <gguf>` picked a model; an Ollama blob works, see docs/llamacpp.md).\n\nQUICK PASS (~3 s/reply on a 4B): edit the prompt in 'Quick pass' and press Run. It remembers the conversation until ComfyUI restarts; tick reset for one run to start over.\n\nDEEP PASS: the four bottom nodes are muted. Select them and press Ctrl+M to enable. It shares the quick pass's conversation through the session_id link, so it reviews the whole back-and-forth and its reply joins the same conversation. llama-server loads one GGUF, so today it runs on the same model as the quick pass; point 'Deep model' at a second llama-server on another port when there is one.\n\nAsk for PANELS to get a 4-panel script matching the manga workflows.\n\nthink = true makes Qwen3.5 reason first: slower, better on hard questions. The reasoning lands on the thinking output.\n\nextra_json takes any llama-server field (n_predict, XTC, DRY, grammar, logit_bias).\n\nReplies are saved to output/story/ as Markdown."
+        "Needs llama-server running: `maid up llamacpp` (after `maid vendor use llamacpp <gguf>` picked a model; an Ollama blob works, see docs/llamacpp.md).\n\nQUICK PASS (~3 s/reply on a 4B): edit the prompt in 'Quick pass' and press Run. It remembers the conversation until ComfyUI restarts; tick reset for one run to start over.\n\nDEEP PASS: the four bottom nodes are muted. Select them and press Ctrl+M to enable. It shares the quick pass's conversation through the session_id link, so it reviews the whole back-and-forth and its reply joins the same conversation. llama-server loads one GGUF, so today it runs on the same model as the quick pass; point 'Deep model' at a second llama-server on another port when there is one.\n\nAsk for PANELS to get a 4-panel script matching the manga workflows.\n\nthink = true makes Qwen3.5 reason first: slower, better on hard questions. The reasoning lands on the thinking output.\n\nextra_json takes any llama-server field (n_predict, XTC, DRY, grammar, logit_bias).\n\nReplies are saved to output/story/ as Markdown."
       ]
     }
   ],
@@ -383,7 +383,7 @@
       0,
       2,
       0,
-      "MAIC_LLM"
+      "MAID_LLM"
     ],
     [
       2,
@@ -407,7 +407,7 @@
       0,
       6,
       0,
-      "MAIC_LLM"
+      "MAID_LLM"
     ],
     [
       5,

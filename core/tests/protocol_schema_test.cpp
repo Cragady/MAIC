@@ -1,19 +1,19 @@
 // protocol/ against itself, OpenAI's pinned description and the design (docs/design/engine-protocol.md section 15):
-// the schemas use only keywords the validator checks, every method and event type is OpenAI's or MAIC's own, no
-// MAIC schema takes an OpenAI name, ordering.json names real events, the engine's dispatcher and event list match
+// the schemas use only keywords the validator checks, every method and event type is OpenAI's or MAID's own, no
+// MAID schema takes an OpenAI name, ordering.json names real events, the engine's dispatcher and event list match
 // the OpenRPC document and the union, and every JSON example in the design validates.
 #include "check.hpp"
 
-#include "maic/engine.hpp"
-#include "maic/jsonschema.hpp"
-#include "maic/protocol.hpp"
+#include "maid/engine.hpp"
+#include "maid/jsonschema.hpp"
+#include "maid/protocol.hpp"
 
 #include <algorithm>
 #include <fstream>
 #include <set>
 #include <sstream>
 
-using namespace maic;
+using namespace maid;
 using nlohmann::json;
 
 namespace {
@@ -34,7 +34,7 @@ bool has(const std::vector<std::string>& v, const std::string& x) {
     return std::find(v.begin(), v.end(), x) != v.end();
 }
 
-// Every schema inside a MAIC file, for schema_unsupported: the $defs, the union, each method's params and result.
+// Every schema inside a MAID file, for schema_unsupported: the $defs, the union, each method's params and result.
 void schemas_in(const json& doc, const std::string& where, std::vector<std::pair<std::string, json>>& out) {
     if (doc.contains("$defs")) {
         for (const auto& [k, v] : doc["$defs"].items()) out.emplace_back(where + "#/$defs/" + k, v);
@@ -44,7 +44,7 @@ void schemas_in(const json& doc, const std::string& where, std::vector<std::pair
         for (const auto& m : doc["methods"]) {
             for (const auto& p : m["params"]) out.emplace_back(where + " " + m["name"].get<std::string>() + " " + p["name"].get<std::string>(), p["schema"]);
             if (m.contains("result")) out.emplace_back(where + " " + m["name"].get<std::string>() + " result", m["result"]["schema"]);
-            if (m.contains("x-maic-params")) out.emplace_back(where + " " + m["name"].get<std::string>() + " x-maic-params", m["x-maic-params"]);
+            if (m.contains("x-maid-params")) out.emplace_back(where + " " + m["name"].get<std::string>() + " x-maid-params", m["x-maid-params"]);
         }
     }
 }
@@ -88,31 +88,31 @@ std::vector<Example> examples(const std::string& markdown, size_t& skipped) {
 }  // namespace
 
 int main() {
-    const std::string root = MAIC_PROTOCOL;
+    const std::string root = MAID_PROTOCOL;
     const protocol::Schemas& schemas = protocol::Schemas::get();
     json spec = load(root + "/openai/openapi.json");
     const json& openai_schemas = spec["components"]["schemas"];
 
     section("the files and the keywords they use");
     {
-        for (const char* f : {"maic.openrpc.json", "schemas/maic.schema.json", "schemas/event.schema.json", "ordering.json", "openai/subset.json"}) {
+        for (const char* f : {"maid.openrpc.json", "schemas/maid.schema.json", "schemas/event.schema.json", "ordering.json", "openai/subset.json"}) {
             expect(load(root + "/" + f) == load(root + "/" + f) && !schemas.file(f).is_null(), std::string(f) + " is built in");
         }
         std::vector<std::pair<std::string, json>> all;
-        for (const char* f : {"maic.openrpc.json", "schemas/maic.schema.json", "schemas/event.schema.json"}) schemas_in(load(root + "/" + f), f, all);
+        for (const char* f : {"maid.openrpc.json", "schemas/maid.schema.json", "schemas/event.schema.json"}) schemas_in(load(root + "/" + f), f, all);
         std::string bad;
         for (const auto& [where, s] : all) {
             std::string e = schema_unsupported(s);
             if (!e.empty() && bad.empty()) bad = where + " " + e;
         }
-        expect(bad.empty() && all.size() > 60, "every MAIC schema (" + std::to_string(all.size()) + ") uses only keywords the validator checks" + (bad.empty() ? "" : ": " + bad));
-        expect(load(root + "/maic.openrpc.json")["openrpc"] == "1.3.2", "the methods are an OpenRPC 1.3 document");
+        expect(bad.empty() && all.size() > 60, "every MAID schema (" + std::to_string(all.size()) + ") uses only keywords the validator checks" + (bad.empty() ? "" : ": " + bad));
+        expect(load(root + "/maid.openrpc.json")["openrpc"] == "1.3.2", "the methods are an OpenRPC 1.3 document");
         expect(load(root + "/schemas/event.schema.json")["$schema"] == "https://json-schema.org/draft/2020-12/schema" &&
-                   load(root + "/schemas/maic.schema.json")["$schema"] == "https://json-schema.org/draft/2020-12/schema",
+                   load(root + "/schemas/maid.schema.json")["$schema"] == "https://json-schema.org/draft/2020-12/schema",
                "the payloads are JSON Schema 2020-12");
     }
 
-    section("names: OpenAI's exactly, MAIC's own under maic.");
+    section("names: OpenAI's exactly, MAID's own under maid.");
     {
         std::set<std::string> operations;
         for (const auto& [path, ops] : spec["paths"].items()) {
@@ -134,26 +134,26 @@ int main() {
         }
         std::string bad;
         for (const auto& m : schemas.methods()) {
-            if (m.rfind("maic.", 0) != 0 && !operations.count(m) && !client_events.count(m)) bad += " " + m;
+            if (m.rfind("maid.", 0) != 0 && !operations.count(m) && !client_events.count(m)) bad += " " + m;
         }
         expect(bad.empty() && operations.count("createConversation") && client_events.count("response.create"),
-               "every method not under maic. is an operationId or a Responses WebSocket client event of the pinned spec" + (bad.empty() ? "" : ":" + bad));
+               "every method not under maid. is an operationId or a Responses WebSocket client event of the pinned spec" + (bad.empty() ? "" : ":" + bad));
         bad.clear();
         for (const auto& t : schemas.event_types()) {
-            if (t.rfind("maic.", 0) == 0) continue;
+            if (t.rfind("maid.", 0) == 0) continue;
             json probe = {{"type", t}};
             if (schemas.openai_event_error(probe).find("is not an event of OpenAI") != std::string::npos) bad += " " + t;
         }
-        expect(bad.empty(), "every event type not under maic. is one of OpenAI's ResponseStreamEvent" + bad);
+        expect(bad.empty(), "every event type not under maid. is one of OpenAI's ResponseStreamEvent" + bad);
         bad.clear();
-        for (const char* f : {"schemas/maic.schema.json", "schemas/event.schema.json"}) {
+        for (const char* f : {"schemas/maid.schema.json", "schemas/event.schema.json"}) {
             json doc = load(root + "/" + f);
             for (const auto& [name, s] : doc["$defs"].items()) {
                 if (openai_schemas.contains(name)) bad += " " + name;
             }
         }
-        expect(bad.empty(), "no MAIC schema takes a name OpenAI's description defines" + bad);
-        for (const char* n : {"maic.event", "maic.index", "maic.engine"}) {
+        expect(bad.empty(), "no MAID schema takes a name OpenAI's description defines" + bad);
+        for (const char* n : {"maid.event", "maid.index", "maid.engine"}) {
             expect(schemas.method(n) && schemas.method(n)->notification, std::string(n) + " is a notification: a method with no result");
         }
     }
@@ -170,7 +170,7 @@ int main() {
         for (const auto& m : described) {
             if (!has(dispatched, m)) extra += " " + m;
         }
-        expect(missing.empty() && extra.empty(), "every method in the dispatcher is in maic.openrpc.json and the reverse" + missing + extra);
+        expect(missing.empty() && extra.empty(), "every method in the dispatcher is in maid.openrpc.json and the reverse" + missing + extra);
         std::vector<std::string> emitted = Engine::event_types(), union_ = schemas.event_types();
         std::sort(emitted.begin(), emitted.end());
         std::sort(union_.begin(), union_.end());
@@ -210,8 +210,8 @@ int main() {
 
     section("the schemas refuse what they should");
     {
-        json notice = {{"type", "maic.notice"}, {"sequence_number", 3}, {"stream_id", "s1"}, {"text", "hi"}, {"level", "info"}};
-        expect(schemas.event_error(notice).empty() && schemas.event_undeclared(notice).empty(), "a maic.notice fits");
+        json notice = {{"type", "maid.notice"}, {"sequence_number", 3}, {"stream_id", "s1"}, {"text", "hi"}, {"level", "info"}};
+        expect(schemas.event_error(notice).empty() && schemas.event_undeclared(notice).empty(), "a maid.notice fits");
         json no_stream = notice;
         no_stream.erase("stream_id");
         expect(schemas.event_error(no_stream) == "/stream_id: is required", "an event without stream_id is refused, naming it");
@@ -224,19 +224,19 @@ int main() {
         json beside = delta;
         beside["judged_by"] = "rules";
         expect(schemas.event_error(beside).empty() && schemas.event_undeclared(beside).rfind("/judged_by: no schema declares it", 0) == 0,
-               "a MAIC field beside OpenAI's fits OpenAI's open object but is refused as undeclared");
+               "a MAID field beside OpenAI's fits OpenAI's open object but is refused as undeclared");
         beside.erase("judged_by");
-        beside["maic"] = {{"judged_by", "rules"}};
-        expect(schemas.event_undeclared(beside).empty(), "inside the maic object it passes");
+        beside["maid"] = {{"judged_by", "rules"}};
+        expect(schemas.event_undeclared(beside).empty(), "inside the maid object it passes");
         expect(!schemas.event_error({{"type", "response.steer.accepted"}, {"sequence_number", 1}, {"stream_id", "s"}}).empty(),
                "an event the engine does not send yet is not in the union");
-        expect(schemas.params_error("maic.approval.answer", {{"session", "s"}, {"approval", "a1"}, {"choice", "maybe"}}).rfind("/choice: must be one of", 0) == 0,
+        expect(schemas.params_error("maid.approval.answer", {{"session", "s"}, {"approval", "a1"}, {"choice", "maybe"}}).rfind("/choice: must be one of", 0) == 0,
                "a request's params are checked against the OpenRPC method");
         expect(schemas.params_error("response.create", {{"conversation", "s"}, {"input", "hello"}}).empty() &&
                    !schemas.params_error("response.create", {{"conversation", "s"}, {"input", 7}}).empty(),
                "response.create takes OpenAI's InputParam");
-        json view = *protocol::openai_view({{"type", "response.output_item.done"}, {"item", {{"type", "message"}, {"maic", {{"ok", true}}}}}, {"maic", 1}});
-        expect(!view.contains("maic") && !view["item"].contains("maic") && !protocol::openai_view(notice), "the OpenAI-only view drops maic.* events and every maic object");
+        json view = *protocol::openai_view({{"type", "response.output_item.done"}, {"item", {{"type", "message"}, {"maid", {{"ok", true}}}}}, {"maid", 1}});
+        expect(!view.contains("maid") && !view["item"].contains("maid") && !protocol::openai_view(notice), "the OpenAI-only view drops maid.* events and every maid object");
     }
 
     section("the stream checker on a hand-made stream");
@@ -246,11 +246,11 @@ int main() {
             e["stream_id"] = "s1";
             return e;
         };
-        json resp = {{"id", "s1.r1"}, {"maic", {{"turn", 1}, {"origin", "local"}}}};
+        json resp = {{"id", "s1.r1"}, {"maid", {{"turn", 1}, {"origin", "local"}}}};
         json done = resp;
-        done["maic"]["final"] = true;
+        done["maid"]["final"] = true;
         std::vector<json> good = {
-            ev(0, {{"type", "maic.session.state"}, {"state", "live"}, {"activity", "idle"}, {"waiting", nullptr}}),
+            ev(0, {{"type", "maid.session.state"}, {"state", "live"}, {"activity", "idle"}, {"waiting", nullptr}}),
             ev(1, {{"type", "response.created"}, {"response", resp}}),
             ev(2, {{"type", "response.in_progress"}, {"response", resp}}),
             ev(3, {{"type", "response.output_item.added"}, {"output_index", 0}, {"item", {{"type", "message"}}}}),
@@ -282,7 +282,7 @@ int main() {
         open.back()["sequence_number"] = 8;
         expect(run(open) == "response.items_done", "a response that ends with an item open is refused");
         auto twice = good;
-        twice.back() = ev(9, {{"type", "response.created"}, {"response", {{"id", "s1.r2"}, {"maic", {{"turn", 2}, {"origin", "local"}}}}}});
+        twice.back() = ev(9, {{"type", "response.created"}, {"response", {{"id", "s1.r2"}, {"maid", {{"turn", 2}, {"origin", "local"}}}}}});
         expect(run(twice) == "response.one_open", "a second response while one is open is refused");
         auto late = good;
         late.push_back(ev(10, {{"type", "response.output_text.delta"}, {"output_index", 0}, {"content_index", 0}}));
@@ -297,7 +297,7 @@ int main() {
     section("every JSON example in the design validates");
     {
         size_t skipped = 0;
-        auto blocks = examples(slurp(MAIC_DOCS "/design/engine-protocol.md"), skipped);
+        auto blocks = examples(slurp(MAID_DOCS "/design/engine-protocol.md"), skipped);
         size_t checked = 0;
         for (const auto& block : blocks) {
             std::map<std::string, std::string> requests;  // id -> method
@@ -318,7 +318,7 @@ int main() {
                     where += " " + msg["method"].get<std::string>();
                 } else if (msg.contains("method")) {
                     const json& p = msg["params"];
-                    if (msg["method"] == "maic.event") {
+                    if (msg["method"] == "maid.event") {
                         e = schemas.event_error(p);
                         if (e.empty()) e = schemas.event_undeclared(p);
                         where += " " + p.value("type", "");

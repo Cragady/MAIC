@@ -1,6 +1,6 @@
 # Running DeepSeek V4 Pro Locally
 
-> Note (2026-10-01): Ollama was removed from MAIC in favour of llama.cpp (docs/llamacpp.md). The Ollama references below are history.
+> Note (2026-10-01): Ollama was removed from MAID in favour of llama.cpp (docs/llamacpp.md). The Ollama references below are history.
 
 ## Prompt
 

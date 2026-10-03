@@ -1,6 +1,6 @@
 # Local LLM Benchmarks
 
-> Note (2026-10-01): Ollama was removed from MAIC in favour of llama.cpp (docs/llamacpp.md). The Ollama references below are history.
+> Note (2026-10-01): Ollama was removed from MAID in favour of llama.cpp (docs/llamacpp.md). The Ollama references below are history.
 
 Measured throughput for local LLMs on this machine. Add a row per run.
 
@@ -33,4 +33,4 @@ Measured throughput for local LLMs on this machine. Add a row per run.
 * ComfyUI's built-in LLM path is not usable for interactive brainstorming on a 2080: Turing has no bf16, so a 4B model runs in fp32 (~16 GB) and mostly offloads.
 * Ollama's quantized models are the way to run LLMs on this card: the 4B is ~54x faster than ComfyUI's path.
 * 4B is ~4x faster than 9B. Use 4B for quick back-and-forth, 9B for deeper passes. The 9B just misses fitting in VRAM, so it will speed up if VRAM is freed (close the desktop's GPU-heavy apps) or a smaller quant is used.
-* ComfyUI uses the same GGUFs through MAIC's llama-server nodes instead of keeping its own copies. See [comfyui-setup.md](comfyui-setup.md).
+* ComfyUI uses the same GGUFs through MAID's llama-server nodes instead of keeping its own copies. See [comfyui-setup.md](comfyui-setup.md).

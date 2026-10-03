@@ -1,4 +1,4 @@
-#include "maic/skeleton.hpp"
+#include "maid/skeleton.hpp"
 
 #include <openssl/evp.h>
 
@@ -8,7 +8,7 @@
 #include <set>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 using json = nlohmann::json;
 
@@ -179,4 +179,4 @@ std::string sha256_digest(const std::string& bytes) {
     return out;
 }
 
-}  // namespace maic
+}  // namespace maid

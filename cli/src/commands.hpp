@@ -1,7 +1,7 @@
 #pragma once
 
-#include "maic/service.hpp"
-#include "maic/settings.hpp"
+#include "maid/service.hpp"
+#include "maid/settings.hpp"
 
 #include <filesystem>
 #include <optional>
@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 // The `:` commands: one registry for running, completing and `:help`.
 struct CommandInfo {
@@ -47,17 +47,17 @@ struct HelpPage {
 };
 // The page `topic` names; none for the index, an unknown topic or several matches.
 std::optional<HelpPage> help_page(const std::string& topic);
-// The tags of a page's first line: `*artifact* *maic artifact*` gives "artifact" and "maic artifact".
+// The tags of a page's first line: `*artifact* *maid artifact*` gives "artifact" and "maid artifact".
 std::vector<std::string> help_tags(const HelpPage& page);
-// Markdown for a terminal, as `maic help` prints it: the tag line, `code` and **bold** styled by the theme of `paint`
+// Markdown for a terminal, as `maid help` prints it: the tag line, `code` and **bold** styled by the theme of `paint`
 // (none: plain), the markers dropped either way. The wording and line breaks are the text's.
 std::string render_markdown(const std::string& text, const Settings* paint);
 // A page laid out like a man page: NAME, SYNOPSIS (`usage`, when the page's command has one), DESCRIPTION (the text,
 // rendered), FILES and SEE ALSO (the paths, docs and topics the text mentions).
 std::string render_help(const HelpPage& page, const std::string& usage, const Settings* paint);
 
-// What `maic open NAME` / `:open NAME` should run: a service opens its URL in the chosen browser (the remote
-// maic-server's copy when `remote` is set and answers), anything else opens the place's path with xdg-open.
+// What `maid open NAME` / `:open NAME` should run: a service opens its URL in the chosen browser (the remote
+// maid-server's copy when `remote` is set and answers), anything else opens the place's path with xdg-open.
 // With `folder`, the containing directory is opened in the file manager instead: a file place's parent, a
 // service's vendored checkout (vendor/NAME) when it has one.
 // Returns {command, description}. Throws when NAME is neither a service nor a place.
@@ -65,4 +65,4 @@ std::pair<std::string, std::string> open_command(const std::string& name, const 
                                                  const std::vector<ServiceDef>& services, const std::optional<std::filesystem::path>& session,
                                                  const std::string& browser_override = "", bool folder = false);
 
-}  // namespace maic
+}  // namespace maid

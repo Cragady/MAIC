@@ -12,7 +12,7 @@ always ran.
 Three stages run concurrently so speech is never dropped while an earlier
 utterance is still being transcribed or written up.
 
-`maic diction ...` and `cai diction ...` both land in main() here.
+`maid diction ...` and `cai diction ...` both land in main() here.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ HERE = Path(__file__).resolve().parent
 
 
 def build_id() -> str:
-    """Which build this is: the installed copy (a MAIC release, which writes VERSION), or the working tree.
+    """Which build this is: the installed copy (a MAID release, which writes VERSION), or the working tree.
 
     Worth printing, because they diverge -- a session was once debugged at
     length against fixes that were only in beta.
@@ -72,18 +72,18 @@ LOG_DIR = "diction-logs"
 HIDDEN_LOG_DIR = ".h-diction-logs"
 
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-CONFIG_PATH = CONFIG_HOME / "maic" / "diction.lua"
+CONFIG_PATH = CONFIG_HOME / "maid" / "diction.lua"
 TOML_PATH = CONFIG_HOME / "diction" / "config.toml"
 
 
 def config_file() -> Path | None:
-    """The file diction's settings come from: diction.lua beside MAIC's settings.lua, else the config.toml diction
+    """The file diction's settings come from: diction.lua beside MAID's settings.lua, else the config.toml diction
     read before it."""
     return CONFIG_PATH if CONFIG_PATH.exists() else TOML_PATH if TOML_PATH.exists() else None
 
 
 def load_config() -> dict:
-    """diction.lua as `maic settings read diction` evaluates it (diction never runs the Lua itself), else the old
+    """diction.lua as `maid settings read diction` evaluates it (diction never runs the Lua itself), else the old
     config.toml with a notice. Absent or broken is fine."""
     src = config_file()
     if src is None:
@@ -97,13 +97,13 @@ def load_config() -> dict:
             return {}
     if TOML_PATH.exists():
         print(f"{YELLOW}  diction reads {CONFIG_PATH}; {TOML_PATH} is ignored (delete it){OFF}")
-    exe = whisper_mod.maic_bin()
+    exe = whisper_mod.maid_bin()
     if not exe:
-        print(f"{YELLOW}  ignoring {CONFIG_PATH}: maic evaluates it, and no maic was found (MAIC_BIN or PATH){OFF}")
+        print(f"{YELLOW}  ignoring {CONFIG_PATH}: maid evaluates it, and no maid was found (MAID_BIN or PATH){OFF}")
         return {}
     r = subprocess.run([exe, "settings", "read", "diction"], capture_output=True, text=True, timeout=20)
     if r.returncode != 0:
-        print(f"{YELLOW}  ignoring {CONFIG_PATH}: {(r.stderr.strip() or r.stdout.strip()).removeprefix('maic: ')}{OFF}")
+        print(f"{YELLOW}  ignoring {CONFIG_PATH}: {(r.stderr.strip() or r.stdout.strip()).removeprefix('maid: ')}{OFF}")
         return {}
     return json.loads(r.stdout)
 
@@ -149,7 +149,7 @@ def migrate_config(force: bool) -> int:
         return 1
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(f"-- diction's settings, written by `diction migrate-config` from {TOML_PATH} on "
-                           f"{datetime.now():%Y-%m-%d}.\n-- maic evaluates it (`maic settings read diction`); "
+                           f"{datetime.now():%Y-%m-%d}.\n-- maid evaluates it (`maid settings read diction`); "
                            f"the TOML is no longer read and can go.\nreturn {lua_value(cfg)}\n", encoding="utf-8")
     print(f"wrote {CONFIG_PATH} (from {TOML_PATH}, which is left in place and no longer read)")
     return 0
@@ -183,8 +183,8 @@ def slugify(text: str) -> str:
 def run(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="diction", description="Narrate a task; get a written procedure.",
                                  epilog=f"Settings (presets, log_dir) live in {CONFIG_PATH}, a Lua file returning a "
-                                        f"table, beside MAIC's settings.lua; maic evaluates it at the settings' "
-                                        f"global_lua level (`maic settings read diction`). Without it, the old {TOML_PATH} is "
+                                        f"table, beside MAID's settings.lua; maid evaluates it at the settings' "
+                                        f"global_lua level (`maid settings read diction`). Without it, the old {TOML_PATH} is "
 
                                         f"still read, and `diction migrate-config` writes diction.lua from it.")
     ap.add_argument("command", nargs="?", default="start",
@@ -207,8 +207,8 @@ def run(argv: list[str]) -> int:
                          "DICTION_MODEL and DICTION_AGENT_MODEL, override its parts")
     ap.add_argument("--backend", choices=list(presets.BACKENDS),
                     help="how the scribe is reached: claude-cli (a claude process on your own "
-                         "login), api (a cloud provider's API, through maic model resolve), local "
-                         "(an OpenAI-compatible MAIC server). Default: DICTION_BACKEND, else the "
+                         "login), api (a cloud provider's API, through maid model resolve), local "
+                         "(an OpenAI-compatible MAID server). Default: DICTION_BACKEND, else the "
                          "preset's (claude-cli)")
     ap.add_argument("-m", "--model",
                     help="whisper ggml model: a file, or a name under <models_dir>/whisper/ "
@@ -217,8 +217,8 @@ def run(argv: list[str]) -> int:
                          "Default: DICTION_MODEL, else the preset's (distil-large-v3)")
     ap.add_argument("--agent-model", metavar="NAME",
                     help="the scribe. With backend claude-cli, what claude --model takes (haiku, "
-                         "sonnet, opus or a full name). With api or local, a MAIC preset or "
-                         "provider/model, as `maic model resolve` reads it, where haiku, sonnet and "
+                         "sonnet, opus or a full name). With api or local, a MAID preset or "
+                         "provider/model, as `maid model resolve` reads it, where haiku, sonnet and "
                          "opus mean haiku-4.5, sonnet-5 and opus-5.5; a preset name that lands on the "
                          "main llama server goes to the side server llamacpp-2 when it answers. "
                          "Default: DICTION_AGENT_MODEL, else the preset's (haiku)")
@@ -513,7 +513,7 @@ def run_under_uv(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """`maic diction` (through the maic-diction launcher) and `cai diction` both call this."""
+    """`maid diction` (through the maid-diction launcher) and `cai diction` both call this."""
     try:
         return run(sys.argv[1:] if argv is None else list(argv))
     except KeyboardInterrupt:          # Ctrl-C while probing mics or loading

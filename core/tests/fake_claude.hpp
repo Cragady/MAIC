@@ -13,13 +13,13 @@
 //   anything else: "pid <pid> call <n>: <text>"
 // It refuses to start (a failed result, exit 2) unless its tools are off, MCP is strict, the permission mode is
 // dontAsk and --setting-sources is given ("" by default, or a subset of user,project,local): the tests' check that
-// MAIC passes those flags. The MCP config is empty for text only. For an agent it names only `maic`, a stdio server
-// whose last argument is MAIC's socket, with --allowedTools mcp__maic and MCP_TOOL_TIMEOUT set; the fake then
+// MAID passes those flags. The MCP config is empty for text only. For an agent it names only `maid`, a stdio server
+// whose last argument is MAID's socket, with --allowedTools mcp__maid and MCP_TOOL_TIMEOUT set; the fake then
 // speaks MCP to that socket (or, with FAKE_CLAUDE_BRIDGE=1, through the server command itself), records the
 // handshake and tool list in <dir>/mcp.jsonl, and acts on lines of the text it is sent:
-//   CALL <tool> <json>   a call to MAIC's tool, one model step each, its result read back over MCP
+//   CALL <tool> <json>   a call to MAID's tool, one model step each, its result read back over MCP
 //   PARALLEL             all the CALLs in one step, sent over MCP at once
-//   STRAY                a call to a tool that is not MAIC's
+//   STRAY                a call to a tool that is not MAID's
 // and ends with "pid <pid> call <n>: results: <each result>" once the calls are done. A conversation handed over
 // whole (labelled turns) is echoed like any other text.
 
@@ -48,19 +48,19 @@ def ev(e):
 
 home = os.environ["FAKE_CLAUDE_DIR"]
 with open(os.path.join(home, "spawns.jsonl"), "a") as f:
-    f.write(json.dumps({"pid": os.getpid(), "argv": args, "api_key": "ANTHROPIC_API_KEY" in os.environ, "other_key": "DEEPSEEK_API_KEY" in os.environ, "work_key": "MAIC_TEST_WORK_TOKEN" in os.environ, "cwd": os.getcwd(),
+    f.write(json.dumps({"pid": os.getpid(), "argv": args, "api_key": "ANTHROPIC_API_KEY" in os.environ, "other_key": "DEEPSEEK_API_KEY" in os.environ, "work_key": "MAID_TEST_WORK_TOKEN" in os.environ, "cwd": os.getcwd(),
                         "tool_timeout": os.environ.get("MCP_TOOL_TIMEOUT")}) + "\n")
 sources = opt("--setting-sources")
 try:
     servers = json.loads(opt("--mcp-config") or "")["mcpServers"]
 except Exception:
     servers = None
-maic = servers.get("maic") if isinstance(servers, dict) else None
-agent = maic is not None
+maid = servers.get("maid") if isinstance(servers, dict) else None
+agent = maid is not None
 ok = (opt("--tools") == "" and "--strict-mcp-config" in args and opt("--permission-mode") == "dontAsk"
       and sources is not None and (not sources or set(sources.split(",")) <= {"user", "project", "local"}))
 if agent:
-    ok = ok and list(servers) == ["maic"] and maic.get("type") == "stdio" and opt("--allowedTools") == "mcp__maic" and os.environ.get("MCP_TOOL_TIMEOUT")
+    ok = ok and list(servers) == ["maid"] and maid.get("type") == "stdio" and opt("--allowedTools") == "mcp__maid" and os.environ.get("MCP_TOOL_TIMEOUT")
 else:
     ok = ok and servers == {} and "--allowedTools" not in args
 if not ok:
@@ -70,11 +70,11 @@ if not ok:
 class Mcp:
     def __init__(self):
         if os.environ.get("FAKE_CLAUDE_BRIDGE") == "1":
-            self.proc = subprocess.Popen([maic["command"]] + maic["args"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            self.proc = subprocess.Popen([maid["command"]] + maid["args"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
             self.w, self.r = self.proc.stdin, self.proc.stdout
         else:
             self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self.sock.connect(maic["args"][-1])
+            self.sock.connect(maid["args"][-1])
             self.w, self.r = self.sock.makefile("wb"), self.sock.makefile("rb")
         self.next = 0
         self.answers = {}
@@ -127,7 +127,7 @@ def step(calls):
     for i, (name, a) in enumerate(calls, start=1):
         uses += 1
         tid = "toolu_%d_%d" % (os.getpid(), uses)
-        full = name if name == "Bash" else "mcp__maic__" + name
+        full = name if name == "Bash" else "mcp__maid__" + name
         blocks.append({"type": "tool_use", "id": tid, "name": full, "input": a})
         ev({"type": "content_block_start", "index": i, "content_block": {"type": "tool_use", "id": tid, "name": full, "input": {}}})
         text = json.dumps(a)
@@ -138,7 +138,7 @@ def step(calls):
     ev({"type": "message_stop"})
     out({"type": "assistant", "message": {"content": [{"type": "text", "text": lead}] + blocks}})
     if any(n == "Bash" for n, _ in calls):
-        return ["not one of MAIC's"]
+        return ["not one of MAID's"]
     ids = [mcp.request("tools/call", {"name": n, "arguments": a}) for n, a in calls]
     results = []
     for rid, b in zip(ids, blocks):
@@ -212,7 +212,7 @@ inline void install(const std::filesystem::path& dir) {
     setenv("PATH", ((dir / "bin").string() + ":/usr/bin:/bin").c_str(), 1);
 }
 
-// Every start so far: {"pid", "argv", "api_key", "other_key" (DEEPSEEK_API_KEY was there), "work_key" (MAIC_TEST_WORK_TOKEN was), "cwd", "tool_timeout"}.
+// Every start so far: {"pid", "argv", "api_key", "other_key" (DEEPSEEK_API_KEY was there), "work_key" (MAID_TEST_WORK_TOKEN was), "cwd", "tool_timeout"}.
 inline std::vector<nlohmann::json> spawns(const std::filesystem::path& dir, const char* file = "spawns.jsonl") {
     std::vector<nlohmann::json> out;
     std::ifstream in(dir / file);
@@ -223,7 +223,7 @@ inline std::vector<nlohmann::json> spawns(const std::filesystem::path& dir, cons
     return out;
 }
 
-// Every agent's MCP handshake: {"pid", "initialize", "tools", "unknown"}, the answers MAIC's server gave.
+// Every agent's MCP handshake: {"pid", "initialize", "tools", "unknown"}, the answers MAID's server gave.
 inline std::vector<nlohmann::json> handshakes(const std::filesystem::path& dir) {
     return spawns(dir, "mcp.jsonl");
 }

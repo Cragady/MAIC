@@ -6,13 +6,13 @@
 #include "tls.hpp"
 #include "tunnel.hpp"
 
-#include "maic/engine.hpp"
-#include "maic/full_output.hpp"
-#include "maic/paths.hpp"
-#include "maic/session.hpp"
-#include "maic/trust.hpp"
+#include "maid/engine.hpp"
+#include "maid/full_output.hpp"
+#include "maid/paths.hpp"
+#include "maid/session.hpp"
+#include "maid/trust.hpp"
 
-#include "maic/http.hpp"
+#include "maid/http.hpp"
 #include <nlohmann/json.hpp>
 
 #include <fcntl.h>
@@ -27,7 +27,7 @@
 #include <fstream>
 #include <mutex>
 
-namespace maic::server {
+namespace maid::server {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -52,14 +52,14 @@ struct HttpError {
     std::string message;
 };
 
-// The engine's refusal as an HTTP status: its JSON-RPC code, then OpenAI's or MAIC's code in data.
+// The engine's refusal as an HTTP status: its JSON-RPC code, then OpenAI's or MAID's code in data.
 HttpError http_error(const json& err) {
     int code = err.value("code", -32603);
     std::string data = err.contains("data") && err["data"].value("code", json()).is_string() ? err["data"]["code"].get<std::string>() : "";
     std::string message = err.value("message", "the engine refused the request");
-    if (data == "maic_not_found") return {404, message};
-    if (data == "maic_forbidden_remote" || data == "maic_step_up_required") return {403, message};
-    if (data == "maic_already_answered" || data == "maic_resync" || data == "maic_busy" || data == "response_not_active") return {409, message};
+    if (data == "maid_not_found") return {404, message};
+    if (data == "maid_forbidden_remote" || data == "maid_step_up_required") return {403, message};
+    if (data == "maid_already_answered" || data == "maid_resync" || data == "maid_busy" || data == "response_not_active") return {409, message};
     if (code == -32601) return {404, message};
     if (code == -32602 || code == -32600) return {400, message};
     return {500, message};
@@ -72,7 +72,7 @@ struct Conn {
     int next = 1;
 
     Conn(Engine& e, const std::string& name) : engine(e), id(e.connect(Origin::Remote, name, "http")) {
-        call("maic.hello", {{"protocol", 1}, {"client", {{"name", name}}}, {"capabilities", {"tool_output"}}});
+        call("maid.hello", {{"protocol", 1}, {"client", {{"name", name}}}, {"capabilities", {"tool_output"}}});
     }
     ~Conn() { engine.disconnect(id); }
     Conn(const Conn&) = delete;
@@ -125,7 +125,7 @@ std::string read_file(const fs::path& file) {
 // The policy every response under /a/ starts with, errors and redirects included: a URL opened directly has no
 // iframe around it. An artifact's own files get artifact_csp's in its place.
 constexpr const char* kSealedCsp = "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
-constexpr const char* kArtifactCookie = "maic_artifacts";
+constexpr const char* kArtifactCookie = "maid_artifacts";
 
 void set_csp(httplib::Response& res, const std::string& csp) {
     res.headers.erase("Content-Security-Policy");
@@ -190,7 +190,7 @@ struct Server::Impl {
     // A request out of the relay tunnel arrives from our own HomeLink on loopback; it names the phone.
     static std::string request_source(const httplib::Request& req) {
         std::string source = req.remote_addr;
-        if (req.has_header("X-Maic-Via") && (source == "127.0.0.1" || source == "::1")) source = req.get_header_value("X-Maic-Via");
+        if (req.has_header("X-Maid-Via") && (source == "127.0.0.1" || source == "::1")) source = req.get_header_value("X-Maid-Via");
         return source;
     }
 
@@ -238,7 +238,7 @@ struct Server::Impl {
     Conn conn(const httplib::Request& req) { return Conn(*engine, token_name(req).value_or("-")); }
 
     // attach, for what the session looks like now; the connection goes with the request.
-    json snapshot(Conn& c, const std::string& id) { return c.call("maic.session.attach", {{"session", id}}); }
+    json snapshot(Conn& c, const std::string& id) { return c.call("maid.session.attach", {{"session", id}}); }
 
     // The session's file, for its history and kept outputs; only a session the engine has loaded.
     fs::path transcript(Conn& c, const std::string& id) {
@@ -249,7 +249,7 @@ struct Server::Impl {
     }
 
     json status_json(Conn& c) {
-        json st = c.call("maic.engine.status");
+        json st = c.call("maid.engine.status");
         json relay;
         if (home) {
             HomeLink::State hs = home->state();
@@ -262,8 +262,8 @@ struct Server::Impl {
         return st;
     }
 
-    // The session's events as server-sent events, each one a maic.event's params as the engine sent it, until the
-    // turn that was running (or that this request started) is over: an idle maic.session.state numbered after
+    // The session's events as server-sent events, each one a maid.event's params as the engine sent it, until the
+    // turn that was running (or that this request started) is over: an idle maid.session.state numbered after
     // `idle_after`, or, when nothing ran, everything up to `replay_to`. A comment line every 15 s keeps the
     // connection open through silence.
     void stream(std::shared_ptr<Conn> c, long idle_after, long replay_to, httplib::Response& res) {
@@ -275,11 +275,11 @@ struct Server::Impl {
                 std::string out;
                 bool finished = false;
                 for (const auto& m : engine->take(c->id, std::chrono::seconds(15))) {
-                    if (m.value("method", "") != "maic.event") continue;
+                    if (m.value("method", "") != "maid.event") continue;
                     const json& e = m["params"];
                     out += "data: " + dump(e) + "\n\n";
                     long n = e.value("sequence_number", -1L);
-                    if (e["type"] == "maic.session.state" && e["activity"] == "idle" && n > idle_after) finished = true;
+                    if (e["type"] == "maid.session.state" && e["activity"] == "idle" && n > idle_after) finished = true;
                     if (replay_to >= 0 && n >= replay_to) finished = true;
                 }
                 if (!engine->closed(c->id).empty()) finished = true;
@@ -306,7 +306,7 @@ struct Server::Impl {
     }
 
     // A person: a bearer token (a device, or the web client through the relay) or the login cookie from
-    // `maic artifact open`. The cookie counts only on the server's own pages, never from a sandboxed page (Origin
+    // `maid artifact open`. The cookie counts only on the server's own pages, never from a sandboxed page (Origin
     // null) or another site; SameSite=Strict keeps it from those already, this says so twice.
     void require_person(const httplib::Request& req) {
         std::string site = req.get_header_value("Sec-Fetch-Site");
@@ -316,7 +316,7 @@ struct Server::Impl {
             return;
         }
         rate.failed(req.remote_addr);
-        throw HttpError{401, "open an artifact with `maic artifact open ID` on the workstation, or send a bearer token"};
+        throw HttpError{401, "open an artifact with `maid artifact open ID` on the workstation, or send a bearer token"};
     }
 
     fs::path artifact_dir(const std::string& id) {
@@ -326,7 +326,7 @@ struct Server::Impl {
     }
 
     // One of an artifact's files, or a data document under data/, under the artifact's policy. Under a capability,
-    // index.html carries it in a meta tag for a page that sends it back as X-Maic-Artifact-Token.
+    // index.html carries it in a meta tag for a page that sends it back as X-Maid-Artifact-Token.
     void serve_artifact(const httplib::Request& req, httplib::Response& res, const std::string& id, const std::string& prefix, const std::string& rel,
                         const std::string& cap) {
         fs::path dir = artifact_dir(id);
@@ -400,12 +400,12 @@ struct Server::Impl {
             res.set_content(read_file(*file), artifact_content_type(*file));
         });
 
-        // The link `maic artifact open` prints: its one-time code becomes the browser's login (an HttpOnly cookie for
+        // The link `maid artifact open` prints: its one-time code becomes the browser's login (an HttpOnly cookie for
         // /a/ only) and a capability for the artifact it names, so the first visit needs no cookie.
         srv->Get("/a/_login", [this](const httplib::Request& req, httplib::Response& res) {
             if (!claim_artifact_login(options.state, req.get_param_value("code"))) {
                 rate.failed(req.remote_addr);
-                throw HttpError{401, "this link was used already or has expired; run `maic artifact open ID` again"};
+                throw HttpError{401, "this link was used already or has expired; run `maid artifact open ID` again"};
             }
             rate.succeeded(req.remote_addr);
             res.set_header("Set-Cookie", std::string(kArtifactCookie) + "=" + grants.login() + "; Path=/a/; HttpOnly; SameSite=Strict; Max-Age=43200" + (tls ? "; Secure" : ""));
@@ -423,7 +423,7 @@ struct Server::Impl {
         // opaque, so these are CORS requests without cookies, and the capability in the path is their only
         // credential: for this artifact, nothing else. One path segment, so ../_vendor/ from the page is /a/_vendor/.
         auto capability = [this](const httplib::Request& req, httplib::Response& res) {
-            std::string id = req.matches[1], cap = req.matches[2], header = req.get_header_value("X-Maic-Artifact-Token");
+            std::string id = req.matches[1], cap = req.matches[2], header = req.get_header_value("X-Maid-Artifact-Token");
             if (!grants.granted(cap, id) || (!header.empty() && header != cap)) {
                 rate.failed(req.remote_addr);
                 return false;
@@ -452,7 +452,7 @@ struct Server::Impl {
         srv->Options(R"(/a/([^/~]+)~([^/]+)/data/([^/]+))", [capability](const httplib::Request& req, httplib::Response& res) {
             if (!capability(req, res)) throw HttpError{401, "this page's capability is not valid"};
             res.set_header("Access-Control-Allow-Methods", "GET, PUT");
-            res.set_header("Access-Control-Allow-Headers", "Content-Type, If-Match, If-None-Match, X-Maic-Artifact-Token");
+            res.set_header("Access-Control-Allow-Headers", "Content-Type, If-Match, If-None-Match, X-Maid-Artifact-Token");
             res.set_header("Access-Control-Max-Age", "600");
             res.status = 204;
         });
@@ -484,7 +484,7 @@ struct Server::Impl {
                 res.set_header("X-Frame-Options", "DENY");
                 res.set_header("Referrer-Policy", "no-referrer");
                 res.set_header("Cache-Control", "no-store");
-            } else if (req.get_header_value("Origin") == "null" || req.has_header("X-Maic-Artifact-Token")) {
+            } else if (req.get_header_value("Origin") == "null" || req.has_header("X-Maid-Artifact-Token")) {
                 // A sandboxed artifact page (its origin is opaque) or its capability: never anything outside /a/.
                 fail(res, 403, "an artifact page has no access outside /a/");
                 return httplib::Server::HandlerResponse::Handled;
@@ -498,7 +498,7 @@ struct Server::Impl {
             if (!token_name(req)) {
                 rate.failed(req.remote_addr);
                 res.set_header("WWW-Authenticate", "Bearer");
-                fail(res, 401, "a bearer token from `maic server token new` is required");
+                fail(res, 401, "a bearer token from `maid server token new` is required");
                 return httplib::Server::HandlerResponse::Handled;
             }
             rate.succeeded(req.remote_addr);
@@ -540,7 +540,7 @@ struct Server::Impl {
         // The loaded sessions, from the engine's index.
         srv->Get("/api/sessions", [this](const httplib::Request& req, httplib::Response& res) {
             Conn c = conn(req);
-            json index = c.call("maic.index.get");
+            json index = c.call("maid.index.get");
             json out = json::array();
             for (const auto& e : index["entries"]) {
                 if (e["state"] != "live" && e["state"] != "background") continue;
@@ -556,14 +556,14 @@ struct Server::Impl {
             Conn c = conn(req);
             std::string id;
             if (body.contains("resume")) {
-                id = c.call("maic.session.resume", {{"session", body["resume"].get<std::string>()}})["id"];
-                if (body.contains("mode")) c.call("maic.session.set", {{"session", id}, {"mode", body["mode"]}});
+                id = c.call("maid.session.resume", {{"session", body["resume"].get<std::string>()}})["id"];
+                if (body.contains("mode")) c.call("maid.session.set", {{"session", id}, {"mode", body["mode"]}});
             } else {
                 json m = json::object();  // no mode: the engine starts the settings' own, held at manual where auto waits
                 if (body.contains("mode")) m["mode"] = body["mode"];
                 if (body.contains("workspace")) m["workspace"] = body["workspace"];
                 if (body.contains("model")) m["model"] = body["model"];
-                id = c.call("createConversation", {{"maic", m}})["id"];
+                id = c.call("createConversation", {{"maid", m}})["id"];
             }
             reply(res, session_json(snapshot(c, id)), 201);
         });
@@ -585,7 +585,7 @@ struct Server::Impl {
             long after = -1;
             if (req.has_param("starting_after")) after = std::stol(req.get_param_value("starting_after"));
             else if (req.has_param("after")) after = std::stol(req.get_param_value("after")) - 1;
-            json sub = c->call("maic.session.subscribe", {{"session", req.matches[1].str()}, {"starting_after", after}});
+            json sub = c->call("maid.session.subscribe", {{"session", req.matches[1].str()}, {"starting_after", after}});
             long at = sub["sequence_number"];
             if (sub["activity"] == "idle") {
                 if (after >= at) {
@@ -631,20 +631,20 @@ struct Server::Impl {
             if (text.empty()) throw HttpError{400, "text is empty"};
             auto c = std::make_shared<Conn>(*engine, token_name(req).value_or("-"));
             std::string id = req.matches[1];
-            json entry = c->call("getConversation", {{"conversation_id", id}})["maic"]["entry"];
+            json entry = c->call("getConversation", {{"conversation_id", id}})["maid"]["entry"];
             if (entry["response"].is_string()) {
-                json snap = c->call("maic.session.attach", {{"session", id}});
+                json snap = c->call("maid.session.attach", {{"session", id}});
                 try {
                     c->call("response.steer", {{"previous_response_id", entry["response"]}, {"input", text}});
                     stream(c, snap["sequence_number"], -1, res);
                     return;
                 } catch (const HttpError&) {
-                    c->call("maic.session.unsubscribe", {{"session", id}});  // it ended meanwhile: the message starts a turn
+                    c->call("maid.session.unsubscribe", {{"session", id}});  // it ended meanwhile: the message starts a turn
                 }
             }
             json r = c->call("response.create", {{"conversation", id}, {"input", text}});
-            long from = r["maic"]["sequence_number"];
-            c->call("maic.session.subscribe", {{"session", id}, {"starting_after", from}});
+            long from = r["maid"]["sequence_number"];
+            c->call("maid.session.subscribe", {{"session", id}, {"starting_after", from}});
             stream(c, from, -1, res);
         });
 
@@ -653,13 +653,13 @@ struct Server::Impl {
             Conn c = conn(req);
             json params = {{"session", req.matches[1].str()}, {"approval", req.matches[2].str()}, {"choice", body.value("choice", "")}};
             if (body.contains("feedback")) params["feedback"] = body["feedback"];
-            json r = c.call("maic.approval.answer", params);
+            json r = c.call("maid.approval.answer", params);
             reply(res, {{"id", req.matches[2].str()}, {"choice", r["choice"]}});
         });
 
         srv->Post(R"(/api/sessions/([^/]+)/interrupt)", [this](const httplib::Request& req, httplib::Response& res) {
             Conn c = conn(req);
-            json entry = c.call("getConversation", {{"conversation_id", req.matches[1].str()}})["maic"]["entry"];
+            json entry = c.call("getConversation", {{"conversation_id", req.matches[1].str()}})["maid"]["entry"];
             if (entry["response"].is_null()) {
                 reply(res, {{"running", false}});
                 return;
@@ -677,7 +677,7 @@ struct Server::Impl {
         srv->Post(R"(/api/sessions/([^/]+)/mode)", [this](const httplib::Request& req, httplib::Response& res) {
             Conn c = conn(req);
             std::string id = req.matches[1];
-            c.call("maic.session.set", {{"session", id}, {"mode", body_of(req).value("mode", "")}});
+            c.call("maid.session.set", {{"session", id}, {"mode", body_of(req).value("mode", "")}});
             reply(res, session_json(snapshot(c, id)));
         });
 
@@ -695,7 +695,7 @@ struct Server::Impl {
             }
         });
 
-        // The pairing exchange, on the LAN only: the phone proves it saw the code `maic server pair` printed and
+        // The pairing exchange, on the LAN only: the phone proves it saw the code `maid server pair` printed and
         // leaves its public key; it gets ours, the pairing id and the relay to use. Nothing here reaches the
         // relay, and the relay has no counterpart to this route.
         srv->Post("/api/pair", [this](const httplib::Request& req, httplib::Response& res) {
@@ -715,7 +715,7 @@ struct Server::Impl {
         srv->Post("/api/trip", [this](const httplib::Request& req, httplib::Response& res) {
             std::string reason = body_of(req).value("reason", "tripped from a remote client");
             Conn c = conn(req);
-            reply(res, c.call("maic.engine.trip", {{"reason", reason}}));
+            reply(res, c.call("maid.engine.trip", {{"reason", reason}}));
         });
     }
 };
@@ -744,7 +744,7 @@ int Server::bind() {
     fs::permissions(o.state, fs::perms::owner_all, fs::perm_options::replace, ec);
     for (const auto& w : o.workspaces) im.roots.push_back(fs::weakly_canonical(w, ec));
     if (im.roots.empty()) throw std::runtime_error("no allowed workspace root");
-    // Every maic-server client is remote; its sessions are kind server. The session index file is the daemon's
+    // Every maid-server client is remote; its sessions are kind server. The session index file is the daemon's
     // (step 13), so this engine keeps none.
     EngineOptions eo;
     eo.settings = o.settings;
@@ -810,4 +810,4 @@ void Server::stop() {
     if (im.srv) im.srv->stop();
 }
 
-}  // namespace maic::server
+}  // namespace maid::server

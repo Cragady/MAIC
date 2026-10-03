@@ -19,7 +19,7 @@ python3 -c "import sys; p=open('page.html').read(); d=open('review.json').read()
 * State is one document, `review/<id>`: `answers` by field id, `addressed` overrides, `merges`, `kept`, `submitted`, `submittedAt`, `savedAt`. It is plain JSON for an agent to read.
 * Combine boxes: pick boxes within one card and combine them. The combined text marks each part with a `── <field id> ──` line. Back to default splits it along those lines, edits included; if the lines were damaged, the boxes return to what they held before combining and the whole combined text is kept in a box beside the first one. Nothing typed is ever dropped.
 * The store hands back frozen objects: the page copies anything it loads before using it, and on load it recovers any text the viewer restored into boxes that its state never received.
-* Storage today is the claude.ai artifact runtime (`db`, with `comments` for the Submit notice) and falls back to the browser's own storage. MAIC's artifact creation will give it a file backend.
+* Storage today is the claude.ai artifact runtime (`db`, with `comments` for the Submit notice) and falls back to the browser's own storage. MAID's artifact creation will give it a file backend.
 
 * Status: every card is open (amber), addressed (blue) or resolved (green), stored in `status`. A topic is resolved only after it is addressed and after the document is marked addressed; the document (`doc_status`) is resolved by the user or an agent once every topic is. When everything is addressed and a topic has grown new depth, it gets a new artifact.
 * Every box collapses to a one-line preview, per box, per card or for the whole page. Boxes under text that asks nothing (the user's own messages, the agent's reports and lists) start collapsed; `build.py` marks each block `respond: true` only when the agent's text asks a question.
@@ -44,7 +44,7 @@ python3 -c "import sys; p=open('page.html').read(); d=open('review.json').read()
 While a page has open items, every agent reply in the conversation ends with one line pointing at it, in this shape:
 
 ```
-↪ Open items: maic artifact open <id>
+↪ Open items: maid artifact open <id>
 ```
 
 The line appears only while that page has open items: once a page is fully closed out, the pointer is dropped (or moved to another page that still has open items), and reopening a closed issue means a new page, not reviving the old one. `<id>` is the page holding the active open items (after a split, usually the newest child). After a set number of chat rounds with the page unresolved (3 suggested), the agent answers only with a short acknowledgement and this line.
@@ -64,7 +64,7 @@ Relationships: `tight` (resolving the topics there resolves them here), `linked`
 `local/` is the same page in Vue 3, built to run from plain files (`file://`) with no server, no packages and no network request. It does not run on claude.ai: the shared store, editing leases, comment notifications and live snapshots are gone. Everything else is kept: the same field ids, statuses, `folded`, `merges`, `kept`, `side_prompts`, `after_prompts`, `splits`, `picked`, `flags`, `events` and `key`, so an answers file moves between the two versions.
 
 ```sh
-python3 local/build_local.py review.json            # writes ~/.local/state/maic/reviews/<id>/
+python3 local/build_local.py review.json            # writes ~/.local/state/maid/reviews/<id>/
 python3 local/build_local.py review.json -o DIR     # or somewhere else
 ```
 
@@ -74,7 +74,7 @@ Open `<folder>/index.html` (the command prints the `file://` URL). `example.json
 * Why classic scripts: browsers block ES module imports over `file://` (Chrome and Firefox), but `<script src="./relative.js">` works. The app uses the global `Vue` build, which includes the in-page template compiler, so there is no build step.
 * Reactivity: every box is a `v-model` on `answers[id]`. Linked boxes (`links` in the data) bind the same entry, so editing one updates its partner in the same frame. A deep watcher on the saved state schedules the autosave, so no code path can change an answer without saving it.
 * Storage: one adapter, three backends, tried in this order, with the choice shown under the save status. The browser's `localStorage` (`review-draft:<id>`) is the per-browser draft in all three.
-  1. `http`, when MAIC serves the page over http(s). `GET data/answers.json` (relative to the page) returns the state with its revision in the `ETag`; `PUT` with `If-Match: <ETag>` writes it and returns the new `ETag`. With nothing stored yet the page sends `If-None-Match: *`. A 409 (or 412) means another writer saved first: the page loads their version, merges nothing, shows a banner, and offers "Download my version". The per-artifact token is read from `<meta name="maic-artifact-token">` and sent as `X-Maic-Artifact-Token`. Vue then loads from `../_vendor/vue/vue.global.prod.js`, falling back to `./vendor/`.
+  1. `http`, when MAID serves the page over http(s). `GET data/answers.json` (relative to the page) returns the state with its revision in the `ETag`; `PUT` with `If-Match: <ETag>` writes it and returns the new `ETag`. With nothing stored yet the page sends `If-None-Match: *`. A 409 (or 412) means another writer saved first: the page loads their version, merges nothing, shows a banner, and offers "Download my version". The per-artifact token is read from `<meta name="maid-artifact-token">` and sent as `X-Maid-Artifact-Token`. Vue then loads from `../_vendor/vue/vue.global.prod.js`, falling back to `./vendor/`.
   2. `fsaccess`, in Chromium over `file://`. "Link this folder" asks once for the page's own folder (it must contain `index.html`); the handle is kept in IndexedDB and the browser asks again each session ("Allow folder access", one click). While linked, every save also writes `answers.json` and `answers.js` (`window.REVIEW_ANSWERS = {...};`) beside `index.html`, one write at a time.
   3. `download`, everywhere else (Firefox over `file://`). The page says plainly that it cannot write beside itself.
 * Which copy is newer: the saved state carries `rev` (a save counter) and `savedAt`. On load, and on Data Refresh, the page uses the newest of `localStorage`, `answers.js` and the server copy, by `rev` and then `savedAt`. A file from the claude.ai page has no `rev` and is ordered by `savedAt`.
@@ -91,8 +91,8 @@ Open `<folder>/index.html` (the command prints the `file://` URL). `example.json
 
 * Adding textareas (more boxes than the blocks give).
 * More expressive references from the Side Prompt (ranges, excerpts, whole cards).
-* The Ctrl+G bridge, behind a switch the page already shows and records (`flags.ctrl_g_bridge`, with "not built yet" beside it): sync on demand with a file under MAIC's state directory; flipping the switch clears the linked sections on both sides. The full version needs MAIC's own artifact system, where a watched file syncs both ways.
-* A view of an artifact in MAIC's TUI with keychords for the same functions; nvim makes moving, yanking and editing several fields easier, and the `--bare` TUI may not reach full parity.
+* The Ctrl+G bridge, behind a switch the page already shows and records (`flags.ctrl_g_bridge`, with "not built yet" beside it): sync on demand with a file under MAID's state directory; flipping the switch clears the linked sections on both sides. The full version needs MAID's own artifact system, where a watched file syncs both ways.
+* A view of an artifact in MAID's TUI with keychords for the same functions; nvim makes moving, yanking and editing several fields easier, and the `--bare` TUI may not reach full parity.
 * `notes` in the data renders as a Notes list among the page's own docs (`~~strike~~` supported).
 
 ## Notes

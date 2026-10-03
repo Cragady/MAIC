@@ -22,9 +22,9 @@ Non-interactive (an agent through run_shell, or a script):
     every writing command takes --dry-run (show the diff, write nothing) and --out PATH (write elsewhere)
     workflow_edit.py check PATH [--comfyui DIR]            node types the workflow uses that neither ComfyUI core nor
                                                            its custom_nodes provide, read from the vendored checkout
-                                                           ($MAIC_VENDOR/ComfyUI by default), offline; exit 1 when any
+                                                           ($MAID_VENDOR/ComfyUI by default), offline; exit 1 when any
 
-Filling a manga workflow from a story JSON? Use `maic-storyboard` instead: it runs this tool for you, one
+Filling a manga workflow from a story JSON? Use `maid-storyboard` instead: it runs this tool for you, one
 panel per turn, and prints the exact `set` command for each prompt.
 
 NODE is the node id (`10`) or, when unique, its title (`"Panel 1 prompt"`). FIELD is the slot name shown by
@@ -273,7 +273,7 @@ def comfyui_dir(arg):
     if arg:
         return arg
     state = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
-    return os.path.join(os.environ.get("MAIC_VENDOR") or os.path.join(state, "maic", "vendor"), "ComfyUI")
+    return os.path.join(os.environ.get("MAID_VENDOR") or os.path.join(state, "maid", "vendor"), "ComfyUI")
 
 
 # Both ways a ComfyUI module registers node types: the key of a NODE_CLASS_MAPPINGS dict ("KSampler": KSampler)
@@ -340,7 +340,7 @@ def cmd_check(args):
     wf = load(args.path)
     root = comfyui_dir(args.comfyui)
     if not os.path.isfile(os.path.join(root, "nodes.py")):
-        sys.exit(f"no ComfyUI checkout at {root} (maic vendor add comfyui, or --comfyui DIR)")
+        sys.exit(f"no ComfyUI checkout at {root} (maid vendor add comfyui, or --comfyui DIR)")
     have = provided_types(root) | FRONTEND_NODES
     used = workflow_node_types(wf)
     missing = {t: hint for t, hint in used.items() if t not in have}
@@ -460,7 +460,7 @@ def main():
     p.set_defaults(func=cmd_apply)
     p = sub.add_parser("check", help="node types the workflow uses that the ComfyUI checkout does not provide")
     common(p, writes=False)
-    p.add_argument("--comfyui", help="the ComfyUI checkout (default: $MAIC_VENDOR/ComfyUI)")
+    p.add_argument("--comfyui", help="the ComfyUI checkout (default: $MAID_VENDOR/ComfyUI)")
     p.set_defaults(func=cmd_check)
     p = sub.add_parser("edit", help="interactive walk over every field")
     common(p)

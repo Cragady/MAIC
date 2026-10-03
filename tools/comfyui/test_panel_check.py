@@ -57,7 +57,7 @@ class Tests(unittest.TestCase):
         dump(TAGS, self.tags)
 
     def run_tool(self, *args, tags=None):
-        env = dict(os.environ, MAIC_DANBOORU_TAGS=tags or os.path.join(self.dir, "no-such-tags.json"))
+        env = dict(os.environ, MAID_DANBOORU_TAGS=tags or os.path.join(self.dir, "no-such-tags.json"))
         return subprocess.run([sys.executable, TOOL, *args], capture_output=True, text=True, env=env)
 
     def test_good_panel_is_one_screen_with_no_flags(self):

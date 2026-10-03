@@ -1,11 +1,11 @@
 #include <signal.h>
-#include "maic/session.hpp"
+#include "maid/session.hpp"
 
-#include "maic/full_output.hpp"
-#include "maic/harness.hpp"
-#include "maic/paths.hpp"
-#include "maic/skeleton.hpp"
-#include "maic/tools.hpp"
+#include "maid/full_output.hpp"
+#include "maid/harness.hpp"
+#include "maid/paths.hpp"
+#include "maid/skeleton.hpp"
+#include "maid/tools.hpp"
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -23,7 +23,7 @@
 #include <stdexcept>
 #include <string_view>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -57,8 +57,8 @@ std::string project_home_name(const fs::path& workspace) {
 }
 
 fs::path runtime_sessions_dir() {
-    if (const char* rt = std::getenv("XDG_RUNTIME_DIR"); rt && *rt) return fs::path(rt) / "maic" / "sessions";
-    return fs::path("/tmp") / ("maic-" + std::to_string(getuid())) / "sessions";
+    if (const char* rt = std::getenv("XDG_RUNTIME_DIR"); rt && *rt) return fs::path(rt) / "maid" / "sessions";
+    return fs::path("/tmp") / ("maid-" + std::to_string(getuid())) / "sessions";
 }
 
 fs::path sessions_home(const std::string& home) {
@@ -102,13 +102,13 @@ SessionLog::SessionLog(const std::string& kind, const fs::path& home) {
 }
 
 // One engine per transcript (Micaiah, 2026-10-03): an open log holds <runtime>/held/<id>.lock, its PID inside, beside the
-// daemon's socket ($XDG_RUNTIME_DIR/maic, else <state>/run). The kernel lets go of a dead process's flock, so a
-// lock a crashed MAIC left is taken over; release() removes it, at the path it was taken. Keyed by id, so a move
+// daemon's socket ($XDG_RUNTIME_DIR/maid, else <state>/run). The kernel lets go of a dead process's flock, so a
+// lock a crashed MAID left is taken over; release() removes it, at the path it was taken. Keyed by id, so a move
 // (:init) keeps it. A flock belongs to the open file, not the process: a second log in the same process is refused
 // too. False, with the holder's PID if it wrote one, when another log has it.
 bool SessionLog::hold(const std::string& id, std::string& holder) {
     const char* rt = std::getenv("XDG_RUNTIME_DIR");
-    fs::path dir = (rt && *rt ? fs::path(rt) / "maic" : state_dir() / "run") / "held";
+    fs::path dir = (rt && *rt ? fs::path(rt) / "maid" : state_dir() / "run") / "held";
     fs::create_directories(dir);
     std::error_code ec;
     fs::permissions(dir.parent_path(), fs::perms::owner_all, fs::perm_options::replace, ec);
@@ -178,12 +178,12 @@ SessionLog::SessionLog(Fork, const fs::path& parent, size_t records, const std::
 SessionLog::SessionLog(Reopen, const fs::path& path) : path_(path) {
     std::string id = path.stem().string();
     if (std::string pid; !hold(id, pid)) {
-        throw std::runtime_error("session " + id + " is open in another MAIC" + (pid.empty() ? "" : " (pid " + pid + ")") +
-                                 ": one engine per transcript. Use that window or quit it; with the daemon (maic daemon start) windows share their "
-                                 "sessions, and maic -r " + id + " --no-append forks it");
+        throw std::runtime_error("session " + id + " is open in another MAID" + (pid.empty() ? "" : " (pid " + pid + ")") +
+                                 ": one engine per transcript. Use that window or quit it; with the daemon (maid daemon start) windows share their "
+                                 "sessions, and maid -r " + id + " --no-append forks it");
     }
     try {
-        // A move this session was in the middle of when MAIC stopped is finished first; it may have left the file elsewhere.
+        // A move this session was in the middle of when MAID stopped is finished first; it may have left the file elsewhere.
         recovered_ = recover_relocations(path.stem().string());
         if (!fs::is_regular_file(path_)) {
             if (auto found = find_session(path.stem().string()); found && !recovered_.empty()) path_ = found->path;
@@ -358,7 +358,7 @@ fs::path backup_session(const fs::path& path) {
     return dest;
 }
 
-bool is_maic_session(const fs::path& path) {
+bool is_maid_session(const fs::path& path) {
     std::ifstream in(path);
     bool signature = false;
     for (std::string line; std::getline(in, line);) {
@@ -405,8 +405,8 @@ void walk(const fs::path& path, size_t limit, int depth, const std::function<voi
         if (!j.is_object()) continue;
         if (!known_record_type(type) && must.count(type)) {
             throw std::runtime_error(path.string() + " record " + std::to_string(n) + " is a `" + type +
-                                     "` record, which this maic does not know and the file marks must_understand: reading on without it would "
-                                     "rebuild the wrong conversation. A newer maic reads it.");
+                                     "` record, which this maid does not know and the file marks must_understand: reading on without it would "
+                                     "rebuild the wrong conversation. A newer maid reads it.");
         }
         if (type != "resumed_from") fn(j);
         else walk(pointer_target(j), j.value("records", size_t(0)), depth + 1, fn, top);
@@ -704,7 +704,7 @@ bool session_running(const SessionInfo& info) {
     if (kill(static_cast<pid_t>(info.pid), 0) != 0) return false;
     std::ifstream cmd("/proc/" + std::to_string(info.pid) + "/cmdline");
     std::string line((std::istreambuf_iterator<char>(cmd)), std::istreambuf_iterator<char>());
-    return line.find("maic") != std::string::npos;
+    return line.find("maid") != std::string::npos;
 }
 
 std::optional<std::string> session_lock_reason(const SessionInfo& info) {
@@ -723,7 +723,7 @@ std::string kept_note(const TranscriptEntry& t, const std::string& open, const s
     std::string id = rel.begin() != rel.end() ? rel.begin()->stem().string() : "";
     std::string note = std::string("[") + kFullOutputLabel + "] " + std::to_string(t.full_output.value("bytes", size_t(0))) + " bytes";
     if (t.full_output.value("dropped", size_t(0))) note += " (" + std::to_string(t.full_output.value("dropped", size_t(0))) + " more dropped over full_output_max_mb)";
-    return open + note + ": maic sessions output " + id + " " + rel.stem().string() + close;
+    return open + note + ": maid sessions output " + id + " " + rel.stem().string() + close;
 }
 
 }  // namespace
@@ -902,7 +902,7 @@ std::vector<RehomeMove> plan_rehome(const std::vector<RehomeTarget>& targets, co
                 if (s.id.rfind(t.id, 0) == 0) matches.push_back(&s);
             }
             if (matches.size() == 1) named = *matches[0];
-            else if (matches.empty()) problems.push_back("no session matching '" + t.id + "' (maic sessions)");
+            else if (matches.empty()) problems.push_back("no session matching '" + t.id + "' (maid sessions)");
             else {
                 std::string ids;
                 for (const auto* m : matches) ids += "\n      " + m->id + "  [" + m->home + "]";
@@ -935,7 +935,7 @@ std::vector<RehomeMove> plan_rehome(const std::vector<RehomeTarget>& targets, co
                 continue;
             }
             if (session_running(s)) problems.push_back(s.id + " is running (pid " + std::to_string(s.pid) + "): a live session moves only by :init inside it; wait until it ends");
-            else if (session_lock_reason(s)) problems.push_back(s.id + " has its tripwire lock set beside it; `maic unlock session " + s.id + "` first");
+            else if (session_lock_reason(s)) problems.push_back(s.id + " has its tripwire lock set beside it; `maid unlock session " + s.id + "` first");
             else if (fs::exists(to, ec)) problems.push_back(to.string() + " already exists");
             else if (fs::exists(side_dir(to), ec)) problems.push_back(side_dir(to).string() + " already exists");
             plan.push_back({s, to});
@@ -1025,7 +1025,7 @@ std::vector<std::string> recover_relocations(const std::string& id) {
             }
             fs::remove(leftover, ec);
             size_t added = static_cast<size_t>(std::count(held.begin() + static_cast<long>(k), held.end(), '\n'));
-            notices.push_back("session " + sid + " was being moved when MAIC stopped: " + std::to_string(added) + " record" + (added == 1 ? "" : "s") +
+            notices.push_back("session " + sid + " was being moved when MAID stopped: " + std::to_string(added) + " record" + (added == 1 ? "" : "s") +
                               " written meanwhile were added back to it, in " + home_of(live));
         }
     }
@@ -1176,4 +1176,4 @@ StreamStart stream_start(const fs::path& path) {
     return out;
 }
 
-}  // namespace maic
+}  // namespace maid

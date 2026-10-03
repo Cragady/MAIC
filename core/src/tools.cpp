@@ -1,6 +1,6 @@
-#include "maic/tools.hpp"
+#include "maid/tools.hpp"
 
-#include "maic/sandbox.hpp"
+#include "maid/sandbox.hpp"
 
 #include <algorithm>
 #include <regex.h>
@@ -10,7 +10,7 @@
 #include <fstream>
 #include <sstream>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -49,7 +49,7 @@ bool flag(const nlohmann::json& args, const char* key) {
 }
 
 // POSIX extended regex (grep -E syntax). std::regex recurses per character and overflows the stack on long
-// lines, which crashed MAIC; glibc's matcher doesn't. `error` is set instead of throwing so each tool can
+// lines, which crashed MAID; glibc's matcher doesn't. `error` is set instead of throwing so each tool can
 // word the failure.
 struct Regex {
     regex_t re{};
@@ -1095,4 +1095,4 @@ ToolResult run_tool(const Harness& harness, const std::string& name, const nlohm
     }
 }
 
-}  // namespace maic
+}  // namespace maid

@@ -1,15 +1,15 @@
-// `maic setup`: the first run, step by step, out of the pieces that exist (doctor's checks, settings init,
+// `maid setup`: the first run, step by step, out of the pieces that exist (doctor's checks, settings init,
 // vendor add, the model catalog, the tripwire installer), each behind a question.
 #include "setup.hpp"
 
 #include "doctor.hpp"
-#include "maic/helper.hpp"
-#include "maic/models.hpp"
-#include "maic/paths.hpp"
-#include "maic/service.hpp"
-#include "maic/settings.hpp"
-#include "maic/status.hpp"
-#include "maic/vendor.hpp"
+#include "maid/helper.hpp"
+#include "maid/models.hpp"
+#include "maid/paths.hpp"
+#include "maid/service.hpp"
+#include "maid/settings.hpp"
+#include "maid/status.hpp"
+#include "maid/vendor.hpp"
 
 #include <unistd.h>
 
@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -39,7 +39,7 @@ long meminfo_gb() {
 
 int run_setup() {
     bool tty = isatty(STDIN_FILENO);
-    std::cout << "MAIC setup" << (tty ? "" : " (not a terminal: the plan only, nothing is done)") << "\n\n";
+    std::cout << "MAID setup" << (tty ? "" : " (not a terminal: the plan only, nothing is done)") << "\n\n";
     std::vector<std::string> plan;
     // A yes/no on a terminal; off one, the step goes on the plan and the answer is no.
     auto ask = [&](const std::string& question) {
@@ -56,7 +56,7 @@ int run_setup() {
         try {
             work();
         } catch (const std::exception& e) {
-            std::cerr << "maic: " << what << ": " << e.what() << "\n";
+            std::cerr << "maid: " << what << ": " << e.what() << "\n";
         }
     };
 
@@ -82,7 +82,7 @@ int run_setup() {
             if (!models_dir.empty() && models_dir[0] == '~') models_dir = std::string(std::getenv("HOME") ? std::getenv("HOME") : "") + models_dir.substr(1);
             step("settings", [&] {
                 write_default_settings(false, models_dir);
-                setenv("MAIC_MODELS_DIR", models_dir.c_str(), 1);  // the steps below read ${MAIC_MODELS}
+                setenv("MAID_MODELS_DIR", models_dir.c_str(), 1);  // the steps below read ${MAID_MODELS}
                 std::cout << "  wrote " << lua.string() << "\n";
             });
         }
@@ -98,8 +98,8 @@ int run_setup() {
             std::cout << name << ": installed (" << st.target << ")\n";
             continue;
         }
-        std::string what = std::string(name) == "llamacpp" ? "Build llama.cpp, the model server (maic vendor add llamacpp; about ten minutes, no download)?"
-                                                             : "Install ComfyUI (maic vendor add comfyui; downloads torch and the requirements, several GB)?";
+        std::string what = std::string(name) == "llamacpp" ? "Build llama.cpp, the model server (maid vendor add llamacpp; about ten minutes, no download)?"
+                                                             : "Install ComfyUI (maid vendor add comfyui; downloads torch and the requirements, several GB)?";
         if (ask(what)) step(std::string("vendor add ") + name, [&] { vendor_add(*e); });
     }
 
@@ -118,7 +118,7 @@ int run_setup() {
     try {
         catalog = load_catalog();
     } catch (const std::exception& e) {
-        std::cerr << "maic: model catalog: " << e.what() << "\n";
+        std::cerr << "maid: model catalog: " << e.what() << "\n";
     }
     for (const auto& m : catalog) {
         if (m.root != "llamacpp" || (m.role != "agent" && m.role != "vision") || entry_installed(m, catalog)) continue;
@@ -128,11 +128,11 @@ int run_setup() {
         snprintf(size, sizeof(size), "%.1f GB", static_cast<double>(bytes) / (1024.0 * 1024 * 1024));
         std::string what = m.shares_entry.empty() ? std::string(size) : "a link to " + m.shares_entry + "'s weights";
         std::string role = m.dir.rfind(rec.quick + "-", 0) == 0 ? ", the recommended quick model" : m.dir.rfind(rec.deep + "-", 0) == 0 ? ", the recommended deep model" : "";
-        if (!ask("Fetch " + m.id + " (" + what + ", " + m.role + ", checked by SHA-256" + role + "; maic models info " + m.id + ")?")) continue;
+        if (!ask("Fetch " + m.id + " (" + what + ", " + m.role + ", checked by SHA-256" + role + "; maid models info " + m.id + ")?")) continue;
         step("models install " + m.id, [&] { install_entry(m, catalog, llamacpp_current_id().empty(), std::cout); });
     }
 
-    if (!fs::exists("/usr/local/sbin/maic-lock")) {
+    if (!fs::exists("/usr/local/sbin/maid-lock")) {
         fs::path script = root_dir() / "harness" / "install-tripwire.sh";
         if (ask("Install the tripwire (sudo " + script.string() + "; asks for your password)?")) {
             step("tripwire", [&] {
@@ -154,11 +154,11 @@ int run_setup() {
     try {
         services = load_services(root_dir() / "services");
     } catch (const std::exception& e) {
-        std::cerr << "maic: " << e.what() << "\n";
+        std::cerr << "maid: " << e.what() << "\n";
     }
     std::cout << format_status(status_report(services));
-    std::cout << "next: maic up llamacpp, then maic (maic doctor for the full picture)\n";
+    std::cout << "next: maid up llamacpp, then maid (maid doctor for the full picture)\n";
     return 0;
 }
 
-}  // namespace maic
+}  // namespace maid

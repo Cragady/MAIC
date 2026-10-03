@@ -1,5 +1,5 @@
 {
-  "//": "Every way of leaving a session, mapped to what MAIC defines today with the shipped leave table (docs/settings.md#leaving-a-session, docs/design/engine-protocol.md 'As built (the leave table)'), or to UNDEFINED where nothing defines it. scripts/leave_audit.py expands every combination of the dimensions and gives each the first rule whose `when` fits it (a value or a list per dimension; a dimension left out fits any value). `is` is the behaviour, \"n/a: ...\" for a combination that cannot happen, or \"UNDEFINED\" with `why`; `same_as` maps the combination to the one with those dimensions replaced, with `prefix` before its behaviour. A window is one interface (a TUI, a maic.nvim tab), each its own client.",
+  "//": "Every way of leaving a session, mapped to what MAID defines today with the shipped leave table (docs/settings.md#leaving-a-session, docs/design/engine-protocol.md 'As built (the leave table)'), or to UNDEFINED where nothing defines it. scripts/leave_audit.py expands every combination of the dimensions and gives each the first rule whose `when` fits it (a value or a list per dimension; a dimension left out fits any value). `is` is the behaviour, \"n/a: ...\" for a combination that cannot happen, or \"UNDEFINED\" with `why`; `same_as` maps the combination to the one with those dimensions replaced, with `prefix` before its behaviour. A window is one interface (a TUI, a maid.nvim tab), each its own client.",
   "dimensions": {
     "action": ["switch", "quit"],
     "state": ["idle", "working", "finished"],
@@ -18,9 +18,9 @@
     {"when": {"windows": "several", "daemon": "off", "place": "local"},
      "is": "n/a: one engine per transcript: without the daemon each window runs its own engine, and a second one is refused a session another has open (its transcript is held), so no session has two windows there"},
     {"when": {"place": "remote", "action": "switch", "state": "idle", "flag": "bg"},
-     "is": "refused (maic_step_up_required), nothing changed: a remote flag that loosens the case (stop -> park -> bg) needs a step-up, which waits for accounts (roadmap item 6)"},
+     "is": "refused (maid_step_up_required), nothing changed: a remote flag that loosens the case (stop -> park -> bg) needs a step-up, which waits for accounts (roadmap item 6)"},
     {"when": {"place": "remote", "action": "quit", "state": "idle", "flag": ["bg", "park"]},
-     "is": "refused (maic_step_up_required), nothing changed: a remote flag that loosens the case (stop -> park -> bg) needs a step-up, which waits for accounts (roadmap item 6)"},
+     "is": "refused (maid_step_up_required), nothing changed: a remote flag that loosens the case (stop -> park -> bg) needs a step-up, which waits for accounts (roadmap item 6)"},
 
     {"when": {"action": "quit", "state": "finished", "daemon": "off", "place": "local"},
      "is": "n/a: without a daemon a quit parks or stops what still runs (leave.no_daemon), so nothing finishes after it"},
@@ -54,7 +54,7 @@
     {"when": {"action": ["switch", "quit"], "state": "idle", "flag": "park"},
      "is": "parked: out of memory, in the switcher, resumes where it was"},
     {"when": {"action": ["switch", "quit"], "state": "idle", "flag": "stop"},
-     "is": "stopped: off the switcher, an ordinary transcript (maic -r)"},
+     "is": "stopped: off the switcher, an ordinary transcript (maid -r)"},
     {"when": {"action": "switch", "state": "working", "flag": ["none", "bg"]},
      "is": "keeps working in the background (leave.switch.working: bg, shipped), with leave.switch.after armed"},
     {"when": {"action": ["switch", "quit"], "state": "working", "flag": "park"},
@@ -69,7 +69,7 @@
     {"when": {"action": "quit", "state": "idle", "flag": "bg", "daemon": "off", "place": "local"},
      "is": "leave.no_daemon: parked, since no daemon keeps it"},
     {"when": {"action": "quit", "state": "idle", "flag": "bg"},
-     "is": "stays loaded, idle, where sessions outlive their clients (the daemon, maic-server)"},
+     "is": "stays loaded, idle, where sessions outlive their clients (the daemon, maid-server)"},
     {"when": {"action": "quit", "state": "working", "daemon": "off", "place": "local"},
      "is": "leave.no_daemon: its turn is interrupted and it is parked"},
     {"when": {"action": "quit", "state": "working"},

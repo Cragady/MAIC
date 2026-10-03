@@ -1,17 +1,17 @@
 #include "session_commands.hpp"
 
-#include "maic/engine.hpp"
-#include "maic/lazy_lock.hpp"
-#include "maic/lua_tools.hpp"
-#include "maic/paths.hpp"
-#include "maic/places.hpp"
-#include "maic/script_tools.hpp"
-#include "maic/service.hpp"
-#include "maic/models.hpp"
-#include "maic/status.hpp"
-#include "maic/tools.hpp"
-#include "maic/tripwire.hpp"
-#include "maic/vendor.hpp"
+#include "maid/engine.hpp"
+#include "maid/lazy_lock.hpp"
+#include "maid/lua_tools.hpp"
+#include "maid/paths.hpp"
+#include "maid/places.hpp"
+#include "maid/script_tools.hpp"
+#include "maid/service.hpp"
+#include "maid/models.hpp"
+#include "maid/status.hpp"
+#include "maid/tools.hpp"
+#include "maid/tripwire.hpp"
+#include "maid/vendor.hpp"
 
 #include <regex.h>
 
@@ -21,7 +21,7 @@
 #include <fstream>
 #include <sstream>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -55,19 +55,19 @@ std::string command_name(const std::string& typed) {
     return "";
 }
 
-// Scaffolds a project: a MAIC.md placeholder and .maic/settings.lua. Returns what was created.
+// Scaffolds a project: a MAID.md placeholder and .maid/settings.lua. Returns what was created.
 std::string init_project(const fs::path& ws) {
     std::string made;
-    fs::create_directories(ws / ".maic");
-    if (!fs::exists(ws / ".maic" / "settings.lua") && !fs::exists(ws / ".maic" / "settings.json")) {
-        std::ofstream(ws / ".maic" / "settings.lua") << "-- Project settings for MAIC, committed with the code. Personal overrides go in settings.local.lua\n"
+    fs::create_directories(ws / ".maid");
+    if (!fs::exists(ws / ".maid" / "settings.lua") && !fs::exists(ws / ".maid" / "settings.json")) {
+        std::ofstream(ws / ".maid" / "settings.lua") << "-- Project settings for MAID, committed with the code. Personal overrides go in settings.local.lua\n"
                                                          "-- (add it to .gitignore). Keys: docs/settings.md\n"
                                                          "return {\n}\n";
-        made += "created .maic/settings.lua\n";
+        made += "created .maid/settings.lua\n";
     }
-    if (!fs::exists(ws / "MAIC.md")) {
-        std::ofstream(ws / "MAIC.md") << "# " << ws.filename().string() << "\n\nStanding instructions for agents working in this project.\n";
-        made += "created MAIC.md (transcripts for this project now go under sessions/projects/)\n";
+    if (!fs::exists(ws / "MAID.md")) {
+        std::ofstream(ws / "MAID.md") << "# " << ws.filename().string() << "\n\nStanding instructions for agents working in this project.\n";
+        made += "created MAID.md (transcripts for this project now go under sessions/projects/)\n";
     }
     return made;
 }
@@ -156,7 +156,7 @@ CommandOutput SessionCommands::answer(Session& s, const std::string& id, const s
 }
 
 void SessionCommands::apply_sampling(Session& s) {
-    maic::apply_sampling(s.agent, s.settings, live_sampling_);
+    maid::apply_sampling(s.agent, s.settings, live_sampling_);
 }
 
 // Changes the mode; auto under a dumb harness is confirmed once per session (or dumb_auto_ok in settings).
@@ -323,7 +323,7 @@ void SessionCommands::ask_imports(CommandOutput& out, std::vector<PendingImport>
     asked_imports_.insert(p.importer.string() + ">" + p.target.string());
     std::vector<std::string> lines = {"your instruction file imports a file from outside your trusted directories:"};
     for (const auto& l : import_prompt(p.importer, p.target, import_exception_status(p.importer, p.target))) lines.push_back("  " + l);
-    lines.push_back("[y] approve: remembered for every session (maic trust imports lists, --remove forgets)   [n] not now");
+    lines.push_back("[y] approve: remembered for every session (maid trust imports lists, --remove forgets)   [n] not now");
     ask(out, {" import from outside? ", lines, "yn"}, [this, p, pending, again](Session&, CommandOutput& out, const std::string& key) {
         if (key == "y") {
             try {
@@ -357,7 +357,7 @@ void SessionCommands::lua(Session& s, CommandOutput& out, const std::string& cod
     out.line(shown.empty() ? "(no output)" : shown, r.ok ? "info" : "error");
     out.ok = r.ok;
     if (!r.output.empty()) {
-        std::string context = "[The user ran Lua in MAIC: `" + code + "`]\n" + (r.output.size() > 32 * 1024 ? r.output.substr(0, 32 * 1024) + "\n[truncated]" : r.output);
+        std::string context = "[The user ran Lua in MAID: `" + code + "`]\n" + (r.output.size() > 32 * 1024 ? r.output.substr(0, 32 * 1024) + "\n[truncated]" : r.output);
         if (s.running) s.agent.post_message(context);
         else s.agent.add_context(context);
     }
@@ -421,7 +421,7 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
             if (arg.empty()) {
                 std::string list = "model: " + agent.model + "\npresets (:model NAME):" + preset_lines(s.settings);
                 list += "\nproviders:";
-                for (const auto& p : agent.providers) list += "\n  " + p.name + "/<model>  (" + p.kind + ", " + (p.kind == "cli" ? p.options.value("command", "") + ", MAIC's tools over MCP" : p.base_url) + (p.remote() ? ", REMOTE)" : ")");
+                for (const auto& p : agent.providers) list += "\n  " + p.name + "/<model>  (" + p.kind + ", " + (p.kind == "cli" ? p.options.value("command", "") + ", MAID's tools over MCP" : p.base_url) + (p.remote() ? ", REMOTE)" : ")");
                 out.info(list);
             } else if (idle()) {
                 set_model(s, out, arg);
@@ -533,8 +533,8 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
                 if (desc.size() > 90) desc = desc.substr(0, 87) + "...";
                 text += "\n  " + t["function"].value("name", "") + "  " + desc;
             }
-            text += "\nhelpers: maic-workflow-edit, maic-storyboard, maic-danbooru-tags, maic-panel-check (run_shell; allow-listed)";
-            if (agent.tools().empty() && agent.script_tools().empty()) text += "\nno user-defined tools. Put a <name>.lua or a <name>/tool.json in .maic/tools/ or " + global_tools_dir().string() + " (see :h tools)";
+            text += "\nhelpers: maid-workflow-edit, maid-storyboard, maid-danbooru-tags, maid-panel-check (run_shell; allow-listed)";
+            if (agent.tools().empty() && agent.script_tools().empty()) text += "\nno user-defined tools. Put a <name>.lua or a <name>/tool.json in .maid/tools/ or " + global_tools_dir().string() + " (see :h tools)";
             for (const auto& t : agent.tools()) text += "\n  " + t.name + "  (lua)  " + t.file.string() + "\n    " + t.description;
             auto globs = [](const std::vector<std::string>& g) {
                 std::string x;
@@ -568,9 +568,9 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
         } else if (cmd == "init") {
             fs::path ws = agent.harness().workspace();
             std::string made = init_project(ws);
-            out.info(made.empty() ? "already initialised: MAIC.md and .maic/settings.lua exist" : made);
+            out.info(made.empty() ? "already initialised: MAID.md and .maid/settings.lua exist" : made);
             if (!trusted(ws)) {
-                out.info(ws.string() + " is not trusted, so its MAIC.md and .maic/settings.lua are not read until it is: "
+                out.info(ws.string() + " is not trusted, so its MAID.md and .maid/settings.lua are not read until it is: "
                          ":trust (fully: its Lua runs as you) or :trust --lua sandbox (its Lua in a child process that cannot reach the system)");
             }
             // The session joins the project's transcripts when it worked here throughout (docs/sessions.md, Homes).
@@ -585,7 +585,7 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
                     set_tripwire_scope(s.settings.tripwire, to.string() + ".tripped");
                     std::error_code ec;
                     if (fs::exists(old_lock, ec)) fs::rename(old_lock, to.string() + ".tripped", ec);  // a trip while it moved
-                    out.info("this session moved to " + there + why + "; `maic sessions rehome " + id + " " + here + "` moves it back");
+                    out.info("this session moved to " + there + why + "; `maid sessions rehome " + id + " " + here + "` moves it back");
                 } catch (const std::exception& e) {
                     out.error("this session stays in " + here + "/: " + e.what());
                 }
@@ -597,19 +597,19 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
                     {" move this session? ",
                      {"this session read " + std::to_string(m.outside_reads) + " and wrote " + std::to_string(m.outside_writes) +
                           " files outside the project; move it into the project's home anyway?",
-                      "[y] move it to " + there + "   [n] leave it in " + here + "/   (later: maic sessions rehome " + id + " project)"},
+                      "[y] move it to " + there + "   [n] leave it in " + here + "/   (later: maid sessions rehome " + id + " project)"},
                      "yn"},
                     [move, id, here](Session& s, CommandOutput& out, const std::string& key) {
                         if (key == "y") move(s, out, "");
-                        else out.info("this session stays in " + here + "/; `maic sessions rehome " + id + " project` moves it later");
+                        else out.info("this session stays in " + here + "/; `maid sessions rehome " + id + " project` moves it later");
                     });
             } else if (!s.settings.record) {
                 out.info("this session stays out of the project's home: " + m.reason);
             }
-            if (!fs::exists(ws / "MAIC.md") || fs::file_size(ws / "MAIC.md") < 200) {
-                out.send = "Look over this project (list the top level, read the README and build files) and write a MAIC.md at the workspace root: "
+            if (!fs::exists(ws / "MAID.md") || fs::file_size(ws / "MAID.md") < 200) {
+                out.send = "Look over this project (list the top level, read the README and build files) and write a MAID.md at the workspace root: "
                            "what the project is, how it is built and tested, the conventions to follow, and anything an agent should know before editing. "
-                           "Keep it under 60 lines. Use write_file for MAIC.md only.";
+                           "Keep it under 60 lines. Use write_file for MAID.md only.";
             }
         } else if (cmd == "cd") {
             fs::path ws = agent.harness().workspace();
@@ -886,15 +886,15 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
             } else {
                 std::string text = "instruction files in effect (re-read every turn):";
                 for (const auto& f : agent.instructions()) text += "\n  " + f.path.string() + "  (" + std::to_string(f.text.size()) + " bytes" + (f.imported_by.empty() ? "" : ", imported by " + f.imported_by.string()) + ")";
-                if (agent.instructions().empty()) text += "\n  none. Create " + global_instructions_path().string() + " or a MAIC.md / AGENTS.md / CLAUDE.md in the workspace.";
+                if (agent.instructions().empty()) text += "\n  none. Create " + global_instructions_path().string() + " or a MAID.md / AGENTS.md / CLAUDE.md in the workspace.";
                 out.info(text);
             }
         } else if (cmd == "session") {
             out.info("this session: " + log_path(s) + (s.settings.record ? "\nhome: " + s.log.path().parent_path().lexically_relative(sessions_dir()).string() +
-                                                          "  (maic sessions rehome " + s.log.path().stem().string() + " project|general|NAME moves it)"
+                                                          "  (maid sessions rehome " + s.log.path().stem().string() + " project|general|NAME moves it)"
                                                     : "\nnot kept: it lives in the runtime directory and is gone at logout") +
                      "\n"
-                     "all sessions: " + sessions_dir().string() + "\n`maic sessions` lists them, `maic artifacts` cleans");
+                     "all sessions: " + sessions_dir().string() + "\n`maid sessions` lists them, `maid artifacts` cleans");
         } else if (cmd == "lua") {
             lua(s, out, arg, typed == "luafile");
         }
@@ -904,4 +904,4 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
     return out;
 }
 
-}  // namespace maic
+}  // namespace maid

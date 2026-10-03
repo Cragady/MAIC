@@ -1,8 +1,8 @@
-#include "maic/nvim_setup.hpp"
+#include "maid/nvim_setup.hpp"
 
-#include "maic/lazy_lock.hpp"
-#include "maic/paths.hpp"
-#include "maic/tools.hpp"
+#include "maid/lazy_lock.hpp"
+#include "maid/paths.hpp"
+#include "maid/tools.hpp"
 #include "nvim_run.hpp"
 
 #include <nlohmann/json.hpp>
@@ -17,15 +17,15 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
 
 namespace {
 
-const char* kFileName = "maic-llama-vim.lua";
-const char* kMarker = "-- Written by MAIC (maic nvim setup llama-vim)";
+const char* kFileName = "maid-llama-vim.lua";
+const char* kMarker = "-- Written by MAID (maid nvim setup llama-vim)";
 
 // Asked of a headless nvim after the user's init has run: where its config and data are, whether lazy.nvim
 // loads and was set up, the modules its spec imports (resolved to <config>/lua/...), and whether llama.vim is in
@@ -69,7 +69,7 @@ local ok, err = pcall(function()
   end
 end)
 if not ok then r = { error = tostring(err) } end
-local f = io.open(os.getenv("MAIC_LAZY_OUT"), "w")
+local f = io.open(os.getenv("MAID_LAZY_OUT"), "w")
 f:write(vim.json.encode(r))
 f:close()
 vim.cmd("qa!")
@@ -99,7 +99,7 @@ std::string read_all(const fs::path& p) {
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
-bool written_by_maic(const fs::path& p) {
+bool written_by_maid(const fs::path& p) {
     return read_all(p).rfind(kMarker, 0) == 0;
 }
 
@@ -156,16 +156,16 @@ LlamaVimPlan plan_remove() {
     for (fs::recursive_directory_iterator it(lua, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
         if (it->path().filename() == kFileName) found.push_back(it->path());
     }
-    if (found.empty()) return noop("There is no " + std::string(kFileName) + " under " + tilde(lua) + ", so there is nothing of MAIC's to remove.", false);
+    if (found.empty()) return noop("There is no " + std::string(kFileName) + " under " + tilde(lua) + ", so there is nothing of MAID's to remove.", false);
     if (found.size() > 1) {
         std::string list;
         for (const auto& f : found) list += "\n  " + tilde(f);
-        return {LlamaVimPlan::Kind::Refuse, "There is more than one " + std::string(kFileName) + ":" + list + "\nMAIC writes one; remove the ones you do not want by hand. Nothing was removed.", {}, {}};
+        return {LlamaVimPlan::Kind::Refuse, "There is more than one " + std::string(kFileName) + ":" + list + "\nMAID writes one; remove the ones you do not want by hand. Nothing was removed.", {}, {}};
     }
-    if (!written_by_maic(found[0])) {
-        return {LlamaVimPlan::Kind::Refuse, tilde(found[0]) + " does not start with MAIC's header (" + kMarker + "), so MAIC did not write it and will not remove it. Nothing was removed.", {}, {}};
+    if (!written_by_maid(found[0])) {
+        return {LlamaVimPlan::Kind::Refuse, tilde(found[0]) + " does not start with MAID's header (" + kMarker + "), so MAID did not write it and will not remove it. Nothing was removed.", {}, {}};
     }
-    return {LlamaVimPlan::Kind::Remove, "Remove " + tilde(found[0]) + ", the llama.vim spec MAIC wrote. No other file is touched.", found[0], {}};
+    return {LlamaVimPlan::Kind::Remove, "Remove " + tilde(found[0]) + ", the llama.vim spec MAID wrote. No other file is touched.", found[0], {}};
 }
 
 }  // namespace
@@ -185,7 +185,7 @@ std::string llama_vim_spec() {
            "    init = function()\n"
            "        vim.g.llama_config = {\n"
            "            endpoint_fim = 'http://127.0.0.1:8084/infill',\n"
-           "            model_fim = 'current',  -- the coder `maic models install ID --link` chose\n"
+           "            model_fim = 'current',  -- the coder `maid models install ID --link` chose\n"
            "            keymap_fim_trigger = '<M-f>',      -- off the leader in insert mode (below)\n"
            "            keymap_fim_accept_word = '<M-]>',\n"
            "            keymap_inst_accept = '',           -- completion only: leave normal mode alone (below)\n"
@@ -200,9 +200,9 @@ std::string llama_vim_file(const std::string& date) {
     // "(below)" points into the docs page, which the header names.
     for (size_t at; (at = spec.find(" (below)")) != std::string::npos;) spec.erase(at, 8);
     return std::string(kMarker) + " on " + date + ".\n"
-           "-- Undo with: maic nvim setup llama-vim --remove\n"
+           "-- Undo with: maid nvim setup llama-vim --remove\n"
            "-- Why these settings: " + (root_dir() / "docs" / "models.md").string() + "#code-completion\n"
-           "-- MAIC replaces this file when the setup runs again; keep changes of your own in another spec file.\n"
+           "-- MAID replaces this file when the setup runs again; keep changes of your own in another spec file.\n"
            "return " + spec;
 }
 
@@ -212,22 +212,22 @@ LlamaVimPlan plan_llama_vim(bool remove, const std::string& config, const std::s
     // Without lazy.nvim on disk the user's init is not run at all: a bootstrap snippet in it would clone lazy.nvim.
     bool installed = fs::is_directory(lazy_dir());
     if (!installed && config.empty()) {
-        return noop("lazy.nvim is not installed: there is no " + tilde(lazy_dir()) + ". MAIC adds llama.vim only to a lazy.nvim setup, and no other plugin manager is touched.");
+        return noop("lazy.nvim is not installed: there is no " + tilde(lazy_dir()) + ". MAID adds llama.vim only to a lazy.nvim setup, and no other plugin manager is touched.");
     }
 
-    std::string tmpl = (fs::temp_directory_path() / "maic-lazy-XXXXXX").string();
+    std::string tmpl = (fs::temp_directory_path() / "maid-lazy-XXXXXX").string();
     if (!mkdtemp(tmpl.data())) return {LlamaVimPlan::Kind::Error, "can't create a temporary directory for the nvim run", {}, {}};
     fs::path dir = tmpl, script = dir / "query.lua", out = dir / "answer.json";
     std::ofstream(script) << kQuery;
     std::vector<std::string> args = {nvim, "--headless", "-i", "NONE", "-n"};
     if (!config.empty()) args.insert(args.end(), {"-u", config});
-    args.insert(args.end(), {"-c", "lua dofile(os.getenv('MAIC_LAZY_SCRIPT'))"});
+    args.insert(args.end(), {"-c", "lua dofile(os.getenv('MAID_LAZY_SCRIPT'))"});
     json j;
     std::string failed;
     try {
-        // GIT_ALLOW_PROTOCOL=file: a bootstrap or lazy.nvim's install of a missing plugin cannot clone while MAIC looks.
-        NvimRun run = run_nvim_child(args, {"MAIC_LAZY_", "NVIM", "NVIM_LISTEN_ADDRESS"},
-                                     {"MAIC_LAZY_SCRIPT=" + script.string(), "MAIC_LAZY_OUT=" + out.string(), "GIT_ALLOW_PROTOCOL=file"}, std::chrono::seconds(60));
+        // GIT_ALLOW_PROTOCOL=file: a bootstrap or lazy.nvim's install of a missing plugin cannot clone while MAID looks.
+        NvimRun run = run_nvim_child(args, {"MAID_LAZY_", "NVIM", "NVIM_LISTEN_ADDRESS"},
+                                     {"MAID_LAZY_SCRIPT=" + script.string(), "MAID_LAZY_OUT=" + out.string(), "GIT_ALLOW_PROTOCOL=file"}, std::chrono::seconds(60));
         std::ifstream in(out);
         if (run.timed_out) failed = nvim + " did not finish within 60 s and was stopped";
         else if (!in) failed = nvim + " exited without an answer (status " + std::to_string(WIFEXITED(run.status) ? WEXITSTATUS(run.status) : 128 + WTERMSIG(run.status)) + ")";
@@ -242,10 +242,10 @@ LlamaVimPlan plan_llama_vim(bool remove, const std::string& config, const std::s
 
     fs::path nvim_config = j.value("config", "");
     if (!installed && !j.value("lazy", false)) {
-        return noop("lazy.nvim is not installed: there is no " + tilde(fs::path(j.value("data", "")) / "lazy" / "lazy.nvim") + " and require(\"lazy\") fails. MAIC adds llama.vim only to a lazy.nvim setup, and no other plugin manager is touched.");
+        return noop("lazy.nvim is not installed: there is no " + tilde(fs::path(j.value("data", "")) / "lazy" / "lazy.nvim") + " and require(\"lazy\") fails. MAID adds llama.vim only to a lazy.nvim setup, and no other plugin manager is touched.");
     }
     if (!j.value("setup", false)) {
-        return noop("lazy.nvim is installed, but your nvim config does not call require(\"lazy\").setup(...), so lazy.nvim would not load a spec MAIC writes.");
+        return noop("lazy.nvim is installed, but your nvim config does not call require(\"lazy\").setup(...), so lazy.nvim would not load a spec MAID writes.");
     }
 
     fs::path import_dir;
@@ -261,16 +261,16 @@ LlamaVimPlan plan_llama_vim(bool remove, const std::string& config, const std::s
         fs::path suggested = nvim_config / "lua" / "plugins";
         return {LlamaVimPlan::Kind::Noop,
                 "Your lazy.nvim spec imports no directory of your config" + (seen.empty() ? std::string() : " (it imports " + seen + ", none of them under " + tilde(nvim_config / "lua") + ")") +
-                    ", so MAIC has nowhere to put a file of its own, and it does not edit your init files. Nothing was written.\n\n"
+                    ", so MAID has nowhere to put a file of its own, and it does not edit your init files. Nothing was written.\n\n"
                     "To set it up by hand: add { import = \"plugins\" } to the spec you give require(\"lazy\").setup(...), then save this as " + tilde(suggested / "llama-vim.lua") + ":\n\n" +
                     indent("return " + llama_vim_spec()),
                 {}, {}};
     }
 
     fs::path file = import_dir / kFileName;
-    bool exists = fs::exists(file, ec), ours = exists && written_by_maic(file);
+    bool exists = fs::exists(file, ec), ours = exists && written_by_maid(file);
     if (exists && !ours) {
-        return {LlamaVimPlan::Kind::Refuse, tilde(file) + " exists and MAIC did not write it (it does not start with " + kMarker + "). MAIC leaves it alone; nothing was written. Rename it to let MAIC write its own, or merge the spec into it by hand." + paste_by_hand(), {}, {}};
+        return {LlamaVimPlan::Kind::Refuse, tilde(file) + " exists and MAID did not write it (it does not start with " + kMarker + "). MAID leaves it alone; nothing was written. Rename it to let MAID write its own, or merge the spec into it by hand." + paste_by_hand(), {}, {}};
     }
     // Only lazy.nvim's resolved spec decides: a file that merely names llama.vim (a comment, a note) is a warning.
     std::vector<std::string> mentions = files_naming_llama(nvim_config, file);
@@ -284,10 +284,10 @@ LlamaVimPlan plan_llama_vim(bool remove, const std::string& config, const std::s
             if (where.empty()) where.insert(mentions.begin(), mentions.end());  // an untraced spec: the files naming it are where to look
             std::string from;
             for (const auto& w : where) from += "\n  " + tilde(w);
-            if (from.empty()) from = "\n  a spec MAIC cannot trace to a file in " + tilde(nvim_config) + " (a plugin's or a distribution's own spec, perhaps)";
+            if (from.empty()) from = "\n  a spec MAID cannot trace to a file in " + tilde(nvim_config) + " (a plugin's or a distribution's own spec, perhaps)";
             return {LlamaVimPlan::Kind::Refuse,
                     "llama.vim (\"" + l.value("name", "llama.vim") + "\") is already in your lazy.nvim spec, from:" + from +
-                        "\nMAIC writes nothing, so lazy.nvim does not get a second spec to merge with yours. To use MAIC's settings, merge them into that spec by hand." + paste_by_hand(),
+                        "\nMAID writes nothing, so lazy.nvim does not get a second spec to merge with yours. To use MAID's settings, merge them into that spec by hand." + paste_by_hand(),
                     {}, {}};
         }
     }
@@ -303,17 +303,17 @@ LlamaVimPlan plan_llama_vim(bool remove, const std::string& config, const std::s
     std::string before = ours ? read_all(file) : "";
     p.content = llama_vim_file(today());
     if (ours && without_first_line(before) == without_first_line(p.content)) {
-        return {LlamaVimPlan::Kind::UpToDate, warnings + tilde(file) + " is MAIC's and already holds this spec; nothing to write.", file, {}};
+        return {LlamaVimPlan::Kind::UpToDate, warnings + tilde(file) + " is MAID's and already holds this spec; nothing to write.", file, {}};
     }
     std::string relies = "It relies on the import { import = \"" + module + "\" } in your lazy.nvim spec, which loads every file in " + tilde(import_dir) + ".";
-    if (ours) p.text = warnings + "Update " + tilde(file) + ", which MAIC wrote:\n\n" + indent(change_lines(before, p.content, 60)) + "\n" + relies + " No other file is touched.";
+    if (ours) p.text = warnings + "Update " + tilde(file) + ", which MAID wrote:\n\n" + indent(change_lines(before, p.content, 60)) + "\n" + relies + " No other file is touched.";
     else p.text = warnings + "Write " + tilde(file) + " (a new file):\n\n" + indent(p.content) + "\n" + relies + " No other file is touched.";
     return p;
 }
 
 void apply_llama_vim(const LlamaVimPlan& plan) {
     if (plan.kind == LlamaVimPlan::Kind::Remove) {
-        if (!written_by_maic(plan.file)) throw std::runtime_error(tilde(plan.file) + " no longer starts with MAIC's header; not removed");
+        if (!written_by_maid(plan.file)) throw std::runtime_error(tilde(plan.file) + " no longer starts with MAID's header; not removed");
         fs::remove(plan.file);
         return;
     }
@@ -324,4 +324,4 @@ void apply_llama_vim(const LlamaVimPlan& plan) {
     if (!out.flush()) throw std::runtime_error("can't write " + tilde(plan.file));
 }
 
-}  // namespace maic
+}  // namespace maid

@@ -5,7 +5,7 @@ import json
 import os
 import sys
 
-from cai.grammar import maic
+from cai.grammar import maid
 from cai.read import reader
 
 MAN_HELP = """cai read -- project a transcript to what was said
@@ -118,7 +118,7 @@ def main(argv=None):
     except OSError as e:
         print("cai read: %s" % e, file=sys.stderr)
         return 2
-    data = maic.with_parents(args.transcript, data)
+    data = maid.with_parents(args.transcript, data)
 
     _sel = [n for n, v in (("--since-compaction", args.since_compaction),
                            ("--before-compaction", args.before_compaction),

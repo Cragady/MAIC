@@ -1,25 +1,25 @@
 {
   "name": "llamacpp",
-  "description": "llama.cpp server in router mode, local only, vendored: every GGUF under ${MAIC_MODELS}/llamacpp is a model, loaded on demand, one resident at a time (maic vendor add llamacpp; docs/llamacpp.md)",
+  "description": "llama.cpp server in router mode, local only, vendored: every GGUF under ${MAID_MODELS}/llamacpp is a model, loaded on demand, one resident at a time (maid vendor add llamacpp; docs/llamacpp.md)",
   "command": [
-    "${MAIC_VENDOR}/llamacpp/bin/llama-server",
+    "${MAID_VENDOR}/llamacpp/bin/llama-server",
     "--host",
     "127.0.0.1",
     "--port",
     "8081",
     "--models-dir",
-    "${MAIC_MODELS}/llamacpp",
+    "${MAID_MODELS}/llamacpp",
     "--models-max",
     "1",
     "--ctx-size",
-    "${MAIC_CONTEXT}",
+    "${MAID_CONTEXT}",
     "--jinja",
     "-ngl",
     "99"
   ],
   "port": 8081,
   "requires": [
-    "${MAIC_MODELS}/llamacpp"
+    "${MAID_MODELS}/llamacpp"
   ],
   "ready_timeout": 120,
   "ready_pattern": "listening on",

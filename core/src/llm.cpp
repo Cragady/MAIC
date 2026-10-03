@@ -1,7 +1,7 @@
 #include "llm_http.hpp"
 
-#include "maic/http.hpp"
-#include "maic/paths.hpp"
+#include "maid/http.hpp"
+#include "maid/paths.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -18,7 +18,7 @@
 #include <set>
 #include <thread>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -173,7 +173,7 @@ std::vector<Provider> default_providers() {
         // reasoning_content goes back with every later request that carries tools. Pictures only to deepseek-flash. An
         // empty `stop` reply is sent again. Metered: billed per token to the key's account. GET /models is read at first
         // use for each model's window, output cap and thinking levels. Its 429 counts open requests per account (2,500
-        // Flash, 500 V4 Pro): MAIC keeps to a third of each (Micaiah, 2026-10-02).
+        // Flash, 500 V4 Pro): MAID keeps to a third of each (Micaiah, 2026-10-02).
         {"deepseek", "openai", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "",
          {{"context_window", 1000000},
           {"read_models", true},
@@ -187,7 +187,7 @@ std::vector<Provider> default_providers() {
           {"replay_reasoning", true},
           {"vision", {"deepseek-flash"}}}},
         {"openrouter", "openai", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "", nlohmann::json::object()},
-        // Claude Code run headless on the user's own login and plan: text only, or the agent on MAIC's tools (docs/settings.md).
+        // Claude Code run headless on the user's own login and plan: text only, or the agent on MAID's tools (docs/settings.md).
         // Metered as the API is (Micaiah, 2026-10-02): it spends the plan's usage.
         {"claude-cli", "cli", "", "", "", {{"command", "claude"}, {"args", nlohmann::json::array()}, {"metered", true}}},
     };
@@ -426,9 +426,9 @@ void enter(Account& a, const Provider& provider, const ChatOptions& options, int
         auto now = Clock::now();
         if (a.hold_until > now) {
             if (a.breaker) {
-                throw ApiError(429, provider.name + ": MAIC is sending nothing to it for " + in_seconds(a.hold_until - now) + " more, after " + std::to_string(kBreakerAfter) +
+                throw ApiError(429, provider.name + ": MAID is sending nothing to it for " + in_seconds(a.hold_until - now) + " more, after " + std::to_string(kBreakerAfter) +
                                         " rate limits in a short time (the circuit breaker); this request was not sent",
-                               0, "maic_breaker");
+                               0, "maid_breaker");
             }
             if (!told_hold && a.hold_until - now >= std::chrono::seconds(1)) {
                 told_hold = true;
@@ -444,7 +444,7 @@ void enter(Account& a, const Provider& provider, const ChatOptions& options, int
         if (n >= cap) {
             if (!told_queue) {
                 told_queue = true;
-                tell(provider.name + "/" + options.model + ": all " + std::to_string(cap) + " concurrent requests MAIC allows are open (max_concurrent); this one waits for a slot");
+                tell(provider.name + "/" + options.model + ": all " + std::to_string(cap) + " concurrent requests MAID allows are open (max_concurrent); this one waits for a slot");
                 continue;
             }
             a.freed.wait_for(lock, milliseconds(50));
@@ -453,7 +453,7 @@ void enter(Account& a, const Provider& provider, const ChatOptions& options, int
         ++n;
         if (2 * n > cap && a.past_half.insert(options.model).second) {
             tell(provider.name + "/" + options.model + ": " + std::to_string(n) + " of the " + std::to_string(cap) +
-                 " concurrent requests MAIC allows are open (max_concurrent); past that, requests wait");
+                 " concurrent requests MAID allows are open (max_concurrent); past that, requests wait");
         }
         return;
     }
@@ -515,7 +515,7 @@ Message chat(const Provider& provider, const ChatOptions& options, const std::ve
             bool limit = e.status == 429 && !is_usage_limit(e);
             wait_ms = std::max(wait_ms, e.retry_after_ms);
             if (limit && rate_limited(account, wait_ms, window_ms)) {
-                throw ApiError(429, std::string(e.what()) + "; that is " + std::to_string(kBreakerAfter) + " rate limits in a short time, so MAIC sends nothing to " + provider.name +
+                throw ApiError(429, std::string(e.what()) + "; that is " + std::to_string(kBreakerAfter) + " rate limits in a short time, so MAID sends nothing to " + provider.name +
                                         " for " + in_seconds(milliseconds(window_ms)) + " (the circuit breaker)",
                                e.retry_after_ms, e.type);
             }
@@ -665,4 +665,4 @@ HttpResult stream_post(const std::string& base_url, const std::string& path,
 
 }  // namespace detail
 
-}  // namespace maic
+}  // namespace maid

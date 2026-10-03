@@ -1,0 +1,10 @@
+# maid-leak-audit as a systemd user service, run by maid-leak-audit.timer (docs/audit-trail.md). Written by
+# `maid audit-trail schedule install` from contrib/systemd/; `maid audit-trail schedule remove` takes it away.
+[Unit]
+Description=MAID leak audit over the audit trail and session transcripts (local judge only)
+
+[Service]
+Type=oneshot
+Environment=MAID_BIN=@MAID@
+ExecStart=@EXEC@
+Nice=10

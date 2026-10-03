@@ -1,7 +1,7 @@
-#include "maic/lazy_lock.hpp"
+#include "maid/lazy_lock.hpp"
 
-#include "maic/paths.hpp"
-#include "maic/settings.hpp"
+#include "maid/paths.hpp"
+#include "maid/settings.hpp"
 
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
@@ -18,7 +18,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -141,7 +141,7 @@ int diff(const LazyLockState& s, std::string& out) {
               ", so there are no plugins to compare.\n";
         if (s.kind == LazyLockState::Kind::InSync) out += "the hashes match: in sync\n";
         else out += "the hashes differ: recorded " + s.recorded + ", now " + s.hash + "\n";
-        out += "maic lazy-lock record keeps a snapshot here from now on\n";
+        out += "maid lazy-lock record keeps a snapshot here from now on\n";
         return lazy_lock_exit_code(s);
     }
     if (s.kind == LazyLockState::Kind::InSync) {
@@ -168,7 +168,7 @@ int diff(const LazyLockState& s, std::string& out) {
         out += line + "\n";
     }
     if (changes.empty()) out += "  no plugin changed (only the file's formatting)\n";
-    out += counts(s) + ". maic lazy-lock record once you are happy with it\n";
+    out += counts(s) + ". maid lazy-lock record once you are happy with it\n";
     return 1;
 }
 
@@ -217,7 +217,7 @@ LazyLockState lazy_lock_state(const fs::path& lock) {
     }
     if (!hash_ok) {
         s.kind = LazyLockState::Kind::Error;
-        s.error = tilde(hash_file) + " does not start with a SHA-256 (maic lazy-lock record writes it again)";
+        s.error = tilde(hash_file) + " does not start with a SHA-256 (maid lazy-lock record writes it again)";
         return s;
     }
     if (s.hash == s.recorded) {
@@ -241,22 +241,22 @@ std::string lazy_lock_summary(const LazyLockState& s) {
     switch (s.kind) {
         case LazyLockState::Kind::Quiet: return "";
         case LazyLockState::Kind::Missing: return "no lazy-lock.json at " + tilde(s.lock) + " (a hash was recorded " + s.recorded_on + ")";
-        case LazyLockState::Kind::NotRecorded: return "not recorded yet (maic lazy-lock record)";
+        case LazyLockState::Kind::NotRecorded: return "not recorded yet (maid lazy-lock record)";
         case LazyLockState::Kind::InSync: return "in sync";
         case LazyLockState::Kind::Changed:
-            return "changed since " + s.recorded_on + (s.snapshot ? ": " + counts(s) : " (no snapshot here to count plugins; maic lazy-lock diff)");
+            return "changed since " + s.recorded_on + (s.snapshot ? ": " + counts(s) : " (no snapshot here to count plugins; maid lazy-lock diff)");
         case LazyLockState::Kind::Error: return s.error;
     }
     return "";
 }
 
 std::string lazy_lock_notice(const LazyLockState& s) {
-    const std::string tail = ". maic lazy-lock diff / record";
+    const std::string tail = ". maid lazy-lock diff / record";
     switch (s.kind) {
         case LazyLockState::Kind::Quiet:
         case LazyLockState::Kind::InSync: return "";
-        case LazyLockState::Kind::Missing: return "nvim's lazy-lock.json is gone from " + tilde(s.lock) + ", but a hash of it was recorded. maic lazy-lock";
-        case LazyLockState::Kind::NotRecorded: return "nvim's lazy-lock.json is not recorded yet: maic lazy-lock record";
+        case LazyLockState::Kind::Missing: return "nvim's lazy-lock.json is gone from " + tilde(s.lock) + ", but a hash of it was recorded. maid lazy-lock";
+        case LazyLockState::Kind::NotRecorded: return "nvim's lazy-lock.json is not recorded yet: maid lazy-lock record";
         case LazyLockState::Kind::Error: return "nvim's lazy-lock.json: " + s.error;
         case LazyLockState::Kind::Changed: break;
     }
@@ -288,12 +288,12 @@ int lazy_lock_command(const std::string& sub, const fs::path& lock, std::string&
         LazyLockState s = lazy_lock_state(lock);
         if (sub == "diff") return diff(s, out);
         if (!sub.empty()) {
-            out = "usage: maic lazy-lock [record|diff]\n";
+            out = "usage: maid lazy-lock [record|diff]\n";
             return 2;
         }
         std::string line = lazy_lock_summary(s);
         out = (line.empty() ? "no lazy-lock.json at " + tilde(lock) : line) + "\n";
-        if (s.kind == LazyLockState::Kind::Changed) out += "maic lazy-lock diff / record\n";
+        if (s.kind == LazyLockState::Kind::Changed) out += "maid lazy-lock diff / record\n";
         return lazy_lock_exit_code(s);
     } catch (const std::exception& e) {
         out = std::string("lazy-lock: ") + e.what() + "\n";
@@ -317,4 +317,4 @@ LazyLockState LazyLockWatch::check() {
     return state_;
 }
 
-}  // namespace maic
+}  // namespace maid

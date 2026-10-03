@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
-# Builds the vendored whisper.cpp OUT OF TREE into $MAIC_VENDOR/whisper.cpp-build/ (Release; CUDA when nvcc is
-# around; WHISPER_CURL off, so nothing in it can fetch a model) and links its bin/ in as $MAIC_VENDOR/whisper/bin.
-# The model whisper-server loads is the symlink ${MAIC_MODELS}/whisper/current.bin, which
-# `maic vendor use whisper FILE` points at a ggml .bin; services/whisper.json runs the server on 127.0.0.1:8083
+# Builds the vendored whisper.cpp OUT OF TREE into $MAID_VENDOR/whisper.cpp-build/ (Release; CUDA when nvcc is
+# around; WHISPER_CURL off, so nothing in it can fetch a model) and links its bin/ in as $MAID_VENDOR/whisper/bin.
+# The model whisper-server loads is the symlink ${MAID_MODELS}/whisper/current.bin, which
+# `maid vendor use whisper FILE` points at a ggml .bin; services/whisper.json runs the server on 127.0.0.1:8083
 # against it. diction is its only client (docs/diction.md). Idempotent: run again to rebuild.
 #
-#   vendor/whispercpp.sh install|update|wire|check   MAIC_VENDOR=<state>/vendor  MAIC_STATE=<state>
+#   vendor/whispercpp.sh install|update|wire|check   MAID_VENDOR=<state>/vendor  MAID_STATE=<state>
 #   install/update configure and build (no network: the submodule is already fetched); wire only links bin/.
 #
-# The checkout is $MAIC_VENDOR/whisper.cpp (a symlink to the submodule, or to an adopted checkout).
+# The checkout is $MAID_VENDOR/whisper.cpp (a symlink to the submodule, or to an adopted checkout).
 set -euo pipefail
 cmd="${1:-install}"
-: "${MAIC_VENDOR:?set by maic}"
-: "${MAIC_STATE:?set by maic}"
-src="$MAIC_VENDOR/whisper.cpp"
-build="$MAIC_VENDOR/whisper.cpp-build"
-home="$MAIC_VENDOR/whisper"
-models="${MAIC_MODELS_DIR:-$MAIC_STATE/models}/whisper"
-[ -f "$src/CMakeLists.txt" ] || { echo "no whisper.cpp at $src (maic vendor add whisper, or maic vendor adopt whisper PATH)" >&2; exit 1; }
+: "${MAID_VENDOR:?set by maid}"
+: "${MAID_STATE:?set by maid}"
+src="$MAID_VENDOR/whisper.cpp"
+build="$MAID_VENDOR/whisper.cpp-build"
+home="$MAID_VENDOR/whisper"
+models="${MAID_MODELS_DIR:-$MAID_STATE/models}/whisper"
+[ -f "$src/CMakeLists.txt" ] || { echo "no whisper.cpp at $src (maid vendor add whisper, or maid vendor adopt whisper PATH)" >&2; exit 1; }
 
 wire() {
     mkdir -p "$home"
     if [ ! -x "$build/bin/whisper-server" ]; then
-        echo "not built yet: maic vendor add whisper"
+        echo "not built yet: maid vendor add whisper"
         return 0
     fi
     ln -sfn "$build/bin" "$home/bin"
@@ -30,7 +30,7 @@ wire() {
     if [ -e "$models/current.bin" ]; then
         echo "model: $(readlink -f "$models/current.bin")"
     else
-        echo "no model yet: maic vendor use whisper /path/to/ggml-model.bin (docs/diction.md names one)"
+        echo "no model yet: maid vendor use whisper /path/to/ggml-model.bin (docs/diction.md names one)"
     fi
 }
 

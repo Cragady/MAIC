@@ -1,13 +1,13 @@
 #pragma once
 
-#include "maic/settings.hpp"
+#include "maid/settings.hpp"
 
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
 
-namespace maic::server {
+namespace maid::server {
 
 struct ServerOptions {
     std::string listen = "127.0.0.1:7373";  // ADDR:PORT; port 0 picks a free one (tests)
@@ -19,7 +19,7 @@ struct ServerOptions {
     std::filesystem::path vue;        // vendor/vue, served at /a/_vendor/vue/
 };
 
-// The HTTP face of MAIC: a client of the core like the CLI, never a bypass. Every tool call it causes is
+// The HTTP face of MAID: a client of the core like the CLI, never a bypass. Every tool call it causes is
 // Origin::Remote, so the harness asks whatever the mode. It cannot reset the tripwire: there is no route for it.
 class Server {
 public:
@@ -43,17 +43,17 @@ private:
     std::string fingerprint_;
 };
 
-// `maic server start|token|status ...`, also main() of maic-server. Returns the exit code.
+// `maid server start|token|status ...`, also main() of maid-server. Returns the exit code.
 int run_server_command(const std::vector<std::string>& args);
 
-// `maic artifact list|add|open|allow-insecure|watch|protocol ...` (docs/artifacts.md). Returns the exit code.
+// `maid artifact list|add|open|allow-insecure|watch|protocol ...` (docs/artifacts.md). Returns the exit code.
 int run_artifact_command(const std::vector<std::string>& args, bool text_base = false);
 
-// The usage block `maic server` or `maic artifact` prints, for `maic help`; empty for any other command.
+// The usage block `maid server` or `maid artifact` prints, for `maid help`; empty for any other command.
 std::string usage_text(const std::string& command);
 
-// `maic channel [--artifact ID]... [--doc NAME]`: an MCP server on stdio for Claude Code's channels, one notification
+// `maid channel [--artifact ID]... [--doc NAME]`: an MCP server on stdio for Claude Code's channels, one notification
 // per artifact event (docs/agent-kit.md). Returns the exit code.
 int run_channel_command(const std::vector<std::string>& args);
 
-}  // namespace maic::server
+}  // namespace maid::server

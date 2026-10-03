@@ -1,5 +1,5 @@
 /* ComfyMaid Review, local version: Vue 3 (global build, classic script) over file://.
-   Data comes from data.js, replies from replies.js. Saved answers go through one adapter: MAIC over http (data/answers.json, ETag / If-Match),
+   Data comes from data.js, replies from replies.js. Saved answers go through one adapter: MAID over http (data/answers.json, ETag / If-Match),
    a linked folder beside the page (answers.json and answers.js, Chromium over file://), or a download; localStorage is the draft in all three. */
 (function () {
 "use strict";
@@ -115,7 +115,7 @@ async function writeOnce() {
   let local = true, stored = null, how = "";
   try { REVIEW_STORE.setItem(LOCAL, JSON.stringify(snap)); } catch (e) { local = false; logEvent("save", false, "localStorage: " + (e && e.name)); }
   try {
-    if (backend.name === "http") { await httpSave(snap); how = "to MAIC "; stored = true; }
+    if (backend.name === "http") { await httpSave(snap); how = "to MAID "; stored = true; }
     else if (backend.name === "fsaccess" && folder.mode === "linked") { await writeBeside(snap); how = "beside the page "; stored = true; }
     if (stored) backend.lastWrite = new Date();
   } catch (e) {
@@ -129,18 +129,18 @@ async function writeOnce() {
   }
   pending--;
   if (!pending && !conflict.value) {
-    if (stored === false) setStatus("Not written " + (backend.name === "http" ? "to MAIC" : "beside the page") + " (" + backend.text + "); kept in this browser. It retries on your next change, or use Save answers to file.", true);
+    if (stored === false) setStatus("Not written " + (backend.name === "http" ? "to MAID" : "beside the page") + " (" + backend.text + "); kept in this browser. It retries on your next change, or use Save answers to file.", true);
     else if (!local && !stored) setStatus("This browser would not store the answers. Use Save answers to file.", true);
     else setStatus("Saved " + how + "and in this browser " + clock());
   }
   return { ok: local || !!stored, stored: stored };
 }
 
-// ---- storage backends: http (served by MAIC), fsaccess (Chromium over file://), download (everything else) ----
+// ---- storage backends: http (served by MAID), fsaccess (Chromium over file://), download (everything else) ----
 // localStorage is the per-browser draft in all three.
-const tokenMeta = document.querySelector('meta[name="maic-artifact-token"]');
+const tokenMeta = document.querySelector('meta[name="maid-artifact-token"]');
 const DATA_URL = "data/answers.json";
-const httpHeaders = (extra) => Object.assign(tokenMeta ? { "X-Maic-Artifact-Token": tokenMeta.content } : {}, extra);
+const httpHeaders = (extra) => Object.assign(tokenMeta ? { "X-Maid-Artifact-Token": tokenMeta.content } : {}, extra);
 async function httpLoad() { // the saved document, or undefined when this server does not hold answers for the page
   const r = await fetch(DATA_URL, { cache: "no-store", headers: httpHeaders() });
   if (r.status === 404 && tokenMeta) { backend.etag = null; return null; }
@@ -179,7 +179,7 @@ async function pickBackend() {
 
 // ---- fsaccess: the folder beside the page (File System Access API; Chromium) ----
 const CAN_LINK = typeof window.showDirectoryPicker === "function" && !!window.REVIEW_IDB;
-const IDB = "maic-review-local";
+const IDB = "maid-review-local";
 function idb(fn) {
   return new Promise((resolve, reject) => {
     if (!window.REVIEW_IDB) { reject(new Error("IndexedDB is not available here")); return; }
@@ -213,7 +213,7 @@ async function useFolder(handle) {
 }
 async function linkFolder() {
   let handle;
-  try { handle = await window.showDirectoryPicker({ id: "maic-review", mode: "readwrite" }); }
+  try { handle = await window.showDirectoryPicker({ id: "maid-review", mode: "readwrite" }); }
   catch (e) { if (e && e.name !== "AbortError") { folder.text = "Could not open the folder picker (" + (e && e.name) + ")."; } return; }
   if (await useFolder(handle)) { await enqueue(); setStatus("Linked the folder; answers.json and answers.js are written there on every save " + clock()); }
 }
@@ -247,10 +247,10 @@ async function saveFile() {
 }
 function downloadMine() { if (conflict.value) { download(DATA.id + "-answers-mine.json", JSON.stringify(conflict.value.mine, null, 1)); logEvent("conflict: my version downloaded", true, DATA.id + "-answers-mine.json"); } }
 function dismissConflict() { conflict.value = null; setStatus("Showing the other writer's version " + clock()); }
-// Hands the answers to Claude: stored by MAIC or beside the page when that backend is working, else downloaded.
+// Hands the answers to Claude: stored by MAID or beside the page when that backend is working, else downloaded.
 async function deliver() {
   const r = await enqueue();
-  if (r.stored) return backend.name === "http" ? "Saved to MAIC (" + DATA_URL + "); Claude reads it there." : "Written to answers.json beside the page; Claude reads it there.";
+  if (r.stored) return backend.name === "http" ? "Saved to MAID (" + DATA_URL + "); Claude reads it there." : "Written to answers.json beside the page; Claude reads it there.";
   download(fileName(), JSON.stringify(snapshot(), null, 1));
   logEvent("answers file downloaded", true, fileName());
   return "Downloaded " + fileName() + (backend.name === "download" && !CAN_LINK ? " (this browser cannot write beside the page)" : "") + ": Claude reads it from ~/Downloads.";
@@ -295,7 +295,7 @@ async function refresh() {
   const cur = { rev: meta.rev, savedAt: meta.savedAt }, cand = newest([readLocal(), readBeside(), served]);
   let took = "";
   if (cand && isNewer(cand, cur)) { adopt(cand); joinLinked(); took = " Took newer saved answers (rev " + meta.rev + ")."; }
-  logEvent("data refresh", true, (gotReplies ? replies.value.length + " replies" : "no replies.js") + (gotAnswers ? ", answers.js" : "") + (served ? ", MAIC data" : ""));
+  logEvent("data refresh", true, (gotReplies ? replies.value.length + " replies" : "no replies.js") + (gotAnswers ? ", answers.js" : "") + (served ? ", MAID data" : ""));
   setStatus("Data Refresh " + clock() + ": " + (gotReplies ? replies.value.length + " repl" + (replies.value.length === 1 ? "y" : "ies") + " in replies.js." : "replies.js could not be read.") + took, !gotReplies);
 }
 
@@ -450,7 +450,7 @@ const lineage = computed(() => DATA.lineage || {});
 const storageLine = computed(() => {
   const w = backend.lastWrite ? " Last write " + backend.lastWrite.toLocaleTimeString() + "." : "";
   if (backend.name === "checking") return "Storage: checking…";
-  if (backend.name === "http") return "Storage: MAIC server (" + DATA_URL + ", revision " + backend.etag + ")." + w;
+  if (backend.name === "http") return "Storage: MAID server (" + DATA_URL + ", revision " + backend.etag + ")." + w;
   if (backend.name === "download") return "Storage: this browser only. It cannot write beside the page, so the answers file goes to Downloads (Submit and Send download it).";
   switch (folder.mode) {
     case "linked": return "Storage: folder beside the page. answers.json and answers.js are written there on every save." + w;
@@ -489,7 +489,7 @@ const KEY = {
     splits: "Split requests in order: { id, cards (card ids to move), relation (tight: resolving there resolves here; linked: this page waits for that one; loose: related only), note, at, status (requested, then done once Claude made the new page) }.",
     picked: "Card ids ticked for the next split (view state).",
     lineage: "In the page data, not the saved state: lineage.parent { url, id }, lineage.children [{ url, id, cards, relation, at }], lineage.deltas [{ at, text }] (task and topic changes Claude recorded across the linked pages), and moved { card id: child url } for topics now handled elsewhere.",
-    rev: "Counts saves, so two copies of the answers can be told apart: the one with the higher rev (then the later savedAt) is newer. The local page writes answers.json and answers.js beside itself when its folder is linked, or PUTs the state to MAIC when served by it, and keeps the same state in the browser's localStorage.",
+    rev: "Counts saves, so two copies of the answers can be told apart: the one with the higher rev (then the later savedAt) is newer. The local page writes answers.json and answers.js beside itself when its folder is linked, or PUTs the state to MAID when served by it, and keeps the same state in the browser's localStorage.",
     events: "The last 30 page events { at, what, ok, detail }: references, sends, failed saves and page errors, for diagnosis.",
     submitted: "true after the overall Submit; editing afterwards sets it back to false.",
     times: "submittedAt, savedAt and side prompt at are ISO 8601 UTC."
@@ -610,7 +610,7 @@ app.mount("#app");
 document.title = DATA.title + " (local)";
 setStatus(first && first.savedAt ? "Loaded answers saved " + fmt(first.savedAt) + " (save " + (first.rev || 0) + ")" : "Ready. Nothing saved yet.");
 pickBackend().then(async (doc) => {
-  let from = "MAIC";
+  let from = "MAID";
   if (!doc && window.REVIEW_HTTP && backend.name !== "http" && await reread("answers.js")) { doc = readBeside(); from = "answers.js"; } // answers.js is only a script tag when opened over file://
   if (doc && typeof doc.answers === "object" && isNewer(doc, { rev: meta.rev, savedAt: meta.savedAt })) { adopt(doc); joinLinked(); resetOpen(); setStatus("Loaded answers from " + from + ", saved " + fmt(doc.savedAt) + " (save " + (doc.rev || 0) + ")"); }
 });

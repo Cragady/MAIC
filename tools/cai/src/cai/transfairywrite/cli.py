@@ -54,26 +54,26 @@ WHAT IT REFUSES
   A replacement whose sessionId disagrees with the target's, which would leave a
     file whose name and contents disagree.
 
-MAIC SESSIONS
-  A MAIC session (~/.local/state/maic/sessions/<home>/<id>.jsonl, detected by its
+MAID SESSIONS
+  A MAID session (~/.local/state/maid/sessions/<home>/<id>.jsonl, detected by its
   records, never by its path) is a valid target and a valid --from. It is checked
-  with MAIC's shapes: msg content, tool messages paired with their calls, a
-  resumed_from pointer only first. It looks LIVE when the maic process that last
+  with MAID's shapes: msg content, tool messages paired with their calls, a
+  resumed_from pointer only first. It looks LIVE when the maid process that last
   opened it is still running here, or by the five-minute rule above.
 
   Before ANY write, whatever the target, a second copy is taken under
-  ~/.local/state/maic/sessions/.backups/<id>/<UTC>.jsonl (0600; $XDG_STATE_HOME
+  ~/.local/state/maid/sessions/.backups/<id>/<UTC>.jsonl (0600; $XDG_STATE_HOME
   when set), beside the --backup you named, and its path goes to stderr; the
-  write lands through a temp file and a rename. A MAIC session then
+  write lands through a temp file and a rename. A MAID session then
   gets a `rewritten` record appended naming that copy and this invocation, so the
   file says it was rewritten. A Claude Code transcript gets the copy and the
   rename and nothing else: it stays byte for byte what --from gave.
 
-  list-backups ID        every copy taken for a session (a MAIC id or unique
+  list-backups ID        every copy taken for a session (a MAID id or unique
                          prefix, or any transcript's path)
   restore ID [--backup TS]
                          put the newest copy (or the one stamped TS) back, after
-                         copying the current file to the same place first. A MAIC
+                         copying the current file to the same place first. A MAID
                          session gets a `rewritten` record naming both.
 
 THE AGENT CONTRACT
@@ -86,9 +86,9 @@ EXIT   0 ok   1 refused or verification failed   2 usage/backup refused
 
 
 def _backups(argv):
-    """`list-backups ID` and `restore ID [--backup TS]`: the copies MAIC's rule keeps."""
+    """`list-backups ID` and `restore ID [--backup TS]`: the copies MAID's rule keeps."""
     ap = argparse.ArgumentParser(prog="cai trans-fairy-write " + argv[0])
-    ap.add_argument("id", help="a MAIC session id, a unique prefix, or a transcript path")
+    ap.add_argument("id", help="a MAID session id, a unique prefix, or a transcript path")
     if argv[0] == "restore":
         ap.add_argument("--backup", help="the UTC stamp of the copy to restore (default: the newest)")
         ap.add_argument("--ignore-live", action="store_true")

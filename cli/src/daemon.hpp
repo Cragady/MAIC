@@ -14,20 +14,20 @@
 #include <thread>
 #include <vector>
 
-namespace maic {
+namespace maid {
 
 class Engine;
 struct TuiOptions;
 
-// One connection of JSON-RPC lines to `engine` for `client` (docs/design/engine-protocol.md, section 1): `maic --rpc`
+// One connection of JSON-RPC lines to `engine` for `client` (docs/design/engine-protocol.md, section 1): `maid --rpc`
 // on stdio and each of the daemon's socket connections. Reads from `in` until it closes, `stop_fd` (when not -1)
 // becomes readable or the engine ends the connection; then calls `ended`, waits for the requests still running and
-// sends what is queued. `record`, when set, keeps the exchange for `maic protocol check`. True when it ended for a
-// fault (a line over 1 MiB, maic_too_slow, a write that failed).
+// sends what is queued. `record`, when set, keeps the exchange for `maid protocol check`. True when it ended for a
+// fault (a line over 1 MiB, maid_too_slow, a write that failed).
 bool serve_lines(Engine& engine, const std::string& client, int in, int out, int stop_fd, const std::filesystem::path& record,
                  const std::function<void()>& ended);
 
-// Where the daemon listens: $XDG_RUNTIME_DIR/maic/engine.sock, or <state>/run/engine.sock without a runtime
+// Where the daemon listens: $XDG_RUNTIME_DIR/maid/engine.sock, or <state>/run/engine.sock without a runtime
 // directory (never /tmp), in a 0700 directory.
 std::filesystem::path daemon_socket();
 
@@ -69,11 +69,11 @@ private:
     std::mutex write_mu_;
 };
 
-// `maic --rpc` with a daemon running: stdin and stdout carried to its socket `sock` unchanged, so maic.nvim's
+// `maid --rpc` with a daemon running: stdin and stdout carried to its socket `sock` unchanged, so maid.nvim's
 // interface is one of its clients. Returns the exit code.
 int bridge_to_daemon(int sock, int in, int out);
 
-// maic daemon start | stop [--yes] | status [--json] | run | unit [install|remove]
+// maid daemon start | stop [--yes] | status [--json] | run | unit [install|remove]
 int cmd_daemon(const std::vector<std::string>& args);
 
-}  // namespace maic
+}  // namespace maid

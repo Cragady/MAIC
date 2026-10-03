@@ -1,4 +1,4 @@
-#include "maic/bans.hpp"
+#include "maid/bans.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -6,7 +6,7 @@
 #include <fstream>
 #include <cstdlib>
 
-namespace maic {
+namespace maid {
 
 std::vector<std::string> expand_ban_entry(const std::string& value) {
     if (value.empty() || value[0] != '@') return {value};
@@ -250,4 +250,4 @@ std::string BanFilter::flush() {
     return through_patterns(release(held_.size()), true, true);
 }
 
-}  // namespace maic
+}  // namespace maid

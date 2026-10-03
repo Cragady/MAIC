@@ -1,4 +1,4 @@
-// `maic server ...`: start, token new|list|revoke, pair, pairs, unpair, status; and `maic artifact ...`.
+// `maid server ...`: start, token new|list|revoke, pair, pairs, unpair, status; and `maid artifact ...`.
 #include "artifacts.hpp"
 #include "auth.hpp"
 #include "server.hpp"
@@ -6,12 +6,12 @@
 
 #include <nlohmann/json.hpp>
 
-#include "maic/harness.hpp"
-#include "maic/paths.hpp"
-#include "maic/settings.hpp"
-#include "maic/theme.hpp"
+#include "maid/harness.hpp"
+#include "maid/paths.hpp"
+#include "maid/settings.hpp"
+#include "maid/theme.hpp"
 
-#include "maic/http.hpp"
+#include "maid/http.hpp"
 
 #include <unistd.h>
 
@@ -24,7 +24,7 @@
 #include <sstream>
 #include <thread>
 
-namespace maic::server {
+namespace maid::server {
 
 namespace fs = std::filesystem;
 
@@ -37,18 +37,18 @@ void on_signal(int) {
 }
 
 void usage(std::ostream& out) {
-    out << "usage: maic server start [--listen ADDR:PORT] [--model M] [--mode MODE]   serve the API and the web client\n"
-           "       maic server token new NAME     a bearer token for one device, printed once\n"
-           "       maic server token list\n"
-           "       maic server token revoke NAME\n"
-           "       maic server pair               a one-time code and pairing string for a phone, valid 2 minutes (server.relay set)\n"
-           "       maic server pairs              the phones paired for the relay\n"
-           "       maic server unpair NAME\n"
-           "       maic server status             the configuration, the relay link, and whether a server answers\n"
+    out << "usage: maid server start [--listen ADDR:PORT] [--model M] [--mode MODE]   serve the API and the web client\n"
+           "       maid server token new NAME     a bearer token for one device, printed once\n"
+           "       maid server token list\n"
+           "       maid server token revoke NAME\n"
+           "       maid server pair               a one-time code and pairing string for a phone, valid 2 minutes (server.relay set)\n"
+           "       maid server pairs              the phones paired for the relay\n"
+           "       maid server unpair NAME\n"
+           "       maid server status             the configuration, the relay link, and whether a server answers\n"
            "\n"
            "Loopback is the default. Any other address needs TLS: a self-signed certificate is made on first use\n"
            "(pin its fingerprint on the phone), or set server.cert and server.key in settings. With server.relay set\n"
-           "the server dials out to a maic-relay so a paired phone reaches it from anywhere, end-to-end encrypted.\n"
+           "the server dials out to a maid-relay so a paired phone reaches it from anywhere, end-to-end encrypted.\n"
            "docs/remote.md\n";
 }
 
@@ -71,13 +71,13 @@ int cmd_token(const std::vector<std::string>& args, const fs::path& state) {
     }
     if (args.size() == 1 && args[0] == "list") {
         auto all = store.list();
-        if (all.empty()) std::cout << "no tokens yet: maic server token new NAME\n";
+        if (all.empty()) std::cout << "no tokens yet: maid server token new NAME\n";
         for (const auto& t : all) std::cout << t.name << "  created " << t.created << "\n";
         return 0;
     }
     if (args.size() == 2 && args[0] == "revoke") {
         if (!store.revoke(args[1])) {
-            std::cerr << "maic server: no token named " << args[1] << "\n";
+            std::cerr << "maid server: no token named " << args[1] << "\n";
             return 1;
         }
         std::cout << "revoked " << args[1] << "; the server picks that up at its next request\n";
@@ -90,25 +90,25 @@ int cmd_token(const std::vector<std::string>& args, const fs::path& state) {
 int cmd_pair(const std::vector<std::string>& args, const Settings& settings, const fs::path& state) {
     PairStore store(state / "pairs.json");
     if (args.empty()) {
-        if (settings.server.relay.empty()) throw std::runtime_error("set server.relay = \"https://host:port\" (the maic-relay the server dials out to) in settings first; maic help server");
+        if (settings.server.relay.empty()) throw std::runtime_error("set server.relay = \"https://host:port\" (the maid-relay the server dials out to) in settings first; maid help server");
         std::string code = new_pairing_code();
         write_pairing_offer(state / "pairing.json", code);
         std::cout << "pairing code, valid two minutes: " << code.substr(0, 4) << " " << code.substr(4) << "\n\n"
                   << "On the phone, on this LAN, open the web client (the token box first if it has none), then Sessions > Pair with\n"
                      "a relay, and paste this string. The exchange runs over the LAN, straight to this server, never through the relay:\n\n"
-                  << "    maic://pair/" << settings.server.relay << "/" << store.pairing_id() << "/" << code << "\n\n"
-                  << "The server must be running (maic server start). Three wrong codes void the offer.\n";
+                  << "    maid://pair/" << settings.server.relay << "/" << store.pairing_id() << "/" << code << "\n\n"
+                  << "The server must be running (maid server start). Three wrong codes void the offer.\n";
         return 0;
     }
     if (args.size() == 1 && args[0] == "list") {
         auto all = store.list();
-        if (all.empty()) std::cout << "no phones paired yet: maic server pair\n";
+        if (all.empty()) std::cout << "no phones paired yet: maid server pair\n";
         for (const auto& p : all) std::cout << p.name << "  key " << p.public_key.substr(0, 12) << "...  paired " << p.created << "\n";
         return 0;
     }
     if (args.size() == 2 && args[0] == "remove") {
         if (!store.remove(args[1])) {
-            std::cerr << "maic server: no phone named " << args[1] << "\n";
+            std::cerr << "maid server: no phone named " << args[1] << "\n";
             return 1;
         }
         std::cout << "unpaired " << args[1] << "; its next connection through the relay is refused\n";
@@ -146,9 +146,9 @@ int cmd_status(const Settings& settings, const fs::path& state) {
     }
     std::cout << "workspaces:";
     for (const auto& w : workspace_roots(settings)) std::cout << " " << w.string();
-    std::cout << "\ntokens:     " << store.list().size() << " (maic server token list)\n"
+    std::cout << "\ntokens:     " << store.list().size() << " (maid server token list)\n"
               << "relay:      " << relay_notice(settings, state) << "\n"
-              << "paired:     " << PairStore(state / "pairs.json").list().size() << " phone(s) (maic server pairs)\n"
+              << "paired:     " << PairStore(state / "pairs.json").list().size() << " phone(s) (maid server pairs)\n"
               << "audit log:  " << (state / "audit.log").string() << "\n";
     // Any answer, even the 401 an unauthenticated probe gets, means a server is up.
     std::string probe_host = host == "0.0.0.0" || host == "::" || host.empty() ? "127.0.0.1" : host;
@@ -186,14 +186,14 @@ int cmd_start(const std::vector<std::string>& args) {
     Server server(std::move(o));
     int port = server.bind();
     TokenStore tokens(state_dir() / "server" / "tokens.json");
-    std::cout << "maic server on " << (server.tls() ? "https://" : "http://") << listen.substr(0, listen.rfind(':')) << ":" << port
+    std::cout << "maid server on " << (server.tls() ? "https://" : "http://") << listen.substr(0, listen.rfind(':')) << ":" << port
               << "  model " << settings.model << "  mode " << settings.mode << "\n";
     if (server.tls()) std::cout << "certificate SHA-256: " << server.fingerprint() << "  (compare on the phone when it warns)\n";
     std::cout << "workspaces:";
     for (const auto& w : workspace_roots(settings)) std::cout << " " << w.string();
     std::cout << "\n";
-    if (tokens.empty()) std::cout << "no tokens yet, so every request gets 401: maic server token new NAME\n";
-    if (!settings.server.relay.empty()) std::cout << "relay: dialling " << settings.server.relay << " (maic server status shows the link; maic server pair enrols a phone)\n";
+    if (tokens.empty()) std::cout << "no tokens yet, so every request gets 401: maid server token new NAME\n";
+    if (!settings.server.relay.empty()) std::cout << "relay: dialling " << settings.server.relay << " (maid server status shows the link; maid server pair enrols a phone)\n";
     std::cout << "Ctrl-C stops it. Every tool call from here is asked about, whatever the mode; the tripwire can be tripped\n"
                  "from a client but never reset.\n";
 
@@ -208,19 +208,19 @@ int cmd_start(const std::vector<std::string>& args) {
 }
 
 void artifact_usage(std::ostream& out) {
-    out << "usage: maic artifact list              the artifacts maic-server serves, with their trust and data documents\n"
-           "       maic artifact add DIR [--id ID]  copy a built page folder in (index.html at its top); again to update it,\n"
+    out << "usage: maid artifact list              the artifacts maid-server serves, with their trust and data documents\n"
+           "       maid artifact add DIR [--id ID]  copy a built page folder in (index.html at its top); again to update it,\n"
            "                                    its saved data/ is kept\n"
-           "       maic artifact open ID           a one-time link for a browser on this machine, valid 2 minutes\n"
-           "       maic artifact allow-insecure ID [--off]   add 'unsafe-eval' to that artifact's script policy (asks you to type\n"
+           "       maid artifact open ID           a one-time link for a browser on this machine, valid 2 minutes\n"
+           "       maid artifact allow-insecure ID [--off]   add 'unsafe-eval' to that artifact's script policy (asks you to type\n"
            "                                    \"allow insecure\" at a terminal); --off removes it without asking\n"
-           "       maic artifact watch ID [--doc NAME] [--once]   a line per event an agent acts on (submitted, side_prompt N,\n"
+           "       maid artifact watch ID [--doc NAME] [--once]   a line per event an agent acts on (submitted, side_prompt N,\n"
            "                                    after_prompt N, split ID) when the page saves data/NAME.json (answers)\n"
-           "       maic artifact protocol ID [--propose FILE | --approve | --verify HASH]   the notify protocol events name;\n"
+           "       maid artifact protocol ID [--propose FILE | --approve | --verify HASH]   the notify protocol events name;\n"
            "                                    --approve asks you to type \"approve\" at a terminal; --verify re-hashes it\n"
            "\n"
-           "Artifacts live in ~/.local/state/maic/artifacts/ and are served sandboxed at /a/ID/ by maic server start.\n"
-           "docs/artifacts.md; watch, protocol and maic channel: docs/agent-kit.md\n";
+           "Artifacts live in ~/.local/state/maid/artifacts/ and are served sandboxed at /a/ID/ by maid server start.\n"
+           "docs/artifacts.md; watch, protocol and maid channel: docs/agent-kit.md\n";
 }
 
 // The server's own address as this machine reaches it, from server.listen.
@@ -241,7 +241,7 @@ int run_artifact_command(const std::vector<std::string>& args, bool text_base) {
     std::string sub = args.empty() ? "list" : args[0];
     if (sub == "list" && args.size() <= 1) {
         auto all = list_artifacts(root);
-        if (all.empty()) std::cout << "no artifacts yet: maic artifact add DIR\n";
+        if (all.empty()) std::cout << "no artifacts yet: maid artifact add DIR\n";
         Settings settings;
         bool color = color_output(text_base, STDOUT_FILENO);
         if (color) {
@@ -267,22 +267,22 @@ int run_artifact_command(const std::vector<std::string>& args, bool text_base) {
             if (args[i] == "--id" && i + 1 < args.size()) id = args[++i];
             else throw std::runtime_error("unknown option " + args[i]);
         }
-        for (const auto& s : add_artifact(root, src, id)) std::cerr << "maic artifact: skipped " << s << "\n";
-        std::cout << "added " << id << " at " << (root / id).string() << " (sandboxed); maic artifact open " << id << "\n";
+        for (const auto& s : add_artifact(root, src, id)) std::cerr << "maid artifact: skipped " << s << "\n";
+        std::cout << "added " << id << " at " << (root / id).string() << " (sandboxed); maid artifact open " << id << "\n";
         return 0;
     }
     if (sub == "open" && args.size() == 2) {
         std::error_code ec;
-        if (!artifact_name_ok(args[1]) || !fs::is_directory(root / args[1], ec)) throw std::runtime_error("no artifact " + args[1] + "; maic artifact list");
+        if (!artifact_name_ok(args[1]) || !fs::is_directory(root / args[1], ec)) throw std::runtime_error("no artifact " + args[1] + "; maid artifact list");
         std::string code = new_artifact_login(state_dir() / "server");
         std::cout << local_server_url(load_settings()) << "/a/_login?code=" << code << "&to=" << args[1] << "\n\n"
                   << "Open it in a browser on this machine within two minutes; it works once and logs that browser in to\n"
-                  << "artifacts for 12 hours (afterwards /a/" << args[1] << "/ opens it directly). maic server start must be running.\n";
+                  << "artifacts for 12 hours (afterwards /a/" << args[1] << "/ opens it directly). maid server start must be running.\n";
         return 0;
     }
     if (sub == "allow-insecure" && (args.size() == 2 || (args.size() == 3 && args[2] == "--off"))) {
         std::error_code ec;
-        if (!artifact_name_ok(args[1]) || !fs::is_directory(root / args[1], ec)) throw std::runtime_error("no artifact " + args[1] + "; maic artifact list");
+        if (!artifact_name_ok(args[1]) || !fs::is_directory(root / args[1], ec)) throw std::runtime_error("no artifact " + args[1] + "; maid artifact list");
         fs::path dir = root / args[1];
         if (args.size() == 3) {
             set_artifact_allow_insecure(dir, false);
@@ -292,9 +292,9 @@ int run_artifact_command(const std::vector<std::string>& args, bool text_base) {
         std::cout << "ALLOW_INSECURE for " << args[1] << " adds 'unsafe-eval' to that artifact's script policy only, which lets its page\n"
                   << "compile templates and run strings as code (Vue's in-page template compiler needs it). The sandbox, the opaque\n"
                   << "origin and the network limits stay. Every load of its index.html is written to the server's audit log, and\n"
-                  << "maic artifact list shows it. Turn it off with: maic artifact allow-insecure " << args[1] << " --off\n";
+                  << "maid artifact list shows it. Turn it off with: maid artifact allow-insecure " << args[1] << " --off\n";
         if (!isatty(STDIN_FILENO)) {
-            std::cerr << "maic artifact: allowing insecure asks you to type a phrase at a terminal; run it in one. Nothing was changed.\n";
+            std::cerr << "maid artifact: allowing insecure asks you to type a phrase at a terminal; run it in one. Nothing was changed.\n";
             return 2;
         }
         std::cout << "type \"allow insecure\" to turn it on: " << std::flush;
@@ -342,4 +342,4 @@ int run_server_command(const std::vector<std::string>& args) {
     return 2;
 }
 
-}  // namespace maic::server
+}  // namespace maid::server

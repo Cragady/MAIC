@@ -4,7 +4,7 @@ Three backends, one conversation per scribe key in each, with the same system pr
 
 * claude-cli, ClaudeScribe: a persistent headless `claude` process per mode, on the user's own login, as diction
   always ran. Ported from the original diction.py.
-* api and local, Scribe: a chat client (stdlib urllib) for a provider `maic model resolve NAME` names, Anthropic's
+* api and local, Scribe: a chat client (stdlib urllib) for a provider `maid model resolve NAME` names, Anthropic's
   Messages API or an OpenAI-compatible server such as llama-server on loopback. A local window is small, so each
   request carries the system prompt, the document, and only as many earlier exchanges as fit (see build_messages).
 """
@@ -25,11 +25,11 @@ from pathlib import Path
 
 from diction.document import Procedure, apply_reply
 from diction.ui import DIM, OFF, RED, esc, say
-from diction.whisper import maic_bin
+from diction.whisper import maid_bin
 
 # A neutral working directory for the claude process, so it picks up no project's instructions. The original kept
 # it beside diction.py; an installed copy's directory may not be writable, so it lives in the state directory.
-AGENT_CWD = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "maic" / "diction" / "agent-cwd"
+AGENT_CWD = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "maid" / "diction" / "agent-cwd"
 # How many of the newest passages each claude-cli message carries, as the original's Procedure.context().
 CLAUDE_CONTEXT = 25
 
@@ -253,20 +253,20 @@ LEGACY_SCRIBES = {"haiku": "haiku-4.5", "sonnet": "sonnet-5", "opus": "opus-5.5"
 
 
 def resolve_agent(name: str) -> dict:
-    """--agent-model through `maic model resolve`: {provider, kind, base_url, model, context, remote, ...}.
-    The legacy aliases haiku, sonnet and opus mean the MAIC presets in LEGACY_SCRIBES.
+    """--agent-model through `maid model resolve`: {provider, kind, base_url, model, context, remote, ...}.
+    The legacy aliases haiku, sonnet and opus mean the MAID presets in LEGACY_SCRIBES.
 
     A name without a provider (a preset such as the default qwen-4b) that lands on the main llama server goes to the
     side server instead whenever that one answers, so dictation never evicts the model a session is using.
     `llamacpp/MODEL` written out stays on the main server."""
-    exe = maic_bin()
+    exe = maid_bin()
     if not exe:
-        raise RuntimeError("--agent-model is resolved by `maic model resolve`, and no maic was found (MAIC_BIN or PATH)")
+        raise RuntimeError("--agent-model is resolved by `maid model resolve`, and no maid was found (MAID_BIN or PATH)")
 
     def resolve(n: str) -> dict:
         r = subprocess.run([exe, "model", "resolve", n], capture_output=True, text=True, timeout=20)
         if r.returncode != 0:
-            raise RuntimeError((r.stderr.strip() or r.stdout.strip()).removeprefix("maic: "))
+            raise RuntimeError((r.stderr.strip() or r.stdout.strip()).removeprefix("maid: "))
         return json.loads(r.stdout)
 
     name = LEGACY_SCRIBES.get(name.lower(), name)
@@ -426,7 +426,7 @@ class Scribe:
             raise RuntimeError(f"HTTP {e.code}: {detail[:200]}") from None
         except (urllib.error.URLError, OSError) as e:
             self._log(f"{url}: {e}")
-            hint = f": maic up {self.agent['provider']}" if not self.agent.get("remote") else ""
+            hint = f": maid up {self.agent['provider']}" if not self.agent.get("remote") else ""
             raise RuntimeError(f"{self.agent['provider']} is not answering at {self.agent['base_url']}{hint}") from None
 
     def _chat(self, messages: list[dict]) -> str:

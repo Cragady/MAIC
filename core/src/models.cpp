@@ -1,9 +1,9 @@
-#include "maic/models.hpp"
+#include "maid/models.hpp"
 
-#include "maic/paths.hpp"
-#include "maic/status.hpp"
-#include "maic/tripwire.hpp"
-#include "maic/vendor.hpp"
+#include "maid/paths.hpp"
+#include "maid/status.hpp"
+#include "maid/tripwire.hpp"
+#include "maid/vendor.hpp"
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -19,7 +19,7 @@
 #include <set>
 #include <stdexcept>
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -70,7 +70,7 @@ const CatalogFile* weights_of(const CatalogEntry& e) {
     return nullptr;
 }
 
-// What an entry holds on the card at `context`, with `maic gpu`'s arithmetic.
+// What an entry holds on the card at `context`, with `maid gpu`'s arithmetic.
 double estimate_gb(const CatalogEntry& e, int context) {
     long bytes = 0;
     for (const auto& f : e.files) bytes += f.size;
@@ -89,8 +89,8 @@ fs::path catalog_path() {
 }
 
 fs::path user_catalog_path() {
-    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return fs::path(xdg) / "maic" / "models.json";
-    return fs::path(std::getenv("HOME")) / ".config" / "maic" / "models.json";
+    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return fs::path(xdg) / "maid" / "models.json";
+    return fs::path(std::getenv("HOME")) / ".config" / "maid" / "models.json";
 }
 
 json merge_catalog(const json& shipped, const json& user) {
@@ -186,7 +186,7 @@ const std::vector<ApiModel>& api_models() {
                     else *it = std::move(a);
                 }
             } catch (const std::exception&) {
-                // A broken file costs nothing; `maic models check` names what is wrong with it.
+                // A broken file costs nothing; `maid models check` names what is wrong with it.
             }
         }
         return out;
@@ -260,7 +260,7 @@ void add_session_cost(const std::string& session, double cost, const std::string
     fs::path path = costs_path();
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
-    // Processes share the file (the daemon, a TUI of its own, maic-server): one writes at a time.
+    // Processes share the file (the daemon, a TUI of its own, maid-server): one writes at a time.
     int fd = open((path.string() + ".lock").c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
     if (fd < 0) return;
     flock(fd, LOCK_EX);
@@ -485,7 +485,7 @@ void link_entry(const CatalogEntry& e, std::ostream& out) {
     if (!w) throw std::runtime_error(e.id + " is not a model a server loads as current (services/whisper.json loads the VAD by its own name)");
     fs::path file = entry_dir(e) / w->name;
     std::error_code ec;
-    if (!fs::exists(file, ec)) throw std::runtime_error(e.id + " is not installed: maic models install " + e.id);
+    if (!fs::exists(file, ec)) throw std::runtime_error(e.id + " is not installed: maid models install " + e.id);
     if (e.root == "fim") {
         fs::path link = fim_model_link();
         if (fs::is_symlink(link, ec)) fs::remove(link);
@@ -506,7 +506,7 @@ void install_entry(const CatalogEntry& e, const std::vector<CatalogEntry>& all, 
     std::error_code ec;
     if (!e.shares_entry.empty()) {
         const CatalogEntry* s = find_entry(all, e.shares_entry);
-        if (!s || e.files.empty()) throw std::runtime_error(e.id + " shares '" + e.shares_entry + "', which the catalog does not have (maic models check)");
+        if (!s || e.files.empty()) throw std::runtime_error(e.id + " shares '" + e.shares_entry + "', which the catalog does not have (maid models check)");
         if (!entry_installed(*s, all)) {
             out << "installing " << s->id << " first: " << e.id << " links its " << e.shares_file << "\n";
             install_entry(*s, all, false, out);
@@ -545,8 +545,8 @@ void install_entry(const CatalogEntry& e, const std::vector<CatalogEntry>& all, 
         out << "\n";
     }
     if (link) link_entry(e, out);
-    else if (weights_of(e) && !entry_current(e)) out << "maic models install " << e.id << " --link makes it the current " << e.root << " model\n";
-    if (e.root == "llamacpp") out << "a running llama server lists a new folder after it restarts (maic down, then maic up)\n";
+    else if (weights_of(e) && !entry_current(e)) out << "maid models install " << e.id << " --link makes it the current " << e.root << " model\n";
+    if (e.root == "llamacpp") out << "a running llama server lists a new folder after it restarts (maid down, then maid up)\n";
 }
 
 bool verify_entry(const CatalogEntry& e, std::ostream& out) {
@@ -594,7 +594,7 @@ std::string remove_blocker(const CatalogEntry& e, const std::vector<CatalogEntry
         for (const auto& d : deps) names += (names.empty() ? "" : ", ") + d;
         return names + " links " + e.id + "'s weights and is installed; remove " + names + " first, or keep both";
     }
-    if (entry_current(e)) return e.id + " is the current " + e.root + " model; make another current first (maic models install ID --link)";
+    if (entry_current(e)) return e.id + " is the current " + e.root + " model; make another current first (maid models install ID --link)";
     return "";
 }
 
@@ -620,4 +620,4 @@ void remove_entry(const CatalogEntry& e, const std::vector<CatalogEntry>& all, s
     }
 }
 
-}  // namespace maic
+}  // namespace maid

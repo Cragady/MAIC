@@ -7,7 +7,7 @@
 #include <deque>
 #include <map>
 
-namespace maic::detail {
+namespace maid::detail {
 
 namespace {
 
@@ -75,7 +75,7 @@ Converted convert_messages(const std::vector<Message>& messages, bool mid_system
                 content = nlohmann::json::array();
                 if (!m.content.empty()) content.push_back({{"type", "text"}, {"text", m.content}});
                 for (const auto& call : m.tool_calls) {
-                    std::string id = call.id.empty() ? "toolu_maic_" + std::to_string(++generated) : call.id;
+                    std::string id = call.id.empty() ? "toolu_maid_" + std::to_string(++generated) : call.id;
                     pending_ids.push_back(id);
                     content.push_back({{"type", "tool_use"}, {"id", id}, {"name", call.name}, {"input", call.arguments}});
                 }
@@ -171,7 +171,7 @@ Message chat_anthropic(const Provider& provider, const ChatOptions& options, con
                         const std::string& raw = partial_input[i];
                         auto input = raw.empty() ? nlohmann::json::object() : nlohmann::json::parse(raw, nullptr, false);
                         if (!input.is_object()) {
-                            blocks[i]["_maic_invalid_input"] = raw;
+                            blocks[i]["_maid_invalid_input"] = raw;
                             input = nlohmann::json::object();
                         }
                         blocks[i]["input"] = input;
@@ -214,9 +214,9 @@ Message chat_anthropic(const Provider& provider, const ChatOptions& options, con
             if (bt == "text") reply.content += b.value("text", "");
             if (bt == "tool_use") {
                 nlohmann::json args = b["input"];
-                if (b.contains("_maic_invalid_input")) {
-                    args = {{"_maic_invalid_input", b["_maic_invalid_input"]}};
-                    b.erase("_maic_invalid_input");
+                if (b.contains("_maid_invalid_input")) {
+                    args = {{"_maid_invalid_input", b["_maid_invalid_input"]}};
+                    b.erase("_maid_invalid_input");
                 }
                 reply.tool_calls.push_back({b.value("id", ""), b.value("name", ""), args});
             }
@@ -245,4 +245,4 @@ Message chat_anthropic(const Provider& provider, const ChatOptions& options, con
     throw std::runtime_error(provider.name + ": request failed");
 }
 
-}  // namespace maic::detail
+}  // namespace maid::detail

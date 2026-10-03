@@ -1,7 +1,7 @@
-#include "maic/lua.hpp"
+#include "maid/lua.hpp"
 
 #include "lua_json.hpp"
-#include "maic/nvim_host.hpp"
+#include "maid/nvim_host.hpp"
 
 extern "C" {
 #include <lauxlib.h>
@@ -30,11 +30,11 @@ extern "C" {
 #include <iterator>
 #include <sstream>
 
-#ifndef MAIC_VERSION
-#define MAIC_VERSION "dev"
+#ifndef MAID_VERSION
+#define MAID_VERSION "dev"
 #endif
 
-namespace maic {
+namespace maid {
 
 namespace fs = std::filesystem;
 
@@ -147,17 +147,17 @@ std::shared_ptr<NvimHost>& lua_nvim_host() {
     return host;
 }
 
-// maic.nvim.*: the host's answer as a Lua value, an error raised as a Lua error.
+// maid.nvim.*: the host's answer as a Lua value, an error raised as a Lua error.
 int nvim_call(lua_State* L, const std::function<nlohmann::json(NvimHost&)>& call) {
     auto& s = self(L);
     std::string err;
     nlohmann::json result;
-    if (!s.nvim || !s.nvim->connected()) err = "maic.nvim: the nvim host is gone";
+    if (!s.nvim || !s.nvim->connected()) err = "maid.nvim: the nvim host is gone";
     else {
         try {
             result = call(*s.nvim);
         } catch (const std::exception& e) {
-            err = std::string("maic.nvim: ") + e.what();
+            err = std::string("maid.nvim: ") + e.what();
         }
     }
     if (!err.empty()) return luaL_error(L, "%s", err.c_str());
@@ -186,7 +186,7 @@ int l_nvim_current(lua_State* L) {
 }
 
 constexpr int kRestrictedSeconds = 2;
-const char* const kStateKey = "maic.lua";
+const char* const kStateKey = "maid.lua";
 
 Lua::State& restricted_state(lua_State* L) {
     lua_getfield(L, LUA_REGISTRYINDEX, kStateKey);
@@ -372,7 +372,7 @@ Lua::Lua(fs::path workspace, std::function<void(const std::string&)> notice, Lua
     lua_newtable(L);
     lua_pushstring(L, st_->workspace.c_str());
     lua_setfield(L, -2, "workspace");
-    lua_pushstring(L, MAIC_VERSION);
+    lua_pushstring(L, MAID_VERSION);
     lua_setfield(L, -2, "version");
     if (const char* home = std::getenv("HOME")) {
         lua_pushstring(L, home);
@@ -385,7 +385,7 @@ Lua::Lua(fs::path workspace, std::function<void(const std::string&)> notice, Lua
         lua_setfield(L, -2, "hostname");
     }
     if (st_->restricted) {
-        lua_setglobal(L, "maic");
+        lua_setglobal(L, "maid");
         return;
     }
     for (auto [name, fn] : {std::pair<const char*, lua_CFunction>{"read", l_read}, {"write", l_write}, {"shell", l_shell}, {"notice", l_notice}}) {
@@ -403,7 +403,7 @@ Lua::Lua(fs::path workspace, std::function<void(const std::string&)> notice, Lua
         }
         lua_setfield(L, -2, "nvim");
     }
-    lua_setglobal(L, "maic");
+    lua_setglobal(L, "maid");
 }
 
 Lua::~Lua() {
@@ -530,7 +530,7 @@ int Lua::load_chunk(const std::string& code, const std::string& chunk_name) {
 
 namespace {
 
-// Lua shortens a long file name in an error ("...ome/x/.maic/settings.lua:2: ..."); this puts the whole one back.
+// Lua shortens a long file name in an error ("...ome/x/.maid/settings.lua:2: ..."); this puts the whole one back.
 std::string full_chunk_name(std::string err, const std::string& chunk_name) {
     if (chunk_name.empty() || chunk_name[0] != '@' || err.rfind("...", 0) != 0) return err;
     std::string path = chunk_name.substr(1);
@@ -785,7 +785,7 @@ nlohmann::json eval_lua_data(const std::string& code, const std::string& chunk_n
     } catch (const ChildUnavailable& e) {
         std::string note = what + ": the sandbox could not start (" + e.what() + "); evaluated restricted in this process instead";
         if (warnings) warnings->push_back(note);
-        else fprintf(stderr, "maic: %s\n", note.c_str());
+        else fprintf(stderr, "maid: %s\n", note.c_str());
         return restricted();
     }
 }
@@ -797,4 +797,4 @@ nlohmann::json eval_lua_data_file(const fs::path& path, const fs::path& workspac
     return eval_lua_data(code, "@" + path.string(), workspace, tier, memory_mb, warnings);
 }
 
-}  // namespace maic
+}  // namespace maid

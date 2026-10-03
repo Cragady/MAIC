@@ -2,7 +2,7 @@
 import json
 import re
 
-from cai.grammar import maic
+from cai.grammar import maid
 from cai.grammar import records as grecords
 from cai.redact import redactor
 
@@ -18,13 +18,13 @@ def records(data):
     and in no other loader, so four others kept their own answers. The rule lives
     in `cai.grammar.records` now and this is the caller.
 
-    A MAIC session (detected by content, `cai.grammar.maic`) is projected onto the
+    A MAID session (detected by content, `cai.grammar.maid`) is projected onto the
     Claude Code grammar here, so every selection and every compaction slice below
     works on it unchanged: a `compact` record is the boundary, a `tool` record is
     the tool traffic.
     """
     recs = grecords.load(data)
-    return maic.to_claude(recs) if maic.is_maic(recs) else recs
+    return maid.to_claude(recs) if maid.is_maid(recs) else recs
 
 
 def boundaries(recs):

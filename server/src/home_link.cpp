@@ -2,7 +2,7 @@
 
 #include "tunnel.hpp"
 
-#include "maic/http.hpp"
+#include "maid/http.hpp"
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -18,7 +18,7 @@
 #include <optional>
 #include <thread>
 
-namespace maic::server {
+namespace maid::server {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -179,7 +179,7 @@ struct HomeLink::Impl {
             if (lower == "host" || lower == "content-length" || lower == "connection" || lower == "transfer-encoding") continue;
             if (v.is_string()) req.set_header(k, v.get<std::string>());
         }
-        req.set_header("X-Maic-Via", "relay/" + link->phone);
+        req.set_header("X-Maid-Via", "relay/" + link->phone);
         if (nl != std::string::npos) req.body = payload.substr(nl + 1);
         req.response_handler = [&](const httplib::Response& r) {
             json headers = json::object();
@@ -384,4 +384,4 @@ HomeLink::State HomeLink::state() const {
     return impl_->st;
 }
 
-}  // namespace maic::server
+}  // namespace maid::server
