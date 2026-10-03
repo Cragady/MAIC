@@ -16,7 +16,7 @@ maic daemon unit remove      # disables it, stops a daemon it runs, and removes 
 
 * **`maic` and maic.nvim open their sessions in the daemon.** The TUI says so at start ("in the daemon") and shows `daemon` in its status strip; `maic --rpc`, maic.nvim's engine, carries its connection to the daemon's socket unchanged.
 * **Quitting leaves a working session working.** A session working when you quit keeps working, and is parked once it is done (it leaves memory and resumes where it was); an idle one is stopped (it stays a transcript, `maic -r`). `leave.quit` in settings changes either (`"ask"` asks at each quit), and `:q --bg`, `--park` or `--stop` decides for one quit ([settings.md](settings.md#leaving-a-session)). The next `maic` or `:Maic` lists what was parked in `:switch`, a finished one marked as such.
-* **One engine holds each session**, so two windows cannot both append to it.
+* **One engine holds each session**, so two windows cannot both append to it. Without the daemon each window runs its own engine, and a second window on a session another one has open is refused ([one engine per transcript](settings.md#leaving-a-session)).
 * **`maic daemon stop` parks everything.** A running turn is interrupted (asked first; `--yes` does not ask) and resumes where it stopped.
 
 `daemon = "off"` in settings keeps every session in its own process, as before.

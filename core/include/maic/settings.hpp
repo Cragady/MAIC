@@ -152,9 +152,10 @@ struct LeaveCase {
     std::string idle, working, after;
 };
 struct LeaveSettings {
-    LeaveCase switching{"park", "bg", "park"};  // leave.switch: :new, :switch and :fork; its `after` also ends a background task
+    LeaveCase switching{"park", "bg", "park"};  // leave.switch: :new, :switch and :fork
     LeaveCase quitting{"stop", "bg", "park"};   // leave.quit: :q, or a client that goes
     std::string no_daemon = "park";             // what a quit does, park or stop, to a session it would leave running where no daemon can
+    std::string task_after = "park";            // leave.task.after: a background task's session, its own after whichever way it was left
 };
 
 struct Settings {

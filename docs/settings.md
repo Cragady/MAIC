@@ -97,7 +97,7 @@ Your global file runs with LuaJIT and the standard library; `maic.home`, `maic.h
 | `colors` | The colour depth: `"auto"` (default: truecolor when `COLORTERM` is `truecolor` or `24bit`, else 256 colours when `TERM` (or `COLORTERM`) contains `256`, else the 16 ANSI colours), `"truecolor"`, `"256"` or `"16"`. Below truecolor a `#rrggbb` becomes the nearest xterm-256 colour (the 6x6x6 cube and the grey ramp, by squared distance in sRGB) or the nearest of the 16. |
 | `enter_sends` | `true`: in insert mode Enter sends a one-line input, Shift+Enter or Alt+Enter inserts the line break, and an input that already has several lines keeps Enter as a line break. Default `false`, the vim-like behaviour: Enter is always a line break and Alt+Enter or `:w` sends. `:set enter_sends on\|off` for a session. |
 | `max_tasks` | How many background tasks (the `task` tool with `background: true`, [tools.md](tools.md)) one session may have running at once (default `4`); past it the call is refused and the model told why. `0` turns background tasks off. A project's settings can only lower it. |
-| `leave` | What becomes of a session you leave, one value for each case: `switch` (`:new`, `:switch`, `:fork`) and `quit` (`:q`), each with `idle`, `working` and `after`, and `no_daemon`. Every case has a default; see [Leaving a session](#leaving-a-session). `--bg`, `--park` or `--stop` on the command decides for that one leave. |
+| `leave` | What becomes of a session you leave, one value for each case: `switch` (`:new`, `:switch`, `:fork`) and `quit` (`:q`), each with `idle`, `working` and `after`, `task` with `after`, and `no_daemon`. Every case has a default; see [Leaving a session](#leaving-a-session). `--bg`, `--park` or `--stop` on the command decides for that one leave. |
 | `server` | `maic server`: `listen` (default `127.0.0.1:7373`; any other address turns TLS on), `workspaces` (directories a remote session may open; default `~/dev2`, else the current directory), `cert` and `key` (a PEM pair; empty makes a self-signed one under `~/.local/state/maic/server/`). See [remote.md](remote.md). |
 | `global_lua` | Global file only. How your own Lua data files run: `settings.lua`, your themes and MAIC's shipped ones, `diction.lua`. `"full"` (default): the full standard library, as they always have. `"sandbox"`: a child process that cannot reach the system; `"restricted"`: the restricted state in MAIC's own process ([Lua levels](#lua-levels)). MAIC has to know before the file runs, so it reads this from the file's text: write it literally, `global_lua = "sandbox"`; a value computed in Lua is an error. |
 | `lua_memory_mb` | Global file only. The memory cap of settings Lua at the sandbox and restricted levels, in MB (default `256`): the sandbox's child process may grow by this much, and the restricted state's heap may reach it. Read literally from the global file for the global file itself, like `global_lua`. |
@@ -121,6 +121,7 @@ Your global file runs with LuaJIT and the standard library; `maic.home`, `maic.h
 leave = {
   switch = { idle = "park", working = "bg", after = "park" },
   quit = { idle = "stop", working = "bg", after = "park" },
+  task = { after = "park" },
   no_daemon = "park",
 }
 ```
@@ -129,13 +130,25 @@ leave = {
 | :--- | :--- | :--- |
 | `switch.idle` | `"park"` | An idle session you leave through `:new`, `:switch` or `:fork`. `"ask"` asks each time. |
 | `switch.working` | `"bg"` | A working session you leave that way (a response, a paused or queued turn, a `!cmd`). `"ask"` asks each time; `"park"` and `"stop"` interrupt its turn. |
-| `switch.after` | `"park"` | What a session left working becomes once its work ends with no window on it. A background task's session (the `task` tool's `background = true`) follows it too when its job is done. |
+| `switch.after` | `"park"` | What a session left working becomes once its work ends with no window on it. |
 | `quit.idle` | `"stop"` | The idle session in focus when you quit (`:q`, or an interface that closes). `"ask"` asks each time. |
 | `quit.working` | `"bg"` | The working session in focus when you quit: a quit mid-turn is a switch to the void, so with the [daemon](daemon.md) it keeps working. `"ask"` asks each time. |
 | `quit.after` | `"park"` | What a session a quit left working becomes once its work is done. |
+| `task.after` | `"park"` | What a background task's session (the `task` tool's `background = true`) becomes once its work ends with no window on it: when its job is done, and whenever it is left working later, whichever way. A task is its own session: it follows its own case and nothing from its parent, whether its parent was in front or in the background when it started. |
 | `no_daemon` | `"park"` | Where no daemon can keep a session running (the TUI's or `maic --rpc`'s own engine): what a quit does, `"park"` or `"stop"`, to a session it would leave loaded, and to every session in that MAIC's background. `"park"` interrupts the turn and parks it. |
 
-`--bg`, `--park` or `--stop` on `:q`, `:new`, `:switch` or `:fork` (and maic.nvim's `:MaicNew`, `:MaicSwitch`, `:MaicFork`) decides for that one leave, whatever the case; parking or stopping a working session that way is asked first. A case leaves alone a session another window has in focus; a flag does not. Layers replace only the cases they name, so a project's file can change `quit.idle` and keep the rest. An unknown case or value is an error naming it when settings load; `"ask"` is accepted for the `idle` and `working` cases of `switch` and `quit`: the TUI asks b/p/s and maic.nvim asks through `vim.ui.select` (when nvim quits, before it goes), and a client that goes without being asked (a connection that closes, `maic --rpc` at stdin's end) gets the shipped value, `"stop"` for an idle session and `"bg"` for a working one. `no_daemon` only takes `"park"` or `"stop"`. The old `session_leave` key is an error naming this table.
+`--bg`, `--park` or `--stop` on `:q`, `:new`, `:switch` or `:fork` (and maic.nvim's `:MaicNew`, `:MaicSwitch`, `:MaicFork`) decides for that one leave, whatever the case; parking or stopping a working session that way is asked first. A case leaves alone a session another window has in focus; a flag does not. Layers replace only the cases they name, so a project's file can change `quit.idle` and keep the rest. An unknown case or value is an error naming it when settings load (`task` has only `after`); `"ask"` is accepted for the `idle` and `working` cases of `switch` and `quit`: the TUI asks b/p/s and maic.nvim asks through `vim.ui.select` (when nvim quits, before it goes), and a client that goes without being asked (a connection that closes, `maic --rpc` at stdin's end) gets the shipped value, `"stop"` for an idle session and `"bg"` for a working one. `no_daemon` only takes `"park"` or `"stop"`. The old `session_leave` key is an error naming this table.
+
+**One engine per transcript.** Without the [daemon](daemon.md) each window (the TUI, a maic.nvim tab) runs its own engine, so a second window on a session another one has open is refused: "session ID is open in another MAIC (pid N): one engine per transcript". An open session holds `held/<id>.lock` in the runtime directory (`$XDG_RUNTIME_DIR/maic/`, else `~/.local/state/maic/run/`) until it is parked, stopped or its MAIC ends; one a killed MAIC left is taken over. With the daemon every window is its client, so the daemon owns the session and windows share it. `maic -r ID --no-append` opens a new session that points at a held one.
+
+**A remote flag only tightens.** From a remote client (maic-server) `--park` and `--stop` may tighten the case (`bg`, then `park`, then `stop`), but a flag that loosens it is refused with `maic_step_up_required`, and nothing changes: loosening needs a step-up, which waits for accounts ([roadmap](roadmap.md) item 6). A case set to `"ask"` counts as its shipped value there.
+
+**Where we came from** (Micaiah, 2026-10-03). The options not taken, kept in view in case more expansive behaviour is wanted later:
+
+* A task follows its own case. Not taken: a task inheriting its parent's leave (and a task started while its parent was in the background behaving otherwise than one started in front).
+* `task.after` is a case of its own. Not taken: reusing `switch.after` for a finished task, as before.
+* One engine per transcript without the daemon. Not taken: two engines on one transcript, each appending to it.
+* A remote flag that loosens the case is refused. Not taken: a step-up that would let it through, until accounts exist.
 
 ## Model presets and tiers
 

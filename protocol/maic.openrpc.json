@@ -433,7 +433,7 @@
       "params": [
         {
           "name": "as",
-          "description": "`bg`, `park`, `stop`, or `default` (the session's `leave.quit`; `maic_leave_ask` when that case is `ask`). A session left working in the background gets `leave.quit.after`.",
+          "description": "`bg`, `park`, `stop`, or `default` (the session's `leave.quit`; `maic_leave_ask` when that case is `ask`). A session left working in the background gets `leave.quit.after` (a background task's session, `leave.task.after`). A remote client's verb looser than the case (bg < park < stop) is refused with `maic_step_up_required`.",
           "required": false,
           "schema": {
             "enum": ["default", "bg", "park", "stop"]

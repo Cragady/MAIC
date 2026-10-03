@@ -239,13 +239,13 @@ idle()
 send("bg:explore:look around")
 expect(wait_for("the explore agent works in the background: look around") and wait_for("the explore task finished"),
   "a background task's start and end show in its parent's conversation")
--- Its job done with no window on it, the task's session is parked (leave.switch.after).
+-- Its job done with no window on it, the task's session is parked (leave.task.after).
 expect(vim.wait(10000, function()
   for _, e in pairs(ui.here().conn.index) do
     if e.kind == "sub" and e.parent == fork.session and e.state == "parked" then return true end
   end
   return false
-end, 20), "the finished task's session is parked (leave.switch.after)")
+end, 20), "the finished task's session is parked (leave.task.after)")
 local task, second_line
 vim.ui.select = function(items, _, cb)
   second_line = items[2]

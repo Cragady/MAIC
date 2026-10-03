@@ -8,6 +8,7 @@
 #include "maic/tools.hpp"
 
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -84,11 +85,59 @@ void SessionLog::create(const std::string& kind, const fs::path& home) {
         throw std::runtime_error("can't create session log " + path_.string() + ": " + std::strerror(errno));
     }
     close(fd);
+    hold(path_.stem().string());
     out_.open(path_, std::ios::app);
 }
 
 SessionLog::SessionLog(const std::string& kind, const fs::path& home) {
     create(kind, home);
+}
+
+// One engine per transcript (Micaiah, 2026-10-03): an open log holds <runtime>/held/<id>.lock, its PID inside, beside the
+// daemon's socket ($XDG_RUNTIME_DIR/maic, else <state>/run). The kernel lets go of a dead process's flock, so a
+// lock a crashed MAIC left is taken over; release() removes it. Keyed by id, so a move (:init) keeps it.
+void SessionLog::hold(const std::string& id) {
+    const char* rt = std::getenv("XDG_RUNTIME_DIR");
+    fs::path dir = (rt && *rt ? fs::path(rt) / "maic" : state_dir() / "run") / "held";
+    fs::create_directories(dir);
+    std::error_code ec;
+    fs::permissions(dir.parent_path(), fs::perms::owner_all, fs::perm_options::replace, ec);
+    fs::path lock = dir / (id + ".lock");
+    for (;;) {
+        int fd = open(lock.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        if (fd < 0) throw std::runtime_error("can't create " + lock.string() + ": " + std::strerror(errno));
+        if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+            char pid[32] = {};
+            ssize_t n = pread(fd, pid, sizeof(pid) - 1, 0);
+            close(fd);
+            throw std::runtime_error("session " + id + " is open in another MAIC" + (n > 0 ? " (pid " + std::string(pid, static_cast<size_t>(n)) + ")" : "") +
+                                     ": one engine per transcript. Use that window or quit it; with the daemon (maic daemon start) windows share their "
+                                     "sessions, and maic -r " + id + " --no-append forks it");
+        }
+        // The holder may have let go and removed the file between our open and our lock: lock the one at the path.
+        struct stat ours{}, there{};
+        if (fstat(fd, &ours) == 0 && stat(lock.c_str(), &there) == 0 && ours.st_ino == there.st_ino && ours.st_dev == there.st_dev) {
+            std::string pid = std::to_string(getpid());
+            if (ftruncate(fd, 0) != 0 || pwrite(fd, pid.data(), pid.size(), 0) < 0) {}  // the lock holds without it; a refusal names no process
+            held_ = lock;
+            held_fd_ = fd;
+            return;
+        }
+        close(fd);
+    }
+}
+
+void SessionLog::release() {
+    std::lock_guard lock(mu_);
+    out_.close();
+    if (held_fd_ < 0) return;
+    unlink(held_.c_str());
+    close(held_fd_);
+    held_fd_ = -1;
+}
+
+SessionLog::~SessionLog() {
+    release();
 }
 
 namespace {
@@ -118,18 +167,24 @@ SessionLog::SessionLog(Fork, const fs::path& parent, size_t records, const std::
 }
 
 SessionLog::SessionLog(Reopen, const fs::path& path) : path_(path) {
-    // A move this session was in the middle of when MAIC stopped is finished first; it may have left the file elsewhere.
-    recovered_ = recover_relocations(path.stem().string());
-    if (!fs::is_regular_file(path_)) {
-        if (auto found = find_session(path.stem().string()); found && !recovered_.empty()) path_ = found->path;
-    }
-    if (!fs::is_regular_file(path_)) throw std::runtime_error("no session at " + path.string());
-    out_.open(path_, std::ios::app);
-    if (!out_) throw std::runtime_error("can't append to " + path_.string());
-    std::ifstream in(path_);
-    for (std::string line; std::getline(in, line);) {
-        auto j = nlohmann::json::parse(line, nullptr, false);
-        if (j.is_object() && j.value("type", "") == "skeleton") described_.insert(j.value("of", "") + "\x1f" + j.value("hash", ""));
+    hold(path.stem().string());
+    try {
+        // A move this session was in the middle of when MAIC stopped is finished first; it may have left the file elsewhere.
+        recovered_ = recover_relocations(path.stem().string());
+        if (!fs::is_regular_file(path_)) {
+            if (auto found = find_session(path.stem().string()); found && !recovered_.empty()) path_ = found->path;
+        }
+        if (!fs::is_regular_file(path_)) throw std::runtime_error("no session at " + path.string());
+        out_.open(path_, std::ios::app);
+        if (!out_) throw std::runtime_error("can't append to " + path_.string());
+        std::ifstream in(path_);
+        for (std::string line; std::getline(in, line);) {
+            auto j = nlohmann::json::parse(line, nullptr, false);
+            if (j.is_object() && j.value("type", "") == "skeleton") described_.insert(j.value("of", "") + "\x1f" + j.value("hash", ""));
+        }
+    } catch (...) {
+        release();  // a constructor that throws runs no destructor
+        throw;
     }
 }
 

@@ -405,13 +405,21 @@ void read_leave(LeaveSettings& into, const json& t, const std::string& where) {
         for (size_t i = 0; i < allowed.size(); ++i) list += (i == 0 ? "\"" : i + 1 == allowed.size() ? " or \"" : ", \"") + allowed[i] + "\"";
         throw std::runtime_error(where + ": leave." + name + " must be " + list + ", not " + (v.is_string() ? "\"" + got + "\"" : got));
     };
-    if (!t.is_object()) throw std::runtime_error(where + ": leave must be a table of cases: switch, quit, no_daemon");
+    if (!t.is_object()) throw std::runtime_error(where + ": leave must be a table of cases: switch, quit, task, no_daemon");
     for (const auto& [key, v] : t.items()) {
         if (key == "no_daemon") {
             verb(key, v, {"park", "stop"}, into.no_daemon);
             continue;
         }
-        if (key != "switch" && key != "quit") throw std::runtime_error(where + ": leave." + key + " is not a case (switch, quit, no_daemon)");
+        if (key == "task") {
+            if (!v.is_object()) throw std::runtime_error(where + ": leave.task must be a table of cases: after");
+            for (const auto& [k, x] : v.items()) {
+                if (k != "after") throw std::runtime_error(where + ": leave.task." + k + " is not a case (after)");
+                verb("task.after", x, {"bg", "park", "stop"}, into.task_after);
+            }
+            continue;
+        }
+        if (key != "switch" && key != "quit") throw std::runtime_error(where + ": leave." + key + " is not a case (switch, quit, task, no_daemon)");
         if (!v.is_object()) throw std::runtime_error(where + ": leave." + key + " must be a table of cases: idle, working, after");
         LeaveCase& c = key == "switch" ? into.switching : into.quitting;
         for (const auto& [k, x] : v.items()) {
@@ -964,8 +972,9 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"//enter_sends", "true: Enter sends a one-line input in insert mode, Shift+Enter or Alt+Enter insert a newline; false (vim-like): Enter is always a newline, Alt+Enter or :w sends"},
         {"leave", {{"switch", {{"idle", d.leave.switching.idle}, {"working", d.leave.switching.working}, {"after", d.leave.switching.after}}},
                    {"quit", {{"idle", d.leave.quitting.idle}, {"working", d.leave.quitting.working}, {"after", d.leave.quitting.after}}},
+                   {"task", {{"after", d.leave.task_after}}},
                    {"no_daemon", d.leave.no_daemon}}},
-        {"//leave", "what becomes of a session you leave: switch (:new, :switch, :fork) and quit (:q), each with idle, working and after (what a session left working becomes when its work ends; a background task's end follows switch.after), as bg, park or stop (switch.idle and switch.working may also be ask); no_daemon, park or stop, is what a quit does to a session it would leave running where no daemon can keep it. --bg, --park or --stop on the command decides once. docs/settings.md"},
+        {"//leave", "what becomes of a session you leave: switch (:new, :switch, :fork) and quit (:q), each with idle, working and after (what a session left working becomes when its work ends), as bg, park or stop (the idle and working cases may also be ask); task.after, the same for a background task's session, its own whichever way it was left; no_daemon, park or stop, is what a quit does to a session it would leave running where no daemon can keep it. --bg, --park or --stop on the command decides once. docs/settings.md"},
         {"max_tasks", d.max_tasks},
         {"//max_tasks", "background tasks (the task tool's background = true) one session may have running at once; past it the call is refused. 0 turns them off; a project's settings can only lower it"},
         {"record", d.record},
