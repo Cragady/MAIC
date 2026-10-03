@@ -2379,6 +2379,110 @@ int main() {
         after.finish();
     }
 
+    section("an approval or a question nobody answers times out: approvals_timeout denies it and tells the model");
+    {
+        // One engine that gives a person a second to answer, and one whose limit is 0: no timeout at all.
+        EngineOptions ot = o;
+        ot.settings.approvals_timeout = 1;
+        ot.index_file = root / "state" / "engine-timeout" / "index.json";
+        ot.protocol_log = root / "state" / "engine-timeout" / "protocol.log";
+        Engine e(ot);
+        Recording timed("timeout");
+        TestClient a(e, timed, Origin::Local, "tui");
+        a.hello();
+        std::string tid = a.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}}).value("id", "");
+        a.ok("maid.session.subscribe", {{"session", tid}});
+        a.pump(0ms);
+        auto request_count = [&] {
+            std::lock_guard lock(fake.mu);
+            return fake.requests.size();
+        };
+        // Whether any request from `from` on carries `needle` in one of its messages.
+        auto says_since = [&](size_t from, const std::string& needle) {
+            std::lock_guard lock(fake.mu);
+            for (size_t i = from; i < fake.requests.size(); ++i) {
+                for (const auto& m : fake.requests[i]["messages"]) {
+                    if (m.contains("content") && FakeServer::text_of(m["content"]).find(needle) != std::string::npos) return true;
+                }
+            }
+            return false;
+        };
+
+        // 1. Nobody answers: the engine denies it, `by` the timeout, marked timed_out.
+        size_t mark = a.events.size();
+        size_t before = request_count();
+        plan({shell("echo timed")});
+        a.ok("response.create", {{"conversation", tid}, {"input", "run it"}});
+        long at = a.until_type("maid.approval.requested", mark);
+        auto began = std::chrono::steady_clock::now();
+        long ans = a.until_type("maid.approval.answered", mark);
+        auto waited = std::chrono::steady_clock::now() - began;
+        const json* done = ans > 0 ? &a.events[ans] : nullptr;
+        expect(at > 0 && done && (*done)["choice"] == "no" && (*done)["by"]["client"] == "engine" && (*done)["by"]["name"] == "timeout" &&
+                   (*done)["by"]["origin"] == "local" && (*done)["timed_out"] == true,
+               "an approval nobody answers is denied by the engine's timeout: choice no, by timeout, timed_out");
+        expect(waited >= 900ms && waited < 10s, "after about the second approvals_timeout gave it, and not much more");
+        expect(a.until_idle(mark) > 0 && says_since(before, "NOT ANSWERED within 1 s"),
+               "the turn goes on, and the model's next request says NOT ANSWERED within 1 s");
+
+        // 2. An answer inside the second wins as usual.
+        mark = a.events.size();
+        plan({shell("echo quick")});
+        a.ok("response.create", {{"conversation", tid}, {"input", "run it now"}});
+        long ask2 = a.until_type("maid.approval.requested", mark);
+        if (ask2 > 0) a.ok("maid.approval.answer", {{"session", tid}, {"approval", a.events[ask2]["id"]}, {"choice", "yes"}});
+        long ans2 = a.until_type("maid.approval.answered", mark);
+        const json* done2 = ans2 > 0 ? &a.events[ans2] : nullptr;
+        expect(ask2 > 0 && done2 && (*done2)["choice"] == "yes" && (*done2)["by"]["client"] == a.id && !done2->contains("timed_out"),
+               "an answer inside the second wins: choice yes, by the client, no timed_out");
+        expect(a.until_idle(mark) > 0, "the command runs and the turn ends");
+
+        // 3. approvals_timeout = 0: no limit, it waits as long as it takes.
+        EngineOptions o0 = o;
+        o0.settings.approvals_timeout = 0;
+        o0.index_file = root / "state" / "engine-no-timeout" / "index.json";
+        o0.protocol_log = root / "state" / "engine-no-timeout" / "protocol.log";
+        Engine e0(o0);
+        Recording patient("no-timeout");
+        TestClient z(e0, patient, Origin::Local, "tui");
+        z.hello();
+        std::string zid = z.ok("createConversation", {{"maid", {{"workspace", ws.string()}}}}).value("id", "");
+        z.ok("maid.session.subscribe", {{"session", zid}});
+        z.pump(0ms);
+        size_t mark0 = z.events.size();
+        plan({shell("echo late")});
+        z.ok("response.create", {{"conversation", zid}, {"input", "run it eventually"}});
+        long ask0 = z.until_type("maid.approval.requested", mark0);
+        {
+            auto deadline = std::chrono::steady_clock::now() + 2s;
+            while (std::chrono::steady_clock::now() < deadline) z.pump(50ms);
+        }
+        expect(ask0 > 0 && !z.find("maid.approval.answered", mark0), "with approvals_timeout = 0 an unanswered approval is still waiting after 2 s");
+        if (ask0 > 0) z.ok("maid.approval.answer", {{"session", zid}, {"approval", z.events[ask0]["id"]}, {"choice", "yes"}});
+        long late = z.until_type("maid.approval.answered", mark0);
+        expect(late > 0 && z.events[late]["choice"] == "yes" && !z.events[late].contains("timed_out"), "answering it late still runs the command, with no timed_out");
+        expect(z.until_idle(mark0) > 0, "and the turn ends");
+        patient.finish();
+
+        // 4. A question nobody answers: empty, marked timed out, and the model told to go on.
+        mark = a.events.size();
+        size_t before_q = request_count();
+        plan({json{{"name", "question"}, {"arguments", {{"question", "which cat?"}, {"options", json::array({"whiskers", "felix"})}}}}});
+        a.ok("response.create", {{"conversation", tid}, {"input", "ask me which cat"}});
+        long asked = a.until_type("maid.question.asked", mark);
+        auto began_q = std::chrono::steady_clock::now();
+        long qans = a.until_type("maid.question.answered", mark);
+        auto waited_q = std::chrono::steady_clock::now() - began_q;
+        const json* qdone = qans > 0 ? &a.events[qans] : nullptr;
+        expect(asked > 0 && qdone && (*qdone)["timed_out"] == true && (*qdone)["by"]["client"] == "engine" && (*qdone)["by"]["name"] == "timeout" &&
+                   (*qdone)["withdrawn"] == false,
+               "a question nobody answers comes back marked timed out, by the engine's timeout");
+        expect(waited_q >= 900ms && waited_q < 10s, "after about the second it was given");
+        expect(a.until_idle(mark) > 0 && says_since(before_q, "no answer within 1 s"),
+               "the turn goes on, and the model is told to go on with what it assumed");
+        timed.finish();
+    }
+
     section("one bad item degrades only itself: a service file that doesn't load, a vendor manifest that doesn't parse");
     {
         // A maid tree of its own: the real one's files, a bad service beside a healthy one, and a corrupt manifest.

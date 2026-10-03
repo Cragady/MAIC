@@ -44,10 +44,13 @@ struct ApprovalRequest {
 
 // The user's answer; `feedback` is a sentence for the model when the answer is No ("use the test config").
 // `withdrawn`: a steer took the approval's place, and `feedback` is what the call's result says instead.
+// `timed_out`: nobody answered within approvals_timeout, and the engine denied it on the user's behalf; `feedback`
+// then names the seconds it waited.
 struct ApprovalAnswer {
     Approval choice = Approval::No;
     std::string feedback;
     bool withdrawn = false;
+    bool timed_out = false;
 };
 
 // What a turn its front end stopped does next (AgentEvents::stopped): a cancel ends it; the steering actions of

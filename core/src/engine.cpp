@@ -397,6 +397,7 @@ struct PendingQuestion {
     std::optional<std::string> answer;
     json by;
     bool withdrawn = false;  // a steer took its place
+    bool timed_out = false;  // nobody answered within approvals_timeout
 };
 
 // The response being run: what its events carry.
@@ -3033,13 +3034,26 @@ public:
         s_.approvals[id] = PendingApproval{ev, r.proposed, std::nullopt, nullptr};
         if (!s_.parent.empty()) e_.mirror(s_, id, ev);
         e_.set_activity(s_, "waiting", {{"kind", "approval"}, {"id", id}, {"tool", r.tool}, {"summary", r.summary}});
-        s_.cv.wait(lock, [&] { return s_.approvals[id].answer.has_value() || s_.cancel.load(); });
+        // Waited for at most approvals_timeout seconds (0: with no limit): an approval nobody answers must not hold
+        // the session forever. A timeout is a denial, answered by the engine itself.
+        int timeout_s = s_.settings.approvals_timeout;
+        auto has_answer = [&] { return s_.approvals[id].answer.has_value() || s_.cancel.load(); };
+        if (timeout_s > 0) {
+            if (!s_.cv.wait_for(lock, std::chrono::seconds(timeout_s), has_answer)) {
+                s_.approvals[id].answer = ApprovalAnswer{Approval::No, "approval timed out after " + std::to_string(timeout_s) + " s; treated as denied"};
+                s_.approvals[id].answer->timed_out = true;
+                s_.approvals[id].by = json{{"client", "engine"}, {"name", "timeout"}, {"origin", "local"}};
+            }
+        } else {
+            s_.cv.wait(lock, has_answer);
+        }
         PendingApproval p = s_.approvals[id];
         s_.approvals.erase(id);
         s_.answered.insert(id);
         ApprovalAnswer answer = p.answer.value_or(ApprovalAnswer{Approval::No, "interrupted by the user"});
         json by = p.by.is_null() ? (s_.cancel_by.is_null() ? json{{"client", "engine"}, {"name", "engine"}, {"origin", "local"}} : s_.cancel_by) : p.by;
         json done = {{"type", "maid.approval.answered"}, {"id", id}, {"choice", answer.withdrawn ? "withdrawn" : choice_name(answer.choice)}, {"by", by}};
+        if (answer.timed_out) done["timed_out"] = true;
         if (!call_id.empty()) done["call_id"] = call_id;
         e_.emit(s_, done);
         if (!s_.parent.empty()) e_.mirror(s_, id, done);
@@ -3056,13 +3070,25 @@ public:
         ev["stream_id"] = s_.id;
         s_.questions[id] = PendingQuestion{ev, std::nullopt, nullptr};
         e_.set_activity(s_, "waiting", {{"kind", "question"}, {"id", id}, {"summary", text}});
-        s_.cv.wait(lock, [&] { return s_.questions[id].answer.has_value() || s_.cancel.load(); });
+        // As ask() above: waited for at most approvals_timeout seconds (0: with no limit). A question nobody
+        // answers comes back empty, marked timed out, and the model is told to go on with what it assumed.
+        int timeout_s = s_.settings.approvals_timeout;
+        auto has_answer = [&] { return s_.questions[id].answer.has_value() || s_.cancel.load(); };
+        if (timeout_s > 0) {
+            if (!s_.cv.wait_for(lock, std::chrono::seconds(timeout_s), has_answer)) s_.questions[id].timed_out = true;
+        } else {
+            s_.cv.wait(lock, has_answer);
+        }
         PendingQuestion q = s_.questions[id];
         s_.questions.erase(id);
         s_.answered.insert(id);
         json by = q.by.is_null() ? (s_.cancel_by.is_null() ? json{{"client", "engine"}, {"name", "engine"}, {"origin", "local"}} : s_.cancel_by) : q.by;
-        e_.emit(s_, {{"type", "maid.question.answered"}, {"id", id}, {"by", by}, {"withdrawn", q.withdrawn}});
+        if (q.timed_out) by = json{{"client", "engine"}, {"name", "timeout"}, {"origin", "local"}};  // nobody's answer: the engine's
+        json answered = {{"type", "maid.question.answered"}, {"id", id}, {"by", by}, {"withdrawn", q.withdrawn}};
+        if (q.timed_out) answered["timed_out"] = true;
+        e_.emit(s_, answered);
         settle_activity();
+        if (q.timed_out) return "no answer within " + std::to_string(timeout_s) + " s; continue with your best judgement and say what you assumed.";
         return q.answer.value_or("");
     }
 

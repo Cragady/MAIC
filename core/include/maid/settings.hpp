@@ -240,6 +240,7 @@ struct Settings {
     long reviewer_budget_tokens = 0;  // the reviewer's own token cap; past it, what it would review is asked. 0 = none
     Checkers checkers;              // global file only: the checker panel (no judges: the reviewer alone)
     bool dumb_auto_ok = true;       // false: entering auto mode under a dumb harness warns and asks first
+    int approvals_timeout = 300;    // seconds an approval waits for an answer before it is denied; 0 = no limit
     // Read from the global file only (a project's copy is ignored with a warning; docs/settings.md):
     std::string global_lua = "full";         // the tier of your own Lua data files: full, sandbox or restricted (written literally)
     int lua_memory_mb = 256;                 // the memory cap of settings Lua below full trust

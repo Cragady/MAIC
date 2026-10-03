@@ -266,7 +266,7 @@ json settings_json(const fs::path& file, const fs::path& dir) {
 // harness, the providers it defines, its instruction files and its tools.
 json capabilities(const ProjectDir& p) {
     json caps = {{"allow", json::array()}, {"ask", json::array()}, {"deny", json::array()}, {"mode", ""}, {"harness", ""}, {"tripwire", ""},
-                 {"allow_isolated", false}, {"dumb_auto_ok", false}, {"providers", json::object()}, {"error", ""},
+                 {"allow_isolated", false}, {"dumb_auto_ok", false}, {"approvals_timeout", json()}, {"providers", json::object()}, {"error", ""},
                  {"instructions", json::array()}, {"lua_tools", json::array()}, {"script_tools", json::object()}};
     for (const auto& f : p.settings) {
         json j;
@@ -292,6 +292,13 @@ json capabilities(const ProjectDir& p) {
         }
         for (const char* key : {"allow_isolated", "dumb_auto_ok"}) {
             if (j.value(key, json()).is_boolean() && j[key].get<bool>()) caps[key] = true;
+        }
+        // The seconds this directory's files would make an approval wait (0: no timeout at all): the weakest any of
+        // them asks for, as the booleans above take any file's true. Absent when none of them sets it.
+        if (j.contains("approvals_timeout") && j["approvals_timeout"].is_number()) {
+            int v = static_cast<int>(j["approvals_timeout"].get<double>());
+            int had = caps["approvals_timeout"].is_number() ? static_cast<int>(caps["approvals_timeout"].get<double>()) : -1;
+            caps["approvals_timeout"] = (v == 0 || had == 0) ? 0 : std::max(v, had);
         }
         if (j.contains("providers") && j["providers"].is_object()) {
             for (const auto& [name, pj] : j["providers"].items()) caps["providers"][name] = pj.dump();
@@ -351,6 +358,16 @@ std::vector<std::string> widenings(const json& old_caps, const json& now) {
     if (nt != ot && !nt.empty() && nt != "machine") out.push_back("tripwire = \"" + nt + "\"");
     for (const char* key : {"allow_isolated", "dumb_auto_ok"}) {
         if (now.value(key, false) && !old.value(key, false)) out.push_back(std::string(key) + " = true");
+    }
+    // approvals_timeout: a project may tighten the guard (a smaller number of seconds) but not weaken it: 0 (no
+    // timeout at all), or more than the value in force without its own files (the default, 300), is a widening.
+    auto timeout_of = [](const json& j) {
+        return j.is_number() ? static_cast<int>(j.get<double>()) : 300;
+    };
+    if (now.contains("approvals_timeout") && now["approvals_timeout"].is_number()) {
+        int nt = timeout_of(now["approvals_timeout"]), ot = timeout_of(old.value("approvals_timeout", json()));
+        if (nt == 0) out.push_back("approvals_timeout = 0 (no timeout)");
+        else if (nt > ot) out.push_back("approvals_timeout " + std::to_string(ot) + " -> " + std::to_string(nt));
     }
     json op = old.value("providers", json::object()), np = now.value("providers", json::object());
     for (const auto& [name, v] : np.items()) {

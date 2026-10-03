@@ -206,9 +206,9 @@ Every event is one notification, `maid.event`, whose params are the event object
 | `maid.input.added` | `item` (an input `message`, role `user`), `queued`, `by` |
 | `maid.review.started`, `maid.review.delta`, `maid.review.verdict`, `maid.review.cancelled` | `item_id` and the fields of the addendum; `node` when a trusted node reviews; `by` on `cancelled` |
 | `maid.approval.requested` | `id`, `item_id`, `thread {session, agent, title}`, `tool`, `summary`, `reason`, `origin`, `always_covers`, `preview`, `path`, `proposed_size` |
-| `maid.approval.answered` | `id`, `choice` (`yes`, `no`, `always`, `trip`, or `withdrawn` by a steer), `by` |
+| `maid.approval.answered` | `id`, `choice` (`yes`, `no`, `always`, `trip`, or `withdrawn` by a steer), `by`, `timed_out` (`true` only when nobody answered within `approvals_timeout`: the engine denied it, and `by` names `timeout`) |
 | `maid.question.asked` | `id`, `thread`, `text`, `options` |
-| `maid.question.answered` | `id`, `by`, `withdrawn` |
+| `maid.question.answered` | `id`, `by`, `withdrawn`, `timed_out` (`true` only when nobody answered within `approvals_timeout`: the answer is empty, and `by` names `timeout`) |
 | `maid.steer.applied` | section 11 |
 | `maid.tool.output.delta` | `item_id`, `offset`, `data` or `skipped`: a script tool's stderr, or `!cmd`, while it runs |
 | `maid.file.written` | `path`, `tool` (nvim's `:checktime`, `MaidFileWritten`) |

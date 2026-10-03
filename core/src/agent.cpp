@@ -105,6 +105,16 @@ std::string seconds(long ms) {
     return buf;
 }
 
+// " within 300 s" for a timed-out approval's reason ("approval timed out after 300 s; treated as denied"); "" when
+// the reason names no number.
+std::string waited_within(const std::string& reason) {
+    size_t at = reason.find("after ");
+    if (at == std::string::npos) return "";
+    size_t begin = at + 6, end = begin;
+    while (end < reason.size() && std::isdigit(static_cast<unsigned char>(reason[end]))) ++end;
+    return end == begin ? "" : " within " + reason.substr(begin, end - begin) + " s";
+}
+
 // "qwen-9b deny, deletes the tests in 1.2 s; claude-haiku allow in 3.0 s"
 std::string checks_text(const std::vector<Judgement>& said, bool reasons) {
     std::string out;
@@ -1486,6 +1496,7 @@ Decision Agent::authorise(const Action& action, const std::string& tool, const s
                 break;
             case Approval::No:
                 ++denials_;
+                if (answer.timed_out) return {Verdict::Deny, "NOT ANSWERED" + waited_within(answer.feedback) + "; treated as denied. Continue without this action, or say what you need."};
                 if (!answer.feedback.empty()) return {Verdict::Deny, "DENIED by the user, who says: " + answer.feedback};
                 return {Verdict::Deny, "DENIED by the user. Ask what they want instead of retrying."};
             case Approval::Trip:
