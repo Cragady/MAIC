@@ -60,6 +60,12 @@ The gate makes no outbound connection. The only suites that would are three of c
 
 A single suite: `build/core/agent_test`, or `ctest --preset default -R agent`. Every C++ suite prints one line per check and exits with the failure count (`core/tests/check.hpp`).
 
+## The leave-cases audit
+
+A reminder, not a test. `tests/leave_cases.json` names every way of leaving a session as a combination of action (switch, quit), the session's state (idle, working, finished after leaving), its origin (a session you opened, a background task started while its parent was in front or in the background, a foreground subagent), windows (the only one on the session, or one of several), the daemon (running or not), the flag (none, `--bg`, `--park`, `--stop`) and place (local, remote): 768 combinations. Its rules, first match wins, map each one to what MAIC defines today with the shipped [leave table](settings.md#leaving-a-session), to `n/a` where it cannot happen, or to `UNDEFINED` with the reason.
+
+`scripts/leave_audit.py` expands them and prints how many are defined and how many are `UNDEFINED`, each `UNDEFINED` reason with the combinations it covers (`--all` prints every combination). `scripts/check.sh` runs it first on every run, `--quick` included; it always exits 0, so it never changes the gate's result. When a change defines a case, change its rule in the same commit, and the count goes down.
+
 ## The protocol conformance tests
 
 The engine protocol's checks ([design/engine-protocol.md](design/engine-protocol.md#15-schemas-the-ordering-machine-and-conformance)) are one checker used three ways: the engine runs it on every event it sends (the `guarded` tier logs a fault to `<state>/engine/protocol.log`), the tests run it on every exchange they drive, and `maic protocol check` runs it on recorded streams.
