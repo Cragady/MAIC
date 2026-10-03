@@ -7,6 +7,7 @@
 #include "maid/vendor.hpp"
 
 #include <cstdlib>
+#include <iostream>
 #include <stdexcept>
 
 namespace maid {
@@ -37,16 +38,25 @@ std::vector<Place> known_places(const Settings& settings, const fs::path& worksp
     add("tools", root_dir() / "tools", "MAID's helper scripts");
     fs::path models = settings.models_dir.empty() ? state_dir() / "models" : fs::path(settings.models_dir);
     add("models", models, "model files (models_dir)");
-    add("models/llamacpp", llamacpp_models_root(), "GGUFs the llama.cpp router serves");
+    add("models/llamacpp", models / "llamacpp", "GGUFs the llama.cpp router serves");
     add("vendor", vendor_dir(), "links to the vendored services");
-    for (const auto& e : load_vendor_manifest()) {
-        fs::path link = vendor_link(e);
-        if (fs::exists(link, ec)) add("vendor/" + e.name, fs::weakly_canonical(link, ec), e.description.substr(0, 60));
+    // The vendor links and the artifacts are listed on the side: if either fails, the other places still are.
+    try {
+        for (const auto& e : load_vendor_manifest()) {
+            fs::path link = vendor_link(e);
+            if (fs::exists(link, ec)) add("vendor/" + e.name, fs::weakly_canonical(link, ec), e.description.substr(0, 60));
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "maid: the vendor places are skipped: " << e.what() << "\n";
     }
     add("workflows", state_dir() / "workflows" / "comfyui", "your saved ComfyUI workflows");
     add("templates", state_dir() / "templates" / "comfyui", "your ComfyUI templates (originals, opened as copies)");
-    for (const auto& a : list_artifacts(services)) {
-        add(a.owner + "/" + a.name, a.resolved.empty() ? a.path : fs::path(a.resolved), a.description);
+    try {
+        for (const auto& a : list_artifacts(services)) {
+            add(a.owner + "/" + a.name, a.resolved.empty() ? a.path : fs::path(a.resolved), a.description);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "maid: the artifact places are skipped: " << e.what() << "\n";
     }
     return out;
 }
@@ -83,8 +93,10 @@ fs::path cd_target(const std::string& arg, const fs::path& workspace, const fs::
         return previous;
     }
     fs::path p = arg;
-    if (arg == "~") p = std::getenv("HOME");
-    else if (arg.rfind("~/", 0) == 0) p = fs::path(std::getenv("HOME")) / arg.substr(2);
+    const char* home = std::getenv("HOME");
+    if ((arg == "~" || arg.rfind("~/", 0) == 0) && (!home || !*home)) throw std::runtime_error("HOME is not set, so " + arg + " names nothing; give the full path");
+    if (arg == "~") p = home;
+    else if (arg.rfind("~/", 0) == 0) p = fs::path(home) / arg.substr(2);
     else if (p.is_relative()) p = workspace / p;
     if (fs::is_directory(p, ec)) return fs::weakly_canonical(p, ec);
     const Place* place = nullptr;

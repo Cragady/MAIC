@@ -262,6 +262,21 @@ SessionInfo read_session_info(const fs::path& path) {
     return info;
 }
 
+namespace {
+
+// One transcript's listing fields, or nothing when a field in it does not read (a null pid): said, and the
+// listing or the resume of the others goes on.
+std::optional<SessionInfo> try_session_info(const fs::path& path, std::vector<std::string>* notes = nullptr) {
+    try {
+        return read_session_info(path);
+    } catch (const std::exception& e) {
+        report_skipped(notes, "unreadable transcript " + path.string() + ": " + e.what());
+        return std::nullopt;
+    }
+}
+
+}  // namespace
+
 fs::path side_dir(const fs::path& session_file) {
     return session_file.parent_path() / (session_file.stem().string() + ".d");
 }
@@ -272,8 +287,8 @@ std::vector<fs::path> sub_sessions_of(const fs::path& path) {
     std::string id = path.stem().string();
     for (const auto& e : fs::directory_iterator(path.parent_path(), ec)) {
         if (e.path().extension() != ".jsonl" || e.path().stem().string().find("-sub-") == std::string::npos) continue;
-        SessionInfo info = read_session_info(e.path());
-        if (info.kind == "sub" && info.delegated_from == id) out.push_back(e.path());
+        auto info = try_session_info(e.path());
+        if (info && info->kind == "sub" && info->delegated_from == id) out.push_back(e.path());
     }
     return out;
 }
@@ -285,7 +300,7 @@ std::vector<SessionInfo> list_sessions(const std::optional<fs::path>& workspace)
     // Files from before homes existed sit directly in sessions/; they belong in general/.
     for (const auto& e : fs::directory_iterator(sessions_dir(), ec)) {
         if (e.path().extension() == ".jsonl") {
-            fs::create_directories(sessions_home("general"));
+            fs::create_directories(sessions_home("general"), ec);
             fs::rename(e.path(), sessions_home("general") / e.path().filename(), ec);
         }
     }
@@ -298,9 +313,9 @@ std::vector<SessionInfo> list_sessions(const std::optional<fs::path>& workspace)
             continue;
         }
         if (e.path().extension() != ".jsonl") continue;
-        SessionInfo info = read_session_info(e.path());
-        if (!want.empty() && info.workspace != want && info.opened_in != want) continue;
-        out.push_back(info);
+        auto info = try_session_info(e.path());
+        if (!info || (!want.empty() && info->workspace != want && info->opened_in != want)) continue;
+        out.push_back(*info);
     }
     std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.id > b.id; });
     return out;
@@ -313,7 +328,12 @@ std::optional<SessionInfo> find_session(const std::string& id_or_path) {
         for (const auto& s : list_sessions()) {
             if (fs::equivalent(s.path, id_or_path, ec)) return s;
         }
-        SessionInfo info = read_session_info(fs::absolute(id_or_path));
+        SessionInfo info;
+        try {
+            info = read_session_info(fs::absolute(id_or_path));
+        } catch (const std::exception& e) {
+            throw std::runtime_error("unreadable transcript " + fs::absolute(id_or_path).string() + ": " + e.what());
+        }
         info.home = "(unlisted)";
         return info;
     }
@@ -991,7 +1011,10 @@ std::vector<std::string> recover_relocations(const std::string& id) {
                 }
             }
             fs::path live = fs::exists(target, ec) ? target : source.value_or(fs::path());
-            if (!live.empty() && session_running(read_session_info(live))) continue;  // its own process is moving it now
+            if (!live.empty()) {
+                auto info = try_session_info(live, &notices);
+                if (!info || session_running(*info)) continue;  // its own process is moving it now, or it can't be told
+            }
             if (moving) {
                 if (!source) {
                     notices.push_back("an unfinished copy of session " + sid + " is at " + leftover.string() + " and no original was found; left as it is");

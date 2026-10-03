@@ -85,10 +85,11 @@ std::filesystem::path catalog_path();
 std::filesystem::path user_catalog_path();
 
 // The shipped catalog with the user's merged in: an entry with a known id replaces the fields it names, an
-// unknown id is added. Pure, for load_catalog and its test.
+// unknown id is added. Pure, for load_catalog and its test. A malformed entry is skipped: its problem goes into
+// `problems`, or to stderr once per process when none is given; the rest load.
 nlohmann::json merge_catalog(const nlohmann::json& shipped, const nlohmann::json& user);
-std::vector<CatalogEntry> parse_catalog(const nlohmann::json& j);
-std::vector<ApiModel> parse_api_models(const nlohmann::json& j);
+std::vector<CatalogEntry> parse_catalog(const nlohmann::json& j, std::vector<std::string>* problems = nullptr);
+std::vector<ApiModel> parse_api_models(const nlohmann::json& j, std::vector<std::string>* problems = nullptr);
 std::vector<CatalogEntry> load_catalog();
 const CatalogEntry* find_entry(const std::vector<CatalogEntry>& all, const std::string& id);
 

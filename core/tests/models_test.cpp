@@ -90,6 +90,7 @@ int main() {
     setenv("XDG_CONFIG_HOME", cfg.c_str(), 1);
     setenv("XDG_STATE_HOME", state.c_str(), 1);
     write_file(cfg / "maid" / "settings.lua", "return { models_dir = '" + mdir.string() + "' }");
+    setenv("MAID_MODELS_DIR", mdir.c_str(), 1);  // as main() exports it from settings
 
     section("the shipped catalog");
     std::ifstream in(catalog_path());
@@ -144,6 +145,19 @@ int main() {
         expect(p.find("api_models x: checked must be") != std::string::npos && p.find("limits.context and limits.output") != std::string::npos &&
                    p.find("input_cache_miss must be a price") != std::string::npos && p.find("utc ranges are HH:MM-HH:MM") != std::string::npos,
                "check names a bad date, a missing limit, a negative price and a malformed hour range: " + p);
+        // One malformed entry is skipped; the others are still read and priced.
+        json one_bad = shipped;
+        one_bad["api_models"].push_back({{"id", "mangled"}, {"provider", 7}, {"model", "m"}});
+        std::vector<std::string> skipped;
+        auto rest = parse_api_models(one_bad, &skipped);
+        bool priced = std::any_of(rest.begin(), rest.end(), [](const ApiModel& a) { return a.id == "deepseek-flash" && a.pricing.contains("periods"); });
+        expect(priced && rest.size() == apis.size() && skipped.size() == 1 && skipped[0].find("'mangled'") != std::string::npos && skipped[0].find("skipped") != std::string::npos,
+               "a malformed api_models entry is skipped with a warning naming it; the rest stay priced: " + joined(skipped));
+        json bad_entry = shipped;
+        bad_entry["models"].push_back({{"id", "mangled"}, {"files", 3}});
+        skipped.clear();
+        expect(parse_catalog(bad_entry, &skipped).size() == all.size() && skipped.size() == 1 && joined(check_catalog(bad_entry, json::object())).find("'mangled'") != std::string::npos,
+               "a malformed catalog entry is skipped, the others load, and maid models check names it");
 
         // 2026-10-05 is a Monday: 02:00 UTC is peak, 04:00 (the end of the first range) and 12:00 are not; Saturday never is.
         const std::time_t mon_0200 = 1791165600, mon_0400 = 1791172800, mon_1200 = 1791201600, sat_0200 = 1790992800;

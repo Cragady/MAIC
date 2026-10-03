@@ -2,6 +2,7 @@
 
 #include "lua_json.hpp"
 #include "maid/nvim_host.hpp"
+#include "maid/paths.hpp"
 #include "maid/sandbox.hpp"
 #include "maid/trust.hpp"
 
@@ -315,7 +316,7 @@ LuaTool read_tool(const fs::path& file) {
 
 fs::path global_tools_dir() {
     if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return fs::path(xdg) / "maid" / "tools";
-    return fs::path(std::getenv("HOME")) / ".config" / "maid" / "tools";
+    return home_dir() / ".config" / "maid" / "tools";
 }
 
 LuaToolSet load_lua_tools(const fs::path& workspace) {

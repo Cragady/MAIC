@@ -20,9 +20,6 @@
 #include <ctime>
 #include <deque>
 #include <fstream>
-#include <set>
-#include <mutex>
-#include <iostream>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -250,10 +247,13 @@ std::string timestamp() {
 
 std::vector<ServiceDef> load_services(const fs::path& dir, std::vector<std::string>* problems) {
     std::vector<ServiceDef> out;
-    if (!fs::is_directory(dir)) {
-        throw std::runtime_error("no services directory at " + dir.string());
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) {
+        std::string where = dir == root_dir() / "services" ? "services/ in " + root_dir_looked() : dir.string();
+        report_skipped(problems, "no services directory (looked for " + where + "); set MAID_HOME to a maid tree (no services are loaded)");
+        return out;
     }
-    for (const auto& entry : fs::directory_iterator(dir)) {
+    for (const auto& entry : fs::directory_iterator(dir, ec)) {
         if (entry.path().extension() != ".json") {
             continue;
         }
@@ -314,15 +314,7 @@ std::vector<ServiceDef> load_services(const fs::path& dir, std::vector<std::stri
             }
             out.push_back(std::move(def));
         } catch (const std::exception& e) {
-            std::string problem = entry.path().string() + ": " + e.what() + " (this service is skipped; the others still run)";
-            if (problems) {
-                problems->push_back(std::move(problem));
-            } else {
-                static std::mutex mu;
-                static std::set<std::string> told;
-                std::lock_guard lock(mu);
-                if (told.insert(problem).second) std::cerr << "maid: " << problem << "\n";
-            }
+            report_skipped(problems, entry.path().string() + ": " + e.what() + " (this service is skipped; the others still run)");
         }
     }
     std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.name < b.name; });

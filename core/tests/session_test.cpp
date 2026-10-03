@@ -23,6 +23,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <set>
 #include <thread>
 
 namespace fs = std::filesystem;
@@ -1002,6 +1003,31 @@ int main() {
         age(relocated, 90);
         clean(sessions, std::chrono::hours(24 * 30));
         expect(!fs::exists(relocated) && !fs::exists(side_dir(relocated)), "and goes with the session once the session is old");
+    }
+
+    section("a transcript with a null or mistyped field: the others still list and resume");
+    {
+        fs::path gen = sessions_home("general");
+        fs::create_directories(gen);
+        auto plant = [&](const std::string& id, const std::string& start) {
+            std::ofstream(gen / (id + ".jsonl")) << start << "\n" << R"({"type":"user","text":"hello"})" << "\n";
+        };
+        plant("20260102-090000-tui-11", R"({"type":"start","workspace":"/tmp","model":"m","pid":null})");
+        plant("20260102-090001-tui-12", R"({"type":"start","workspace":"/tmp","model":"m","pid":12})");
+        plant("20260102-090002-tui-13", R"({"type":"start","workspace":"/tmp","model":"m","host":7})");
+        std::set<std::string> ids;
+        for (const auto& info : list_sessions()) ids.insert(info.id);
+        auto good = find_session("20260102-090001-tui-12");
+        expect(ids.count("20260102-090001-tui-12") && !ids.count("20260102-090000-tui-11") && !ids.count("20260102-090002-tui-13") && good && good->turns == 1,
+               "the unreadable ones are skipped; the good one lists and is found for a resume");
+        bool named = false;
+        try {
+            find_session((gen / "20260102-090000-tui-11.jsonl").string());
+        } catch (const std::exception& e) {
+            named = std::string(e.what()).find("unreadable transcript " + (gen / "20260102-090000-tui-11.jsonl").string()) == 0;
+        }
+        expect(named, "asked for by its path, the bad one says it is unreadable and why");
+        for (const char* id : {"20260102-090000-tui-11", "20260102-090001-tui-12", "20260102-090002-tui-13"}) fs::remove(gen / (std::string(id) + ".jsonl"));
     }
 
     section("one engine per transcript: the hold");
