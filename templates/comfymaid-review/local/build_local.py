@@ -3,7 +3,7 @@
 
     python3 build_local.py review.json [-o OUTDIR]
 
-OUTDIR defaults to ~/.local/state/maic/reviews/<id>/. The folder holds index.html, app.js, style.css,
+OUTDIR defaults to ~/.local/state/maic/reviews/<id>/. The folder holds index.html, boot.js, app.js, style.css,
 vendor/vue.global.prod.js, data.js and replies.js. data.js is rewritten on every run; replies.js (Claude writes it)
 and answers.js / answers.json (the page writes them; answers.js starts as a null placeholder) are never overwritten. Nothing here is committed: the folder
 holds unique data.
@@ -14,7 +14,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 VUE = REPO / "vendor" / "vue" / "vue.global.prod.js"
-PAGE_FILES = ["index.html", "app.js", "style.css"]
+PAGE_FILES = ["index.html", "boot.js", "app.js", "style.css"]
 EMPTY_REPLIES = "window.REVIEW_REPLIES = {items: [], latest: null};\n"
 NO_ANSWERS = "window.REVIEW_ANSWERS = null;\n"
 

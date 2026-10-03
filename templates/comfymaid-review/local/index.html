@@ -233,15 +233,9 @@
 </div>
 </script>
 
-<!-- Classic scripts only (module imports are blocked over file://). Served by MAIC over http the shared copy of Vue is used, otherwise the one in this folder. -->
-<script>
-  window.REVIEW_HTTP = /^https?:$/.test(location.protocol);
-  document.write('<script src="' + (window.REVIEW_HTTP ? '../_vendor/vue/vue.global.prod.js' : './vendor/vue.global.prod.js') + '"><\/script>');
-</script>
-<script>
-  if (!window.Vue) document.write('<script src="./vendor/vue.global.prod.js"><\/script>');
-  if (!window.REVIEW_HTTP) document.write('<script src="./answers.js"><\/script>');
-</script>
+<!-- Classic scripts only (module imports are blocked over file://), and no inline scripts (MAIC's artifact sandbox refuses them). Vue comes from this folder in both cases. -->
+<script src="./vendor/vue.global.prod.js"></script>
+<script src="./boot.js"></script>
 <script src="./data.js"></script>
 <script src="./replies.js"></script>
 <script src="./app.js"></script>
