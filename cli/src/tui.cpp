@@ -1582,7 +1582,12 @@ bool App::handle(Event e) {
         if (asking()) return true;
         bool inserting = editor_.mode() == Editor::Mode::Insert || editor_.mode() == Editor::Mode::Replace;
         if (settings_.enter_sends && inserting && focus_ == Focus::Input) editor_.newline();
-        else if (!shift_enter) submit(editor_.text(), false);
+        else if (!shift_enter) {
+            // Normal mode after a send either way: the terminal's Esc + Enter arrives as one key or as two (the Esc
+            // alone switching modes) depending on timing, and the mode afterwards must not depend on that.
+            submit(editor_.text(), false);
+            editor_.escape();
+        }
         return true;
     }
     if (!e.is_mouse() && raw.size() >= 2 && raw[0] == '\x1b' && raw[1] != '[' && raw[1] != 'O') {
