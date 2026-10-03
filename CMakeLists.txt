@@ -81,6 +81,8 @@ install(PROGRAMS diction/maic-diction DESTINATION bin)
 file(WRITE ${CMAKE_BINARY_DIR}/diction-VERSION "${MAIC_GIT_VERSION}\n")
 install(FILES ${CMAKE_BINARY_DIR}/diction-VERSION DESTINATION share/maic/diction RENAME VERSION)
 install(DIRECTORY server/web/ DESTINATION share/maic/server/web)
+# Vue for artifacts, served by maic-server at /a/_vendor/vue/ (docs/artifacts.md).
+install(FILES vendor/vue/vue.global.prod.js vendor/vue/LICENSE vendor/vue/PROVENANCE DESTINATION share/maic/vendor/vue)
 # The engine protocol's description for clients that read it (maic.nvim, the web client; docs/design/engine-protocol.md
 # section 15): MAIC's files and OpenAI's subset, not the 4.6 MB description it is cut from or the script that cuts it.
 install(DIRECTORY protocol/ DESTINATION share/maic/protocol PATTERN "openapi.json" EXCLUDE PATTERN "extract.py" EXCLUDE)

@@ -15,6 +15,8 @@ struct ServerOptions {
     std::vector<std::filesystem::path> workspaces;  // roots a remote session may open; the first is the default workspace
     std::filesystem::path state;  // tokens.json, audit.log and the generated TLS pair live here
     std::filesystem::path web;    // the single-file client served at /
+    std::filesystem::path artifacts;  // <state>/artifacts: one folder per artifact, served at /a/<id>/
+    std::filesystem::path vue;        // vendor/vue, served at /a/_vendor/vue/
 };
 
 // The HTTP face of MAIC: a client of the core like the CLI, never a bypass. Every tool call it causes is
@@ -43,5 +45,8 @@ private:
 
 // `maic server start|token|status ...`, also main() of maic-server. Returns the exit code.
 int run_server_command(const std::vector<std::string>& args);
+
+// `maic artifact list|add|open ...` (docs/artifacts.md). Returns the exit code.
+int run_artifact_command(const std::vector<std::string>& args);
 
 }  // namespace maic::server

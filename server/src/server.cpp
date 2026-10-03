@@ -1,5 +1,6 @@
 #include "server.hpp"
 
+#include "artifacts.hpp"
 #include "auth.hpp"
 #include "home_link.hpp"
 #include "tls.hpp"
@@ -116,6 +117,41 @@ json transcript_json(const fs::path& file) {
     return out;
 }
 
+std::string read_file(const fs::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+// The policy every response under /a/ starts with, errors and redirects included: a URL opened directly has no
+// iframe around it. An artifact's own files get artifact_csp's in its place.
+constexpr const char* kSealedCsp = "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+constexpr const char* kArtifactCookie = "maic_artifacts";
+
+void set_csp(httplib::Response& res, const std::string& csp) {
+    res.headers.erase("Content-Security-Policy");
+    res.set_header("Content-Security-Policy", csp);
+}
+
+std::string cookie(const httplib::Request& req, const std::string& name) {
+    std::string all = req.get_header_value("Cookie");
+    for (size_t pos = 0; pos < all.size();) {
+        size_t end = all.find(';', pos);
+        std::string part = all.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        part.erase(0, part.find_first_not_of(' '));
+        if (part.rfind(name + "=", 0) == 0) return part.substr(name.size() + 1);
+        if (end == std::string::npos) break;
+        pos = end + 1;
+    }
+    return "";
+}
+
+// data/<name>.json: the name, or a 404 for anything else under data/.
+std::string data_name(const std::string& file) {
+    std::string name = file.size() > 5 && file.ends_with(".json") ? file.substr(0, file.size() - 5) : "";
+    if (!artifact_name_ok(name)) throw HttpError{404, "data documents are data/NAME.json, NAME of letters, digits, '_' or '-'"};
+    return name;
+}
+
 }  // namespace
 
 struct Server::Impl {
@@ -137,6 +173,8 @@ struct Server::Impl {
     std::mutex pairs_mu;
     PairStore pairs;
     std::unique_ptr<HomeLink> home;  // the outbound connection to server.relay, when one is set
+    ArtifactGrants grants;
+    std::mutex data_mu;  // one artifact data write at a time
 
     // The sessions, their streams and approvals: every HTTP request is one connection to it, remote, named by its token.
     std::unique_ptr<Engine> engine;
@@ -153,7 +191,10 @@ struct Server::Impl {
         // A request out of the relay tunnel arrives from our own HomeLink on loopback; it names the phone.
         std::string source = req.remote_addr;
         if (req.has_header("X-Maic-Via") && (source == "127.0.0.1" || source == "::1")) source = req.get_header_value("X-Maic-Via");
-        std::string line = utc_now() + " " + source + " " + token_name(req).value_or("-") + " " + req.method + " " + req.path + " " +
+        // An artifact capability in a path is a credential: the log keeps where it was used, never what it was.
+        std::string path = req.path;
+        if (size_t t = path.find('~'); path.rfind("/a/", 0) == 0 && t != std::string::npos) path.replace(t + 1, path.find('/', t) - t - 1, "*");
+        std::string line = utc_now() + " " + source + " " + token_name(req).value_or("-") + " " + req.method + " " + path + " " +
                            std::to_string(res.status) + "\n";
         std::lock_guard lock(audit_mu);
         int fd = open((options.state / "audit.log").c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
@@ -236,13 +277,207 @@ struct Server::Impl {
             [c](bool) {});
     }
 
+    // An artifact's files: scripts from its own files and /a/_vendor/ only, no network but its own data routes, and
+    // an opaque origin, so it never acts with the server's cookies or storage. The sources are absolute, built from
+    // Host, because 'self' in a sandboxed page is not dependable across browsers.
+    std::string artifact_csp(const httplib::Request& req, const std::string& prefix) {
+        std::string host = req.get_header_value("Host");
+        bool plain = !host.empty() && std::all_of(host.begin(), host.end(), [](unsigned char c) { return std::isalnum(c) || c == '.' || c == '-' || c == ':' || c == '[' || c == ']'; });
+        if (!plain) throw HttpError{400, "an artifact request needs a plain Host header"};
+        std::string origin = (tls ? "https://" : "http://") + host, own = origin + prefix;
+        return "sandbox allow-scripts allow-forms allow-modals allow-downloads; default-src 'none'; script-src " + own + " " + origin + "/a/_vendor/; style-src " + own +
+               " 'unsafe-inline'; img-src " + own + " data: blob:; font-src " + own + " data:; media-src " + own + " blob:; connect-src " + own +
+               "data/; form-action 'none'; base-uri 'none'; frame-ancestors 'none'";
+    }
+
+    // A person: a bearer token (a device, or the web client through the relay) or the login cookie from
+    // `maic artifact open`. The cookie counts only on the server's own pages, never from a sandboxed page (Origin
+    // null) or another site; SameSite=Strict keeps it from those already, this says so twice.
+    void require_person(const httplib::Request& req) {
+        std::string site = req.get_header_value("Sec-Fetch-Site");
+        bool own = req.get_header_value("Origin") != "null" && site != "cross-site" && site != "same-site";
+        if (token_name(req) || (own && grants.logged_in(cookie(req, kArtifactCookie)))) {
+            rate.succeeded(req.remote_addr);
+            return;
+        }
+        rate.failed(req.remote_addr);
+        throw HttpError{401, "open an artifact with `maic artifact open ID` on the workstation, or send a bearer token"};
+    }
+
+    fs::path artifact_dir(const std::string& id) {
+        std::error_code ec;
+        if (!artifact_name_ok(id) || !fs::is_directory(options.artifacts / id, ec)) throw HttpError{404, "no artifact " + id};
+        return options.artifacts / id;
+    }
+
+    // One of an artifact's files, or a data document under data/, under the artifact's policy. Under a capability,
+    // index.html carries it in a meta tag for a page that sends it back as X-Maic-Artifact-Token.
+    void serve_artifact(const httplib::Request& req, httplib::Response& res, const std::string& id, const std::string& prefix, const std::string& rel,
+                        const std::string& cap) {
+        fs::path dir = artifact_dir(id);
+        set_csp(res, artifact_csp(req, prefix));
+        if (rel.rfind("data/", 0) == 0) {
+            std::string name = data_name(rel.substr(5));
+            auto file = artifact_file(dir, "data/" + name + ".json");
+            if (!file) throw HttpError{404, "no data document " + name + " yet"};
+            std::string body = read_file(*file);
+            res.set_header("ETag", "\"" + data_rev(body) + "\"");
+            res.set_header("X-Rev", data_rev(body));
+            res.set_content(body, "application/json");
+            return;
+        }
+        auto file = artifact_file(dir, rel);
+        if (!file) throw HttpError{404, "no file " + rel + " in artifact " + id};
+        std::string body = read_file(*file);
+        if (!cap.empty() && (rel.empty() || rel == "index.html")) body = page_with_token(std::move(body), cap);
+        res.set_content(body, artifact_content_type(*file));
+    }
+
+    // A data document written whole: If-Match with the revision last read (or If-None-Match: * to create it), the
+    // body checked as JSON, then a temporary file renamed over it. A stale revision is a 409 naming the current one.
+    // The body is read only once the request is authorized, and never more than the cap of it is kept.
+    void put_data(const httplib::Request& req, httplib::Response& res, const httplib::ContentReader& read, const fs::path& dir, const std::string& file) {
+        std::string name = data_name(file), body;
+        bool over = false;
+        read([&](const char* data, size_t n) {
+            over = over || body.size() + n > kArtifactDataMax;
+            if (!over) body.append(data, n);
+            return true;
+        });
+        if (over) throw HttpError{413, "a data document is at most 1 MiB"};
+        if (json::parse(body, nullptr, false).is_discarded()) throw HttpError{400, "the body is not JSON"};
+        std::string match = req.get_header_value("If-Match");
+        if (match.rfind("W/", 0) == 0) match = match.substr(2);
+        if (match.size() >= 2 && match.front() == '"' && match.back() == '"') match = match.substr(1, match.size() - 2);
+        std::lock_guard lock(data_mu);
+        std::optional<std::string> current;
+        try {
+            current = data_revision(dir, name);
+        } catch (const std::runtime_error& e) {
+            throw HttpError{403, e.what()};
+        }
+        bool fresh;
+        if (!match.empty()) fresh = current && (match == "*" || match == *current);
+        else if (req.get_header_value("If-None-Match") == "*") fresh = !current;
+        else throw HttpError{428, "send If-Match with the revision you read (its ETag), or If-None-Match: * to create the document"};
+        std::string rev = fresh ? data_rev(body) : current.value_or("");
+        if (!rev.empty()) {
+            res.set_header("ETag", "\"" + rev + "\"");
+            res.set_header("X-Rev", rev);
+        }
+        if (!fresh) {
+            reply(res, {{"error", "stale: data/" + name + ".json changed since that revision"}, {"rev", current ? json(*current) : json()}}, 409);
+            return;
+        }
+        write_data(dir, name, body);
+        reply(res, {{"rev", rev}}, current ? 200 : 201);
+    }
+
+    void artifact_routes() {
+        // Vendored libraries for every artifact: public code, so no login. A module import from a sandboxed page is
+        // a CORS request.
+        srv->Get(R"(/a/_vendor/vue/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+            auto file = options.vue.empty() ? std::nullopt : artifact_file(options.vue, req.matches[1].str());
+            if (!file) throw HttpError{404, "no vendored file " + req.matches[1].str()};
+            res.set_header("Access-Control-Allow-Origin", "*");
+            res.set_content(read_file(*file), artifact_content_type(*file));
+        });
+
+        // The link `maic artifact open` prints: its one-time code becomes the browser's login (an HttpOnly cookie for
+        // /a/ only) and a capability for the artifact it names, so the first visit needs no cookie.
+        srv->Get("/a/_login", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!claim_artifact_login(options.state, req.get_param_value("code"))) {
+                rate.failed(req.remote_addr);
+                throw HttpError{401, "this link was used already or has expired; run `maic artifact open ID` again"};
+            }
+            rate.succeeded(req.remote_addr);
+            res.set_header("Set-Cookie", std::string(kArtifactCookie) + "=" + grants.login() + "; Path=/a/; HttpOnly; SameSite=Strict; Max-Age=43200" + (tls ? "; Secure" : ""));
+            std::string id = req.get_param_value("to");
+            artifact_dir(id);
+            res.set_redirect("/a/" + id + "~" + grants.grant(id) + "/", 303);
+        });
+
+        srv->Get(R"(/a/([^/]+))", [](const httplib::Request& req, httplib::Response& res) {
+            if (!artifact_name_ok(req.matches[1].str())) throw HttpError{404, "no artifact " + req.matches[1].str()};
+            res.set_redirect("/a/" + req.matches[1].str() + "/", 301);
+        });
+
+        // Under a capability, /a/<id>~<capability>/: the artifact's files and data, for the page itself. Its origin is
+        // opaque, so these are CORS requests without cookies, and the capability in the path is their only
+        // credential: for this artifact, nothing else. One path segment, so ../_vendor/ from the page is /a/_vendor/.
+        auto capability = [this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1], cap = req.matches[2], header = req.get_header_value("X-Maic-Artifact-Token");
+            if (!grants.granted(cap, id) || (!header.empty() && header != cap)) {
+                rate.failed(req.remote_addr);
+                return false;
+            }
+            rate.succeeded(req.remote_addr);
+            res.set_header("Access-Control-Allow-Origin", "*");
+            res.set_header("Access-Control-Expose-Headers", "ETag, X-Rev");
+            return true;
+        };
+        srv->Get(R"(/a/([^/~]+)~([^/]+)/(.*))", [this, capability](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1], cap = req.matches[2], rel = req.matches[3];
+            if (!capability(req, res)) {
+                // An old tab, after a restart or 12 hours: the login cookie, when the browser has one, grants a new one.
+                if (rel.empty() && artifact_name_ok(id)) {
+                    res.set_redirect("/a/" + id + "/", 303);
+                    return;
+                }
+                throw HttpError{401, "this page's capability is not valid (expired, or for another artifact); open the artifact again"};
+            }
+            serve_artifact(req, res, id, "/a/" + id + "~" + cap + "/", rel, cap);
+        });
+        srv->Put(R"(/a/([^/~]+)~([^/]+)/data/([^/]+))", [this, capability](const httplib::Request& req, httplib::Response& res, const httplib::ContentReader& read) {
+            if (!capability(req, res)) throw HttpError{401, "this page's capability is not valid (expired, or for another artifact); open the artifact again"};
+            put_data(req, res, read, artifact_dir(req.matches[1]), req.matches[3]);
+        });
+        srv->Options(R"(/a/([^/~]+)~([^/]+)/data/([^/]+))", [capability](const httplib::Request& req, httplib::Response& res) {
+            if (!capability(req, res)) throw HttpError{401, "this page's capability is not valid"};
+            res.set_header("Access-Control-Allow-Methods", "GET, PUT");
+            res.set_header("Access-Control-Allow-Headers", "Content-Type, If-Match, If-None-Match, X-Maic-Artifact-Token");
+            res.set_header("Access-Control-Max-Age", "600");
+            res.status = 204;
+        });
+
+        // A person's own requests. The page itself is never served here: it is sent on to a fresh capability, so the
+        // requests it makes carry one.
+        srv->Get(R"(/a/([^/]+)/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            require_person(req);
+            std::string id = req.matches[1], rel = req.matches[2];
+            artifact_dir(id);
+            if (rel.empty() || rel == "index.html") {
+                res.set_redirect("/a/" + id + "~" + grants.grant(id) + "/", 303);
+                return;
+            }
+            serve_artifact(req, res, id, "/a/" + id + "/", rel, "");
+        });
+        srv->Put(R"(/a/([^/]+)/data/([^/]+))", [this](const httplib::Request& req, httplib::Response& res, const httplib::ContentReader& read) {
+            require_person(req);
+            put_data(req, res, read, artifact_dir(req.matches[1]), req.matches[2]);
+        });
+    }
+
     void routes() {
         srv->set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
+            bool artifact = req.path.rfind("/a/", 0) == 0;
+            if (artifact) {
+                set_csp(res, kSealedCsp);
+                res.set_header("X-Content-Type-Options", "nosniff");
+                res.set_header("X-Frame-Options", "DENY");
+                res.set_header("Referrer-Policy", "no-referrer");
+                res.set_header("Cache-Control", "no-store");
+            } else if (req.get_header_value("Origin") == "null" || req.has_header("X-Maic-Artifact-Token")) {
+                // A sandboxed artifact page (its origin is opaque) or its capability: never anything outside /a/.
+                fail(res, 403, "an artifact page has no access outside /a/");
+                return httplib::Server::HandlerResponse::Handled;
+            }
             if (req.path == "/") return httplib::Server::HandlerResponse::Unhandled;
             if (rate.blocked(req.remote_addr)) {
                 fail(res, 429, "too many failed attempts from this address; try again in a minute");
                 return httplib::Server::HandlerResponse::Handled;
             }
+            if (artifact) return httplib::Server::HandlerResponse::Unhandled;  // each artifact route checks its own credential
             if (!token_name(req)) {
                 rate.failed(req.remote_addr);
                 res.set_header("WWW-Authenticate", "Bearer");
@@ -253,6 +488,11 @@ struct Server::Impl {
             return httplib::Server::HandlerResponse::Unhandled;
         });
         srv->set_logger([this](const httplib::Request& req, const httplib::Response& res) { audit(req, res); });
+        // A refusal httplib makes before routing (a bad Range, say) is sandboxed under /a/ too.
+        srv->set_error_handler(httplib::Server::HandlerWithResponse([](const httplib::Request& req, httplib::Response& res) {
+            if (req.path.rfind("/a/", 0) == 0 && !res.has_header("Content-Security-Policy")) res.set_header("Content-Security-Policy", kSealedCsp);
+            return httplib::Server::HandlerResponse::Unhandled;
+        }));
         srv->set_exception_handler([](const httplib::Request&, httplib::Response& res, std::exception_ptr ep) {
             try {
                 std::rethrow_exception(ep);
@@ -272,6 +512,8 @@ struct Server::Impl {
             }
             res.set_content(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()), "text/html; charset=utf-8");
         });
+
+        artifact_routes();
 
         srv->Get("/api/status", [this](const httplib::Request& req, httplib::Response& res) {
             Conn c = conn(req);

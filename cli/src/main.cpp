@@ -204,6 +204,8 @@ void usage(std::ostream& out = std::cerr) {
                  "  server token new|list|revoke [NAME]   per-device bearer tokens for it\n"
                  "  server pair | pairs | unpair NAME     a phone's pairing for the relay (server.relay in settings)\n"
                  "  server status              its configuration, the relay link, and whether it is up (maic help server)\n"
+                 "  artifact list | add DIR [--id ID] | open ID   pages maic-server serves sandboxed at /a/ID/, with their\n"
+                 "                             data beside them; open prints a one-time login link (maic help artifact)\n"
                  "  trust [PATH] [--lua full|sandbox|restricted] [--level strict|standard|relaxed]   trust a project directory\n"
                  "                             (default: every untrusted one on the chain down to here): how its settings Lua\n"
                  "                             runs (default full) and how often to ask again; trust --list shows what is\n"
@@ -1575,6 +1577,7 @@ int main(int argc, char** argv) {
             if (tui.mode) cargs.insert(cargs.end(), {"--mode", *tui.mode});
             return maic::server::run_server_command(cargs);
         }
+        if (cmd == "artifact") return maic::server::run_artifact_command(cargs);
         if (cmd == "doctor") return maic::run_doctor();
         if (cmd == "setup") return maic::run_setup();
         if (cmd == "lua") {
