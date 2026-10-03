@@ -615,7 +615,9 @@ CommandOutput SessionCommands::run(Session& s, const std::string& line) {
             fs::path ws = agent.harness().workspace();
             if (arg.empty()) {
                 out.info("workspace: " + ws.string() + (previous_ws_.empty() ? "" : "\n:cd - returns to " + previous_ws_.string()));
-            } else if (idle()) {
+            } else if (!idle()) {
+                out.error(":cd waits until the turn ends (Ctrl-C stops it); the workspace is still " + ws.string());
+            } else {
                 fs::path to = cd_target(arg, ws, previous_ws_, known_places(s.settings, ws, services(), s.log.path()));
                 if (to == ws) out.info("already in " + ws.string());
                 // A start there would ask about its project directories first: so does :cd.

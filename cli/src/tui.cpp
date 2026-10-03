@@ -1036,6 +1036,7 @@ std::vector<std::string> App::palette_entries() {
     }
     for (const auto& p : settings_.providers) ctx.providers.push_back(p.name);
     ctx.models = installed_models();
+    ctx.workspace = ws_;
     std::string cmd = line.substr(0, space), partial = line.substr(space + 1);
     auto matches = match_commands(cmd);
     if (!matches.empty() && matches.front()->name == "theme") {
