@@ -143,6 +143,19 @@ Everything below is covered by tests against fake servers; these runs confirm it
 * **A pty test that timed out once under load** (2026-10-02): `test_pause_menu_keeps_and_steer_drops` passed 3 of 3 alone; watch for it under parallel builds.
 * **Task token accounting against local and remote limits** (2026-10-02): the approach chosen for counting a running task's tokens against its parent's budget should be reviewed once real use shows whether it keeps cards and vendor quotas from a hard stop or a surprise bill.
 
+## Beta: refine later
+
+Micaiah's rule (2026-10-03): new information that needs refinement ships as beta and is recorded here, so its context is kept, tracked and picked up by later audits. Only hard blockers, or things that would balloon into a nightmare if left, stay open now.
+
+* **Spend ceilings for metered models**: a soft ceiling (warn) and a hard ceiling (stop) for Anthropic API and Claude Code use, so nobody runs a bill into the thousands unnoticed; and stepping down further than Opus (Sonnet, Haiku) when circumstances call for it.
+* **An asking point for escalation**: check usage before a metered judge is reached, with a configurable point at which MAIC asks.
+* **Checker strength**: try the Qwen3.5 4B with thinking, then the 9B with thinking; consider DeepSeek as the auditor of tool calls, built from its documentation, API and harness so each tool stays in its lane; Claude as its own smart harness inside MAIC; the 9B vs 4B card check.
+* **Leaving, beyond the table**: nested settings named `Advanced Options`, `Advanced Options +`, `Advanced Options +2` (FromSoftware's new-game-plus pattern), with deeper settings in deeper directories; flags acting on a session only explicitly when several windows hold it, the newer window taking ownership first; on the machine, a plain warning for flags outside the normal leave flow; remotely, a step-up for flags that loosen (stop to park to bg), none for flags that tighten; starting background sessions remotely for a local client to attach to later; `:MaicQuit` and a CLI form that targets a session; control over `after`; telling apart tasks started in front from tasks started in the background. The leave-cases audit lists what is still undefined on every test run.
+* **A keystore**: API keys stored on disk encrypted with argon2id, after studying how C and C++ applications do it.
+* **An immediate "thinking" state**: show the thinking indicator the moment a prompt is sent, as other tools appear to, even before the first token arrives.
+* **trans-fairy across transcript styles**: a translator, adapter and normalizer for different transcript formats and their ID generation files (needs a later discussion).
+* **comfymaid-review splits**: which way a split goes (a sibling that takes resolved material out, or a deeper dive), named parent, child and sibling; tight or loose decided case by case. The split feature is beta, in active development.
+
 ## Parked
 
 * A sandbox wrapper for external processes: bubblewrap around any helper or agentic tool MAIC starts (Claude Code first), letting through only what that tool names (for Claude Code, `~/.claude` and the network). Not needed for Claude Code today, which acts only through MAIC's tools; worth having for tools that act on their own.
