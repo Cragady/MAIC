@@ -438,6 +438,7 @@ int cmd_audit_trail(const std::vector<std::string>& args) {
         return 0;
     }
     Settings settings = load_settings();
+    if (!settings.audit_error.empty()) throw std::runtime_error(settings.audit_error);
     if (sub == "status" && (args.size() <= 1 || (args.size() == 2 && args[1] == "--json"))) return status(settings, args.size() == 2);
     if (sub == "purge" && args.size() == 1) return purge();
     if (sub == "offsite") return offsite(settings.audit, args);
@@ -446,6 +447,7 @@ int cmd_audit_trail(const std::vector<std::string>& args) {
 }
 
 void audit_gate(const Settings& settings) {
+    if (!settings.audit_error.empty()) throw std::runtime_error(settings.audit_error + " (fix audit.lua; until then no session opens, the other commands still work)");
     const AuditSettings& a = settings.audit;
     if (!a.enabled) return;
     AuditDue due = audit_due(a, std::time(nullptr));
@@ -464,7 +466,13 @@ void audit_gate(const Settings& settings) {
     std::string line;
     if (a.enforce == "judge-and-hold") {
         say(due.why + "; auditing with the local judge (" + a.judge + ") before the session opens, everything else on hold...");
-        if (a.start_services) start_judge_service(settings, a.judge);
+        if (a.start_services) {
+            try {
+                start_judge_service(settings, a.judge);
+            } catch (const std::exception& e) {
+                say(std::string("could not start the judge's service (") + e.what() + "); the audit tries the judge as it is");
+            }
+        }
         int rc = run({exec, "--model", a.judge}, &line);
         say(first_line(line));
         if (rc == 0) return;

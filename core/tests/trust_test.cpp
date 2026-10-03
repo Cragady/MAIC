@@ -77,21 +77,22 @@ fs::path project(const std::string& name, bool git) {
     return dir;
 }
 
-// The settings error for a project file whose second line is `line`, with the project trusted at Lua level `lua`.
+std::string lua_file(const std::string& name, const std::string& lua) {
+    return (g_home / "dev" / ("lua-" + lua + "-" + name) / ".maid" / "settings.lua").string();
+}
+
+// The settings error for a project file whose second line is `line`, with the project trusted at Lua level `lua`:
+// the layer is skipped with it as a warning (it sets nothing that tightens the harness), and nothing from it applies.
 std::string lua_error(const std::string& name, const std::string& line, const std::string& lua) {
     fs::path dir = g_home / "dev" / ("lua-" + lua + "-" + name);
     write_file(dir / ".maid" / "settings.lua", "local x = 1\n" + line + "\nreturn { mode = 'edit' }\n");
     trust_dir(project_dir(dir), Origin::Local, "", lua);
-    try {
-        load_settings(dir);
-    } catch (const std::exception& e) {
-        return e.what();
+    Settings s = load_settings(dir);
+    if (s.mode == "edit") return "";
+    for (const auto& w : s.warnings) {
+        if (w.find(lua_file(name, lua)) != std::string::npos && w.find("skipped") != std::string::npos) return w;
     }
     return "";
-}
-
-std::string lua_file(const std::string& name, const std::string& lua) {
-    return (g_home / "dev" / ("lua-" + lua + "-" + name) / ".maid" / "settings.lua").string();
 }
 
 bool names_file_and_line(const std::string& err, const std::string& name, const std::string& lua) {
@@ -203,13 +204,9 @@ int main() {
         fs::path fdir = g_home / "dev" / ("lua-" + lua + "-fn");
         write_file(fdir / ".maid" / "settings.lua", "return { mode = 'edit', providers = { lab = { kind = 'openai', base_url = 'http://x', hook = function() end } } }\n");
         trust_dir(project_dir(fdir), Origin::Local, "", lua);
-        err.clear();
-        try {
-            load_settings(fdir);
-        } catch (const std::exception& e) {
-            err = e.what();
-        }
-        expect(contains(err, "`providers.lab.hook` is a function"), lua + ": a function in the table is an error naming its key: " + err);
+        Settings fn = load_settings(fdir);
+        err = joined(fn.warnings);
+        expect(contains(err, "`providers.lab.hook` is a function") && fn.mode != "edit", lua + ": a function in the table is an error naming its key, and the layer is skipped: " + err);
 
         fs::path dir = g_home / "dev" / ("lua-" + lua + "-ok");
 
@@ -224,12 +221,7 @@ int main() {
         write_file(bc / ".maid" / "settings.lua", std::string("\x1bLJ\x02\x00garbage", 11));
         trust_dir(project_dir(bc), Origin::Local, "", lua);
 
-        err.clear();
-        try {
-            load_settings(bc);
-        } catch (const std::exception& e) {
-            err = e.what();
-        }
+        err = joined(load_settings(bc).warnings);
         expect(contains(err, (bc / ".maid" / "settings.lua").string()) && contains(err, "bytecode is not allowed"), lua + ": a settings file that is bytecode does not load: " + err);
     }
 
@@ -402,13 +394,10 @@ int main() {
         }
         expect(contains(why, "steer is not allowed above; this layer can only remove actions"), "a project cannot add an action the global file took away: " + why);
         write_file(g_home / ".config" / "maid" / "settings.lua", "return { bans = { patterns = { { 'kubernetes', steer = 'further' } } } }\n");
-        why.clear();
-        try {
-            load_settings(g_home);
-        } catch (const std::exception& e) {
-            why = e.what();
-        }
-        expect(contains(why, "further never is"), "a ban never names further: " + why);
+        Settings further = load_settings(g_home);
+        why = joined(further.warnings);
+        expect(contains(why, "further never is") && further.bans.patterns.size() == 1 && further.bans.pattern_steers[0].action.empty(),
+               "a ban never names further: the steer is dropped with a warning and the ban stays: " + why);
         fs::remove(g_home / ".config" / "maid" / "settings.lua");
         fs::path scout = g_home / "dev" / "scouting";
         write_file(scout / ".maid" / "settings.lua", "return { agents = { explore = { steering = { actions = { 'interrupt', 'keep', 'halt' }, clients = { remote = 'none' } } } } }\n");
@@ -445,13 +434,8 @@ int main() {
                  {"return { judge_max_tokens = 0 }", "judge_max_tokens must be a whole number of at least 1"},
                  {"return { enabld = true }", "enabld is not an audit trail setting"}}) {
             write_file(audit, text + "\n");
-            std::string err;
-            try {
-                load_settings(dir);
-            } catch (const std::exception& e) {
-                err = e.what();
-            }
-            expect(contains(err, audit.string() + ": " + error), text + ": " + err);
+            Settings bad = load_settings(dir);
+            expect(contains(bad.audit_error, audit.string() + ": " + error) && !bad.audit.enabled, text + ", held for audit_gate while the rest loads: " + bad.audit_error);
         }
         // It runs at the user's Lua level, like diction.lua: full by default, sandboxed under global_lua = "sandbox".
         fs::path global = g_home / ".config" / "maid" / "settings.lua";
@@ -459,12 +443,7 @@ int main() {
         expect(load_settings(dir).audit.enabled, "full Lua by default");
         write_file(global, "return { global_lua = 'sandbox' }\n");
         write_file(audit, "local f = io.open('/dev/null')\nreturn { enabled = true }\n");
-        std::string err;
-        try {
-            load_settings(dir);
-        } catch (const std::exception& e) {
-            err = e.what();
-        }
+        std::string err = load_settings(dir).audit_error;
         expect(contains(err, audit.string() + ":1:") && contains(err, "io is not available"), "global_lua = \"sandbox\" runs it sandboxed: " + err);
         fs::remove(global);
         fs::remove(audit);

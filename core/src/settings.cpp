@@ -434,7 +434,7 @@ void read_leave(LeaveSettings& into, const json& t, const std::string& where) {
 // `checkers`: a shipped setup's name, or { setup = "dual-9b", judges = { "qwen-9b", { model = ..., think = false,
 // timeout = 20 } }, combine = "escalate", ask_before_metered = true }, the table's judges and combine over its
 // setup's. "" or an empty table: no panel.
-Checkers read_checkers(const json& v, const std::string& where) {
+Checkers read_checkers(const json& v, const std::string& where, std::vector<std::string>& warnings) {
     if (v.is_string()) {
         std::string name = v.get<std::string>();
         if (name.empty()) return {};
@@ -446,7 +446,7 @@ Checkers read_checkers(const json& v, const std::string& where) {
     if (!v.is_object()) throw std::runtime_error(where + ": checkers must be a setup's name or a table");
     if (v.contains("setup")) {
         if (!v["setup"].is_string()) throw std::runtime_error(where + ": checkers.setup must be a setup's name");
-        c = read_checkers(v["setup"], where);
+        c = read_checkers(v["setup"], where, warnings);
     }
     if (v.contains("ask_before_metered")) {
         if (!v["ask_before_metered"].is_boolean()) throw std::runtime_error(where + ": checkers.ask_before_metered must be true or false");
@@ -455,17 +455,23 @@ Checkers read_checkers(const json& v, const std::string& where) {
     c.combine = v.value("combine", c.combine);
     if (c.combine != "primary" && c.combine != "escalate" && c.combine != "both") throw std::runtime_error(where + ": checkers.combine must be \"primary\", \"escalate\" or \"both\", not \"" + c.combine + "\"");
     if (v.contains("judges")) c.judges.clear();
+    // A judge that doesn't read is left off the panel with a warning; the others still judge.
     for (const auto& j : v.value("judges", json::array())) {
         Checker k;
-        if (j.is_string()) {
-            k.model = j.get<std::string>();
-        } else if (j.is_object()) {
-            k.model = j.value("model", "");
-            if (j.contains("think")) k.think = j["think"].get<bool>() ? 1 : 0;
-            k.timeout = j.value("timeout", k.timeout);
+        try {
+            if (j.is_string()) {
+                k.model = j.get<std::string>();
+            } else if (j.is_object()) {
+                k.model = j.value("model", "");
+                if (j.contains("think")) k.think = j["think"].get<bool>() ? 1 : 0;
+                k.timeout = j.value("timeout", k.timeout);
+            }
+            if (k.model.empty()) throw std::runtime_error("each judge needs a model (a preset or provider/model)");
+            if (k.timeout < 1) throw std::runtime_error(k.model + "'s timeout must be at least 1 second");
+        } catch (const std::exception& e) {
+            warnings.push_back(where + ": checkers.judges: " + e.what() + " (this judge is skipped)");
+            continue;
         }
-        if (k.model.empty()) throw std::runtime_error(where + ": checkers.judges: each judge needs a model (a preset or provider/model)");
-        if (k.timeout < 1) throw std::runtime_error(where + ": checkers.judges: " + k.model + "'s timeout must be at least 1 second");
         c.judges.push_back(k);
     }
     return c;
@@ -531,7 +537,7 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
                 if (!tier.is_string() || !valid_protocol_tier(tier.get<std::string>())) throw std::runtime_error(path.string() + ": protocol_tiers." + dir + " must be \"open\", \"guarded\" or \"airtight\"");
                 s.protocol_tiers[dir] = tier.get<std::string>();
             }
-            if (j.contains("checkers")) s.checkers = read_checkers(j["checkers"], path.string());
+            if (j.contains("checkers")) s.checkers = read_checkers(j["checkers"], path.string(), s.warnings);
             json chain = j.value("instructions", json::object());
             if (chain.contains("project_markers") && chain["project_markers"].is_array()) s.project_markers = chain["project_markers"].get<std::vector<std::string>>();
             for (auto& m : s.project_markers) {
@@ -639,63 +645,72 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
             for (const auto& [given, pj] : agent_table.items()) {
                 std::string name = agent_def_name(given);
                 std::string where = path.string() + ": " + key + "." + given;
-                if (!pj.is_object()) throw std::runtime_error(where + " must be a table");
-                const AgentDef* builtin = find_agent_def(builtins, name);
-                AgentDef p = builtin ? *builtin : AgentDef{name};
-                if (pj.contains("mode")) {
-                    auto m = parse_mode(pj["mode"].get<std::string>());
-                    if (!m) throw std::runtime_error(where + ".mode must be manual, auto-read, edit, auto or plan");
-                    if (builtin && narrower_mode(*m, builtin->mode) != *m) throw std::runtime_error(where + ": mode " + std::string(mode_name(*m)) + " is wider than the built-in " + name + " (" + std::string(mode_name(builtin->mode)) + "); an agent can only narrow");
-                    p.mode = *m;
-                }
-                if (pj.contains("role")) {
-                    auto r = parse_role(pj["role"].get<std::string>());
-                    if (!r) throw std::runtime_error(where + ".role must be primary, subagent or all");
-                    p.role = *r;
-                }
-                p.description = pj.value("description", p.description);
-                if (pj.contains("write_paths")) p.write_paths = pj["write_paths"].get<std::vector<std::string>>();
-                if (pj.contains("read_outside")) {
-                    p.read_outside = pj["read_outside"].get<bool>();
-                    if (builtin && p.read_outside && !builtin->read_outside) throw std::runtime_error(where + ": the built-in " + name + " does not read outside the workspace; an agent can only narrow");
-                }
-                if (pj.value("network", false)) throw std::runtime_error(where + ": no agent has the network yet");
-                if (pj.contains("budget_tokens")) {
-                    p.budget_tokens = pj["budget_tokens"].get<long>();
-                    if (builtin && builtin->budget_tokens > 0 && (p.budget_tokens <= 0 || p.budget_tokens > builtin->budget_tokens)) throw std::runtime_error(where + ": budget_tokens above the built-in " + name + "'s " + std::to_string(builtin->budget_tokens) + "; an agent can only narrow");
-                }
-                if (pj.contains("max_steps")) {
-                    p.max_steps = pj["max_steps"].get<int>();
-                    if (p.max_steps < 1 || (builtin && p.max_steps > builtin->max_steps)) throw std::runtime_error(where + ": max_steps must be between 1 and " + std::to_string(builtin ? builtin->max_steps : AgentDef{}.max_steps));
-                }
-                if (pj.contains("tools")) {
-                    p.tools = pj["tools"].get<std::vector<std::string>>();
-                    if (builtin && !builtin->tools.empty()) {
-                        for (const auto& t : p.tools) {
-                            if (!builtin->allows_tool(t)) throw std::runtime_error(where + ": the built-in " + name + " has no " + t + " tool; an agent can only narrow");
+                // An agent that doesn't read, or asks for more than it may, is unavailable (it fails closed); the
+                // other agents and settings still load.
+                try {
+                    if (!pj.is_object()) throw std::runtime_error(where + " must be a table");
+                    const AgentDef* builtin = find_agent_def(builtins, name);
+                    AgentDef p = builtin ? *builtin : AgentDef{name};
+                    if (pj.contains("mode")) {
+                        auto m = parse_mode(pj["mode"].get<std::string>());
+                        if (!m) throw std::runtime_error(where + ".mode must be manual, auto-read, edit, auto or plan");
+                        if (builtin && narrower_mode(*m, builtin->mode) != *m) throw std::runtime_error(where + ": mode " + std::string(mode_name(*m)) + " is wider than the built-in " + name + " (" + std::string(mode_name(builtin->mode)) + "); an agent can only narrow");
+                        p.mode = *m;
+                    }
+                    if (pj.contains("role")) {
+                        auto r = parse_role(pj["role"].get<std::string>());
+                        if (!r) throw std::runtime_error(where + ".role must be primary, subagent or all");
+                        p.role = *r;
+                    }
+                    p.description = pj.value("description", p.description);
+                    if (pj.contains("write_paths")) p.write_paths = pj["write_paths"].get<std::vector<std::string>>();
+                    if (pj.contains("read_outside")) {
+                        p.read_outside = pj["read_outside"].get<bool>();
+                        if (builtin && p.read_outside && !builtin->read_outside) throw std::runtime_error(where + ": the built-in " + name + " does not read outside the workspace; an agent can only narrow");
+                    }
+                    if (pj.value("network", false)) throw std::runtime_error(where + ": no agent has the network yet");
+                    if (pj.contains("budget_tokens")) {
+                        p.budget_tokens = pj["budget_tokens"].get<long>();
+                        if (builtin && builtin->budget_tokens > 0 && (p.budget_tokens <= 0 || p.budget_tokens > builtin->budget_tokens)) throw std::runtime_error(where + ": budget_tokens above the built-in " + name + "'s " + std::to_string(builtin->budget_tokens) + "; an agent can only narrow");
+                    }
+                    if (pj.contains("max_steps")) {
+                        p.max_steps = pj["max_steps"].get<int>();
+                        if (p.max_steps < 1 || (builtin && p.max_steps > builtin->max_steps)) throw std::runtime_error(where + ": max_steps must be between 1 and " + std::to_string(builtin ? builtin->max_steps : AgentDef{}.max_steps));
+                    }
+                    if (pj.contains("tools")) {
+                        p.tools = pj["tools"].get<std::vector<std::string>>();
+                        if (builtin && !builtin->tools.empty()) {
+                            for (const auto& t : p.tools) {
+                                if (!builtin->allows_tool(t)) throw std::runtime_error(where + ": the built-in " + name + " has no " + t + " tool; an agent can only narrow");
+                            }
                         }
                     }
+                    if (pj.contains("reviewer")) p.reviewer = pj["reviewer"].get<bool>();
+                    p.model = pj.value("model", p.model);
+                    if (pj.contains("steering")) {
+                        // Checked now against the full set; the session's own narrows it again when it runs as the agent.
+                        SteeringSettings check;
+                        read_steering(check, pj["steering"], where + ".steering", global, true, s.warnings);
+                        p.steering = pj["steering"];
+                        if (!global) p.steering.erase("clients");
+                    }
+                    if (pj.contains("protocol_tier")) {
+                        std::string tier = pj["protocol_tier"].is_string() ? pj["protocol_tier"].get<std::string>() : "";
+                        if (!valid_protocol_tier(tier)) throw std::runtime_error(where + ".protocol_tier must be open, guarded or airtight");
+                        if (global) p.protocol_tier = tier;
+                        else s.warnings.push_back(where + ".protocol_tier is ignored: only your global settings file sets it");
+                    }
+                    bool replaced = false;
+                    for (auto& existing : s.agents) {
+                        if (existing.name == name) existing = p, replaced = true;
+                    }
+                    if (!replaced) s.agents.push_back(p);
+                } catch (const std::exception& e) {
+                    std::string why = e.what();
+                    if (why.rfind(where, 0) != 0) why = where + ": " + why;
+                    std::erase_if(s.agents, [&](const AgentDef& a) { return a.name == name; });
+                    s.warnings.push_back(why + " (the " + name + " agent is unavailable until this is fixed)");
                 }
-                if (pj.contains("reviewer")) p.reviewer = pj["reviewer"].get<bool>();
-                p.model = pj.value("model", p.model);
-                if (pj.contains("steering")) {
-                    // Checked now against the full set; the session's own narrows it again when it runs as the agent.
-                    SteeringSettings check;
-                    read_steering(check, pj["steering"], where + ".steering", global, true, s.warnings);
-                    p.steering = pj["steering"];
-                    if (!global) p.steering.erase("clients");
-                }
-                if (pj.contains("protocol_tier")) {
-                    std::string tier = pj["protocol_tier"].is_string() ? pj["protocol_tier"].get<std::string>() : "";
-                    if (!valid_protocol_tier(tier)) throw std::runtime_error(where + ".protocol_tier must be open, guarded or airtight");
-                    if (global) p.protocol_tier = tier;
-                    else s.warnings.push_back(where + ".protocol_tier is ignored: only your global settings file sets it");
-                }
-                bool replaced = false;
-                for (auto& existing : s.agents) {
-                    if (existing.name == name) existing = p, replaced = true;
-                }
-                if (!replaced) s.agents.push_back(p);
             }
         }
         if (j.contains("rules") && j["rules"].is_array()) {
@@ -740,29 +755,31 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         json preset_table = j.value("models", json::object());  // a named copy: iterating a temporary dangles
         for (const auto& [name, pj] : preset_table.items()) {
             if (!pj.is_object()) continue;
-            // An existing preset changes field by field; a new one needs a model.
-            ModelPreset* mp = nullptr;
-            for (auto& existing : s.presets) {
-                if (existing.name == name) mp = &existing;
+            // An existing preset changes field by field; a new one needs a model. One that doesn't read is skipped
+            // whole (an existing one stays as it was), and the others still load.
+            auto it = std::find_if(s.presets.begin(), s.presets.end(), [&](const ModelPreset& p) { return p.name == name; });
+            ModelPreset mp = it != s.presets.end() ? *it : ModelPreset{name};
+            try {
+                if (it == s.presets.end() && pj.value("model", "").empty()) throw std::runtime_error("needs a model");
+                mp.model = pj.value("model", mp.model);
+                mp.context = pj.value("context", mp.context);
+                mp.reviewer = pj.value("reviewer", mp.reviewer);
+                if (pj.contains("think")) mp.think = pj["think"].get<bool>() ? 1 : 0;
+                mp.tier = pj.value("tier", mp.tier);
+                mp.limited = pj.value("limited", mp.limited);
+                if (pj.contains("subagents")) {
+                    mp.subagents.clear();
+                    for (const auto& n : pj["subagents"]) mp.subagents.push_back(n.get<std::string>());  // an empty Lua table arrives as {}
+                }
+                mp.subagent = pj.value("subagent", mp.subagent);
+                mp.on_limit = pj.value("on_limit", mp.on_limit);
+                mp.metered = pj.value("metered", mp.metered);
+            } catch (const std::exception& e) {
+                s.warnings.push_back(path.string() + ": models." + name + ": " + e.what() + " (this preset is skipped)");
+                continue;
             }
-            if (!mp) {
-                if (pj.value("model", "").empty()) throw std::runtime_error(path.string() + ": models." + name + " needs a model");
-                s.presets.push_back({name});
-                mp = &s.presets.back();
-            }
-            mp->model = pj.value("model", mp->model);
-            mp->context = pj.value("context", mp->context);
-            mp->reviewer = pj.value("reviewer", mp->reviewer);
-            if (pj.contains("think")) mp->think = pj["think"].get<bool>() ? 1 : 0;
-            mp->tier = pj.value("tier", mp->tier);
-            mp->limited = pj.value("limited", mp->limited);
-            if (pj.contains("subagents")) {
-                mp->subagents.clear();
-                for (const auto& n : pj["subagents"]) mp->subagents.push_back(n.get<std::string>());  // an empty Lua table arrives as {}
-            }
-            mp->subagent = pj.value("subagent", mp->subagent);
-            mp->on_limit = pj.value("on_limit", mp->on_limit);
-            mp->metered = pj.value("metered", mp->metered);
+            if (it != s.presets.end()) *it = std::move(mp);
+            else s.presets.push_back(std::move(mp));
         }
         json providers = j.value("providers", json::object());
         for (const auto& [name, pj] : providers.items()) {
@@ -780,19 +797,24 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
                 s.warnings.push_back(path.string() + ": providers." + name + " is ignored: a provider with a key is defined only in your global settings file");
                 continue;
             }
-            if (!p) {
-                s.providers.push_back({name, "openai", "", "", "", json::object()});
-                p = &s.providers.back();
-            }
-            p->kind = pj.value("kind", p->kind);
-            p->base_url = pj.value("base_url", p->base_url);
-            p->api_key_env = pj.value("api_key_env", p->api_key_env);
-            p->api_key_command = pj.value("api_key_command", p->api_key_command);
-            p->upstream = pj.value("upstream", p->upstream);
             if (pj.contains("api_key")) throw std::runtime_error("providers." + name + ": keys don't go in settings; use api_key_env or api_key_command");
-            json opts = pj.value("options", json::object());
-            for (const auto& [k, v] : opts.items()) p->options[k] = v;
-            if (p->base_url.empty() && p->kind != "cli") throw std::runtime_error("providers." + name + ": base_url is required");
+            // A provider that doesn't read is skipped whole (an existing one stays as it was); the others still load.
+            Provider np = p ? *p : Provider{name, "openai", "", "", "", json::object()};
+            try {
+                np.kind = pj.value("kind", np.kind);
+                np.base_url = pj.value("base_url", np.base_url);
+                np.api_key_env = pj.value("api_key_env", np.api_key_env);
+                np.api_key_command = pj.value("api_key_command", np.api_key_command);
+                np.upstream = pj.value("upstream", np.upstream);
+                json opts = pj.value("options", json::object());
+                for (const auto& [k, v] : opts.items()) np.options[k] = v;
+                if (np.base_url.empty() && np.kind != "cli") throw std::runtime_error("base_url is required");
+            } catch (const std::exception& e) {
+                s.warnings.push_back(path.string() + ": providers." + name + ": " + e.what() + " (this provider is skipped)");
+                continue;
+            }
+            if (p) *p = std::move(np);
+            else s.providers.push_back(std::move(np));
         }
         json styles = j.value("style", json::object());
         for (const auto& [name, sj] : styles.items()) {
@@ -803,6 +825,18 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
     }
 }
 
+// Whether a project layer's text names a field that tightens the harness. Read as text, since a layer that fails
+// may never have evaluated.
+bool names_guarded_field(const fs::path& json_path) {
+    fs::path lua_path = json_path;
+    lua_path.replace_extension(".lua");
+    std::error_code ec;
+    std::ifstream in(fs::is_regular_file(lua_path, ec) ? lua_path : json_path);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    static const std::regex guarded(R"(\b(permission|allow|forbid|harness|reviewer_model|dumb_auto_ok|tripwire|allow_isolated|agents|profiles)\b)");
+    return std::regex_search(text, guarded);
+}
+
 }  // namespace
 
 Settings load_settings(const fs::path& workspace) {
@@ -810,15 +844,32 @@ Settings load_settings(const fs::path& workspace) {
     apply_file(s, settings_path(), workspace, true, LuaTier::Full, s.lua_memory_mb);
     set_trust_config({s.trust_strictness, s.trust_identities, s.trust_levels, s.project_markers, s.instructions_bound, s.instructions});
     set_lua_data_limits({*parse_lua_tier(s.global_lua), size_t(s.lua_memory_mb)});
-    // audit.lua is the user's own file, at their Lua level; no project layer below can touch it.
-    s.audit = load_audit_settings();
+    // audit.lua is the user's own file, at their Lua level; no project layer below can touch it. A broken one
+    // stops only the audit's own path (audit_gate, maid audit-trail), never every command.
+    try {
+        s.audit = load_audit_settings();
+    } catch (const std::exception& e) {
+        s.audit_error = e.what();
+    }
     // Project layers: the config chain (the project root, or just under $HOME, down to the workspace), like
-    // instruction files, each only once its directory is trusted (docs/harness.md, Trust).
+    // instruction files, each only once its directory is trusted (docs/harness.md, Trust). A layer that doesn't
+    // load is skipped with a warning, unless it names a field that tightens the harness: skipping that one would
+    // fail open, so it is still refused.
     for (const auto& d : config_chain(workspace)) {
         if (!trusted(d)) continue;
         LuaTier tier = trust_lua_tier(d);
-        apply_file(s, d / ".maid" / "settings.json", workspace, false, tier, s.lua_memory_mb);
-        apply_file(s, d / ".maid" / "settings.local.json", workspace, false, tier, s.lua_memory_mb);
+        for (const fs::path& file : {d / ".maid" / "settings.json", d / ".maid" / "settings.local.json"}) {
+            Settings before = s;
+            try {
+                apply_file(s, file, workspace, false, tier, s.lua_memory_mb);
+            } catch (const std::exception& e) {
+                if (names_guarded_field(file)) {
+                    throw std::runtime_error(std::string(e.what()) + " (this layer sets permission, forbid, harness, tripwire or agent fields, so it is refused rather than skipped)");
+                }
+                s = std::move(before);
+                s.warnings.push_back(std::string(e.what()) + " (this project layer is skipped until it is fixed)");
+            }
+        }
     }
     // An agent's model, small_model and the names inside presets may be preset names; presets from every
     // layer are known only now.
@@ -828,30 +879,37 @@ Settings load_settings(const fs::path& workspace) {
     }
     if (auto preset = find_preset(s.presets, s.small_model)) s.small_model = preset->model;
     if (auto preset = find_preset(s.presets, s.compact_model)) s.compact_model = preset->model;
-    for (const auto& k : s.checkers.judges) {
-        if (!find_preset(s.presets, k.model) && k.model.find('/') == std::string::npos) throw std::runtime_error("checkers: no preset named " + k.model + " (a judge is a preset or provider/model)");
-    }
+    std::erase_if(s.checkers.judges, [&](const Checker& k) {
+        if (find_preset(s.presets, k.model) || k.model.find('/') != std::string::npos) return false;
+        s.warnings.push_back("checkers: no preset named " + k.model + " (a judge is a preset or provider/model; this judge is skipped)");
+        return true;
+    });
     // A preset on a metered provider is metered unless a layer says otherwise in its own `metered`.
     const json layered_models = s.layered.value("models", json::object());
     for (auto& p : s.presets) {
         bool given = layered_models.is_object() && layered_models.contains(p.name) && layered_models[p.name].is_object() && layered_models[p.name].contains("metered");
         if (!given && resolve_model(s.providers, p.model).first.metered()) p.metered = true;
     }
-    for (const auto& p : s.presets) {
-        auto known = [&](const std::string& n, const char* field) {
-            if (!find_preset(s.presets, n)) throw std::runtime_error("models." + p.name + "." + field + ": no preset named " + n);
+    // A name that is no preset is dropped from the preset that names it, with a warning.
+    for (auto& p : s.presets) {
+        auto unknown = [&](const std::string& n, const char* field) {
+            if (find_preset(s.presets, n)) return false;
+            s.warnings.push_back("models." + p.name + "." + field + ": no preset named " + n + " (ignored)");
+            return true;
         };
-        for (const auto& n : p.subagents) known(n, "subagents");
-        if (!p.subagent.empty() && p.subagent != "same") known(p.subagent, "subagent");
-        if (!p.on_limit.empty()) known(p.on_limit, "on_limit");
+        std::erase_if(p.subagents, [&](const std::string& n) { return unknown(n, "subagents"); });
+        if (!p.subagent.empty() && p.subagent != "same" && unknown(p.subagent, "subagent")) p.subagent.clear();
+        if (!p.on_limit.empty() && unknown(p.on_limit, "on_limit")) p.on_limit.clear();
     }
-    // A ban's steer is checked once every layer has said which actions bans may name.
-    for (const auto& steers : {s.bans.string_steers, s.bans.pattern_steers}) {
-        for (const auto& b : steers) {
+    // A ban's steer is checked once every layer has said which actions bans may name; one that may not is dropped
+    // and the ban itself stays.
+    for (auto* steers : {&s.bans.string_steers, &s.bans.pattern_steers}) {
+        for (auto& b : *steers) {
             if (b.action.empty()) continue;
             if (std::find(s.steering.ban_actions.begin(), s.steering.ban_actions.end(), b.action) == s.steering.ban_actions.end()) {
-                throw std::runtime_error("bans: an entry names steer = \"" + b.action + "\", which is not in steering.ban_actions" +
-                                         (b.action == "further" ? " (further never is: it would go deeper into the banned topic)" : ""));
+                s.warnings.push_back("bans: an entry names steer = \"" + b.action + "\", which is not in steering.ban_actions" +
+                                     (b.action == "further" ? " (further never is: it would go deeper into the banned topic)" : "") + "; the ban stays, without its steer");
+                b = BanSteer{};
             }
         }
     }
