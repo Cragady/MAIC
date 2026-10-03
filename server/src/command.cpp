@@ -1,4 +1,5 @@
-// `maic server ...`: start, token new|list|revoke, pair, pairs, unpair, status.
+// `maic server ...`: start, token new|list|revoke, pair, pairs, unpair, status; and `maic artifact ...`.
+#include "artifacts.hpp"
 #include "auth.hpp"
 #include "server.hpp"
 #include "tunnel.hpp"
@@ -176,6 +177,8 @@ int cmd_start(const std::vector<std::string>& args) {
     o.workspaces = workspace_roots(settings);
     o.state = state_dir() / "server";
     o.web = root_dir() / "server" / "web" / "index.html";
+    o.artifacts = state_dir() / "artifacts";
+    o.vue = root_dir() / "vendor" / "vue";
     Server server(std::move(o));
     int port = server.bind();
     TokenStore tokens(state_dir() / "server" / "tokens.json");
@@ -200,7 +203,70 @@ int cmd_start(const std::vector<std::string>& args) {
     return 0;
 }
 
+void artifact_usage(std::ostream& out) {
+    out << "usage: maic artifact list              the artifacts maic-server serves, with their trust and data documents\n"
+           "       maic artifact add DIR [--id ID]  copy a built page folder in (index.html at its top); again to update it,\n"
+           "                                    its saved data/ is kept\n"
+           "       maic artifact open ID           a one-time link for a browser on this machine, valid 2 minutes\n"
+           "\n"
+           "Artifacts live in ~/.local/state/maic/artifacts/ and are served sandboxed at /a/ID/ by maic server start.\n"
+           "docs/artifacts.md\n";
+}
+
+// The server's own address as this machine reaches it, from server.listen.
+std::string local_server_url(const Settings& settings) {
+    std::string listen = settings.server.listen;
+    size_t colon = listen.rfind(':');
+    std::string host = colon == std::string::npos ? listen : listen.substr(0, colon);
+    std::string port = colon == std::string::npos ? "7373" : listen.substr(colon + 1);
+    bool tls = !loopback_host(host) || !settings.server.cert.empty();
+    if (host.empty() || host == "0.0.0.0" || host == "::" || host == "[::]") host = "127.0.0.1";
+    return (tls ? "https://" : "http://") + host + ":" + port;
+}
+
 }  // namespace
+
+int run_artifact_command(const std::vector<std::string>& args) {
+    fs::path root = state_dir() / "artifacts";
+    std::string sub = args.empty() ? "list" : args[0];
+    if (sub == "list" && args.size() <= 1) {
+        auto all = list_artifacts(root);
+        if (all.empty()) std::cout << "no artifacts yet: maic artifact add DIR\n";
+        for (const auto& a : all) {
+            std::cout << a.id << "  " << a.trust << (a.added.empty() ? "" : "  added " + a.added);
+            for (size_t i = 0; i < a.data.size(); ++i) std::cout << (i ? ", " : "  data: ") << a.data[i];
+            std::cout << "\n";
+        }
+        return 0;
+    }
+    if (sub == "add" && args.size() >= 2) {
+        fs::path src = args[1];
+        std::string id = src.lexically_normal().filename().string();
+        if (id.empty() || id == ".") id = fs::absolute(src).lexically_normal().parent_path().filename().string();
+        for (size_t i = 2; i < args.size(); ++i) {
+            if (args[i] == "--id" && i + 1 < args.size()) id = args[++i];
+            else throw std::runtime_error("unknown option " + args[i]);
+        }
+        for (const auto& s : add_artifact(root, src, id)) std::cerr << "maic artifact: skipped " << s << "\n";
+        std::cout << "added " << id << " at " << (root / id).string() << " (sandboxed); maic artifact open " << id << "\n";
+        return 0;
+    }
+    if (sub == "open" && args.size() == 2) {
+        std::error_code ec;
+        if (!artifact_name_ok(args[1]) || !fs::is_directory(root / args[1], ec)) throw std::runtime_error("no artifact " + args[1] + "; maic artifact list");
+        std::string code = new_artifact_login(state_dir() / "server");
+        std::cout << local_server_url(load_settings()) << "/a/_login?code=" << code << "&to=" << args[1] << "\n\n"
+                  << "Open it in a browser on this machine within two minutes; it works once and logs that browser in to\n"
+                  << "artifacts for 12 hours (afterwards /a/" << args[1] << "/ opens it directly). maic server start must be running.\n";
+        return 0;
+    }
+    if (sub == "help" || sub == "-h" || sub == "--help") {
+        artifact_usage(std::cout);
+        return 0;
+    }
+    artifact_usage(std::cerr);
+    return 2;
+}
 
 int run_server_command(const std::vector<std::string>& args) {
     std::string sub = args.empty() ? "start" : args[0];

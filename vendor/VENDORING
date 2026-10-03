@@ -77,5 +77,6 @@ install script, which updates packages in place. Do not track a branch.
         build (vue.global.prod.js) and its MIT LICENSE, with PROVENANCE (upstream
         url and sha256) and verify.sh (fetches upstream, checks the hash, compares
         the committed copy). Loaded by artifact pages with a classic <script src>
-        from a relative path, which works over file://. Bump by fetching the new
+        from a relative path, which works over file://; maic-server serves it at
+        /a/_vendor/vue/ (installed to share/maic/vendor/vue). Bump by fetching the new
         pinned version and updating PROVENANCE and verify.sh together.

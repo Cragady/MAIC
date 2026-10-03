@@ -146,10 +146,11 @@ State, under `~/.local/state/maic/server/` (`$XDG_STATE_HOME/maic/server/`):
 | `audit.log` | one line per request, 0600 |
 | `cert.pem`, `key.pem` | the self-signed pair, made on first TLS start; the key is 0600 |
 | `pairs.json` | the pairing id, this workstation's X25519 key pair, and the paired phones (name, public key, when), 0600 |
+| `artifact-logins/` | one file per unused `maic artifact open` link, named by its code's SHA-256, holding its expiry; removed when used ([artifacts.md](artifacts.md)) |
 | `pairing.json` | a pairing offer from `maic server pair`: the code's SHA-256, its expiry, wrong guesses so far; gone once claimed or void |
 | `relay.json` | what the relay link last reported: connected, since when, last connected, the last error; read by `maic server status` |
 
-Session transcripts go where the CLI's go: `~/.local/state/maic/sessions/`, kind `server`.
+Session transcripts go where the CLI's go: `~/.local/state/maic/sessions/`, kind `server`. Artifacts are in `~/.local/state/maic/artifacts/`.
 
 ## Tokens
 
@@ -166,6 +167,8 @@ Every request, accepted or not, adds a line to `audit.log`: time, source address
 ```
 
 The web page at `/` needs no token: it is the client itself, and it contains nothing but code.
+
+Artifacts under `/a/` take the same bearer token, or the browser login `maic artifact open` makes, and the page itself works with a capability for that one artifact ([artifacts.md](artifacts.md)). Neither the login nor a capability is accepted anywhere else: a request outside `/a/` with an `X-Maic-Artifact-Token` header, or with `Origin: null` (a sandboxed page), is a 403.
 
 ## TLS
 
@@ -193,6 +196,7 @@ Since the engine (engine protocol step 5, [design/engine-protocol.md](design/eng
 | `POST /api/sessions/{id}/mode` | `{mode}` | changes the session's mode; loosening to `auto` needs a step-up (403 until accounts register a verifier) |
 | `POST /api/pair` | `{code, name, public_key}` | the LAN half of pairing a phone for the relay: 201 with `{name, pairing_id, relay, public_key}` when the code matches the offer from `maic server pair`; 403 for a wrong, expired or missing offer; 409 with no `server.relay` |
 | `POST /api/trip` | `{reason?}` | trips the harness lock. There is no reset route. |
+| `GET /a/...`, `PUT /a/ID/data/NAME.json` | | artifacts, sandboxed, and their data documents: [artifacts.md](artifacts.md#routes) |
 
 A session: `{id, title, workspace, model, mode, remote_model, running, turns, created, sequence_number, pending_approval}`. `sequence_number` (formerly `seq`) is the number of the last event on the session's stream, for `events?starting_after=`. The transcript's path is not shown to a remote client.
 
@@ -226,6 +230,6 @@ The API would not change for any of this; it is the same one the browser uses.
 
 ## Tests
 
-`build/server/server_test` (`ctest --test-dir build -R server`) starts the server on a random port against a fake OpenAI-compatible server and covers: token creation, verification, revocation and file permissions; the rate limit; 401 with no token and with a wrong one; the audit line for both; 403 for a workspace outside the roots; session creation, streaming in the engine's event names with contiguous `sequence_number`s, the folded transcript and replay from any `starting_after` (and the older `after`); `always` refused from a remote client; an approval round trip in auto mode where the call is still asked about because the origin is remote; a denial with feedback reaching the model; interrupt of a running turn and of a pending approval; per-session mode changes; the self-signed certificate and a pinned HTTPS client; and that no reset route exists.
+`build/server/server_test` (`ctest --test-dir build -R server`) starts the server on a random port against a fake OpenAI-compatible server and covers: token creation, verification, revocation and file permissions; the rate limit; 401 with no token and with a wrong one; the audit line for both; 403 for a workspace outside the roots; session creation, streaming in the engine's event names with contiguous `sequence_number`s, the folded transcript and replay from any `starting_after` (and the older `after`); `always` refused from a remote client; an approval round trip in auto mode where the call is still asked about because the origin is remote; a denial with feedback reaching the model; interrupt of a running turn and of a pending approval; per-session mode changes; the self-signed certificate and a pinned HTTPS client; that no reset route exists; and the artifact routes ([artifacts.md](artifacts.md#tests)).
 
 `build/server/relay_test` (`ctest -R relay`) covers the relay and the tunnel: frames forwarded whole and in order between two sides, a frame split across posts reassembled, keepalives dropped, both sides ended when one leaves and the pair forgotten, the log holding ids and counts and no content; the idle expiry, the pair cap and the throughput cap; the crypto against known answers (HKDF-SHA256 from RFC 5869, the session keys and two sealed frames from fixed X25519 keys, replay, reorder and a flipped byte refused, the other direction's key not opening); the pairing store and the offer (wrong code, three wrong codes, expiry); and end to end, a `maic-server` with `server.relay` pointing at a loopback relay, a fake phone pairing over the LAN through `/api/pair` then asking `/api/status` through the relay and getting the real answer, a token-less request still a 401, the audit line naming the phone, the relay log free of anything but the id, `POST /api/unlock` a 404 through the tunnel and at the relay, the home reconnecting after the phone leaves, and an unpaired phone refused. `tunnel_js` runs the web client's copy of the crypto under node against the same vectors.

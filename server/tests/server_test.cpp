@@ -1,6 +1,7 @@
 // The server against a fake OpenAI-compatible server: tokens, streaming, the remote-origin approval round trip, interrupt, audit.
 #include "check.hpp"
 
+#include "artifacts.hpp"
 #include "auth.hpp"
 #include "maic/paths.hpp"
 #include "maic/session.hpp"
@@ -239,6 +240,8 @@ int main() {
     o.workspaces = {root / "ws"};
     o.state = state;
     o.web = fs::path(__FILE__).parent_path().parent_path() / "web" / "index.html";
+    o.artifacts = root / "artifacts";
+    o.vue = fs::path(__FILE__).parent_path().parent_path().parent_path() / "vendor" / "vue";
     server::Server server(o);
     int port = server.bind();
     std::thread serving([&] { server.run(); });
@@ -549,6 +552,210 @@ int main() {
                    audit.find("device=phone action=untrust path=" + dir.string() + " done") != std::string::npos,
                "each request is an audit line naming the device");
         set_step_up_verifier({});
+    }
+
+    section("artifacts");
+    {
+        fs::path src = root / "src-demo";
+        fs::create_directories(src / "sub");
+        fs::create_directories(src / "data");
+        fs::create_directories(src / ".git");
+        std::ofstream(src / "index.html") << "<!doctype html><html><HEAD><title>demo</title></head><body><script src=\"app.js\"></script></body></html>\n";
+        std::ofstream(src / "app.js") << "console.log(1)\n";
+        std::ofstream(src / "style.css") << "body{}\n";
+        std::ofstream(src / "img.png") << "\x89PNG\r\n";
+        std::ofstream(src / "sub" / "page.txt") << "text\n";
+        std::ofstream(src / "data" / "seed.json") << "{\"seed\":1}";
+        std::ofstream(src / ".env") << "SECRET=1\n";
+        std::ofstream(src / ".git" / "config") << "x\n";
+        fs::create_symlink("/etc/hostname", src / "link.js");
+        fs::path arts = root / "artifacts";
+        auto skipped = server::add_artifact(arts, src, "demo");
+        expect(skipped.size() == 1 && skipped[0].find("link.js") != std::string::npos && !fs::exists(arts / "demo" / "link.js"), "add skips a symlink and says so");
+        expect(!fs::exists(arts / "demo" / ".env") && !fs::exists(arts / "demo" / ".git") && fs::exists(arts / "demo" / "sub" / "page.txt"), "and dotfiles, copying the rest");
+        std::ofstream(src / "app.js") << "console.log(2)\n";
+        std::ofstream(src / "data" / "seed.json") << "{\"seed\":2}";
+        server::add_artifact(arts, src, "demo");
+        expect(slurp(arts / "demo" / "app.js") == "console.log(2)\n" && slurp(arts / "demo" / "data" / "seed.json") == "{\"seed\":1}", "adding again updates the page and keeps its data");
+        server::add_artifact(arts, src, "other");
+        bool threw = false;
+        try {
+            server::add_artifact(arts, src, "../evil");
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        expect(threw && !fs::exists(root / "evil"), "an id outside the safe charset is refused");
+        auto list = server::list_artifacts(arts);
+        expect(list.size() == 2 && list[0].id == "demo" && list[0].trust == "sandboxed" && list[0].data == std::vector<std::string>{"seed"}, "list shows each artifact, sandboxed, with its data");
+        std::ofstream(arts / "other" / ".maic-artifact.json") << "{\"trust\": \"Trusted\"}";
+        expect(server::artifact_trust(arts / "other") == "sandboxed", "an unknown trust value counts as sandboxed");
+        std::ofstream(arts / "other" / ".maic-artifact.json") << "{\"trust\": \"trusted\"}";
+        expect(server::artifact_trust(arts / "other") == "trusted", "the trusted flag is recorded (and loosens nothing)");
+        // Planted after the copy: what add never makes, the server must still refuse.
+        std::ofstream(root / "outside" / "secret.txt") << "secret\n";
+        std::ofstream(arts / "demo" / ".hidden") << "hidden\n";
+        fs::create_symlink(root / "outside" / "secret.txt", arts / "demo" / "escape.js");
+        fs::create_symlink("app.js", arts / "demo" / "inner.js");
+        fs::create_symlink(".hidden", arts / "demo" / "dot.js");
+
+        httplib::Client c(api.base);
+        std::string origin = api.base;
+        auto sandboxed = [](const httplib::Result& r) {
+            return r && r->get_header_value("Content-Security-Policy").rfind("sandbox", 0) == 0 && r->get_header_value("X-Content-Type-Options") == "nosniff";
+        };
+        auto bearer = api.auth();
+        // A person's request succeeds, which clears the rate limit's count between the refusals below.
+        auto reopen = [&]() {
+            auto r = c.Get("/a/demo/", bearer);
+            std::string loc = r ? r->get_header_value("Location") : "";
+            return loc.size() > 8 && loc.rfind("/a/demo~", 0) == 0 ? loc.substr(8, loc.size() - 9) : std::string();
+        };
+
+        auto r = c.Get("/a/demo/");
+        expect(r && r->status == 401 && sandboxed(r), "no login: 401, and the refusal is sandboxed too");
+        std::string cap = reopen();
+        expect(cap.size() == 32, "a bearer token opens it: a redirect to a fresh capability");
+        std::string page = "/a/demo~" + cap + "/";
+        r = c.Get(page);
+        std::string csp = r ? r->get_header_value("Content-Security-Policy") : "";
+        expect(r && r->status == 200 && r->get_header_value("Content-Type") == "text/html; charset=utf-8" &&
+                   r->body.find("<HEAD><meta name=\"maic-artifact-token\" content=\"" + cap + "\"><title>") != std::string::npos,
+               "the page is served under the capability, carrying it in a meta tag first in its head");
+        expect(csp.rfind("sandbox allow-scripts allow-forms allow-modals allow-downloads;", 0) == 0 && csp.find("allow-same-origin") == std::string::npos &&
+                   csp.find("default-src 'none'") != std::string::npos && csp.find("script-src " + origin + page + " " + origin + "/a/_vendor/;") != std::string::npos &&
+                   csp.find("connect-src " + origin + page + "data/;") != std::string::npos && csp.find("frame-ancestors 'none'") != std::string::npos &&
+                   csp.find("'unsafe-eval'") == std::string::npos,
+               "its policy: sandboxed with an opaque origin, scripts from its own files and /a/_vendor/, network to its data only: " + csp);
+        expect(r && r->get_header_value("X-Frame-Options") == "DENY" && r->get_header_value("Referrer-Policy") == "no-referrer" &&
+                   r->get_header_value("Access-Control-Allow-Origin") == "*",
+               "no framing, no referrer, and CORS for the page's own opaque origin");
+        bool types = true;
+        for (auto [f, t] : std::vector<std::pair<std::string, std::string>>{{"app.js", "text/javascript; charset=utf-8"}, {"style.css", "text/css; charset=utf-8"},
+                                                                            {"img.png", "image/png"}, {"sub/page.txt", "text/plain; charset=utf-8"}, {"inner.js", "text/javascript; charset=utf-8"}}) {
+            auto f_r = c.Get(page + f);
+            types = types && f_r && f_r->status == 200 && f_r->get_header_value("Content-Type") == t && sandboxed(f_r);
+        }
+        expect(types, "every file has its content type and the sandbox, a symlink inside the folder included");
+        bool contained = true;
+        for (std::string bad : {"../other/index.html", "%2e%2e/%2e%2e/outside/secret.txt", "sub/../app.js", ".hidden", "escape.js", "dot.js", "sub/", "sub", "data/../app.js",
+                                 ".maic-artifact.json", "a//b"}) {
+            auto b = c.Get(page + bad);
+            contained = contained && b && b->status == 404 && sandboxed(b) && b->body.find("secret\n") == std::string::npos;
+        }
+        expect(contained, "traversal, dotfiles, a symlink out of the folder or to a dotfile, and folders: 404, sandboxed");
+        r = c.Get("/a/_vendor/vue/vue.global.prod.js");
+        expect(r && r->status == 200 && r->get_header_value("Content-Type") == "text/javascript; charset=utf-8" && sandboxed(r) &&
+                   r->get_header_value("Access-Control-Allow-Origin") == "*" && r->body.find("Vue") != std::string::npos,
+               "the vendored Vue needs no login");
+        r = c.Get("/a/_vendor/vue/%2e%2e/manifest.json");
+        expect(r && r->status >= 400 && sandboxed(r), "and nothing beside it");
+        r = c.Get("/a/demo");
+        expect(r && r->status == 301 && r->get_header_value("Location") == "/a/demo/" && sandboxed(r), "/a/ID is sent on to /a/ID/, sandboxed");
+        r = c.Get("/a/nope/", bearer);
+        auto r2 = c.Get("/a/");
+        expect(r && r->status == 404 && sandboxed(r) && r2 && r2->status == 404 && sandboxed(r2), "an unknown artifact, and /a/ itself, are sandboxed 404s");
+
+        section("artifact capabilities");
+        r = c.Get("/a/other~" + cap + "/");
+        expect(r && r->status == 303 && r->get_header_value("Location") == "/a/other/", "demo's capability does not open other: its page is sent to log in");
+        r = c.Get("/a/other~" + cap + "/app.js");
+        r2 = c.Get("/a/other~" + cap + "/data/seed.json");
+        expect(r && r->status == 401 && r2 && r2->status == 401 && sandboxed(r2) && !r2->has_header("Access-Control-Allow-Origin"), "nor its files or data");
+        r = c.Get(page + "data/seed.json", {{"X-Maic-Artifact-Token", "not-" + cap.substr(4)}});
+        expect(r && r->status == 401, "a header token that is not the path's capability is refused");
+        reopen();
+        r = c.Get("/api/status", {{"Authorization", "Bearer " + cap}});
+        expect(r && r->status == 401, "a capability is no bearer token for the session API");
+        r = c.Get("/a/demo/", {{"Authorization", "Bearer " + cap}});
+        expect(r && r->status == 401, "nor for an artifact's login");
+        reopen();
+        r = c.Get("/api/status", {{"Authorization", "Bearer " + token}, {"X-Maic-Artifact-Token", cap}});
+        expect(r && r->status == 403, "the session API refuses a request carrying an artifact token, even with a bearer token");
+        r = c.Get("/api/status", {{"Authorization", "Bearer " + token}, {"Origin", "null"}});
+        r2 = c.Get("/", {{"Origin", "null"}});
+        expect(r && r->status == 403 && r2 && r2->status == 403, "and any request with Origin null, a sandboxed page's");
+
+        section("artifact data");
+        httplib::Headers h = {{"X-Maic-Artifact-Token", cap}};
+        auto with = [&](httplib::Headers more) {
+            more.insert(h.begin(), h.end());
+            return more;
+        };
+        std::string answers = page + "data/answers.json";
+        r = c.Options(answers, {{"Origin", "null"}, {"Access-Control-Request-Method", "PUT"}, {"Access-Control-Request-Headers", "x-maic-artifact-token,if-match"}});
+        expect(r && r->status == 204 && r->get_header_value("Access-Control-Allow-Origin") == "*" && r->get_header_value("Access-Control-Allow-Methods") == "GET, PUT" &&
+                   r->get_header_value("Access-Control-Allow-Headers").find("X-Maic-Artifact-Token") != std::string::npos,
+               "the preflight is answered for the data route");
+        // The sequence the comfymaid-review page runs (templates/comfymaid-review/local/app.js).
+        r = c.Get(answers, h);
+        expect(r && r->status == 404 && r->get_header_value("Access-Control-Allow-Origin") == "*" && sandboxed(r), "nothing stored yet: a 404 the page can read");
+        r = c.Put(answers, with({{"If-None-Match", "*"}}), "{\"answers\":{\"a\":1}}", "application/json");
+        std::string e1 = r ? r->get_header_value("ETag") : "";
+        expect(r && r->status == 201 && e1 == "\"" + server::data_rev("{\"answers\":{\"a\":1}}") + "\"" && r->get_header_value("X-Rev") == e1.substr(1, 16) &&
+                   r->get_header_value("Access-Control-Expose-Headers") == "ETag, X-Rev",
+               "the first write creates it, with If-None-Match: *, and returns its ETag");
+        r = c.Get(answers, h);
+        expect(r && r->status == 200 && r->body == "{\"answers\":{\"a\":1}}" && r->get_header_value("ETag") == e1 && r->get_header_value("Content-Type") == "application/json",
+               "a read returns it and the same ETag");
+        r = c.Put(answers, with({{"If-Match", e1}}), "{\"answers\":{\"a\":2}}", "application/json");
+        std::string e2 = r ? r->get_header_value("ETag") : "";
+        expect(r && r->status == 200 && !e2.empty() && e2 != e1 && json::parse(r->body)["rev"] == e2.substr(1, 16), "a write with the ETag it read succeeds and returns the new one");
+        r = c.Put(answers, with({{"If-Match", e1}}), "{\"answers\":{\"a\":3}}", "application/json");
+        expect(r && r->status == 409 && r->get_header_value("ETag") == e2 && json::parse(r->body)["rev"] == e2.substr(1, 16) &&
+                   r->get_header_value("Access-Control-Allow-Origin") == "*",
+               "a stale write is a 409 naming the current revision");
+        r = c.Put(answers, with({{"If-None-Match", "*"}}), "{}", "application/json");
+        expect(r && r->status == 409, "creating what exists is a 409 too");
+        expect(slurp(arts / "demo" / "data" / "answers.json") == "{\"answers\":{\"a\":2}}", "the file on disk is the last accepted write");
+        std::ofstream(arts / "demo" / "data" / "answers.json") << "{\"answers\":{\"by\":\"an agent\"}}";
+        r = c.Put(answers, with({{"If-Match", e2.substr(1, 16)}}), "{\"answers\":{\"a\":4}}", "application/json");
+        expect(r && r->status == 409, "an agent's edit on disk changes the revision, so the page's next write is stale");
+        r = c.Put(answers, h, "{}", "application/json");
+        expect(r && r->status == 428, "a write without If-Match or If-None-Match is refused");
+        r = c.Put(page + "data/fresh.json", with({{"If-None-Match", "*"}}), "{not json", "application/json");
+        expect(r && r->status == 400 && !fs::exists(arts / "demo" / "data" / "fresh.json"), "a body that is not JSON is refused");
+        r = c.Put(page + "data/big.json", with({{"If-None-Match", "*"}}), "\"" + std::string(server::kArtifactDataMax, 'x') + "\"", "application/json");
+        expect(r && r->status == 413 && !fs::exists(arts / "demo" / "data" / "big.json"), "a document over 1 MiB is a 413");
+        bool names = true;
+        for (std::string bad : {"data/a.b.json", "data/.x.json", "data/x.txt", "data/_x.json"}) {
+            auto b = c.Put(page + bad, with({{"If-None-Match", "*"}}), "{}", "application/json");
+            names = names && b && b->status == 404;
+        }
+        expect(names, "data names outside the safe charset are refused");
+        bool tidy = true;
+        for (const auto& e : fs::directory_iterator(arts / "demo" / "data")) tidy = tidy && e.path().filename().string()[0] != '.';
+        expect(tidy, "no temporary file is left beside the documents");
+        r = c.Get("/a/demo/data/answers.json", bearer);
+        expect(r && r->status == 200 && r->get_header_value("ETag") == "\"" + server::data_rev(r->body) + "\"", "a bearer token reads the data too (a device, or through the relay)");
+
+        section("artifact logins");
+        std::string code = server::new_artifact_login(state);
+        r = c.Get("/a/_login?code=" + code + "&to=demo");
+        std::string set = r ? r->get_header_value("Set-Cookie") : "";
+        std::string login = set.substr(set.find('=') + 1, 32);
+        expect(r && r->status == 303 && r->get_header_value("Location").rfind("/a/demo~", 0) == 0 && sandboxed(r), "the one-time link goes straight to a capability");
+        expect(set.rfind("maic_artifacts=", 0) == 0 && set.find("; Path=/a/; HttpOnly; SameSite=Strict") != std::string::npos, "and sets the login cookie, HttpOnly, SameSite=Strict, for /a/ only");
+        r = c.Get("/a/_login?code=" + code + "&to=demo");
+        expect(r && r->status == 401 && sandboxed(r), "the link works once");
+        httplib::Headers cookie = {{"Cookie", "theme=dark; maic_artifacts=" + login}};
+        r = c.Get("/a/demo/", cookie);
+        expect(r && r->status == 303 && r->get_header_value("Location").rfind("/a/demo~", 0) == 0, "the cookie opens an artifact later");
+        r = c.Get("/a/demo/", {{"Cookie", "maic_artifacts=" + login}, {"Origin", "null"}});
+        r2 = c.Get("/a/demo/", {{"Cookie", "maic_artifacts=" + login}, {"Sec-Fetch-Site", "cross-site"}});
+        expect(r && r->status == 401 && r2 && r2->status == 401, "but not from a sandboxed page or another site");
+        r = c.Get("/api/status", cookie);
+        expect(r && r->status == 401, "and the session API never takes it");
+        c.Get("/a/demo/", cookie);
+        r = c.Get("/a/demo/", {{"Cookie", "maic_artifacts=" + cap}});
+        r2 = c.Get("/a/demo~" + login + "/");
+        expect(r && r->status == 401 && r2 && r2->status == 303 && r2->get_header_value("Location") == "/a/demo/", "a capability is no login, and a login no capability");
+        c.Get("/a/demo/", cookie);
+        r = c.Get("/a/_login?code=" + server::new_artifact_login(state, -1) + "&to=demo");
+        expect(r && r->status == 401, "an expired link is refused");
+        c.Get("/a/demo/", cookie);
+        std::string audit = slurp(state / "audit.log");
+        expect(audit.find("GET /a/demo~*/data/answers.json 200") != std::string::npos && audit.find(cap) == std::string::npos && audit.find(code) == std::string::npos,
+               "the audit log names the route but never a capability or a login code");
     }
 
     section("no remote unlock");
