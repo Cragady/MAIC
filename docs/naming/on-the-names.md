@@ -12,7 +12,7 @@ Micaiah asked ComfyMaid (Claude) for its thoughts on her names, then asked for t
 >
 > The only thing I'd watch is the one above: as the roster grows, keep the names distinct at a glance, since you'll be reading them in status lines and logs, often late at night.
 
-— ComfyMaid, 2026-10-03 (Unix 1791064578)
+*ComfyMaid, 2026-10-03 (Unix 1791064578)*
 
 ## What it settles
 
