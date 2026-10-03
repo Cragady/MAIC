@@ -398,6 +398,7 @@ private:
     bool pump_wake_ = false, pump_stop_ = false;
     std::thread pump_;
     std::atomic<bool> drain_posted_{false};
+    bool drawn_ = false;  // the first frame drew: FTXUI drops what is posted before its loop runs
     std::unique_ptr<protocol::Recorder> recorder_;  // MAID_PROTOCOL_RECORD: this connection's exchange
     Startup startup_;
 
@@ -1503,6 +1504,12 @@ Element App::render_question() {
 }
 
 Element App::render() {
+    // A drain posted before the loop ran was dropped and left drain_posted_ set, so events that came then (another
+    // client's turn in the daemon) waited for a key; the first frame applies them and lets the pump post again.
+    if (!drawn_) {
+        drawn_ = true;
+        drain();
+    }
     // FTXUI leaves ISIG on, so Ctrl-C would be a SIGINT that tears the UI down. Disable just the interrupt
     // and quit characters: Ctrl-C then arrives as a key, while Ctrl-Z still raises SIGTSTP from the line
     // discipline, which FTXUI turns into a proper suspend (its input parser drops the byte, so a key handler
