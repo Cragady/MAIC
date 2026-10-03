@@ -17,15 +17,13 @@ std::filesystem::path home_dir() {
 
 }  // namespace
 
-// MAID_HOME, else the source tree this binary was built from, else (an installed copy) <prefix>/share/maid.
+// MAID_HOME, else (an installed copy) <prefix>/share/maid, else the source tree this binary was built from. An
+// installed release reads the files it shipped with, never a checkout that has moved on since.
 std::filesystem::path root_dir() {
     if (const char* env = std::getenv("MAID_HOME"); env && *env) {
         return env;
     }
     std::error_code ec;
-    if (std::filesystem::is_directory(std::filesystem::path(MAID_ROOT) / "services", ec)) {
-        return MAID_ROOT;
-    }
     std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
     if (!ec) {
         std::filesystem::path share = exe.parent_path().parent_path() / "share" / "maid";

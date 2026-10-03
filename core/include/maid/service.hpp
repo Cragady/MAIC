@@ -36,7 +36,9 @@ struct ServiceDef {
     bool gpu = false;              // docker: --gpus all
 };
 
-std::vector<ServiceDef> load_services(const std::filesystem::path& dir);
+// A file that doesn't load (bad JSON, an unset variable, a refused volume) is skipped, so one broken service never
+// stops the others: its problem goes into `problems`, or to stderr once per process when none is given.
+std::vector<ServiceDef> load_services(const std::filesystem::path& dir, std::vector<std::string>* problems = nullptr);
 
 enum class ServiceState {
     Stopped,

@@ -1618,17 +1618,17 @@ int main() {
             fs::path bad = ws / "services-bad";
             fs::remove_all(bad);
             write_file(bad / "bad.json", json);
-            try {
-                load_services(bad);
-            } catch (const std::exception& e) {
-                return std::string(e.what()).find(needle) != std::string::npos;
-            }
-            return false;
+            write_file(bad / "good.json", R"({"name":"good","command":["x"]})");
+            std::vector<std::string> problems;
+            auto defs = load_services(bad, &problems);
+            return defs.size() == 1 && defs[0].name == "good" && problems.size() == 1 && problems[0].find(needle) != std::string::npos;
         };
-        expect(refuses(R"({"name":"b","runtime":"docker","image":"x","volumes":{"/etc":"/etc"}})", "outside ${MAID_STATE}"), "a volume outside MAID's trees is refused");
+        expect(refuses(R"({"name":"b","runtime":"docker","image":"x","volumes":{"/etc":"/etc"}})", "outside ${MAID_STATE}"), "a volume outside MAID's trees is refused, and only that service is skipped");
         expect(refuses(R"({"name":"b","runtime":"docker","command":["x"]})", "needs an image"), "a docker service without an image is refused");
         expect(refuses(R"({"name":"b","runtime":"podman","command":["x"]})", "unknown (host or docker)"), "an unknown runtime is refused");
         expect(refuses(R"({"name":"b","command":["x"],"ready_pattern":"("})", "ready_pattern"), "a ready_pattern that does not compile is refused");
+        expect(refuses(R"({"name":"b","command":["${MAID_NO_SUCH_VARIABLE}/bin/x"]})", "MAID_NO_SUCH_VARIABLE"),
+               "a service naming an unset variable is skipped; the other services still load");
 
         // A fake docker on PATH: records its argv, answers inspect from a marker file, logs from a file.
         fs::path fake = ws / "fake-docker";
