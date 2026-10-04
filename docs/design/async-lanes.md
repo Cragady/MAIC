@@ -40,6 +40,10 @@ One compact view of pending work across lanes (counts, the items that need it, t
 
 A session that doesn't want async behaviour at all can get most of the benefit anyway: long or parallel work goes to background subagents through thin wrappers, which keeps token costs down. Each subagent returns a brief description (what it did, the outcome, where its details are), and the full report stays in its own transcript, read only when needed. That is also the answer to the flood of events: the parent sees one short line per subagent instead of every event, and the detail is a transcript away. It matches how forks merge back with a summary rather than their raw history (roadmap item 3), and how Claude's own agents report today (a few lines back, the transcript for the rest).
 
+## Backgrounded calls with a watcher (idea, Micaiah)
+
+A long-running tool call can itself go to the background, with a minimal-context subagent adopting it to report back. Linux has no call to reparent a process, and none is needed: maid already owns every tool process as its child and captures its output to a file with an index, so "backgrounding" is maid detaching the call from the turn, and "adopting" is handing the watcher a handle (the call's title, its output file, a `wait` tool), while maid keeps the process. Where useful: a `pidfd` (`pidfd_open`) to wait on or poll a process that is not the waiter's own child, and the daemon marked as a child subreaper (`PR_SET_CHILD_SUBREAPER`) so orphaned grandchildren return to maid, never to init. The watcher's context is the command, one line of why, and "summarize when it ends, or at milestones"; its capability set is read-only (it may watch, never signal or kill; cancelling goes through maid). The parent gets one line when it is done.
+
 ## Costs to plan for
 
 * **Nondeterminism:** testing needs a controllable clock and scheduler; the policy testing's two layers (a base set and a case corpus) extend to scheduling.
