@@ -1,0 +1,43 @@
+# Asynchronous work as lanes of one event loop (design note)
+
+Micaiah, 2026-10-03. Status: note only; nothing to build until the tool-call queue ([tool-call-queue.md](tool-call-queue.md)) is proven, since its decision lane is the hard part and the rest follows from it.
+
+## The decision
+
+Asynchronous work gets one shared model, not a second queue. Two independent queues invite ordering ambiguity (which wins when an approval needs an async result), deadlock (a decision waiting on work that waits on a decision) and priority inversion (a hang stuck behind a slow build). One event loop with typed items avoids all three by construction.
+
+## Lanes
+
+* **The decision lane:** the tool-call queue. One item at a time, at the owner's pace; hangs first and never skipped.
+* **Execution lanes:** concurrent, each with its own cap. They mostly exist already; this names them and gives them one vocabulary.
+
+## What maid has today, mapped onto lanes
+
+| Lane | Today | Its cap today |
+| :- | :- | :- |
+| Session turns | each session's lane: inputs queue first in, first out behind a running response (`response.create`, status `queued`) | one running response per session |
+| Background tasks | `task` subagents and background sessions | `max_tasks`, with project exceptions |
+| Provider calls | requests per provider account | `max_concurrent` per model; shared holds after a 429; the circuit breaker |
+| Services | `maid up` / `down` and the services' readiness waits | one start per service |
+| Liaison sends | a turn handed to a daemon session, waited on until it completes | the session's own lane |
+| Approvals | today's blocking approval: the decision lane at depth one | one at a time (the hang) |
+
+## The shared vocabulary
+
+Every item, in any lane:
+
+* **Outcomes:** `pending`, `running`, `done`, `failed`, `stale`, `dropped` (the decision lane adds `accepted`, `rejected`, `dropped+stale`).
+* **Identity:** the same short hash as tool calls (a timestamp, a brief title, a short description), and `max_retries` per instance.
+* **Time:** a lifetime timeout and a time-in-lane timeout, as in the queue design; each ends in an action, never a silent expiry.
+* **Cancellation:** one way to cancel any item, with its outcome reported.
+* **Dependencies:** an item may wait on another's result, in any lane; the agent is told what it waits on, and nothing blocks blindly.
+
+## What the agent sees
+
+One compact view of pending work across lanes (counts, the items that need it, the ones that finished since its last step), not a stream of every event. Context is the scarce resource here.
+
+## Costs to plan for
+
+* **Nondeterminism:** testing needs a controllable clock and scheduler; the policy testing's two layers (a base set and a case corpus) extend to scheduling.
+* **Contention:** builds, fetches and model calls compete for the same machine and accounts, which is why every execution lane has a cap.
+* **Audit:** every outcome is recorded with its hash and title (brief, readable, secret at a glance).
