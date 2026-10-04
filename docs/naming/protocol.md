@@ -36,6 +36,10 @@ Candidate: **RunningBlindMaid**, the household form of the same (as BlindMaid is
 
 For more than one maid in a role: a prefix from the group's base name, an underscore, then a personal name: **`MM_`** for a reader (MadMaid), **`BM_`** for a writer (BlindMaid), **`CM_`** for an overseer (ComfyMaid). For example `MM_Sarah`, `BM_Johnny`, `CM_Donnah`, `MM_Bee`. The prefix says the role at a glance; the name tells maids in the same role apart. Part of following this protocol: a setup with a loose protocol, or none, names its agents however it likes, and that is respected.
 
+## Names from capability sets (proposed)
+
+The naming protocol reads an agent's capability set (`CapSet`, decisions.md) and gives the agent a name from it: the base role from the core capabilities, qualifiers from the rest. For example `{Read, ReadCommand}` gives a reader (MadMaid, or `MM_<name>` when there are several), `{Read, Write}` with no commands gives BlindWriter, and adding `BuildCommand` gives RunningBlindWriter. With this protocol in use, `maid proto name` with no arguments is the one-line call that does it for the current agent: it names the agent from its capabilities and writes the ledger entry. The same mapping run in reverse is the mismatch check: a name that claims more or less than the agent's capabilities is flagged. A name never grants a capability; the capability set is the source and the name follows it.
+
 ## Forks (proposed)
 
 `maid proto name` covers forks too (Micaiah; her earlier fork definitions still need refining and will be folded in). A fork carries its parent's name plus a fork mark, and a fork that has grown into an independent session (its parent gone; decisions.md, "A fork whose parent is gone") gets a symbol saying both things at once: independent now, but born a fork. The symbol is to be chosen; candidates, each readable in plain text: a distinct prefix or suffix (for example `MadMaid~2` for a fork and `MadMaid~2^` once independent), or a glyph with a plain-text fallback for `--text-base`. Becoming independent is a ledger entry like any other name change.
