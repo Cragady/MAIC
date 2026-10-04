@@ -30,6 +30,8 @@ Unless a failure is a hard harness stop (a critical-tier or blacklist refusal, w
 
 Wherever something can be measured repeatedly, it has a defined, finite default limit, so even the dumb event queue runs in a sane way: a call's wall-clock time, its output size, its CPU and memory (rlimits or cgroups in the sandbox), retries, queue depth, chain length, concurrent subagents, and tokens. Work that really is expected to run long (a large build, a model download) declares a longer limit explicitly, for that call; nothing runs unbounded by default. Hitting a limit ends the call as failed with the limit named, recorded and put up for review like any other failure. The owner's kill chord is always there, but as a backup: an out-of-control process is stopped by its limits, never only by someone noticing it.
 
+**Set at call time, like `fetch`.** Limits are options on the call itself, in the spirit of `AbortSignal.timeout()` and `AbortController`: the agent (or the owner) can give a call its own timeout and other limits when making it, and every call carries a cancel handle maid can trigger. The defaults apply when a call sets nothing. Even with the dumb harness there is still an agent running the queue, so it can set these per call. The smart queue manager may adjust them because it knows what a call is doing (letting a long build it recognizes run past the default, or cutting short a call it can see is stuck), within the critical tier's bounds. A dumb queue on its own is well suited to simple commands in headless runs: predictable, bounded, no judgement needed.
+
 ## Lanes
 
 * **The decision lane:** the tool-call queue. One item at a time, at the owner's pace; hangs first and never skipped.
