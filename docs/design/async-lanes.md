@@ -20,6 +20,12 @@ Asynchronous work gets one shared model, not a second queue. Two independent que
 
 A batch of calls, synchronous or not, is a linked list (or like one): each item knows the one before and the one after it, so order, partial results and what depends on what are all explicit. Dropping, failing or cancelling a link puts its successors up for review rather than running them blind; independent branches are separate lists, run concurrently.
 
+## Failures in a chain
+
+Unless a failure is a hard harness stop (a critical-tier or blacklist refusal, which is recorded and never offered for retry), a failed call goes up for review: is it worth retrying (within `max_retries`) or not? If not, its successor is reviewed next. The failure, and why, travels down the results chain, so a successor that runs anyway knows its predecessor failed and how, and can try to get the data (or carry the operation through, for work that isn't research) another way. The review also teaches something about the predecessor, which informs whether to drop the successors or put the whole chain, from that point, back through the lifecycle.
+
+**Modelled on `fetch` and the event loop.** As with `fetch`, a call that ran and reported an error (resolved, not `ok`) is distinct from a call that could not run (rejected: refused, not started, connection lost), and retries are explicit, never hidden. The dumb harness follows these semantics plainly, which makes it predictable and effective. The smart harness keeps the semantics but removes their structural floors and ceilings: backoff and retry judgement where `fetch` has none, priorities and cancellation (hangs first, the owner's kill) where the event loop has neither built in, and no item that can starve the rest.
+
 ## Lanes
 
 * **The decision lane:** the tool-call queue. One item at a time, at the owner's pace; hangs first and never skipped.
