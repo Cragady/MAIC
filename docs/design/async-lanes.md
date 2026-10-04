@@ -1,10 +1,24 @@
 # Asynchronous work as lanes of one event loop (design note)
 
-Micaiah, 2026-10-03. Status: the full lanes design is backlog (build only once the tool-call queue, [tool-call-queue.md](tool-call-queue.md), is proven). **In use first, the simple version: an item marked async runs as a subagent** (see "Sessions that would rather stay synchronous" below).
+Micaiah, 2026-10-03. Status: design in progress, no longer parked. One async model standardizes all of maid's asynchronous work; the two crude strategies below fit inside it and are what gets used first, and the model is what fine-tunes them.
 
 ## The decision
 
 Asynchronous work gets one shared model, not a second queue. Two independent queues invite ordering ambiguity (which wins when an approval needs an async result), deadlock (a decision waiting on work that waits on a decision) and priority inversion (a hang stuck behind a slow build). One event loop with typed items avoids all three by construction.
+
+## Two crude strategies, configurable
+
+1. **Backgrounding:** the call goes to the background; the agent waits for the tool call to come back and consumes the data itself.
+2. **Summarizing subagents:** the work goes to a subagent; the agent awaits its brief summary, the full report staying in the subagent's transcript.
+
+**Which to use (Micaiah's lean, the default):**
+
+* **Sequential discovery stays sequential, in the agent itself.** Calls whose data each depends on the previous one's run consecutively, without subagents, with the choice per call to hold the thread on it or send it to the background (as the send-to-background keychord does). Subagents can be configured for these too, with a plain warning that it can eat tokens for snacks.
+* **Independent, adjacent work runs concurrently in subagents:** researching different areas, for example.
+
+## Batches are linked lists
+
+A batch of calls, synchronous or not, is a linked list (or like one): each item knows the one before and the one after it, so order, partial results and what depends on what are all explicit. Dropping, failing or cancelling a link puts its successors up for review rather than running them blind; independent branches are separate lists, run concurrently.
 
 ## Lanes
 
