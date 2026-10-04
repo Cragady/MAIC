@@ -36,6 +36,10 @@ Every item, in any lane:
 
 One compact view of pending work across lanes (counts, the items that need it, the ones that finished since its last step), not a stream of every event. Context is the scarce resource here.
 
+## Sessions that would rather stay synchronous
+
+A session that doesn't want async behaviour at all can get most of the benefit anyway: long or parallel work goes to background subagents through thin wrappers, which keeps token costs down. Each subagent returns a brief description (what it did, the outcome, where its details are), and the full report stays in its own transcript, read only when needed. That is also the answer to the flood of events: the parent sees one short line per subagent instead of every event, and the detail is a transcript away. It matches how forks merge back with a summary rather than their raw history (roadmap item 3), and how Claude's own agents report today (a few lines back, the transcript for the rest).
+
 ## Costs to plan for
 
 * **Nondeterminism:** testing needs a controllable clock and scheduler; the policy testing's two layers (a base set and a case corpus) extend to scheduling.
