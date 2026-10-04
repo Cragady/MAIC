@@ -26,6 +26,10 @@ Unless a failure is a hard harness stop (a critical-tier or blacklist refusal, w
 
 **Modelled on `fetch` and the event loop.** As with `fetch`, a call that ran and reported an error (resolved, not `ok`) is distinct from a call that could not run (rejected: refused, not started, connection lost), and retries are explicit, never hidden. The dumb harness follows these semantics plainly, which makes it predictable and effective. The smart harness keeps the semantics but removes their structural floors and ceilings: backoff and retry judgement where `fetch` has none, priorities and cancellation (hangs first, the owner's kill) where the event loop has neither built in, and no item that can starve the rest.
 
+## Everything measurable has a limit
+
+Wherever something can be measured repeatedly, it has a defined, finite default limit, so even the dumb event queue runs in a sane way: a call's wall-clock time, its output size, its CPU and memory (rlimits or cgroups in the sandbox), retries, queue depth, chain length, concurrent subagents, and tokens. Work that really is expected to run long (a large build, a model download) declares a longer limit explicitly, for that call; nothing runs unbounded by default. Hitting a limit ends the call as failed with the limit named, recorded and put up for review like any other failure. The owner's kill chord is always there, but as a backup: an out-of-control process is stopped by its limits, never only by someone noticing it.
+
 ## Lanes
 
 * **The decision lane:** the tool-call queue. One item at a time, at the owner's pace; hangs first and never skipped.
