@@ -397,7 +397,7 @@ struct PendingQuestion {
     std::optional<std::string> answer;
     json by;
     bool withdrawn = false;  // a steer took its place
-    bool timed_out = false;  // nobody answered within approvals_timeout
+    bool timed_out = false;  // nobody answered within approvals_proposal_timeout
     bool unattended = false;  // nobody can answer: the turn is unattended
 };
 
@@ -3059,10 +3059,10 @@ public:
         s_.approvals[id] = PendingApproval{ev, r.proposed, std::nullopt, nullptr};
         if (!s_.parent.empty()) e_.mirror(s_, id, ev);
         e_.set_activity(s_, "waiting", {{"kind", "approval"}, {"id", id}, {"tool", r.tool}, {"summary", r.summary}});
-        // Waited for at most approvals_timeout seconds (0: with no limit): an approval nobody answers must not hold
+        // Waited for at most approvals_proposal_timeout seconds (0: with no limit): an approval nobody answers must not hold
         // the session forever. A timeout is a denial, answered by the engine itself. An unattended turn is denied at
         // once instead, by design, and the owner's window gets one line saying so.
-        int timeout_s = s_.settings.approvals_timeout;
+        int timeout_s = s_.settings.approvals_proposal_timeout;
         auto has_answer = [&] { return s_.approvals[id].answer.has_value() || s_.cancel.load(); };
         if (unattended()) {
             ApprovalAnswer denied;
@@ -3104,9 +3104,9 @@ public:
         s_.questions[id] = PendingQuestion{ev, std::nullopt, nullptr};
         e_.set_activity(s_, "waiting", {{"kind", "question"}, {"id", id}, {"summary", text}});
         // As ask() above: an unattended turn answers at once, and otherwise the question waits for at most
-        // approvals_timeout seconds (0: with no limit). A question nobody answers comes back empty, marked timed out,
+        // approvals_proposal_timeout seconds (0: with no limit). A question nobody answers comes back empty, marked timed out,
         // and the model is told to go on with what it assumed.
-        int timeout_s = s_.settings.approvals_timeout;
+        int timeout_s = s_.settings.approvals_proposal_timeout;
         auto has_answer = [&] { return s_.questions[id].answer.has_value() || s_.cancel.load(); };
         if (unattended()) {
             s_.questions[id].unattended = true;

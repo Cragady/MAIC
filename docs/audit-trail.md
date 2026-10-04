@@ -35,7 +35,7 @@ One JSON line per tool call, in every session (the TUI, `maid -p`, maid-server s
 
 * `id`, monotonic across all sessions; `time` in UTC; the `session` id and whether it was `recorded`; the `workspace`.
 * The `tool` and its `arguments` exactly as the model gave them. For `write_file`, `edit_file` and the like that includes the text the agent wrote.
-* What the harness made of it: its `decision` and `reason`, your answer at the prompt (`approval`), the reviewer's verdict and model (`review`; with a checker panel also `review.judged_by`, the judge that decided), and who decided (`judged_by`: harness, reviewer, user, `unattended` when the turn was unattended and the engine denied the call at once, or `timeout` when nobody answered the approval prompt within `approvals_timeout`; in both of those, nobody refused anything).
+* What the harness made of it: its `decision` and `reason`, your answer at the prompt (`approval`), the reviewer's verdict and model (`review`; with a checker panel also `review.judged_by`, the judge that decided), and who decided (`judged_by`: harness, reviewer, user, `unattended` when the turn was unattended and the engine denied the call at once, or `timeout` when nobody answered the approval prompt within `approvals_proposal_timeout`; in both of those, nobody refused anything).
 * Whether it `ran`, and how it ended (`ok`, and `exit` for a command).
 
 Never: conversation text (your messages, the model's replies), feedback you typed with a refusal, your answers to the model's questions, the reviewer's reasoning, or any tool output. Files are 0600 in a 0700 directory, `<state>/maid/audit-trail/`, beside `index.json` (the audit's bookkeeping: id ranges, states, dates and verdict words, never content) and `seq` (the last id given).

@@ -733,8 +733,13 @@ void apply_file(Settings& s, const fs::path& json_path, const fs::path& workspac
         s.reviewer_model = j.value("reviewer_model", s.reviewer_model);
         s.reviewer_budget_tokens = j.value("reviewer_budget_tokens", s.reviewer_budget_tokens);
         s.dumb_auto_ok = j.value("dumb_auto_ok", s.dumb_auto_ok);
-        s.approvals_timeout = j.value("approvals_timeout", s.approvals_timeout);
-        if (s.approvals_timeout < 0) throw std::runtime_error(path.string() + ": approvals_timeout must be 0 or more seconds");
+        if (j.contains("approvals_timeout") && !j.contains("approvals_proposal_timeout")) {
+            // The old name (v0.4.4), read for now: degraded beats halted.
+            s.approvals_proposal_timeout = j.value("approvals_timeout", s.approvals_proposal_timeout);
+            s.warnings.push_back(path.string() + ": approvals_timeout is now approvals_proposal_timeout; it was read under the new name");
+        }
+        s.approvals_proposal_timeout = j.value("approvals_proposal_timeout", s.approvals_proposal_timeout);
+        if (s.approvals_proposal_timeout < 0) throw std::runtime_error(path.string() + ": approvals_proposal_timeout must be 0 or more seconds");
         s.approvals_unattended = j.value("approvals_unattended", s.approvals_unattended);
         if (s.approvals_unattended != "wait" && s.approvals_unattended != "deny") {
             throw std::runtime_error(path.string() + ": approvals_unattended must be \"wait\" or \"deny\", not \"" + s.approvals_unattended + "\"");
@@ -844,7 +849,7 @@ bool names_guarded_field(const fs::path& json_path) {
     std::error_code ec;
     std::ifstream in(fs::is_regular_file(lua_path, ec) ? lua_path : json_path);
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    static const std::regex guarded(R"(\b(permission|allow|forbid|harness|reviewer_model|dumb_auto_ok|approvals_timeout|approvals_unattended|unattended_denials_limit|tripwire|allow_isolated|agents|profiles)\b)");
+    static const std::regex guarded(R"(\b(permission|allow|forbid|harness|reviewer_model|dumb_auto_ok|approvals_proposal_timeout|approvals_timeout|approvals_unattended|unattended_denials_limit|tripwire|allow_isolated|agents|profiles)\b)");
     return std::regex_search(text, guarded);
 }
 
@@ -853,7 +858,7 @@ bool names_guarded_field(const fs::path& json_path) {
 Settings load_settings(const fs::path& workspace) {
     Settings s;
     apply_file(s, settings_path(), workspace, true, LuaTier::Full, s.lua_memory_mb);
-    set_trust_config({s.trust_strictness, s.trust_identities, s.trust_levels, s.project_markers, s.instructions_bound, s.instructions, s.approvals_timeout, s.approvals_unattended, s.unattended_denials_limit});
+    set_trust_config({s.trust_strictness, s.trust_identities, s.trust_levels, s.project_markers, s.instructions_bound, s.instructions, s.approvals_proposal_timeout, s.approvals_unattended, s.unattended_denials_limit});
     set_lua_data_limits({*parse_lua_tier(s.global_lua), size_t(s.lua_memory_mb)});
     // audit.lua is the user's own file, at their Lua level; no project layer below can touch it. A broken one
     // stops only the audit's own path (audit_gate, maid audit-trail), never every command.
@@ -1096,10 +1101,10 @@ void write_default_settings(bool as_json, const std::string& models_dir) {
         {"checkers", ""},
         {"//checkers", "global file only: the judges of the smart harness in place of the single reviewer. A shipped setup, \"dual-9b\" (Qwen3.5 9B, no thinking, then Claude Haiku 4.5 on your Claude plan only when Qwen does not allow or cannot answer) or \"dual-4b\" (the same with the 4B), or { judges = { \"qwen-9b\", { model = \"claude-haiku-cli\", timeout = 60 } }, combine = \"escalate\" }; combine: primary, escalate or both; a table may start from a setup (setup = \"dual-9b\"). Before a metered judge (Claude Code, a metered preset) is called you are asked each time; ask_before_metered = false calls it without asking. Empty: the reviewer alone. docs/harness.md"},
         {"dumb_auto_ok", d.dumb_auto_ok},
-        {"approvals_timeout", d.approvals_timeout},
-        {"//approvals_timeout", "seconds an approval or a question waits for an answer before it is treated as denied (0: no limit); a project's settings may only lower it, and setting it to 0 or above the value here makes the directory ask again"},
+        {"approvals_proposal_timeout", d.approvals_proposal_timeout},
+        {"//approvals_proposal_timeout", "seconds an approval or a question waits for an answer before it is treated as denied (0: no limit); a project's settings may only lower it, and setting it to 0 or above the value here makes the directory ask again"},
         {"approvals_unattended", d.approvals_unattended},
-        {"//approvals_unattended", "wait: someone answers each approval (an unanswered one is denied after approvals_timeout); deny: every approval is denied at once, by design, as if the owner were away, and counts as no refusal of theirs"},
+        {"//approvals_unattended", "wait: someone answers each approval (an unanswered one is denied after approvals_proposal_timeout); deny: every approval is denied at once, by design, as if the owner were away, and counts as no refusal of theirs"},
         {"unattended_denials_limit", d.unattended_denials_limit},
         {"//unattended_denials_limit", "how many approvals one unattended turn may have denied before it ends by itself, with one notice saying so (a normal end, never a trip); beside denials_limit, the user's own refusals"},
         {"protocol_tier", d.protocol_tier},

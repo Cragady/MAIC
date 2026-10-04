@@ -240,8 +240,8 @@ struct Settings {
     long reviewer_budget_tokens = 0;  // the reviewer's own token cap; past it, what it would review is asked. 0 = none
     Checkers checkers;              // global file only: the checker panel (no judges: the reviewer alone)
     bool dumb_auto_ok = true;       // false: entering auto mode under a dumb harness warns and asks first
-    int approvals_timeout = 300;    // seconds an approval waits for an answer before it is denied; 0 = no limit
-    // "wait": someone answers each approval (an unanswered one is denied after approvals_timeout). "deny": the
+    int approvals_proposal_timeout = 300;    // seconds an approval waits for an answer before it is denied; 0 = no limit
+    // "wait": someone answers each approval (an unanswered one is denied after approvals_proposal_timeout). "deny": the
     // session is unattended, so every approval is denied at once, by design, and counts as no refusal of the user's.
     std::string approvals_unattended = "wait";
     int unattended_denials_limit = 5;  // approvals one unattended turn may have denied before it ends, with a notice

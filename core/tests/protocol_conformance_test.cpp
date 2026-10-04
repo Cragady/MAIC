@@ -2379,11 +2379,11 @@ int main() {
         after.finish();
     }
 
-    section("an approval or a question nobody answers times out: approvals_timeout denies it and tells the model");
+    section("an approval or a question nobody answers times out: approvals_proposal_timeout denies it and tells the model");
     {
         // One engine that gives a person a second to answer, and one whose limit is 0: no timeout at all.
         EngineOptions ot = o;
-        ot.settings.approvals_timeout = 1;
+        ot.settings.approvals_proposal_timeout = 1;
         ot.index_file = root / "state" / "engine-timeout" / "index.json";
         ot.protocol_log = root / "state" / "engine-timeout" / "protocol.log";
         Engine e(ot);
@@ -2421,7 +2421,7 @@ int main() {
         expect(at > 0 && done && (*done)["choice"] == "no" && (*done)["by"]["client"] == "engine" && (*done)["by"]["name"] == "timeout" &&
                    (*done)["by"]["origin"] == "local" && (*done)["timed_out"] == true,
                "an approval nobody answers is denied by the engine's timeout: choice no, by timeout, timed_out");
-        expect(waited >= 900ms && waited < 10s, "after about the second approvals_timeout gave it, and not much more");
+        expect(waited >= 900ms && waited < 10s, "after about the second approvals_proposal_timeout gave it, and not much more");
         expect(a.until_idle(mark) > 0 && says_since(before, "NOT ANSWERED within 1 s"),
                "the turn goes on, and the model's next request says NOT ANSWERED within 1 s");
 
@@ -2437,9 +2437,9 @@ int main() {
                "an answer inside the second wins: choice yes, by the client, no timed_out");
         expect(a.until_idle(mark) > 0, "the command runs and the turn ends");
 
-        // 3. approvals_timeout = 0: no limit, it waits as long as it takes.
+        // 3. approvals_proposal_timeout = 0: no limit, it waits as long as it takes.
         EngineOptions o0 = o;
-        o0.settings.approvals_timeout = 0;
+        o0.settings.approvals_proposal_timeout = 0;
         o0.index_file = root / "state" / "engine-no-timeout" / "index.json";
         o0.protocol_log = root / "state" / "engine-no-timeout" / "protocol.log";
         Engine e0(o0);
@@ -2457,7 +2457,7 @@ int main() {
             auto deadline = std::chrono::steady_clock::now() + 2s;
             while (std::chrono::steady_clock::now() < deadline) z.pump(50ms);
         }
-        expect(ask0 > 0 && !z.find("maid.approval.answered", mark0), "with approvals_timeout = 0 an unanswered approval is still waiting after 2 s");
+        expect(ask0 > 0 && !z.find("maid.approval.answered", mark0), "with approvals_proposal_timeout = 0 an unanswered approval is still waiting after 2 s");
         if (ask0 > 0) z.ok("maid.approval.answer", {{"session", zid}, {"approval", z.events[ask0]["id"]}, {"choice", "yes"}});
         long late = z.until_type("maid.approval.answered", mark0);
         expect(late > 0 && z.events[late]["choice"] == "yes" && !z.events[late].contains("timed_out"), "answering it late still runs the command, with no timed_out");
@@ -2516,7 +2516,7 @@ int main() {
             return false;
         };
 
-        // 1. maid.unattended on one turn: the approval is answered at once, not after approvals_timeout (300 here).
+        // 1. maid.unattended on one turn: the approval is answered at once, not after approvals_proposal_timeout (300 here).
         size_t mark = a.events.size();
         size_t before = request_count();
         plan({shell("echo away")});
@@ -2529,7 +2529,7 @@ int main() {
         expect(at > 0 && done && (*done)["choice"] == "no" && (*done)["by"]["client"] == "engine" && (*done)["by"]["name"] == "unattended" &&
                    (*done)["by"]["origin"] == "local" && (*done)["unattended"] == true && !done->contains("timed_out"),
                "an unattended turn denies at once: choice no, by unattended, unattended true");
-        expect(waited < 5s, "and it does not wait for approvals_timeout (300 s here)");
+        expect(waited < 5s, "and it does not wait for approvals_proposal_timeout (300 s here)");
         expect(noticed(mark, "unattended (the owner is away): run_shell denied"), "the owner's window gets one line per denial");
         expect(a.until_idle(mark) > 0 && says_since(before, "Approvals are off in this turn by design (the owner is away)"),
                "the turn goes on, and the model is told the approvals are disabled by design");

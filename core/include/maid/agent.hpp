@@ -44,7 +44,7 @@ struct ApprovalRequest {
 
 // The user's answer; `feedback` is a sentence for the model when the answer is No ("use the test config").
 // `withdrawn`: a steer took the approval's place, and `feedback` is what the call's result says instead.
-// `timed_out`: nobody answered within approvals_timeout, and the engine denied it on the user's behalf; `feedback`
+// `timed_out`: nobody answered within approvals_proposal_timeout, and the engine denied it on the user's behalf; `feedback`
 // then names the seconds it waited. `unattended`: the turn is unattended (approvals_unattended = "deny", or the
 // liaison's maid.unattended), so the engine denied it at once, by design: not the user's refusal.
 struct ApprovalAnswer {

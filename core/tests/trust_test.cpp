@@ -720,12 +720,13 @@ int main() {
         load_settings(g_home);  // the global file's values are what a project layer is measured against
         widened("return { approvals_unattended = 'wait' }\n", "approvals_unattended = \"wait\"");
         widened("return { unattended_denials_limit = 9 }\n", "unattended_denials_limit 5 -> 9");
-        widened("return { approvals_timeout = 900 }\n", "approvals_timeout 300 -> 900");
+        widened("return { approvals_proposal_timeout = 900 }\n", "approvals_proposal_timeout 300 -> 900");
+        widened("return { approvals_timeout = 0 }\n", "approvals_proposal_timeout = 0 (no timeout)");  // the old name is the same guard
         {
             fs::path tight = project("relaxed-tighter", false);
             trust_dir(project_dir(tight), Origin::Local, "relaxed", "sandbox");
             // The project's own mode stays as it was: dropping it would be a mode widening of its own.
-            write_file(tight / ".maid" / "settings.lua", "return { mode = 'edit', approvals_unattended = 'deny', unattended_denials_limit = 2, approvals_timeout = 60 }\n");
+            write_file(tight / ".maid" / "settings.lua", "return { mode = 'edit', approvals_unattended = 'deny', unattended_denials_limit = 2, approvals_proposal_timeout = 60 }\n");
             TrustStatus s = trust_status(project_dir(tight));
             expect(s.trust == Trust::Trusted, "a project that only tightens the guards passes under relaxed: " + joined(s.reasons));
         }

@@ -999,7 +999,7 @@
             },
             "timed_out": {
               "type": "boolean",
-              "description": "Present, true, only when nobody answered within approvals_timeout and the engine denied it on the user's behalf (`by` then names timeout)."
+              "description": "Present, true, only when nobody answered within approvals_proposal_timeout and the engine denied it on the user's behalf (`by` then names timeout)."
             },
             "unattended": {
               "type": "boolean",
@@ -1077,7 +1077,7 @@
             },
             "timed_out": {
               "type": "boolean",
-              "description": "Present, true, only when nobody answered within approvals_timeout (`by` then names timeout, and the answer is empty)."
+              "description": "Present, true, only when nobody answered within approvals_proposal_timeout (`by` then names timeout, and the answer is empty)."
             },
             "unattended": {
               "type": "boolean",

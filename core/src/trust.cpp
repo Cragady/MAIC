@@ -266,7 +266,7 @@ json settings_json(const fs::path& file, const fs::path& dir) {
 // harness, the providers it defines, its instruction files and its tools.
 json capabilities(const ProjectDir& p) {
     json caps = {{"allow", json::array()}, {"ask", json::array()}, {"deny", json::array()}, {"mode", ""}, {"harness", ""}, {"tripwire", ""},
-                 {"allow_isolated", false}, {"dumb_auto_ok", false}, {"approvals_timeout", json()}, {"approvals_unattended", json()}, {"unattended_denials_limit", json()},
+                 {"allow_isolated", false}, {"dumb_auto_ok", false}, {"approvals_proposal_timeout", json()}, {"approvals_unattended", json()}, {"unattended_denials_limit", json()},
                  {"providers", json::object()}, {"error", ""},
                  {"instructions", json::array()}, {"lua_tools", json::array()}, {"script_tools", json::object()}};
     for (const auto& f : p.settings) {
@@ -296,10 +296,12 @@ json capabilities(const ProjectDir& p) {
         }
         // The seconds this directory's files would make an approval wait (0: no timeout at all): the weakest any of
         // them asks for, as the booleans above take any file's true. Absent when none of them sets it.
-        if (j.contains("approvals_timeout") && j["approvals_timeout"].is_number()) {
-            int v = static_cast<int>(j["approvals_timeout"].get<double>());
-            int had = caps["approvals_timeout"].is_number() ? static_cast<int>(caps["approvals_timeout"].get<double>()) : -1;
-            caps["approvals_timeout"] = (v == 0 || had == 0) ? 0 : std::max(v, had);
+        // approvals_timeout is the setting's old name (v0.4.4): read as the same guard, so it can't slip past.
+        const char* timeout_key = j.contains("approvals_proposal_timeout") ? "approvals_proposal_timeout" : "approvals_timeout";
+        if (j.contains(timeout_key) && j[timeout_key].is_number()) {
+            int v = static_cast<int>(j[timeout_key].get<double>());
+            int had = caps["approvals_proposal_timeout"].is_number() ? static_cast<int>(caps["approvals_proposal_timeout"].get<double>()) : -1;
+            caps["approvals_proposal_timeout"] = (v == 0 || had == 0) ? 0 : std::max(v, had);
         }
         // The same for the two unattended guards: "wait" (the weaker of the pair: approvals wait for a person) and
         // the highest limit any of them asks for (more such denials before the turn ends).
@@ -378,18 +380,18 @@ std::vector<std::string> widenings(const json& old_caps, const json& now) {
     {
         std::lock_guard lock(g_mu);
         g_away = config().approvals_unattended;
-        g_timeout = config().approvals_timeout;
+        g_timeout = config().approvals_proposal_timeout;
         g_limit = config().unattended_denials_limit;
     }
-    // approvals_timeout: a project may tighten the guard (a smaller number of seconds) but not weaken it: 0 (no
+    // approvals_proposal_timeout: a project may tighten the guard (a smaller number of seconds) but not weaken it: 0 (no
     // timeout at all), or more than the value in force without its own files, is a widening.
     auto timeout_of = [&](const json& j) {
         return j.is_number() ? static_cast<int>(j.get<double>()) : g_timeout;
     };
-    if (now.contains("approvals_timeout") && now["approvals_timeout"].is_number()) {
-        int nt = timeout_of(now["approvals_timeout"]), ot = timeout_of(old.value("approvals_timeout", json()));
-        if (nt == 0) out.push_back("approvals_timeout = 0 (no timeout)");
-        else if (nt > ot) out.push_back("approvals_timeout " + std::to_string(ot) + " -> " + std::to_string(nt));
+    if (now.contains("approvals_proposal_timeout") && now["approvals_proposal_timeout"].is_number()) {
+        int nt = timeout_of(now["approvals_proposal_timeout"]), ot = timeout_of(old.value("approvals_proposal_timeout", json()));
+        if (nt == 0) out.push_back("approvals_proposal_timeout = 0 (no timeout)");
+        else if (nt > ot) out.push_back("approvals_proposal_timeout " + std::to_string(ot) + " -> " + std::to_string(nt));
     }
     // approvals_unattended: "deny" is the tighter of the pair, so "wait" where the value in force is "deny" hands
     // the guard back. unattended_denials_limit: a higher limit lets more approvals be denied before a turn ends.
