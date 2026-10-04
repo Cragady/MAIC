@@ -7,12 +7,20 @@ Micaiah, 2026-10-03. Status: draft; nothing built. Today's approvals are this qu
 * `approvals_queue = "hang"` stays the default for now; `"queue"` turns on the rest of this document once it is fleshed out.
 * Each part is an option: the interrupt window, staleness, review prompts, queue depth, which tools may queue, `max_retries`, and the default accept mode.
 
-## Two timeouts
+## Timeouts
 
-* `approvals_queue_timeout`: how long a call may wait in the queue; past it, the call is `stale`.
-* `approvals_lifetime_timeout`: how long a call may live from the moment it was made (window, queue and all). Past it, the call announces itself with a stale marker and recommends being dropped, but it can still run after one confirmation round, once it has been accepted as a call to run.
-* In `manual` there is no `approvals_queue_timeout`: a call waits in the queue until decided. The lifetime timeout still applies, as above.
-* Named as timeouts (not `max_age`) to match `approvals_timeout` and because each ends in an action (the call goes stale), not a silent expiry.
+| Setting | Bounds |
+| :- | :- |
+| `approvals_proposal_timeout` | the hang: the single blocking proposal (there is only ever one, since it holds the line between owner and agent). This is today's `approvals_timeout`, renamed; the old name stays readable for a while with a warning naming the new one. |
+| `approvals_queue_timeout` | waiting in the queue; past it the call is `stale`. None in `manual`: a call waits until decided. |
+| `approvals_lifetime_timeout` | a call's whole life (window, queue and all); past it the call announces itself stale and recommends a drop, but can still run after one confirmation round once accepted. Applies in `manual` too. |
+| `harness_answer_timeout` | maid demands the smart harness's answer on a queued call within a window close to an average model or tool call's latency; unanswered in time, the call is dropped. Configurable; the default is strongly recommended. |
+
+Named as timeouts (not `max_age`) because each ends in an action, not a silent expiry.
+
+## Stale calls and the harness
+
+The harness, managing the queue, takes a stale call by an acceptance level (strict to permissive): `drop` (always), `ask` (the owner decides), `judge` (accepted only if the harness judges it safe), `accept`. It automates what the owner would do, with its guardrails on top; the critical tier caps every level.
 
 ## Hangs
 
