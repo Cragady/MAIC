@@ -1,6 +1,6 @@
 # Asynchronous work as lanes of one event loop (design note)
 
-Micaiah, 2026-10-03. Status: note only; nothing to build until the tool-call queue ([tool-call-queue.md](tool-call-queue.md)) is proven, since its decision lane is the hard part and the rest follows from it.
+Micaiah, 2026-10-03. Status: the full lanes design is backlog (build only once the tool-call queue, [tool-call-queue.md](tool-call-queue.md), is proven). **In use first, the simple version: an item marked async runs as a subagent** (see "Sessions that would rather stay synchronous" below).
 
 ## The decision
 
